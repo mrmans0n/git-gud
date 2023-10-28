@@ -20,6 +20,8 @@ enum Commands {
     },
     #[command(name = "ls", alias = "list", about = "Lists all commits")]
     Ls,
+    #[command(name = "squash", alias = "sc", about = "Squash all changes in the previous commit")]
+    Squash,
 }
 
 fn check_if_in_repo() -> Repository {
@@ -27,7 +29,7 @@ fn check_if_in_repo() -> Repository {
     let maybe_repo = Repository::open(".");
 
     if let Err(err) = maybe_repo {
-        println!("Not in a git repository: {}", err.to_string());
+        eprintln!("Not in a git repository: {}", err.to_string());
         exit(1);
     }
 
@@ -44,7 +46,11 @@ fn main() {
             commands::feature::create_branch_off_of_main(repo, branch_name);
         }
         Commands::Ls => {
-            println!("Ls!");
+            let repo = check_if_in_repo();
+            commands::ls::list_commits_off_of_main(repo);
+        }
+        Commands::Squash => {
+            println!("Squash!")
         }
     }
 }

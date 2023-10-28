@@ -1,3 +1,4 @@
+use fancy::printcoln;
 use git2::BranchType::Local;
 use git2::ObjectType::Commit;
 use git2::Repository;
@@ -17,5 +18,7 @@ pub fn create_branch_off_of_main(repository: Repository, branch_name: String) {
 
     // Set the new branch as the current head
     repository.set_head(&new_branch.get().name().unwrap()).expect("Could not set the new branch as the current head");
+
+    printcoln!("Branch [green|b]{}[:] created! 🎉", branch_name);
 }
 

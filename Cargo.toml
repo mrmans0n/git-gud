@@ -9,3 +9,4 @@ edition = "2021"
 clap = { version = "4.4.7", features = ["derive"] }
 spinners = "4.1.0"
 git2 = { version = "0.18.1", features = ["default"] }
+fancy = "0.3.1"

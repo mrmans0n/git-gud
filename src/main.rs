@@ -50,7 +50,8 @@ fn main() {
             commands::ls::list_commits_off_of_main(repo);
         }
         Commands::Squash => {
-            println!("Squash!")
+            let repo = check_if_in_repo();
+            commands::squash::squash_to_previous_commit(repo);
         }
     }
 }

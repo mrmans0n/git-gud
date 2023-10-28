@@ -18,7 +18,8 @@ pub fn list_commits_off_of_main(repository: Repository) {
         .push_range(&format!("{}..{}", main.id(), head.id()))
         .expect("Could not push range between main..head commits");
 
-    printcoln!("[b]Commit[:b]\t\t[b]Summary[:]");
+    printcoln!("[b|u]Commit[:b]\t\t[b|u]Summary[:]");
+    println!();
     for id in revwalk {
         match id {
             Ok(id) => {

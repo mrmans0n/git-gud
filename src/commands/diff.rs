@@ -45,19 +45,16 @@ pub fn diff(repository: Repository) {
 
     let revwalk = util::get_all_commits_from_main(&repository);
 
-    printcoln!("[b|u]Commit[:b]\t\t[b|u]Summary[:]");
-    println!();
+    printcoln!("[b|u]Commit\t\tStatus\t\tSummary[:]");
     for id in revwalk {
         match id {
             Ok(id) => {
                 let commit = repository.find_commit(id).expect("Failed to find commit");
 
                 let mut short_sha = commit.id().to_string();
-                short_sha.truncate(7);
-                printcol!(
-                    "[b|yellow]{}[:]\t\t",
-                    short_sha,
-                );
+                short_sha.truncate(8);
+                printcol!("[b|yellow]{}[:]\t", short_sha);
+                print!("🤷‍\t\t");
                 println!("Should be pushing to `origin/gg/pr/{}`", commit.id().to_string());
             }
             Err(e) => eprintln!("Failed to get commit: {}", e),

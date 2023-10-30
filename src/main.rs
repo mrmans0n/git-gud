@@ -20,6 +20,8 @@ enum Commands {
     },
     #[command(name = "list", alias = "ls", about = "Lists all commits")]
     Ls,
+    #[command(name = "diff", alias = "d", about = "Pushes all commits in the stack")]
+    Diff,
     #[command(name = "squash", alias = "sc", about = "Squash all changes in the previous commit")]
     Squash,
 }
@@ -52,6 +54,10 @@ fn main() {
         Commands::Squash => {
             let repo = check_if_in_repo();
             commands::squash::squash_to_previous_commit(repo);
+        }
+        Commands::Diff => {
+            let repo = check_if_in_repo();
+            commands::diff::diff(repo);
         }
     }
 }

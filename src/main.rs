@@ -18,7 +18,7 @@ enum Commands {
     Feature {
         branch_name: String,
     },
-    #[command(name = "ls", alias = "list", about = "Lists all commits")]
+    #[command(name = "list", alias = "ls", about = "Lists all commits")]
     Ls,
     #[command(name = "squash", alias = "sc", about = "Squash all changes in the previous commit")]
     Squash,

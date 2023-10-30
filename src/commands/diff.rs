@@ -1,5 +1,6 @@
 use fancy::{printcol, printcoln};
-use git2::Repository;
+use git2::{Commit, Repository};
+use uuid::Uuid;
 
 use crate::commands::util;
 
@@ -61,3 +62,8 @@ pub fn diff(repository: Repository) {
         }
     }
 }
+
+// fn get_or_generate_metadata_for_commit(commit: Commit) -> String {
+//     let id = Uuid::new_v4();
+//     return id.to_string();
+// }

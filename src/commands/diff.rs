@@ -1,66 +1,70 @@
-use fancy::{printcol, printcoln};
-use git2::{Commit, Repository};
-use uuid::Uuid;
-
+use git2::{RebaseOptions, Repository};
 use crate::commands::util;
 
 pub fn diff(repository: Repository) {
-    // TODO
-    // Next, you can use the following Rust code to push a commit to the specified branch:
-    //     rust
-    // Copy code
-    // extern crate git2;
-    //
-    // use git2::{Repository, PushOptions, RemoteCallbacks, Cred};
-    //
-    // fn main() {
-    //     // Open the current repository
-    //     let repo = Repository::open(".").unwrap();
-    //
-    //     // Get the remote named "origin"
-    //     let mut remote = repo.find_remote("origin").unwrap();
-    //
-    //     // Set up the push options and callbacks
-    //     let mut callbacks = RemoteCallbacks::new();
-    //     callbacks.credentials(|_url, _username_from_url, _allowed_types| {
-    //         // Provide credentials here, for example:
-    //         Cred::ssh_key_from_agent("git")
-    //     });
-    //     let mut push_options = PushOptions::new();
-    //     push_options.remote_callbacks(callbacks);
-    //
-    //     // Push to the specified branch
-    //     remote.push(
-    //         &["refs/heads/gg/pr/something:refs/heads/gg/pr/something"],
-    //         Some(&mut push_options),
-    //     ).unwrap();
-    // }
-    // In this code:
-    //
-    //     We first open the current repository using Repository::open.
-    //     We then find the remote named "origin" using repo.find_remote.
-    //     We create a new PushOptions object and a RemoteCallbacks object to handle authentication and other remote interactions. In this example, we use Cred::ssh_key_from_agent to authenticate using an SSH key, but you may need to adjust this to match your authentication setup.
-    //     Finally, we push to the specified branch using remote.push, providing the source and destination refspecs as "refs/heads/gg/pr/something:refs/heads/gg/pr/something" to specify that we are pushing to the gg/pr/something branch on the remote named origin.
-    //     Make sure to handle any potential errors that may occur during this process, such as network issues or authentication failures, by checking the result of the unwrap calls or using proper error handling techniques in Rust.
+    // We need to walk through all the commits here but in the context of a rebase
 
+    // Get the commit ids for main
+    let main_oid = repository
+        .revparse_single("main")
+        .or_else(|_| repository.revparse_single("master"))
+        .expect("Could not find main branch")
+        .id();
 
-    let revwalk = util::get_all_commits_from_main(&repository);
+    let main_commit = repository.find_annotated_commit(main_oid)
+        .expect("Could not get annotated commit");
 
-    printcoln!("[b|u]Commit\t\tStatus\t\tSummary[:]");
-    for id in revwalk {
-        match id {
-            Ok(id) => {
-                let commit = repository.find_commit(id).expect("Failed to find commit");
+    let mut rebase_options = RebaseOptions::default();
+    let mut rebase = repository.rebase(
+        None,
+        Some(&main_commit),
+        None,
+        Some(&mut rebase_options))
+        .expect("Could not start the rebase");
 
-                let mut short_sha = commit.id().to_string();
-                short_sha.truncate(8);
-                printcol!("[b|yellow]{}[:]\t", short_sha);
-                print!("🤷‍\t\t");
-                println!("Should be pushing to `origin/gg/pr/{}`", commit.id().to_string());
+    let signature = repository.signature().expect("Failed to get signature");
+
+    // Iterate through the rebase operations
+    while let Some(Ok(operation)) = rebase.next() {
+        match operation.kind() {
+            Some(git2::RebaseOperationType::Pick) => {
+                // TODO mmmh this seems to destroy the repo OOPS
+                let uuid = util::write_metadata_id_to_head(&repository);
+
+                // let commit_oid = rebase.commit(None, &signature, None)
+                //     .expect("Failed to apply commit");
+
+                println!("Applied commit: {:?} (gg-id: {uuid})", operation.id());
+
+                let commit = repository.head().unwrap().peel_to_commit().unwrap();
+                let commit_message = commit.message().unwrap_or("<empty>");
+                println!("Commit message:\n{commit_message}");
             }
-            Err(e) => eprintln!("Failed to get commit: {}", e),
+            _ => {
+                // Skip other types of operations
+                println!("Skipped commit: {:?}", operation.id());
+            }
         }
     }
+
+    // Finalize the rebase
+    rebase.finish(None).expect("Failed to finish rebase");
+
+    // printcoln!("[b|u]Commit\t\tStatus\t\tSummary[:]");
+    // for id in revwalk {
+    //     match id {
+    //         Ok(id) => {
+    //             let commit = repository.find_commit(id).expect("Failed to find commit");
+    //
+    //             let mut short_sha = commit.id().to_string();
+    //             short_sha.truncate(8);
+    //             printcol!("[b|yellow]{}[:]\t", short_sha);
+    //             print!("🤷‍\t\t");
+    //             println!("Should be pushing to `origin/gg/pr/{}`", commit.id().to_string());
+    //         }
+    //         Err(e) => eprintln!("Failed to get commit: {}", e),
+    //     }
+    // }
 }
 
 // fn get_or_generate_metadata_for_commit(commit: Commit) -> String {

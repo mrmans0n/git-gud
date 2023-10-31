@@ -54,7 +54,7 @@ pub(crate) fn write_metadata_id_to_head(repository: &Repository) -> String {
     let uuid = Uuid::new_v4().to_string();
 
     // Write this message to commit
-    let new_message = format!("\"{head_message}\n\ngg-id: {uuid}\"");
+    let new_message = format!("{head_message}\n\ngg-id: {uuid}");
 
     let output = Command::new("git")
         .args(&["commit", "--amend", "-m", &new_message])

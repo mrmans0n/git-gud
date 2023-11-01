@@ -1,6 +1,6 @@
 use std::process::{Command, exit};
 
-use git2::{Commit, Repository, Revwalk};
+use git2::{Commit, Repository, Revwalk, Sort};
 use uuid::Uuid;
 
 pub(crate) fn get_all_commits_from_main(repository: &Repository) -> Revwalk {
@@ -19,6 +19,8 @@ pub(crate) fn get_all_commits_from_main(repository: &Repository) -> Revwalk {
     revwalk
         .push_range(&format!("{}..{}", main.id(), head.id()))
         .expect("Could not push range between main..head commits");
+
+    revwalk.set_sorting(Sort::REVERSE).expect("Could not reverse the list to walk");
     revwalk
 }
 

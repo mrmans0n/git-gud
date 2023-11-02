@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 pub(crate) fn get_all_commits_from_main(repository: &Repository) -> Revwalk {
     let mut revwalk = repository.revwalk().expect("Could not create revwalk");
+    let _ = revwalk.set_sorting(Sort::REVERSE);
 
     // Get the commit ids for HEAD and main
     let head = repository

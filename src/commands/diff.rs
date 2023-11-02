@@ -20,14 +20,18 @@ pub fn diff(repository: Repository) {
                 if let Some(uuid) = util::get_metadata_id_from_commit(&commit) {
                     if detected_uuid.is_none() {
                         detected_uuid = Some(uuid);
-                    } else if detected_uuid.take().unwrap() != uuid {
+                    } else {
                         // TODO
-                        println!(
-                            "Commit {} contains a different uuid than the predecessors. It is {} and it should be {}.",
-                            commit.id().to_string(),
-                            uuid,
-                            detected_uuid.take().unwrap()
-                        );
+                        let detected = detected_uuid.take().unwrap();
+
+                        if detected != uuid {
+                            println!(
+                                "Commit {} contains a different uuid than the predecessors. It is {} and it should be {}.",
+                                commit.id().to_string(),
+                                uuid,
+                                detected
+                            );
+                        }
                     }
                 }
             }
@@ -40,9 +44,13 @@ pub fn diff(repository: Repository) {
     // Make sure we have a canonical uuid to use
     let stack_uuid = if detected_uuid.is_none() {
         Uuid::new_v4().to_string()
+    } else if Uuid::parse_str(detected_uuid.take().unwrap().as_str()).is_err() {
+        Uuid::new_v4().to_string()
     } else {
         detected_uuid.unwrap()
     };
+
+    println!("Canonical uuid: {stack_uuid}");
 
     // We need to walk through all the commits here but in the context of a rebase
 
@@ -84,8 +92,16 @@ pub fn diff(repository: Repository) {
                 if current_commit_uuid.is_none() {
                     new_message = Some(format!("{old_message}\n\ngg-id: {}", stack_uuid));
                 } else if current_commit_uuid.unwrap() != stack_uuid {
-                    // TODO rewrite it!
-                    println!("WOOT NEED TO CHANGE THIS LOL")
+                    let mut lines: Vec<String> = vec![];
+                    for line in old_message.lines() {
+                        if line.starts_with("gg-id:") {
+                            lines.push(format!("gg-id: {stack_uuid}"));
+                        } else {
+                            lines.push(line.to_string());
+                        }
+                    }
+                    new_message = Some(lines.join("\n"));
+                    println!("Rebuilt message!")
                 } // else skip
 
                 // TODO skip the commit if no changes needed for the commit message
@@ -112,6 +128,10 @@ pub fn diff(repository: Repository) {
 
                 let commit_message = new_current_commit.message().unwrap_or("<empty>");
                 println!("Commit message:\n{commit_message}");
+
+                // TODO should we push now?
+                //  create a new tmp branch, cherry pick this commit, push that branch to the repo?
+                //  also hold all temp branches created to delete after this is all done
             }
             _ => {
                 // Skip other types of operations

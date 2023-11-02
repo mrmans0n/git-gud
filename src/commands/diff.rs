@@ -8,8 +8,6 @@ pub fn diff(repository: Repository) {
 
     // We need to look for the current uuid in the list of commits in the patch
     // We'll need to detect that there is one in the stack, and that all commits have the same one
-    // TODO idea, what about looking for the ones missing and construct the rebase so that we
-    //  reword only the ones that are missing? would that work?
     let mut detected_uuid: Option<String> = None;
 
     for id in revwalk {
@@ -24,7 +22,12 @@ pub fn diff(repository: Repository) {
                         detected_uuid = Some(uuid);
                     } else if detected_uuid.take().unwrap() != uuid {
                         // TODO
-                        eprintln!("Commit {} contains a different uuid than the predecessors. It is {} and it should be {}.", commit.id().to_string(), uuid, detected_uuid.take().unwrap());
+                        println!(
+                            "Commit {} contains a different uuid than the predecessors. It is {} and it should be {}.",
+                            commit.id().to_string(),
+                            uuid,
+                            detected_uuid.take().unwrap()
+                        );
                     }
                 }
             }
@@ -34,6 +37,7 @@ pub fn diff(repository: Repository) {
         }
     }
 
+    // Make sure we have a canonical uuid to use
     let stack_uuid = if detected_uuid.is_none() {
         Uuid::new_v4().to_string()
     } else {
@@ -81,6 +85,7 @@ pub fn diff(repository: Repository) {
                     new_message = Some(format!("{old_message}\n\ngg-id: {}", stack_uuid));
                 } else if current_commit_uuid.unwrap() != stack_uuid {
                     // TODO rewrite it!
+                    println!("WOOT NEED TO CHANGE THIS LOL")
                 } // else skip
 
                 // TODO skip the commit if no changes needed for the commit message
@@ -98,10 +103,10 @@ pub fn diff(repository: Repository) {
                 //     println!("Skipped commit: {:?}", operation.id());
                 // }
 
-                rebase.commit(None, &signature, new_message.as_deref())
+                let new_commit_oid = rebase.commit(None, &signature, new_message.as_deref())
                     .expect("Failed to apply commit");
 
-                let new_current_commit = repository.head().unwrap().peel_to_commit().unwrap();
+                let new_current_commit = repository.find_commit(new_commit_oid).expect("Could not find new commit");
 
                 println!("Applied commit: {:?} (gg-id: {})", new_current_commit.id(), stack_uuid);
 

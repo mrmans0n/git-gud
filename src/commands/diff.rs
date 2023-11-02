@@ -4,6 +4,42 @@ use uuid::Uuid;
 use crate::commands::util;
 
 pub fn diff(repository: Repository) {
+    let revwalk = util::get_all_commits_from_main(&repository);
+
+    // We need to look for the current uuid in the list of commits in the patch
+    // We'll need to detect that there is one in the stack, and that all commits have the same one
+    // TODO idea, what about looking for the ones missing and construct the rebase so that we
+    //  reword only the ones that are missing? would that work?
+    let mut detected_uuid: Option<String> = None;
+
+    for id in revwalk {
+        match id {
+            Ok(oid) => {
+                let commit = repository.find_commit(oid).expect("Failed to find commit");
+
+                // uuid found, we need to check whether we already have one stored and if it's the same
+                // if not, we'll need to rewrite?
+                if let Some(uuid) = util::get_metadata_id_from_commit(&commit) {
+                    if detected_uuid.is_none() {
+                        detected_uuid = Some(uuid);
+                    } else if detected_uuid.take().unwrap() != uuid {
+                        // TODO
+                        eprintln!("Commit {} contains a different uuid than the predecessors. It is {} and it should be {}.", commit.id().to_string(), uuid, detected_uuid.take().unwrap());
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to get commit: {}", e);
+            }
+        }
+    }
+
+    let stack_uuid = if detected_uuid.is_none() {
+        Uuid::new_v4().to_string()
+    } else {
+        detected_uuid.unwrap()
+    };
+
     // We need to walk through all the commits here but in the context of a rebase
 
     // Get the commit ids for main
@@ -30,24 +66,22 @@ pub fn diff(repository: Repository) {
     while let Some(Ok(operation)) = rebase.next() {
         match operation.kind() {
             Some(git2::RebaseOperationType::Pick) => {
-                // TODO mmmh this seems to destroy the repo OOPS
-                // let uuid = util::write_metadata_id_to_head(&repository);
-
                 let current_commit = repository.find_commit(operation.id()).expect("Could not obtain current commit");
-                let mut uuid = util::get_metadata_id_from_commit(&current_commit);
+                let current_commit_uuid = util::get_metadata_id_from_commit(&current_commit);
 
-                let mut new_message: Option<String> = None;
+                // Alternatives here:
+                //  - if there is no uuid, we need to write one
+                //  - if there is an uuid but not the same, we need to overwrite
+                //  - if there's our same uuid, it's fine
 
-                if uuid == None {
-                    // TODO force all commits in the stack to share the same
-                    let uuid_string = Uuid::new_v4().to_string();
-                    uuid = Some(uuid_string.clone());
-                    let current_message_raw = current_commit.message().unwrap_or("");
-                    let formatted_message = format!("{current_message_raw}\n\ngg-id: {}", uuid_string);
-                    new_message = Some(formatted_message);
-                } else {
-                    // TODO we should skip here
-                }
+                let old_message = current_commit.message().unwrap_or("");
+                let mut new_message: Option<String> = Some(old_message.to_string());
+
+                if current_commit_uuid.is_none() {
+                    new_message = Some(format!("{old_message}\n\ngg-id: {}", stack_uuid));
+                } else if current_commit_uuid.unwrap() != stack_uuid {
+                    // TODO rewrite it!
+                } // else skip
 
                 // TODO skip the commit if no changes needed for the commit message
                 // let commit = repo.find_commit(operation.id().expect("Failed to get commit id")).expect("Failed to find commit");
@@ -69,7 +103,7 @@ pub fn diff(repository: Repository) {
 
                 let new_current_commit = repository.head().unwrap().peel_to_commit().unwrap();
 
-                println!("Applied commit: {:?} (gg-id: {})", new_current_commit.id(), uuid.unwrap_or("<unset>".to_string()));
+                println!("Applied commit: {:?} (gg-id: {})", new_current_commit.id(), stack_uuid);
 
                 let commit_message = new_current_commit.message().unwrap_or("<empty>");
                 println!("Commit message:\n{commit_message}");

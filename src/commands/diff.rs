@@ -6,6 +6,11 @@ use crate::commands::util;
 pub fn diff(repository: Repository) {
     let revwalk = util::get_all_commits_from_main(&repository);
 
+    if revwalk.size_hint().0 == 0 {
+        println!("Nothing to diff.");
+        return;
+    }
+
     // We need to look for the current uuid in the list of commits in the patch
     // We'll need to detect that there is one in the stack, and that all commits have the same one
     let mut detected_uuid: Option<String> = None;

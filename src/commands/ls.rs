@@ -6,6 +6,10 @@ use crate::commands::util;
 pub fn list_commits_off_of_main(repository: Repository) {
     let revwalk = util::get_all_commits_from_main(&repository);
 
+    if revwalk.size_hint().0 == 0 {
+        return;
+    }
+
     // TODO we should traverse revwalk backwards to list!
 
     printcoln!("[b|u]Commit[:b]\t\t[b|u]Summary[:]");

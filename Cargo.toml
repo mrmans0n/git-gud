@@ -9,5 +9,6 @@ edition = "2021"
 clap = { version = "4.4.7", features = ["derive"] }
 spinners = "4.1.0"
 git2 = { version = "0.18.1", features = ["default"] }
+git2-ext = "0.6.1"
 fancy = "0.3.1"
 uuid = { version = "1.5.0", features = ["v4"] }

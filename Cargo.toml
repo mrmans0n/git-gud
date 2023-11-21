@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4.4.7", features = ["derive"] }
-spinners = "4.1.0"
+spinners = "4.1.1"
 git2 = { version = "0.18.1", features = ["default"] }
 git2-ext = "0.6.1"
 fancy = "0.3.1"

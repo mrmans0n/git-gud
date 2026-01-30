@@ -28,7 +28,7 @@ tokio = { version = "1", features = ["full"] }
 indicatif = "0.18"
 console = "0.16"
 dialoguer = { version = "0.12", features = ["fuzzy-select"] }
-skim = "0.10"
+skim = "0.20"
 
 # Error handling
 anyhow = "1"

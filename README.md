@@ -120,6 +120,7 @@ gg clean
 
 | Command | Description |
 |---------|-------------|
+| `gg setup` | Generate or update `.git/gg/config.json` interactively |
 | `gg lint` | Run lint commands on each commit |
 | `gg continue` | Continue after resolving conflicts |
 | `gg abort` | Abort current operation |
@@ -127,7 +128,7 @@ gg clean
 
 ## Configuration
 
-Configuration is stored in `.git/gg/config.json`:
+Configuration is stored in `.git/gg/config.json`. Run `gg setup` to generate it interactively:
 
 ```json
 {

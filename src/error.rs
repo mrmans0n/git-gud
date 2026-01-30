@@ -3,6 +3,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
+#[allow(dead_code)] // Some variants reserved for future use
 pub enum GgError {
     #[error("Not in a git repository")]
     NotInRepo,

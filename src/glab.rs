@@ -19,6 +19,7 @@ pub enum MrState {
 
 /// MR information from glab
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Fields used for display/future features
 pub struct MrInfo {
     pub iid: u64,
     pub title: String,
@@ -38,13 +39,6 @@ struct GlabMrJson {
     web_url: String,
     draft: Option<bool>,
     work_in_progress: Option<bool>,
-}
-
-/// JSON response from `glab mr create --json`
-#[derive(Debug, Deserialize)]
-struct GlabMrCreateJson {
-    iid: u64,
-    web_url: String,
 }
 
 /// Check if glab is installed
@@ -150,8 +144,8 @@ pub fn create_mr(
 
     // Try to extract MR number from output
     for word in stdout.split_whitespace() {
-        if word.starts_with('!') {
-            if let Ok(num) = word[1..].parse::<u64>() {
+        if let Some(stripped) = word.strip_prefix('!') {
+            if let Ok(num) = stripped.parse::<u64>() {
                 return Ok(num);
             }
         }
@@ -242,20 +236,6 @@ pub fn merge_mr(mr_number: u64, squash: bool, delete_branch: bool) -> Result<()>
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(GgError::GlabError(format!("Failed to merge MR !{}: {}", mr_number, stderr)));
-    }
-
-    Ok(())
-}
-
-/// Close an MR without merging
-pub fn close_mr(mr_number: u64) -> Result<()> {
-    let output = Command::new("glab")
-        .args(["mr", "close", &mr_number.to_string()])
-        .output()?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(GgError::GlabError(format!("Failed to close MR !{}: {}", mr_number, stderr)));
     }
 
     Ok(())

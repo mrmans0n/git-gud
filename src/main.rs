@@ -142,6 +142,10 @@ enum Commands {
         until: Option<usize>,
     },
 
+    /// Set up git-gud config for this repository
+    #[command(name = "setup")]
+    Setup,
+
     /// Absorb staged changes into the appropriate commits
     #[command(name = "absorb")]
     Absorb,
@@ -209,6 +213,9 @@ fn main() {
         }
         Some(Commands::Lint { until }) => {
             commands::lint::run(until)
+        }
+        Some(Commands::Setup) => {
+            commands::setup::run()
         }
         Some(Commands::Absorb) => {
             commands::absorb::run()

@@ -10,5 +10,6 @@ pub mod ls;
 pub mod nav;
 pub mod rebase;
 pub mod reorder;
+pub mod setup;
 pub mod squash;
 pub mod sync;

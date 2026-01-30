@@ -6,6 +6,8 @@
 use std::process::Command;
 
 use git2::{BranchType, Commit, Oid, Repository, Signature, Sort};
+#[allow(unused_imports)]
+use git2::Branch;
 use regex::Regex;
 
 use crate::error::{GgError, Result};
@@ -41,14 +43,6 @@ pub fn current_branch_name(repo: &Repository) -> Option<String> {
     } else {
         None
     }
-}
-
-/// Check if the current branch is a stack branch (matches username/stack-name pattern)
-pub fn is_stack_branch(branch_name: &str) -> bool {
-    // Stack branches are <username>/<stack-name>
-    // Remote per-commit branches are <username>/<stack-name>/<entry-id>
-    let parts: Vec<&str> = branch_name.split('/').collect();
-    parts.len() == 2
 }
 
 /// Parse a stack branch name into (username, stack_name)
@@ -173,12 +167,6 @@ pub fn get_commit_title(commit: &Commit) -> String {
         .to_string()
 }
 
-/// Create a branch pointing to a specific commit
-pub fn create_branch(repo: &Repository, name: &str, commit: &Commit, force: bool) -> Result<()> {
-    repo.branch(name, commit, force)?;
-    Ok(())
-}
-
 /// Checkout a branch by name
 pub fn checkout_branch(repo: &Repository, branch_name: &str) -> Result<()> {
     let refname = format!("refs/heads/{}", branch_name);
@@ -200,23 +188,6 @@ pub fn checkout_commit(repo: &Repository, commit: &Commit) -> Result<()> {
 /// Get the repository signature
 pub fn get_signature(repo: &Repository) -> Result<Signature<'static>> {
     repo.signature().map_err(GgError::Git)
-}
-
-/// Amend the HEAD commit with a new message
-pub fn amend_head_message(repo: &Repository, new_message: &str) -> Result<Oid> {
-    let head = repo.head()?.peel_to_commit()?;
-    let tree = head.tree()?;
-
-    let new_oid = head.amend(
-        Some("HEAD"),
-        None,
-        None,
-        None,
-        Some(new_message),
-        Some(&tree),
-    )?;
-
-    Ok(new_oid)
 }
 
 /// Run git command as subprocess (for operations git2 doesn't support well)
@@ -246,13 +217,6 @@ pub fn push_branch(branch_name: &str, force: bool) -> Result<()> {
 /// Delete a remote branch
 pub fn delete_remote_branch(branch_name: &str) -> Result<()> {
     run_git_command(&["push", "origin", "--delete", branch_name])?;
-    Ok(())
-}
-
-/// Perform an interactive rebase (via subprocess)
-pub fn rebase_interactive(base: &str) -> Result<()> {
-    // Note: This is non-interactive for automation
-    run_git_command(&["rebase", base])?;
     Ok(())
 }
 

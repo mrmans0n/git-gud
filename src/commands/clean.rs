@@ -85,7 +85,7 @@ pub fn run(clean_all: bool) -> Result<()> {
 
             // Delete remote entry branches
             if let Some(stack_config) = config.get_stack(stack_name) {
-                for (entry_id, _) in &stack_config.mrs {
+                for entry_id in stack_config.mrs.keys() {
                     let entry_branch = git::format_entry_branch(&username, stack_name, entry_id);
                     // Try to delete remote branch (ignore errors)
                     let _ = git::delete_remote_branch(&entry_branch);
@@ -165,7 +165,7 @@ fn check_stack_merged(
         }
 
         let mut all_merged = true;
-        for (_, mr_num) in &stack_config.mrs {
+        for mr_num in stack_config.mrs.values() {
             match glab::view_mr(*mr_num) {
                 Ok(info) => {
                     if info.state != MrState::Merged {

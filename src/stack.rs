@@ -157,6 +157,7 @@ impl Stack {
     }
 
     /// Check if any entries need GG-IDs
+    #[allow(dead_code)] // Reserved for future use
     pub fn has_missing_gg_ids(&self) -> bool {
         self.entries.iter().any(|e| e.needs_gg_id())
     }
@@ -191,6 +192,7 @@ impl Stack {
     }
 
     /// Get the current entry (based on HEAD)
+    #[allow(dead_code)] // Reserved for future use
     pub fn current(&self) -> Option<&StackEntry> {
         self.current_position.and_then(|p| self.entries.get(p))
     }

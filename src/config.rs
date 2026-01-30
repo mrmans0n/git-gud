@@ -89,7 +89,7 @@ impl Config {
     pub fn get_or_create_stack(&mut self, stack_name: &str) -> &mut StackConfig {
         self.stacks
             .entry(stack_name.to_string())
-            .or_insert_with(StackConfig::default)
+            .or_default()
     }
 
     /// Get stack config (read-only)

@@ -105,7 +105,7 @@ fn test_gg_ls_no_stack() {
     let (_temp_dir, repo_path) = create_test_repo();
 
     // Running ls outside a stack should show no stacks
-    let (success, stdout, stderr) = run_gg(&repo_path, &["ls"]);
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["ls"]);
 
     // Should succeed but show a message about no stacks
     // (It may fail because we're on main, not a stack branch)

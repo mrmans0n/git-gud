@@ -17,20 +17,25 @@ pub fn run(all: bool, refresh: bool) -> Result<()> {
     // Try to load current stack
     let current_stack = Stack::load(&repo, &config).ok();
 
-    if all || current_stack.is_none() {
-        // List all stacks
-        list_all_stacks(&repo, &config)?;
-    } else {
-        // Show current stack details
-        let mut stack = current_stack.unwrap();
-
-        if refresh {
-            print!("Refreshing MR status... ");
-            stack.refresh_mr_info()?;
-            println!("{}", style("done").green());
+    match current_stack {
+        None => {
+            // List all stacks
+            list_all_stacks(&repo, &config)?;
         }
+        Some(mut stack) if !all => {
+            // Show current stack details
+            if refresh {
+                print!("Refreshing MR status... ");
+                stack.refresh_mr_info()?;
+                println!("{}", style("done").green());
+            }
 
-        show_stack(&stack)?;
+            show_stack(&stack)?;
+        }
+        Some(_) => {
+            // List all stacks (--all flag)
+            list_all_stacks(&repo, &config)?;
+        }
     }
 
     Ok(())
@@ -64,7 +69,7 @@ fn list_all_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
     println!();
 
     for stack_name in &stacks {
-        let is_current = current_stack.as_ref().map(|s| s.as_str()) == Some(stack_name);
+        let is_current = current_stack.as_deref() == Some(stack_name);
         let marker = if is_current { "→ " } else { "  " };
 
         // Count commits in stack if we can

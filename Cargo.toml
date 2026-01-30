@@ -26,7 +26,7 @@ tokio = { version = "1", features = ["full"] }
 
 # Terminal UI
 indicatif = "0.17"
-console = "0.15"
+console = "0.16"
 dialoguer = { version = "0.11", features = ["fuzzy-select"] }
 skim = "0.10"
 

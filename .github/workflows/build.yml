@@ -15,7 +15,7 @@ env:
 
 jobs:
   format:
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
@@ -25,7 +25,7 @@ jobs:
         run: cargo fmt --all -- --check
 
   clippy:
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
@@ -35,7 +35,7 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
   test:
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:

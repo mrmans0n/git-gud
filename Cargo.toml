@@ -2,13 +2,41 @@
 name = "git-gud"
 version = "0.1.0"
 edition = "2021"
+description = "A stacked-diffs CLI tool for GitLab"
+authors = ["Nacho Lopez"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[[bin]]
+name = "gg"
+path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4.4.7", features = ["derive"] }
-spinners = "4.1.0"
-git2 = { version = "0.19.0", features = ["default"] }
-git2-ext = "0.6.1"
-fancy = "0.3.1"
-uuid = { version = "1.5.0", features = ["v4"] }
+# CLI
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+
+# Git
+git2 = { version = "0.19", features = ["default"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Async runtime (for glab subprocess handling)
+tokio = { version = "1", features = ["full"] }
+
+# Terminal UI
+indicatif = "0.17"
+console = "0.15"
+dialoguer = { version = "0.11", features = ["fuzzy-select"] }
+skim = "0.10"
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+regex = "1"
+
+[dev-dependencies]
+tempfile = "3"

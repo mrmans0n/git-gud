@@ -1,63 +1,225 @@
+//! git-gud (gg) - A stacked-diffs CLI tool for GitLab
+//!
+//! Entry point for the CLI application.
+
 mod commands;
+mod config;
+mod error;
+mod git;
+mod glab;
+mod stack;
 
 use std::process::exit;
 
 use clap::{Parser, Subcommand};
-use git2::Repository;
+use console::style;
 
 #[derive(Parser, Debug)]
-#[command(author = "Nacho Lopez", version)]
+#[command(
+    name = "gg",
+    author = "Nacho Lopez",
+    version,
+    about = "A stacked-diffs CLI tool for GitLab",
+    long_about = None
+)]
 struct Cli {
     #[clap(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    #[command(name = "feature", alias = "f", about = "Creates a new branch")]
-    Feature {
-        branch_name: String,
+    /// Create a new stack or switch to an existing one
+    #[command(name = "co", alias = "sw", alias = "checkout", alias = "switch")]
+    Checkout {
+        /// Stack name to create or switch to
+        stack_name: Option<String>,
+
+        /// Base branch to use (default: main/master/trunk)
+        #[arg(short, long)]
+        base: Option<String>,
     },
-    #[command(name = "list", alias = "ls", about = "Lists all commits")]
-    Ls,
-    #[command(name = "diff", alias = "d", about = "Pushes all commits in the stack")]
-    Diff,
-    #[command(name = "squash", alias = "sc", about = "Squash all changes in the previous commit")]
-    Squash,
-}
 
-fn check_if_in_repo() -> Repository {
-    // Try to open a repo in the current repo
-    let maybe_repo = Repository::open(".");
+    /// List current stack or all stacks
+    #[command(name = "ls", alias = "list")]
+    List {
+        /// Show all stacks, not just current
+        #[arg(short, long)]
+        all: bool,
 
-    if let Err(err) = maybe_repo {
-        eprintln!("Not in a git repository: {}", err.to_string());
-        exit(1);
-    }
+        /// Refresh MR status from GitLab
+        #[arg(short, long)]
+        refresh: bool,
+    },
 
-    return maybe_repo.unwrap();
+    /// Sync stack with GitLab (push branches and create/update MRs)
+    #[command(name = "sync", alias = "diff")]
+    Sync {
+        /// Create new MRs as drafts
+        #[arg(short, long)]
+        draft: bool,
+
+        /// Force push even if remote is ahead
+        #[arg(short, long)]
+        force: bool,
+    },
+
+    /// Move to a specific commit in the stack
+    #[command(name = "mv", alias = "move")]
+    Move {
+        /// Position (1-indexed), entry ID, or commit SHA
+        target: String,
+    },
+
+    /// Move to the first commit in the stack
+    #[command(name = "first")]
+    First,
+
+    /// Move to the last commit in the stack (stack head)
+    #[command(name = "last")]
+    Last,
+
+    /// Move to the previous commit in the stack
+    #[command(name = "prev", alias = "previous")]
+    Prev,
+
+    /// Move to the next commit in the stack
+    #[command(name = "next")]
+    Next,
+
+    /// Squash staged changes into the current commit
+    #[command(name = "sc", alias = "squash")]
+    Squash {
+        /// Squash all changes (staged and unstaged)
+        #[arg(short, long)]
+        all: bool,
+    },
+
+    /// Reorder commits in the stack
+    #[command(name = "reorder")]
+    Reorder,
+
+    /// Land (merge) approved MRs starting from the first commit
+    #[command(name = "land", alias = "merge")]
+    Land {
+        /// Land all approved MRs in sequence
+        #[arg(short, long)]
+        all: bool,
+
+        /// Squash commits when merging
+        #[arg(short, long)]
+        squash: bool,
+    },
+
+    /// Clean up merged stacks
+    #[command(name = "clean")]
+    Clean {
+        /// Clean all merged stacks without prompting
+        #[arg(short, long)]
+        all: bool,
+    },
+
+    /// Rebase the stack onto the updated base branch
+    #[command(name = "rebase")]
+    Rebase {
+        /// Target branch to rebase onto (default: base branch)
+        target: Option<String>,
+    },
+
+    /// Continue a paused operation (rebase, etc.)
+    #[command(name = "continue")]
+    Continue,
+
+    /// Abort a paused operation (rebase, etc.)
+    #[command(name = "abort")]
+    Abort,
+
+    /// Run lint commands on each commit in the stack
+    #[command(name = "lint")]
+    Lint {
+        /// Stop at this commit position (default: current)
+        #[arg(short, long)]
+        until: Option<usize>,
+    },
+
+    /// Absorb staged changes into the appropriate commits
+    #[command(name = "absorb")]
+    Absorb,
+
+    /// Generate shell completions
+    #[command(name = "completions")]
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
 }
 
 fn main() {
-    let args = Cli::parse();
-    println!("{:?}", args);
+    let cli = Cli::parse();
 
-    match args.command {
-        Commands::Feature { branch_name } => {
-            let repo = check_if_in_repo();
-            commands::feature::create_branch_off_of_main(repo, branch_name);
+    let result = match cli.command {
+        // No command = show stacks (like `gg ls`)
+        None => commands::ls::run(false, false),
+
+        Some(Commands::Checkout { stack_name, base }) => {
+            commands::checkout::run(stack_name, base)
         }
-        Commands::Ls => {
-            let repo = check_if_in_repo();
-            commands::ls::list_commits_off_of_main(repo);
+        Some(Commands::List { all, refresh }) => {
+            commands::ls::run(all, refresh)
         }
-        Commands::Squash => {
-            let repo = check_if_in_repo();
-            commands::squash::squash_to_previous_commit(repo);
+        Some(Commands::Sync { draft, force }) => {
+            commands::sync::run(draft, force)
         }
-        Commands::Diff => {
-            let repo = check_if_in_repo();
-            commands::diff::diff(repo);
+        Some(Commands::Move { target }) => {
+            commands::nav::move_to(&target)
         }
+        Some(Commands::First) => {
+            commands::nav::first()
+        }
+        Some(Commands::Last) => {
+            commands::nav::last()
+        }
+        Some(Commands::Prev) => {
+            commands::nav::prev()
+        }
+        Some(Commands::Next) => {
+            commands::nav::next()
+        }
+        Some(Commands::Squash { all }) => {
+            commands::squash::run(all)
+        }
+        Some(Commands::Reorder) => {
+            commands::reorder::run()
+        }
+        Some(Commands::Land { all, squash }) => {
+            commands::land::run(all, squash)
+        }
+        Some(Commands::Clean { all }) => {
+            commands::clean::run(all)
+        }
+        Some(Commands::Rebase { target }) => {
+            commands::rebase::run(target)
+        }
+        Some(Commands::Continue) => {
+            commands::rebase::continue_rebase()
+        }
+        Some(Commands::Abort) => {
+            commands::rebase::abort_rebase()
+        }
+        Some(Commands::Lint { until }) => {
+            commands::lint::run(until)
+        }
+        Some(Commands::Absorb) => {
+            commands::absorb::run()
+        }
+        Some(Commands::Completions { shell }) => {
+            commands::completions::run(shell)
+        }
+    };
+
+    if let Err(e) = result {
+        eprintln!("{} {}", style("error:").red().bold(), e);
+        exit(1);
     }
 }

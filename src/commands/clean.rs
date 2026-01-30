@@ -52,10 +52,7 @@ pub fn run(clean_all: bool) -> Result<()> {
         if is_merged {
             if !clean_all {
                 let confirm = Confirm::new()
-                    .with_prompt(format!(
-                        "Delete merged stack '{}'? ",
-                        stack_name
-                    ))
+                    .with_prompt(format!("Delete merged stack '{}'? ", stack_name))
                     .default(true)
                     .interact()
                     .unwrap_or(false);

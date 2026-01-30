@@ -109,16 +109,15 @@ pub fn next() -> Result<()> {
     let stack = Stack::load(&repo, &config)?;
 
     // If we're at the last commit, we might just need to checkout the branch
-    let current_pos = stack.current_position.unwrap_or(stack.len().saturating_sub(1));
+    let current_pos = stack
+        .current_position
+        .unwrap_or(stack.len().saturating_sub(1));
 
     if current_pos >= stack.len().saturating_sub(1) {
         // At stack head, ensure we're on the branch
         git::checkout_branch(&repo, &stack.branch_name())?;
         stack::clear_current_stack(git_dir)?;
-        println!(
-            "{} Already at stack head",
-            style("OK").green().bold()
-        );
+        println!("{} Already at stack head", style("OK").green().bold());
         return Ok(());
     }
 
@@ -146,11 +145,7 @@ pub fn next() -> Result<()> {
 }
 
 /// Checkout a specific entry (detached HEAD)
-fn checkout_entry(
-    repo: &git2::Repository,
-    stack: &Stack,
-    entry: &StackEntry,
-) -> Result<()> {
+fn checkout_entry(repo: &git2::Repository, stack: &Stack, entry: &StackEntry) -> Result<()> {
     // Save the stack branch for later use in detached HEAD mode
     stack::save_current_stack(repo.path(), &stack.branch_name())?;
 

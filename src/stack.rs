@@ -107,8 +107,7 @@ impl Stack {
             })
             .ok_or(GgError::NotOnStack)?;
 
-        let (username, name) = git::parse_stack_branch(&branch_name)
-            .ok_or(GgError::NotOnStack)?;
+        let (username, name) = git::parse_stack_branch(&branch_name).ok_or(GgError::NotOnStack)?;
 
         // Determine base branch
         let base = config
@@ -178,7 +177,9 @@ impl Stack {
 
     /// Get entry by GG-ID
     pub fn get_entry_by_gg_id(&self, gg_id: &str) -> Option<&StackEntry> {
-        self.entries.iter().find(|e| e.gg_id.as_deref() == Some(gg_id))
+        self.entries
+            .iter()
+            .find(|e| e.gg_id.as_deref() == Some(gg_id))
     }
 
     /// Get the first entry
@@ -199,7 +200,9 @@ impl Stack {
 
     /// Get the previous entry relative to current position
     pub fn prev(&self) -> Option<&StackEntry> {
-        let current = self.current_position.unwrap_or(self.entries.len().saturating_sub(1));
+        let current = self
+            .current_position
+            .unwrap_or(self.entries.len().saturating_sub(1));
         if current > 0 {
             self.entries.get(current - 1)
         } else {
@@ -239,9 +242,10 @@ impl Stack {
 
     /// Format entry branch name for a given entry
     pub fn entry_branch_name(&self, entry: &StackEntry) -> Option<String> {
-        entry.gg_id.as_ref().map(|gg_id| {
-            git::format_entry_branch(&self.username, &self.name, gg_id)
-        })
+        entry
+            .gg_id
+            .as_ref()
+            .map(|gg_id| git::format_entry_branch(&self.username, &self.name, gg_id))
     }
 
     /// Refresh MR info for all entries from GitLab
@@ -287,7 +291,9 @@ pub fn save_current_stack(git_dir: &Path, branch_name: &str) -> Result<()> {
 /// Read the stored current stack
 pub fn read_current_stack(git_dir: &Path) -> Option<String> {
     let stack_file = git_dir.join(CURRENT_STACK_FILE);
-    fs::read_to_string(stack_file).ok().map(|s| s.trim().to_string())
+    fs::read_to_string(stack_file)
+        .ok()
+        .map(|s| s.trim().to_string())
 }
 
 /// Clear the stored current stack (when returning to branch)

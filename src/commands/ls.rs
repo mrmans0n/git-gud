@@ -54,7 +54,10 @@ fn list_all_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
     let stacks = stack::list_all_stacks(repo, config, &username)?;
 
     if stacks.is_empty() {
-        println!("{}", style("No stacks found. Use `gg co <name>` to create one.").dim());
+        println!(
+            "{}",
+            style("No stacks found. Use `gg co <name>` to create one.").dim()
+        );
         return Ok(());
     }
 
@@ -92,19 +95,15 @@ fn list_all_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
                 style(&commit_info).dim()
             );
         } else {
-            println!(
-                "{}{}{}",
-                marker,
-                stack_name,
-                style(&commit_info).dim()
-            );
+            println!("{}{}{}", marker, stack_name, style(&commit_info).dim());
         }
     }
 
     println!();
     println!(
         "{}",
-        style("Use `gg co <name>` to switch stacks, or `gg ls` while on a stack to see details.").dim()
+        style("Use `gg co <name>` to switch stacks, or `gg ls` while on a stack to see details.")
+            .dim()
     );
 
     Ok(())
@@ -113,7 +112,8 @@ fn list_all_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
 /// Count commits in a stack branch
 fn count_stack_commits(repo: &git2::Repository, branch: &str, base: &str) -> Result<usize> {
     let head = repo.revparse_single(branch)?;
-    let base_ref = repo.revparse_single(base)
+    let base_ref = repo
+        .revparse_single(base)
         .or_else(|_| repo.revparse_single(&format!("origin/{}", base)))?;
 
     let mut revwalk = repo.revwalk()?;
@@ -145,7 +145,9 @@ fn show_stack(stack: &Stack) -> Result<()> {
     }
 
     // Determine the current position
-    let current_pos = stack.current_position.unwrap_or(stack.len().saturating_sub(1));
+    let current_pos = stack
+        .current_position
+        .unwrap_or(stack.len().saturating_sub(1));
 
     for entry in &stack.entries {
         let is_current = entry.position == current_pos + 1

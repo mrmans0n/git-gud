@@ -66,20 +66,12 @@ pub fn run(land_all: bool, squash: bool) -> Result<()> {
 
         match mr_info.state {
             MrState::Merged => {
-                println!(
-                    "{} MR !{} already merged",
-                    style("✓").green(),
-                    mr_num
-                );
+                println!("{} MR !{} already merged", style("✓").green(), mr_num);
                 landed_count += 1;
                 continue;
             }
             MrState::Closed => {
-                println!(
-                    "{} MR !{} is closed. Stopping.",
-                    style("✗").red(),
-                    mr_num
-                );
+                println!("{} MR !{} is closed. Stopping.", style("✗").red(), mr_num);
                 break;
             }
             MrState::Draft => {
@@ -107,10 +99,7 @@ pub fn run(land_all: bool, squash: bool) -> Result<()> {
         // MR is approved and open - land it
         if !land_all {
             let confirm = Confirm::new()
-                .with_prompt(format!(
-                    "Merge MR !{} ({})? ",
-                    mr_num, entry.title
-                ))
+                .with_prompt(format!("Merge MR !{} ({})? ", mr_num, entry.title))
                 .default(true)
                 .interact()
                 .unwrap_or(false);
@@ -121,11 +110,7 @@ pub fn run(land_all: bool, squash: bool) -> Result<()> {
             }
         }
 
-        println!(
-            "{} Merging MR !{}...",
-            style("→").cyan(),
-            mr_num
-        );
+        println!("{} Merging MR !{}...", style("→").cyan(), mr_num);
 
         match glab::merge_mr(mr_num, squash, true) {
             Ok(()) => {

@@ -43,9 +43,7 @@ struct GlabMrJson {
 
 /// Check if glab is installed
 pub fn check_glab_installed() -> Result<()> {
-    let output = Command::new("glab")
-        .arg("--version")
-        .output();
+    let output = Command::new("glab").arg("--version").output();
 
     match output {
         Ok(o) if o.status.success() => Ok(()),
@@ -55,9 +53,7 @@ pub fn check_glab_installed() -> Result<()> {
 
 /// Check if authenticated with GitLab
 pub fn check_glab_auth() -> Result<()> {
-    let output = Command::new("glab")
-        .args(["auth", "status"])
-        .output()?;
+    let output = Command::new("glab").args(["auth", "status"]).output()?;
 
     if output.status.success() {
         Ok(())
@@ -93,19 +89,23 @@ pub fn whoami() -> Result<String> {
         }
     }
 
-    // Fallback: try `glab api user` 
+    // Fallback: try `glab api user`
     let api_output = Command::new("glab")
         .args(["api", "user", "--jq", ".username"])
         .output()?;
 
     if api_output.status.success() {
-        let username = String::from_utf8_lossy(&api_output.stdout).trim().to_string();
+        let username = String::from_utf8_lossy(&api_output.stdout)
+            .trim()
+            .to_string();
         if !username.is_empty() {
             return Ok(username);
         }
     }
 
-    Err(GgError::GlabError("Could not determine GitLab username".to_string()))
+    Err(GgError::GlabError(
+        "Could not determine GitLab username".to_string(),
+    ))
 }
 
 /// Create a new MR
@@ -117,25 +117,31 @@ pub fn create_mr(
     draft: bool,
 ) -> Result<u64> {
     let mut args = vec![
-        "mr", "create",
-        "--source-branch", source_branch,
-        "--target-branch", target_branch,
-        "--title", title,
-        "--description", description,
-        "--yes",  // Skip confirmation
+        "mr",
+        "create",
+        "--source-branch",
+        source_branch,
+        "--target-branch",
+        target_branch,
+        "--title",
+        title,
+        "--description",
+        description,
+        "--yes", // Skip confirmation
     ];
 
     if draft {
         args.push("--draft");
     }
 
-    let output = Command::new("glab")
-        .args(&args)
-        .output()?;
+    let output = Command::new("glab").args(&args).output()?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(GgError::GlabError(format!("Failed to create MR: {}", stderr)));
+        return Err(GgError::GlabError(format!(
+            "Failed to create MR: {}",
+            stderr
+        )));
     }
 
     // Parse the output to get the MR number
@@ -160,7 +166,9 @@ pub fn create_mr(
         }
     }
 
-    Err(GgError::GlabError("Could not parse MR number from glab output".to_string()))
+    Err(GgError::GlabError(
+        "Could not parse MR number from glab output".to_string(),
+    ))
 }
 
 /// View MR information
@@ -171,7 +179,10 @@ pub fn view_mr(mr_number: u64) -> Result<MrInfo> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(GgError::GlabError(format!("Failed to view MR !{}: {}", mr_number, stderr)));
+        return Err(GgError::GlabError(format!(
+            "Failed to view MR !{}: {}",
+            mr_number, stderr
+        )));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -195,7 +206,7 @@ pub fn view_mr(mr_number: u64) -> Result<MrInfo> {
         state,
         web_url: mr_json.web_url,
         draft,
-        approved: false,  // Would need additional API call
+        approved: false, // Would need additional API call
         mergeable,
     })
 }
@@ -204,14 +215,20 @@ pub fn view_mr(mr_number: u64) -> Result<MrInfo> {
 pub fn update_mr_target(mr_number: u64, target_branch: &str) -> Result<()> {
     let output = Command::new("glab")
         .args([
-            "mr", "update", &mr_number.to_string(),
-            "--target-branch", target_branch,
+            "mr",
+            "update",
+            &mr_number.to_string(),
+            "--target-branch",
+            target_branch,
         ])
         .output()?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(GgError::GlabError(format!("Failed to update MR !{}: {}", mr_number, stderr)));
+        return Err(GgError::GlabError(format!(
+            "Failed to update MR !{}: {}",
+            mr_number, stderr
+        )));
     }
 
     Ok(())
@@ -229,13 +246,14 @@ pub fn merge_mr(mr_number: u64, squash: bool, delete_branch: bool) -> Result<()>
         args.push("--remove-source-branch");
     }
 
-    let output = Command::new("glab")
-        .args(&args)
-        .output()?;
+    let output = Command::new("glab").args(&args).output()?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(GgError::GlabError(format!("Failed to merge MR !{}: {}", mr_number, stderr)));
+        return Err(GgError::GlabError(format!(
+            "Failed to merge MR !{}: {}",
+            mr_number, stderr
+        )));
     }
 
     Ok(())
@@ -248,7 +266,8 @@ pub fn check_mr_approved(mr_number: u64) -> Result<bool> {
         .args([
             "api",
             &format!("projects/:id/merge_requests/{}/approvals", mr_number),
-            "--jq", ".approved",
+            "--jq",
+            ".approved",
         ])
         .output()?;
 
@@ -274,10 +293,7 @@ pub enum CiStatus {
 
 pub fn get_mr_ci_status(mr_number: u64) -> Result<CiStatus> {
     let output = Command::new("glab")
-        .args([
-            "mr", "view", &mr_number.to_string(),
-            "--output", "json",
-        ])
+        .args(["mr", "view", &mr_number.to_string(), "--output", "json"])
         .output()?;
 
     if !output.status.success() {
@@ -288,7 +304,9 @@ pub fn get_mr_ci_status(mr_number: u64) -> Result<CiStatus> {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Simple heuristic - look for pipeline status in output
-    if stdout.contains("\"pipeline_status\":\"success\"") || stdout.contains("\"head_pipeline\":{") && stdout.contains("\"status\":\"success\"") {
+    if stdout.contains("\"pipeline_status\":\"success\"")
+        || stdout.contains("\"head_pipeline\":{") && stdout.contains("\"status\":\"success\"")
+    {
         Ok(CiStatus::Success)
     } else if stdout.contains("\"status\":\"failed\"") {
         Ok(CiStatus::Failed)

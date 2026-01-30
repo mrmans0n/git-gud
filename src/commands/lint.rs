@@ -44,9 +44,8 @@ pub fn run(until: Option<usize>) -> Result<()> {
     }
 
     // Determine the end position
-    let end_pos = until.unwrap_or_else(|| {
-        stack.current_position.map(|p| p + 1).unwrap_or(stack.len())
-    });
+    let end_pos =
+        until.unwrap_or_else(|| stack.current_position.map(|p| p + 1).unwrap_or(stack.len()));
 
     if end_pos > stack.len() {
         return Err(GgError::Other(format!(
@@ -98,9 +97,7 @@ pub fn run(until: Option<usize>) -> Result<()> {
                 continue;
             }
 
-            let output = Command::new(parts[0])
-                .args(&parts[1..])
-                .output()?;
+            let output = Command::new(parts[0]).args(&parts[1..]).output()?;
 
             if output.status.success() {
                 println!("{}", style("OK").green());
@@ -120,9 +117,7 @@ pub fn run(until: Option<usize>) -> Result<()> {
             println!("  {} Lint made changes, squashing...", style("!").yellow());
 
             // Stage all changes
-            let status = Command::new("git")
-                .args(["add", "-A"])
-                .status()?;
+            let status = Command::new("git").args(["add", "-A"]).status()?;
 
             if !status.success() {
                 return Err(GgError::Other("Failed to stage changes".to_string()));
@@ -163,11 +158,7 @@ pub fn run(until: Option<usize>) -> Result<()> {
         }
     }
 
-    println!(
-        "{} Linted {} commits",
-        style("OK").green().bold(),
-        end_pos
-    );
+    println!("{} Linted {} commits", style("OK").green().bold(), end_pos);
 
     Ok(())
 }

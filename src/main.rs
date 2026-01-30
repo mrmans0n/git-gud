@@ -166,63 +166,25 @@ fn main() {
         // No command = show stacks (like `gg ls`)
         None => commands::ls::run(false, false),
 
-        Some(Commands::Checkout { stack_name, base }) => {
-            commands::checkout::run(stack_name, base)
-        }
-        Some(Commands::List { all, refresh }) => {
-            commands::ls::run(all, refresh)
-        }
-        Some(Commands::Sync { draft, force }) => {
-            commands::sync::run(draft, force)
-        }
-        Some(Commands::Move { target }) => {
-            commands::nav::move_to(&target)
-        }
-        Some(Commands::First) => {
-            commands::nav::first()
-        }
-        Some(Commands::Last) => {
-            commands::nav::last()
-        }
-        Some(Commands::Prev) => {
-            commands::nav::prev()
-        }
-        Some(Commands::Next) => {
-            commands::nav::next()
-        }
-        Some(Commands::Squash { all }) => {
-            commands::squash::run(all)
-        }
-        Some(Commands::Reorder) => {
-            commands::reorder::run()
-        }
-        Some(Commands::Land { all, squash }) => {
-            commands::land::run(all, squash)
-        }
-        Some(Commands::Clean { all }) => {
-            commands::clean::run(all)
-        }
-        Some(Commands::Rebase { target }) => {
-            commands::rebase::run(target)
-        }
-        Some(Commands::Continue) => {
-            commands::rebase::continue_rebase()
-        }
-        Some(Commands::Abort) => {
-            commands::rebase::abort_rebase()
-        }
-        Some(Commands::Lint { until }) => {
-            commands::lint::run(until)
-        }
-        Some(Commands::Setup) => {
-            commands::setup::run()
-        }
-        Some(Commands::Absorb) => {
-            commands::absorb::run()
-        }
-        Some(Commands::Completions { shell }) => {
-            commands::completions::run(shell)
-        }
+        Some(Commands::Checkout { stack_name, base }) => commands::checkout::run(stack_name, base),
+        Some(Commands::List { all, refresh }) => commands::ls::run(all, refresh),
+        Some(Commands::Sync { draft, force }) => commands::sync::run(draft, force),
+        Some(Commands::Move { target }) => commands::nav::move_to(&target),
+        Some(Commands::First) => commands::nav::first(),
+        Some(Commands::Last) => commands::nav::last(),
+        Some(Commands::Prev) => commands::nav::prev(),
+        Some(Commands::Next) => commands::nav::next(),
+        Some(Commands::Squash { all }) => commands::squash::run(all),
+        Some(Commands::Reorder) => commands::reorder::run(),
+        Some(Commands::Land { all, squash }) => commands::land::run(all, squash),
+        Some(Commands::Clean { all }) => commands::clean::run(all),
+        Some(Commands::Rebase { target }) => commands::rebase::run(target),
+        Some(Commands::Continue) => commands::rebase::continue_rebase(),
+        Some(Commands::Abort) => commands::rebase::abort_rebase(),
+        Some(Commands::Lint { until }) => commands::lint::run(until),
+        Some(Commands::Setup) => commands::setup::run(),
+        Some(Commands::Absorb) => commands::absorb::run(),
+        Some(Commands::Completions { shell }) => commands::completions::run(shell),
     };
 
     if let Err(e) = result {

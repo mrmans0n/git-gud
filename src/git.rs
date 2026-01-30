@@ -5,9 +5,9 @@
 
 use std::process::Command;
 
-use git2::{BranchType, Commit, Oid, Repository, Signature, Sort};
 #[allow(unused_imports)]
 use git2::Branch;
+use git2::{BranchType, Commit, Oid, Repository, Signature, Sort};
 use regex::Regex;
 
 use crate::error::{GgError, Result};
@@ -28,7 +28,10 @@ pub fn find_base_branch(repo: &Repository) -> Result<String> {
         }
         // Also check remote branches
         let remote_name = format!("origin/{}", branch_name);
-        if repo.find_reference(&format!("refs/remotes/{}", remote_name)).is_ok() {
+        if repo
+            .find_reference(&format!("refs/remotes/{}", remote_name))
+            .is_ok()
+        {
             return Ok(branch_name.to_string());
         }
     }
@@ -82,7 +85,11 @@ pub fn require_clean_working_directory(repo: &Repository) -> Result<()> {
 /// Get all commits between base and stack tip (in order from base to tip)
 /// Returns commit OIDs rather than Commit objects to avoid lifetime issues
 /// If `stack_branch` is provided, use that branch instead of HEAD (for detached HEAD mode)
-pub fn get_stack_commit_oids(repo: &Repository, base_branch: &str, stack_branch: Option<&str>) -> Result<Vec<Oid>> {
+pub fn get_stack_commit_oids(
+    repo: &Repository,
+    base_branch: &str,
+    stack_branch: Option<&str>,
+) -> Result<Vec<Oid>> {
     // Get the tip of the stack - either from a branch or from HEAD
     let tip_oid = if let Some(branch) = stack_branch {
         let branch_ref = format!("refs/heads/{}", branch);
@@ -161,10 +168,7 @@ pub fn strip_gg_id_from_message(message: &str) -> String {
 
 /// Get the commit message title (first line)
 pub fn get_commit_title(commit: &Commit) -> String {
-    commit
-        .summary()
-        .unwrap_or("<no summary>")
-        .to_string()
+    commit.summary().unwrap_or("<no summary>").to_string()
 }
 
 /// Checkout a branch by name
@@ -192,15 +196,17 @@ pub fn get_signature(repo: &Repository) -> Result<Signature<'static>> {
 
 /// Run git command as subprocess (for operations git2 doesn't support well)
 pub fn run_git_command(args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
-        .args(args)
-        .output()?;
+    let output = Command::new("git").args(args).output()?;
 
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(GgError::Other(format!("git {} failed: {}", args.join(" "), stderr)))
+        Err(GgError::Other(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            stderr
+        )))
     }
 }
 

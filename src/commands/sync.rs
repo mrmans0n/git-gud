@@ -52,7 +52,9 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
             // Reload stack after rebase
             return run(draft, force);
         } else {
-            return Err(GgError::Other("Cannot sync without GG-IDs. Aborting.".to_string()));
+            return Err(GgError::Other(
+                "Cannot sync without GG-IDs. Aborting.".to_string(),
+            ));
         }
     }
 
@@ -190,7 +192,8 @@ fn add_gg_ids_to_commits(repo: &Repository, stack: &Stack) -> Result<()> {
     // We need to do a rebase to add GG-IDs to commits
     // For simplicity, we'll use git command
 
-    let base_ref = repo.revparse_single(&stack.base)
+    let base_ref = repo
+        .revparse_single(&stack.base)
         .or_else(|_| repo.revparse_single(&format!("origin/{}", stack.base)))?;
 
     // Create a temporary script to add GG-IDs

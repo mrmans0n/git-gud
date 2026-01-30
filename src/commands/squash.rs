@@ -30,7 +30,10 @@ pub fn run(all: bool) -> Result<()> {
     let stack_result = Stack::load(&repo, &config);
     let needs_rebase = if let Ok(ref stack) = stack_result {
         // Check if we're not at stack head (current_position is Some and not last)
-        stack.current_position.map(|p| p < stack.len() - 1).unwrap_or(false)
+        stack
+            .current_position
+            .map(|p| p < stack.len() - 1)
+            .unwrap_or(false)
     } else {
         false
     };
@@ -41,13 +44,14 @@ pub fn run(all: bool) -> Result<()> {
         args.push("--all");
     }
 
-    let output = Command::new("git")
-        .args(&args)
-        .output()?;
+    let output = Command::new("git").args(&args).output()?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(GgError::Other(format!("Failed to amend commit: {}", stderr)));
+        return Err(GgError::Other(format!(
+            "Failed to amend commit: {}",
+            stderr
+        )));
     }
 
     println!(

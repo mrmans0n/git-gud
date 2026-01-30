@@ -60,9 +60,7 @@ pub fn run() -> Result<()> {
 
     // Try to run git-absorb
     // First check if it's installed
-    let check = Command::new("git")
-        .args(["absorb", "--version"])
-        .output();
+    let check = Command::new("git").args(["absorb", "--version"]).output();
 
     if check.is_err() || !check.unwrap().status.success() {
         println!(
@@ -92,10 +90,7 @@ pub fn run() -> Result<()> {
             }
         }
 
-        println!(
-            "{} Changes absorbed into stack",
-            style("OK").green().bold()
-        );
+        println!("{} Changes absorbed into stack", style("OK").green().bold());
         println!(
             "{}",
             style("  Run `gg ls` to review and `gg sync` to push changes.").dim()

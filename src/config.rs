@@ -87,9 +87,7 @@ impl Config {
 
     /// Get or create stack config
     pub fn get_or_create_stack(&mut self, stack_name: &str) -> &mut StackConfig {
-        self.stacks
-            .entry(stack_name.to_string())
-            .or_default()
+        self.stacks.entry(stack_name.to_string()).or_default()
     }
 
     /// Get stack config (read-only)
@@ -159,7 +157,10 @@ mod tests {
         let loaded = Config::load(git_dir).unwrap();
         assert_eq!(loaded.defaults.base, Some("main".to_string()));
         assert_eq!(loaded.defaults.branch_username, Some("nacho".to_string()));
-        assert_eq!(loaded.get_mr_for_entry("my-feature", "c-abc123"), Some(1234));
+        assert_eq!(
+            loaded.get_mr_for_entry("my-feature", "c-abc123"),
+            Some(1234)
+        );
     }
 
     #[test]

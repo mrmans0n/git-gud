@@ -32,7 +32,10 @@ pub fn run() -> Result<()> {
             return Ok(());
         }
     } else {
-        println!("{}", style("Setting up git-gud for this repository...").bold());
+        println!(
+            "{}",
+            style("Setting up git-gud for this repository...").bold()
+        );
     }
 
     let defaults = prompt_defaults(&repo, &config.defaults, &theme)?;
@@ -134,10 +137,7 @@ fn prompt_base_branch(
     })
 }
 
-fn prompt_branch_username(
-    existing: Option<&str>,
-    theme: &ColorfulTheme,
-) -> Result<Option<String>> {
+fn prompt_branch_username(existing: Option<&str>, theme: &ColorfulTheme) -> Result<Option<String>> {
     let suggested = existing
         .map(|s| s.to_string())
         .or_else(|| glab::whoami().ok());

@@ -35,7 +35,7 @@ pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
 
             if stacks.is_empty() {
                 return Err(GgError::Other(
-                    "No stacks found. Use `gg co <stack-name>` to create one.".to_string()
+                    "No stacks found. Use `gg co <stack-name>` to create one.".to_string(),
                 ));
             }
 
@@ -71,7 +71,8 @@ pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
             .ok_or(GgError::NoBaseBranch)?;
 
         // Find the base commit
-        let base_ref = repo.revparse_single(&base_branch)
+        let base_ref = repo
+            .revparse_single(&base_branch)
             .or_else(|_| repo.revparse_single(&format!("origin/{}", base_branch)))
             .map_err(|_| GgError::NoBaseBranch)?;
         let base_commit = base_ref.peel_to_commit()?;
@@ -83,7 +84,12 @@ pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
         git::checkout_branch(&repo, &branch_name)?;
 
         // Initialize stack config
-        let default_base = config.defaults.base.as_deref().unwrap_or("main").to_string();
+        let default_base = config
+            .defaults
+            .base
+            .as_deref()
+            .unwrap_or("main")
+            .to_string();
         let stack_config = config.get_or_create_stack(&stack_name);
         if base_branch != default_base {
             stack_config.base = Some(base_branch.clone());

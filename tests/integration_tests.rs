@@ -242,28 +242,52 @@ fn test_gg_navigation() {
 
     // Test first
     let (success, stdout, stderr) = run_gg(&repo_path, &["first"]);
-    assert!(success, "first failed: stdout={}, stderr={}", stdout, stderr);
-    assert!(stdout.contains("[1]") || stdout.contains("Commit 1"), "first output: {}", stdout);
+    assert!(
+        success,
+        "first failed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+    assert!(
+        stdout.contains("[1]") || stdout.contains("Commit 1"),
+        "first output: {}",
+        stdout
+    );
 
     // Test next
     let (success, stdout, stderr) = run_gg(&repo_path, &["next"]);
     assert!(success, "next failed: stdout={}, stderr={}", stdout, stderr);
-    assert!(stdout.contains("[2]") || stdout.contains("Commit 2"), "next output: {}", stdout);
+    assert!(
+        stdout.contains("[2]") || stdout.contains("Commit 2"),
+        "next output: {}",
+        stdout
+    );
 
     // Test last
     let (success, stdout, stderr) = run_gg(&repo_path, &["last"]);
     assert!(success, "last failed: stdout={}, stderr={}", stdout, stderr);
-    assert!(stdout.contains("[3]") || stdout.contains("Commit 3") || stdout.contains("stack head"), "last output: {}", stdout);
+    assert!(
+        stdout.contains("[3]") || stdout.contains("Commit 3") || stdout.contains("stack head"),
+        "last output: {}",
+        stdout
+    );
 
     // Test prev (from last, should go to second-to-last)
     let (success, stdout, stderr) = run_gg(&repo_path, &["prev"]);
     assert!(success, "prev failed: stdout={}, stderr={}", stdout, stderr);
-    assert!(stdout.contains("[2]") || stdout.contains("Commit 2"), "prev output: {}", stdout);
+    assert!(
+        stdout.contains("[2]") || stdout.contains("Commit 2"),
+        "prev output: {}",
+        stdout
+    );
 
     // Test mv
     let (success, stdout, stderr) = run_gg(&repo_path, &["mv", "1"]);
     assert!(success, "mv failed: stdout={}, stderr={}", stdout, stderr);
-    assert!(stdout.contains("[1]") || stdout.contains("Commit 1"), "mv output: {}", stdout);
+    assert!(
+        stdout.contains("[1]") || stdout.contains("Commit 1"),
+        "mv output: {}",
+        stdout
+    );
 }
 
 #[test]

@@ -53,10 +53,7 @@ pub fn run(target: Option<String>) -> Result<()> {
         Err(e) => {
             let error_str = e.to_string();
             if error_str.contains("CONFLICT") || error_str.contains("conflict") {
-                println!(
-                    "{} Rebase conflict detected.",
-                    style("!").yellow().bold()
-                );
+                println!("{} Rebase conflict detected.", style("!").yellow().bold());
                 println!("  Resolve conflicts, then run `gg continue`");
                 println!("  Or run `gg abort` to cancel the rebase");
                 Err(GgError::RebaseConflict)
@@ -108,10 +105,7 @@ pub fn abort_rebase() -> Result<()> {
 
     git::rebase_abort()?;
 
-    println!(
-        "{} Rebase aborted",
-        style("OK").green().bold()
-    );
+    println!("{} Rebase aborted", style("OK").green().bold());
 
     Ok(())
 }

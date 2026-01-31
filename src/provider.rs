@@ -49,6 +49,13 @@ pub struct PrInfo {
     pub mergeable: bool,
 }
 
+/// Result of creating a PR/MR
+#[derive(Debug, Clone)]
+pub struct PrCreationResult {
+    pub number: u64,
+    pub url: String,
+}
+
 impl Provider {
     /// Detect provider from repository
     pub fn detect(repo: &Repository) -> Result<Self> {
@@ -91,13 +98,23 @@ impl Provider {
         title: &str,
         description: &str,
         draft: bool,
-    ) -> Result<u64> {
+    ) -> Result<PrCreationResult> {
         match self {
             Provider::GitHub => {
-                gh::create_pr(source_branch, target_branch, title, description, draft)
+                let result =
+                    gh::create_pr(source_branch, target_branch, title, description, draft)?;
+                Ok(PrCreationResult {
+                    number: result.number,
+                    url: result.url,
+                })
             }
             Provider::GitLab => {
-                glab::create_mr(source_branch, target_branch, title, description, draft)
+                let result =
+                    glab::create_mr(source_branch, target_branch, title, description, draft)?;
+                Ok(PrCreationResult {
+                    number: result.number,
+                    url: result.url,
+                })
             }
         }
     }
@@ -290,6 +307,26 @@ mod tests {
         assert!(info.approved);
         assert!(info.mergeable);
         assert!(!info.draft);
+    }
+
+    #[test]
+    fn test_pr_creation_result_construction() {
+        let result = PrCreationResult {
+            number: 123,
+            url: "https://github.com/user/repo/pull/123".to_string(),
+        };
+        assert_eq!(result.number, 123);
+        assert_eq!(result.url, "https://github.com/user/repo/pull/123");
+    }
+
+    #[test]
+    fn test_pr_creation_result_empty_url() {
+        let result = PrCreationResult {
+            number: 456,
+            url: String::new(),
+        };
+        assert_eq!(result.number, 456);
+        assert!(result.url.is_empty());
     }
 
     #[test]

@@ -128,17 +128,21 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
 
                 match provider.create_pr(&entry_branch, &target_branch, &title, &description, draft)
                 {
-                    Ok(pr_num) => {
-                        config.set_mr_for_entry(&stack.name, gg_id, pr_num);
+                    Ok(result) => {
+                        config.set_mr_for_entry(&stack.name, gg_id, result.number);
                         let draft_label = if draft { " (draft)" } else { "" };
                         pb.println(format!(
                             "{} Pushed {} -> {} #{}{}",
                             style("OK").green().bold(),
                             style(&entry_branch).cyan(),
                             provider.pr_label(),
-                            pr_num,
+                            result.number,
                             draft_label
                         ));
+                        // Show clickable URL for new PRs/MRs
+                        if !result.url.is_empty() {
+                            pb.println(format!("   {}", style(&result.url).underlined().blue()));
+                        }
                     }
                     Err(e) => {
                         pb.println(format!(

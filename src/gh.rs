@@ -96,6 +96,13 @@ pub fn whoami() -> Result<String> {
     Ok(username)
 }
 
+/// Result of creating a PR
+#[derive(Debug, Clone)]
+pub struct PrCreationResult {
+    pub number: u64,
+    pub url: String,
+}
+
 /// Create a new PR
 pub fn create_pr(
     source_branch: &str,
@@ -103,7 +110,7 @@ pub fn create_pr(
     title: &str,
     description: &str,
     draft: bool,
-) -> Result<u64> {
+) -> Result<PrCreationResult> {
     let mut args = vec![
         "pr",
         "create",
@@ -134,10 +141,11 @@ pub fn create_pr(
     // gh outputs a URL like https://github.com/user/repo/pull/123
     for line in stdout.lines() {
         if line.contains("/pull/") {
+            let url = line.trim().to_string();
             if let Some(num_str) = line.split("/pull/").nth(1) {
                 let num_str = num_str.trim();
                 if let Ok(num) = num_str.parse::<u64>() {
-                    return Ok(num);
+                    return Ok(PrCreationResult { number: num, url });
                 }
             }
         }
@@ -434,5 +442,26 @@ mod tests {
         assert!(!parsed.is_draft); // defaults to false
         assert!(parsed.mergeable.is_none());
         assert!(parsed.reviews.is_empty()); // defaults to empty
+    }
+
+    #[test]
+    fn test_pr_creation_result_construction() {
+        let result = PrCreationResult {
+            number: 42,
+            url: "https://github.com/user/repo/pull/42".to_string(),
+        };
+        assert_eq!(result.number, 42);
+        assert_eq!(result.url, "https://github.com/user/repo/pull/42");
+    }
+
+    #[test]
+    fn test_pr_creation_result_clone() {
+        let result = PrCreationResult {
+            number: 123,
+            url: "https://github.com/test/repo/pull/123".to_string(),
+        };
+        let cloned = result.clone();
+        assert_eq!(cloned.number, 123);
+        assert_eq!(cloned.url, "https://github.com/test/repo/pull/123");
     }
 }

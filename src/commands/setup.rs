@@ -67,8 +67,11 @@ fn prompt_defaults(
         .clone()
         .or_else(|| provider::detect_provider(repo));
 
-    defaults.branch_username =
-        prompt_branch_username(existing.branch_username.as_deref(), provider_for_whoami.as_ref(), theme)?;
+    defaults.branch_username = prompt_branch_username(
+        existing.branch_username.as_deref(),
+        provider_for_whoami.as_ref(),
+        theme,
+    )?;
     defaults.lint = prompt_lint_commands(repo, &existing.lint, theme)?;
 
     Ok(defaults)

@@ -47,7 +47,9 @@ pub enum GgError {
     #[error("gh command failed: {0}")]
     GhError(String),
 
-    #[error("Rebase conflict. Resolve conflicts and run `gg continue`, or `gg abort` to cancel.")]
+    #[error(
+        "Rebase conflict. Resolve conflicts and run `gg continue`, or `gg abort` to cancel."
+    )]
     RebaseConflict,
 
     #[error("No rebase in progress")]

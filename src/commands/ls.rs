@@ -33,10 +33,8 @@ pub fn run(all: bool, refresh: bool) -> Result<()> {
                     stack.refresh_mr_info(p.as_ref())?;
                     println!("{}", style("done").green());
                 } else {
-                    println!(
-                        "{}",
-                        style("Warning: Could not detect provider for refresh").yellow()
-                    );
+                    let msg = "Warning: Could not detect provider for refresh";
+                    println!("{}", style(msg).yellow());
                 }
             }
 

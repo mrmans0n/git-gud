@@ -128,8 +128,13 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
                     stack.name, entry.short_sha
                 );
 
-                match provider.create_pr(&entry_branch, &target_branch, &title, &description, draft)
-                {
+                match provider.create_pr(
+                    &entry_branch,
+                    &target_branch,
+                    &title,
+                    &description,
+                    draft,
+                ) {
                     Ok(mr_num) => {
                         config.set_mr_for_entry(&stack.name, gg_id, mr_num);
                         let draft_label = if draft { " (draft)" } else { "" };

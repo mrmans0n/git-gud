@@ -133,14 +133,9 @@ impl Provider for GitHubProvider {
     }
 
     fn view_pr(&self, number: u64) -> Result<PrInfo> {
+        let fields = "number,title,state,url,isDraft,reviewDecision,mergeable";
         let output = Command::new("gh")
-            .args([
-                "pr",
-                "view",
-                &number.to_string(),
-                "--json",
-                "number,title,state,url,isDraft,reviewDecision,mergeable",
-            ])
+            .args(["pr", "view", &number.to_string(), "--json", fields])
             .output()?;
 
         if !output.status.success() {

@@ -50,7 +50,8 @@ pub fn run(clean_all: bool) -> Result<()> {
         }
 
         // Load the stack to check MR status
-        let is_merged = check_stack_merged(&repo, &config, stack_name, &username, provider.as_deref())?;
+        let is_merged =
+            check_stack_merged(&repo, &config, stack_name, &username, provider.as_deref())?;
 
         if is_merged {
             if !clean_all {

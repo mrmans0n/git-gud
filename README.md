@@ -2,7 +2,8 @@
 
 A stacked-diffs CLI tool for GitLab, inspired by Gerrit, Phabricator/Arcanist, and Graphite.
 
-> [!WARNING] This tool has been vibe coded for myself and hasn't been battle tested yet. Do not use! You might bork your git repository!
+> [!WARNING]
+> This tool has been vibe coded for myself and hasn't been battle tested yet. Do not use! You might bork your git repository!
 
 ## What are Stacked Diffs?
 

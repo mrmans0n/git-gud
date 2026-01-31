@@ -6,8 +6,8 @@ use dialoguer::{Confirm, Input};
 
 use crate::config::{Config, Defaults};
 use crate::error::{GgError, Result};
+use crate::gh;
 use crate::git;
-use crate::glab;
 
 /// Run the setup command
 pub fn run() -> Result<()> {
@@ -140,7 +140,7 @@ fn prompt_base_branch(
 fn prompt_branch_username(existing: Option<&str>, theme: &ColorfulTheme) -> Result<Option<String>> {
     let suggested = existing
         .map(|s| s.to_string())
-        .or_else(|| glab::whoami().ok());
+        .or_else(|| gh::whoami().ok());
 
     let input: String = if let Some(suggested) = suggested {
         Input::with_theme(theme)

@@ -1,4 +1,4 @@
-//! `gg sync` - Sync stack with GitLab (push branches and create/update MRs)
+//! `gg sync` - Sync stack with GitHub (push branches and create/update PRs)
 
 use console::style;
 use dialoguer::Confirm;
@@ -7,8 +7,8 @@ use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::config::Config;
 use crate::error::{GgError, Result};
+use crate::gh;
 use crate::git::{self, generate_gg_id, get_gg_id, set_gg_id_in_message, strip_gg_id_from_message};
-use crate::glab;
 use crate::stack::Stack;
 
 /// Run the sync command
@@ -17,9 +17,9 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
     let git_dir = repo.path();
     let mut config = Config::load(git_dir)?;
 
-    // Check glab is available
-    glab::check_glab_installed()?;
-    glab::check_glab_auth()?;
+    // Check gh is available
+    gh::check_gh_installed()?;
+    gh::check_gh_auth()?;
 
     // Load current stack
     let stack = Stack::load(&repo, &config)?;
@@ -45,7 +45,7 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
             .with_prompt("Add GG-IDs to these commits? (requires rebase)")
             .default(true)
             .interact()
-            .unwrap_or(false);
+            .unwrap_or(true); // Default to yes if not interactive
 
         if confirm {
             add_gg_ids_to_commits(&repo, &stack)?;
@@ -94,50 +94,50 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
             stack.entry_branch_name(prev_entry).unwrap()
         };
 
-        // Create or update MR
-        let existing_mr = config.get_mr_for_entry(&stack.name, gg_id);
+        // Create or update PR
+        let existing_pr = config.get_mr_for_entry(&stack.name, gg_id);
 
-        match existing_mr {
-            Some(mr_num) => {
-                // Update MR target if needed
-                if let Err(e) = glab::update_mr_target(mr_num, &target_branch) {
+        match existing_pr {
+            Some(pr_num) => {
+                // Update PR base if needed
+                if let Err(e) = gh::update_pr_base(pr_num, &target_branch) {
                     pb.println(format!(
-                        "{} Could not update MR !{}: {}",
+                        "{} Could not update PR #{}: {}",
                         style("Warning:").yellow(),
-                        mr_num,
+                        pr_num,
                         e
                     ));
                 }
                 pb.println(format!(
-                    "{} Force-pushed {} -> MR !{}",
+                    "{} Force-pushed {} -> PR #{}",
                     style("OK").green().bold(),
                     style(&entry_branch).cyan(),
-                    mr_num
+                    pr_num
                 ));
             }
             None => {
-                // Create new MR
+                // Create new PR
                 let title = strip_gg_id_from_message(&entry.title);
                 let description = format!(
                     "Part of stack `{}`\n\nCommit: {}",
                     stack.name, entry.short_sha
                 );
 
-                match glab::create_mr(&entry_branch, &target_branch, &title, &description, draft) {
-                    Ok(mr_num) => {
-                        config.set_mr_for_entry(&stack.name, gg_id, mr_num);
+                match gh::create_pr(&entry_branch, &target_branch, &title, &description, draft) {
+                    Ok(pr_num) => {
+                        config.set_mr_for_entry(&stack.name, gg_id, pr_num);
                         let draft_label = if draft { " (draft)" } else { "" };
                         pb.println(format!(
-                            "{} Pushed {} -> MR !{}{}",
+                            "{} Pushed {} -> PR #{}{}",
                             style("OK").green().bold(),
                             style(&entry_branch).cyan(),
-                            mr_num,
+                            pr_num,
                             draft_label
                         ));
                     }
                     Err(e) => {
                         pb.println(format!(
-                            "{} Failed to create MR for {}: {}",
+                            "{} Failed to create PR for {}: {}",
                             style("Error:").red().bold(),
                             entry_branch,
                             e

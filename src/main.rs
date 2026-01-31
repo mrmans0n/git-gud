@@ -5,6 +5,7 @@
 mod commands;
 mod config;
 mod error;
+mod gh;
 mod git;
 mod glab;
 mod stack;

@@ -6,8 +6,8 @@ use git2::BranchType;
 
 use crate::config::Config;
 use crate::error::{GgError, Result};
+use crate::gh::{self, PrState};
 use crate::git;
-use crate::glab::{self, MrState};
 use crate::stack;
 
 /// Run the clean command
@@ -21,7 +21,7 @@ pub fn run(clean_all: bool) -> Result<()> {
         .defaults
         .branch_username
         .clone()
-        .or_else(|| glab::whoami().ok())
+        .or_else(|| gh::whoami().ok())
         .unwrap_or_else(|| "unknown".to_string());
 
     // Get all stacks
@@ -131,6 +131,36 @@ fn check_stack_merged(
     stack_name: &str,
     username: &str,
 ) -> Result<bool> {
+    // Primary method: check if all MRs are merged
+    // This works correctly with squash and rebase merges
+    if let Some(stack_config) = config.get_stack(stack_name) {
+        if stack_config.mrs.is_empty() {
+            // No MRs tracked, fall back to git merge check
+        } else {
+            let mut all_merged = true;
+            for mr_num in stack_config.mrs.values() {
+                match gh::get_pr_info(*mr_num) {
+                    Ok(info) => {
+                        if info.state != PrState::Merged {
+                            all_merged = false;
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        // PR might be deleted or inaccessible
+                        // If we can't verify, assume it's not merged to be safe
+                        all_merged = false;
+                        break;
+                    }
+                }
+            }
+
+            return Ok(all_merged);
+        }
+    }
+
+    // Fallback: check if stack branch is ancestor of base
+    // This works for merge commits but not for squash/rebase
     let branch_name = git::format_stack_branch(username, stack_name);
 
     // Get base branch
@@ -150,36 +180,5 @@ fn check_stack_merged(
     let base_oid = base_ref.id();
 
     // If stack is ancestor of base, it's merged
-    if repo.merge_base(stack_oid, base_oid)? == stack_oid {
-        return Ok(true);
-    }
-
-    // Alternative: check if all MRs are merged
-    if let Some(stack_config) = config.get_stack(stack_name) {
-        if stack_config.mrs.is_empty() {
-            // No MRs tracked, can't determine merge status
-            return Ok(false);
-        }
-
-        let mut all_merged = true;
-        for mr_num in stack_config.mrs.values() {
-            match glab::view_mr(*mr_num) {
-                Ok(info) => {
-                    if info.state != MrState::Merged {
-                        all_merged = false;
-                        break;
-                    }
-                }
-                Err(_) => {
-                    // MR might be deleted, assume not merged
-                    all_merged = false;
-                    break;
-                }
-            }
-        }
-
-        return Ok(all_merged);
-    }
-
-    Ok(false)
+    Ok(repo.merge_base(stack_oid, base_oid)? == stack_oid)
 }

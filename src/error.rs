@@ -35,6 +35,12 @@ pub enum GgError {
     #[error("glab command failed: {0}")]
     GlabError(String),
 
+    #[error("Invalid PR number: {0}")]
+    InvalidPrNumber(String),
+
+    #[error("Command '{0}' failed: {1}")]
+    Command(String, String),
+
     #[error("Rebase conflict. Resolve conflicts and run `gg continue`, or `gg abort` to cancel.")]
     RebaseConflict,
 

@@ -89,13 +89,11 @@ pub fn find_entry_branch_for_stack(
     stack_name: &str,
 ) -> Option<String> {
     let branches = repo.branches(Some(BranchType::Local)).ok()?;
-    for branch_result in branches {
-        if let Ok((branch, _)) = branch_result {
-            if let Ok(Some(name)) = branch.name() {
-                if let Some((branch_user, branch_stack, _entry_id)) = parse_entry_branch(name) {
-                    if branch_user == username && branch_stack == stack_name {
-                        return Some(name.to_string());
-                    }
+    for (branch, _) in branches.flatten() {
+        if let Ok(Some(name)) = branch.name() {
+            if let Some((branch_user, branch_stack, _entry_id)) = parse_entry_branch(name) {
+                if branch_user == username && branch_stack == stack_name {
+                    return Some(name.to_string());
                 }
             }
         }

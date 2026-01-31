@@ -6,7 +6,7 @@ use dialoguer::Confirm;
 use crate::config::Config;
 use crate::error::Result;
 use crate::git;
-use crate::glab::{self, MrState};
+use crate::provider::{self, PrState};
 use crate::stack::Stack;
 
 /// Run the land command
@@ -15,14 +15,15 @@ pub fn run(land_all: bool, squash: bool) -> Result<()> {
     let git_dir = repo.path();
     let mut config = Config::load(git_dir)?;
 
-    // Check glab is available
-    glab::check_glab_installed()?;
-    glab::check_glab_auth()?;
+    // Get provider and check it's available
+    let provider = provider::get_provider(&config, &repo)?;
+    provider.check_installed()?;
+    provider.check_auth()?;
 
     // Require clean working directory
     git::require_clean_working_directory(&repo)?;
 
-    // Load stack and refresh MR info
+    // Load stack and refresh PR/MR info
     let mut stack = Stack::load(&repo, &config)?;
 
     if stack.is_empty() {
@@ -30,8 +31,10 @@ pub fn run(land_all: bool, squash: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!("{}", style("Checking MR status...").dim());
-    stack.refresh_mr_info()?;
+    println!("{}", style("Checking PR/MR status...").dim());
+    stack.refresh_mr_info(provider.as_ref())?;
+
+    let pr_prefix = provider.pr_prefix();
 
     // Find landable MRs (approved, open, from the start of the stack)
     let mut landed_count = 0;
@@ -61,34 +64,46 @@ pub fn run(land_all: bool, squash: bool) -> Result<()> {
             }
         };
 
-        // Check MR state
-        let mr_info = glab::view_mr(mr_num)?;
+        // Check PR/MR state
+        let mr_info = provider.view_pr(mr_num)?;
 
         match mr_info.state {
-            MrState::Merged => {
-                println!("{} MR !{} already merged", style("✓").green(), mr_num);
+            PrState::Merged => {
+                println!(
+                    "{} {}{} already merged",
+                    style("✓").green(),
+                    pr_prefix,
+                    mr_num
+                );
                 landed_count += 1;
                 continue;
             }
-            MrState::Closed => {
-                println!("{} MR !{} is closed. Stopping.", style("✗").red(), mr_num);
-                break;
-            }
-            MrState::Draft => {
+            PrState::Closed => {
                 println!(
-                    "{} MR !{} is a draft. Mark as ready before landing.",
-                    style("○").yellow(),
+                    "{} {}{} is closed. Stopping.",
+                    style("✗").red(),
+                    pr_prefix,
                     mr_num
                 );
                 break;
             }
-            MrState::Open => {
+            PrState::Draft => {
+                println!(
+                    "{} {}{} is a draft. Mark as ready before landing.",
+                    style("○").yellow(),
+                    pr_prefix,
+                    mr_num
+                );
+                break;
+            }
+            PrState::Open => {
                 // Check if approved
-                let approved = glab::check_mr_approved(mr_num)?;
+                let approved = provider.check_approved(mr_num)?;
                 if !approved {
                     println!(
-                        "{} MR !{} is not approved. Stopping.",
+                        "{} {}{} is not approved. Stopping.",
                         style("○").yellow(),
+                        pr_prefix,
                         mr_num
                     );
                     break;
@@ -96,10 +111,10 @@ pub fn run(land_all: bool, squash: bool) -> Result<()> {
             }
         }
 
-        // MR is approved and open - land it
+        // PR/MR is approved and open - land it
         if !land_all {
             let confirm = Confirm::new()
-                .with_prompt(format!("Merge MR !{} ({})? ", mr_num, entry.title))
+                .with_prompt(format!("Merge {}{} ({})? ", pr_prefix, mr_num, entry.title))
                 .default(true)
                 .interact()
                 .unwrap_or(false);
@@ -110,25 +125,27 @@ pub fn run(land_all: bool, squash: bool) -> Result<()> {
             }
         }
 
-        println!("{} Merging MR !{}...", style("→").cyan(), mr_num);
+        println!("{} Merging {}{}...", style("→").cyan(), pr_prefix, mr_num);
 
-        match glab::merge_mr(mr_num, squash, true) {
+        match provider.merge_pr(mr_num, squash, true) {
             Ok(()) => {
                 println!(
-                    "{} Merged MR !{} into {}",
+                    "{} Merged {}{} into {}",
                     style("OK").green().bold(),
+                    pr_prefix,
                     mr_num,
                     stack.base
                 );
                 landed_count += 1;
 
-                // Remove MR mapping from config
+                // Remove PR/MR mapping from config
                 config.remove_mr_for_entry(&stack.name, gg_id);
             }
             Err(e) => {
                 println!(
-                    "{} Failed to merge MR !{}: {}",
+                    "{} Failed to merge {}{}: {}",
                     style("Error:").red().bold(),
+                    pr_prefix,
                     mr_num,
                     e
                 );

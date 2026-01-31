@@ -7,7 +7,7 @@ use git2::BranchType;
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
-use crate::glab;
+use crate::provider;
 use crate::stack;
 
 /// Run the checkout command
@@ -16,15 +16,19 @@ pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
     let git_dir = repo.path();
     let mut config = Config::load(git_dir)?;
 
-    // Get username from config or glab
+    // Get username from config or provider
+    let provider = provider::get_provider(&config, &repo).ok();
     let username = config
         .defaults
         .branch_username
         .clone()
-        .or_else(|| glab::whoami().ok())
-        .ok_or_else(|| GgError::GlabError(
-            "Could not determine username. Set branch_username in config or run `glab auth login`".to_string()
-        ))?;
+        .or_else(|| provider.as_ref().and_then(|p| p.whoami().ok()))
+        .ok_or_else(|| {
+            GgError::Other(
+                "Could not determine username. Set branch_username in config or run `gg setup`"
+                    .to_string(),
+            )
+        })?;
 
     // If no stack name provided, show fuzzy selector
     let stack_name = match stack_name {
@@ -58,12 +62,19 @@ pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
     if branch_exists {
         // Switch to existing main stack branch
         git::checkout_branch(&repo, &branch_name)?;
+
+        // Save as current stack
+        config.defaults.current_stack = Some(stack_name.clone());
+        config.save(git_dir)?;
+
         println!(
             "{} Switched to stack {}",
             style("OK").green().bold(),
             style(&stack_name).cyan()
         );
-    } else if let Some(entry_branch) = git::find_entry_branch_for_stack(&repo, &username, &stack_name) {
+    } else if let Some(entry_branch) =
+        git::find_entry_branch_for_stack(&repo, &username, &stack_name)
+    {
         // Main stack branch doesn't exist, but an entry branch does - use that
         git::checkout_branch(&repo, &entry_branch)?;
         println!(
@@ -107,6 +118,9 @@ pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
         if config.defaults.branch_username.is_none() {
             config.defaults.branch_username = Some(username);
         }
+
+        // Save as current stack
+        config.defaults.current_stack = Some(stack_name.clone());
 
         config.save(git_dir)?;
 

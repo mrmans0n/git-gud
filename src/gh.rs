@@ -231,6 +231,9 @@ pub fn merge_pr(pr_number: u64, squash: bool, delete_branch: bool) -> Result<()>
         args.push("--delete-branch");
     }
 
+    // Skip confirmation prompt in non-interactive environments
+    args.push("--yes");
+
     let output = Command::new("gh").args(&args).output()?;
 
     if !output.status.success() {
@@ -354,4 +357,83 @@ pub fn get_pr_ci_status(pr_number: u64) -> Result<CiStatus> {
     } else {
         Ok(CiStatus::Unknown)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pr_state_equality() {
+        assert_eq!(PrState::Open, PrState::Open);
+        assert_eq!(PrState::Merged, PrState::Merged);
+        assert_eq!(PrState::Closed, PrState::Closed);
+        assert_eq!(PrState::Draft, PrState::Draft);
+        assert_ne!(PrState::Open, PrState::Merged);
+    }
+
+    #[test]
+    fn test_ci_status_equality() {
+        assert_eq!(CiStatus::Success, CiStatus::Success);
+        assert_eq!(CiStatus::Failed, CiStatus::Failed);
+        assert_eq!(CiStatus::Pending, CiStatus::Pending);
+        assert_ne!(CiStatus::Success, CiStatus::Failed);
+    }
+
+    #[test]
+    fn test_pr_info_construction() {
+        let info = PrInfo {
+            number: 42,
+            title: "Test PR".to_string(),
+            state: PrState::Open,
+            url: "https://github.com/test/repo/pull/42".to_string(),
+            draft: false,
+            approved: true,
+            mergeable: true,
+        };
+        assert_eq!(info.number, 42);
+        assert_eq!(info.title, "Test PR");
+        assert_eq!(info.state, PrState::Open);
+        assert!(info.approved);
+        assert!(info.mergeable);
+    }
+
+    #[test]
+    fn test_gh_pr_json_deserialization() {
+        let json = r#"{
+            "number": 123,
+            "title": "My PR",
+            "state": "OPEN",
+            "url": "https://github.com/owner/repo/pull/123",
+            "isDraft": false,
+            "mergeable": "MERGEABLE",
+            "reviews": [{"state": "APPROVED"}]
+        }"#;
+
+        let parsed: GhPrJson = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.number, 123);
+        assert_eq!(parsed.title, "My PR");
+        assert_eq!(parsed.state, "OPEN");
+        assert!(!parsed.is_draft);
+        assert_eq!(parsed.mergeable, Some("MERGEABLE".to_string()));
+        assert_eq!(parsed.reviews.len(), 1);
+        assert_eq!(parsed.reviews[0].state, "APPROVED");
+    }
+
+    #[test]
+    fn test_gh_pr_json_with_missing_optional_fields() {
+        let json = r#"{
+            "number": 456,
+            "title": "Draft PR",
+            "state": "OPEN",
+            "url": "https://github.com/owner/repo/pull/456"
+        }"#;
+
+        let parsed: GhPrJson = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.number, 456);
+        assert!(!parsed.is_draft); // defaults to false
+        assert!(parsed.mergeable.is_none());
+        assert!(parsed.reviews.is_empty()); // defaults to empty
+    }
+
 }

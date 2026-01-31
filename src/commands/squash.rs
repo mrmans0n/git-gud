@@ -38,6 +38,12 @@ pub fn run(all: bool) -> Result<()> {
         false
     };
 
+    // If we need to rebase after amend, ensure working directory is clean first
+    // This prevents leaving the repo in an inconsistent state
+    if needs_rebase {
+        git::require_clean_working_directory(&repo)?;
+    }
+
     // Perform the squash using git command (more reliable for amend)
     let mut args = vec!["commit", "--amend", "--no-edit"];
     if all {
@@ -63,9 +69,6 @@ pub fn run(all: bool) -> Result<()> {
 
     // If we need to rebase remaining commits
     if needs_rebase {
-        // Check for clean working directory before rebasing
-        git::require_clean_working_directory(&repo)?;
-
         let stack = stack_result.unwrap();
         let remaining = stack.len() - stack.current_position.unwrap() - 1;
 

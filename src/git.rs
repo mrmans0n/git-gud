@@ -49,9 +49,14 @@ pub fn current_branch_name(repo: &Repository) -> Option<String> {
 }
 
 /// Parse a stack branch name into (username, stack_name)
+/// Note: Entry branches (username/stack--entry_id) should NOT be parsed as stack branches
 pub fn parse_stack_branch(branch_name: &str) -> Option<(String, String)> {
     let parts: Vec<&str> = branch_name.split('/').collect();
     if parts.len() == 2 {
+        // Exclude entry branches which have "--" in the stack name portion
+        if parts[1].contains("--") {
+            return None;
+        }
         Some((parts[0].to_string(), parts[1].to_string()))
     } else {
         None
@@ -305,6 +310,9 @@ mod tests {
         );
         assert_eq!(parse_stack_branch("main"), None);
         assert_eq!(parse_stack_branch("nacho/my-feature/c-abc123"), None);
+        // Entry branches should NOT be parsed as stack branches
+        assert_eq!(parse_stack_branch("nacho/my-feature--c-abc123"), None);
+        assert_eq!(parse_stack_branch("nacho/claude.md--c-7d3f2a6"), None);
     }
 
     #[test]

@@ -99,7 +99,12 @@ enum Commands {
 
     /// Reorder commits in the stack
     #[command(name = "reorder")]
-    Reorder,
+    Reorder {
+        /// New order as positions (1-indexed) or SHAs, e.g., "3,1,2" or "3 1 2"
+        /// Position 1 = bottom of stack (closest to base)
+        #[arg(short, long, value_name = "ORDER")]
+        order: Option<String>,
+    },
 
     /// Land (merge) approved MRs starting from the first commit
     #[command(name = "land", alias = "merge")]
@@ -193,7 +198,9 @@ fn main() {
         Some(Commands::Prev) => commands::nav::prev(),
         Some(Commands::Next) => commands::nav::next(),
         Some(Commands::Squash { all }) => commands::squash::run(all),
-        Some(Commands::Reorder) => commands::reorder::run(),
+        Some(Commands::Reorder { order }) => {
+            commands::reorder::run(commands::reorder::ReorderOptions { order })
+        }
         Some(Commands::Land { all, squash }) => commands::land::run(all, squash),
         Some(Commands::Clean { all }) => commands::clean::run(all),
         Some(Commands::Rebase { target }) => commands::rebase::run(target),

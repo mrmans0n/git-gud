@@ -250,9 +250,14 @@ pub fn run_git_command(args: &[&str]) -> Result<String> {
 }
 
 /// Push a branch to origin
-pub fn push_branch(branch_name: &str, force: bool) -> Result<()> {
+///
+/// - `force_with_lease`: Use --force-with-lease (safe force, recommended for stacked diffs)
+/// - `hard_force`: Use --force (overrides force_with_lease, use only as escape hatch)
+pub fn push_branch(branch_name: &str, force_with_lease: bool, hard_force: bool) -> Result<()> {
     let mut args = vec!["push", "origin", branch_name];
-    if force {
+    if hard_force {
+        args.insert(1, "--force");
+    } else if force_with_lease {
         args.insert(1, "--force-with-lease");
     }
     run_git_command(&args)?;

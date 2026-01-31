@@ -78,8 +78,10 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
         // Create/update the remote branch for this commit
         create_entry_branch(&repo, &stack, entry, &entry_branch)?;
 
-        // Push the branch
-        let push_result = git::push_branch(&entry_branch, force);
+        // Push the branch (always force-push with lease because rebases change commit SHAs)
+        // This is safe because each entry branch is owned by this stack
+        // If --force is passed, use hard force as an escape hatch
+        let push_result = git::push_branch(&entry_branch, true, force);
         if let Err(e) = push_result {
             pb.abandon_with_message(format!("Failed to push {}: {}", entry_branch, e));
             return Err(e);

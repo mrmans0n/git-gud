@@ -194,6 +194,17 @@ fn get_order_from_editor(stack: &Stack) -> Result<Option<Vec<String>>> {
         .map(|s| s.to_string())
         .collect();
 
+    // Validate all SHAs from editor match stack entries
+    let valid_shas: Vec<&str> = stack.entries.iter().map(|e| e.short_sha.as_str()).collect();
+    for sha in &new_order {
+        let is_valid = valid_shas
+            .iter()
+            .any(|s| s.starts_with(sha.as_str()) || sha.starts_with(*s));
+        if !is_valid {
+            return Err(GgError::Other(format!("Unknown commit SHA: {}", sha)));
+        }
+    }
+
     Ok(Some(new_order))
 }
 
@@ -219,11 +230,13 @@ fn perform_reorder(repo: &git2::Repository, stack: &Stack, new_order: &[String])
 
     // Use environment variables to control the rebase
     // GIT_SEQUENCE_EDITOR allows us to provide the todo list
-    let todo_file = std::env::temp_dir().join("gg-rebase-todo");
+    // Use unique filenames to avoid conflicts in parallel test runs
+    let unique_id = std::process::id();
+    let todo_file = std::env::temp_dir().join(format!("gg-rebase-todo-{}", unique_id));
     std::fs::write(&todo_file, &rebase_todo)?;
 
     let editor_script = format!("#!/bin/sh\ncat {} > \"$1\"", todo_file.display());
-    let script_file = std::env::temp_dir().join("gg-rebase-editor.sh");
+    let script_file = std::env::temp_dir().join(format!("gg-rebase-editor-{}.sh", unique_id));
     {
         let mut f = std::fs::File::create(&script_file)?;
         f.write_all(editor_script.as_bytes())?;
@@ -267,5 +280,13 @@ mod tests {
     fn test_reorder_options_default() {
         let opts = ReorderOptions::default();
         assert!(opts.order.is_none());
+    }
+
+    #[test]
+    fn test_reorder_options_with_order() {
+        let opts = ReorderOptions {
+            order: Some("3,1,2".to_string()),
+        };
+        assert_eq!(opts.order, Some("3,1,2".to_string()));
     }
 }

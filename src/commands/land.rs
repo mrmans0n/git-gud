@@ -20,8 +20,9 @@ pub fn run(land_all: bool, squash: bool) -> Result<()> {
     provider.check_installed()?;
     provider.check_auth()?;
 
-    // Require clean working directory
-    git::require_clean_working_directory(&repo)?;
+    // Note: We don't require a clean working directory here because land
+    // only performs remote operations (merging PRs via the API). It doesn't
+    // modify local files.
 
     // Load stack and refresh PR info
     let mut stack = Stack::load(&repo, &config)?;

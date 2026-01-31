@@ -58,6 +58,11 @@ pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
     if branch_exists {
         // Switch to existing branch
         git::checkout_branch(&repo, &branch_name)?;
+
+        // Save as current stack
+        config.defaults.current_stack = Some(stack_name.clone());
+        config.save(git_dir)?;
+
         println!(
             "{} Switched to stack {}",
             style("OK").green().bold(),
@@ -99,6 +104,9 @@ pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
         if config.defaults.branch_username.is_none() {
             config.defaults.branch_username = Some(username);
         }
+
+        // Save as current stack
+        config.defaults.current_stack = Some(stack_name.clone());
 
         config.save(git_dir)?;
 

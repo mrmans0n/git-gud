@@ -35,6 +35,18 @@ pub enum GgError {
     #[error("glab command failed: {0}")]
     GlabError(String),
 
+    #[error("Could not detect git provider. Run `gg setup` to configure.")]
+    ProviderNotConfigured,
+
+    #[error("gh is not installed. Install from https://cli.github.com")]
+    GhNotInstalled,
+
+    #[error("Not authenticated with GitHub. Run `gh auth login` first.")]
+    GhNotAuthenticated,
+
+    #[error("gh command failed: {0}")]
+    GhError(String),
+
     #[error("Rebase conflict. Resolve conflicts and run `gg continue`, or `gg abort` to cancel.")]
     RebaseConflict,
 

@@ -312,8 +312,9 @@ mod tests {
 
     #[test]
     fn test_parse_entry_branch() {
+        // Format: username/stack_name--entry_id
         assert_eq!(
-            parse_entry_branch("nacho/my-feature/c-abc123"),
+            parse_entry_branch("nacho/my-feature--c-abc123"),
             Some((
                 "nacho".to_string(),
                 "my-feature".to_string(),
@@ -322,6 +323,8 @@ mod tests {
         );
         assert_eq!(parse_entry_branch("main"), None);
         assert_eq!(parse_entry_branch("nacho/my-feature"), None);
+        // Old format with slash should not match
+        assert_eq!(parse_entry_branch("nacho/my-feature/c-abc123"), None);
     }
 
     #[test]

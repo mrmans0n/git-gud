@@ -148,30 +148,75 @@ pub fn create_mr(
     }
 
     // Parse the output to get the MR number
-    // glab outputs something like "!123" or a URL
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
 
-    // Try to extract MR number from output
-    for word in stdout.split_whitespace() {
+    parse_mr_number_from_output(&stdout, &stderr)
+}
+
+/// Parse MR number from glab command output.
+///
+/// Tries multiple strategies to extract the MR number:
+/// 1. Look for `!N` pattern (e.g., "Created merge request !123")
+/// 2. Look for `/merge_requests/N` in URLs
+/// 3. Look for "MR N" or "merge request N" patterns
+/// 4. Last resort: find any number > 0 in the output
+fn parse_mr_number_from_output(stdout: &str, stderr: &str) -> Result<u64> {
+    let combined = format!("{} {}", stdout, stderr);
+
+    // Strategy 1: Look for !N pattern anywhere in output
+    for word in combined.split_whitespace() {
         if let Some(stripped) = word.strip_prefix('!') {
-            if let Ok(num) = stripped.parse::<u64>() {
-                return Ok(num);
-            }
-        }
-        // Also check for URL pattern
-        if word.contains("/merge_requests/") {
-            if let Some(num_str) = word.split("/merge_requests/").nth(1) {
-                let num_str = num_str.trim_end_matches(|c: char| !c.is_ascii_digit());
-                if let Ok(num) = num_str.parse::<u64>() {
+            // Strip any trailing punctuation
+            let num_str = stripped.trim_end_matches(|c: char| !c.is_ascii_digit());
+            if let Ok(num) = num_str.parse::<u64>() {
+                if num > 0 {
                     return Ok(num);
                 }
             }
         }
     }
 
-    Err(GgError::GlabError(
-        "Could not parse MR number from glab output".to_string(),
-    ))
+    // Strategy 2: Look for /merge_requests/N in URLs
+    if let Some(idx) = combined.find("/merge_requests/") {
+        let after = &combined[idx + "/merge_requests/".len()..];
+        let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(num) = num_str.parse::<u64>() {
+            if num > 0 {
+                return Ok(num);
+            }
+        }
+    }
+
+    // Strategy 3: Look for any number after "MR" or "merge request" (case insensitive)
+    let lower = combined.to_lowercase();
+    for pattern in ["mr ", "mr!", "merge request "] {
+        if let Some(idx) = lower.find(pattern) {
+            let after = &combined[idx + pattern.len()..];
+            let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(num) = num_str.parse::<u64>() {
+                if num > 0 {
+                    return Ok(num);
+                }
+            }
+        }
+    }
+
+    // Strategy 4: Last resort - find any number > 0 in the output (likely the MR number)
+    for word in combined.split(|c: char| !c.is_ascii_digit()) {
+        if !word.is_empty() {
+            if let Ok(num) = word.parse::<u64>() {
+                if num > 0 {
+                    return Ok(num);
+                }
+            }
+        }
+    }
+
+    Err(GgError::GlabError(format!(
+        "Could not parse MR number from glab output: {}",
+        stdout.trim()
+    )))
 }
 
 /// View MR information
@@ -326,5 +371,128 @@ pub fn get_mr_ci_status(mr_number: u64) -> Result<CiStatus> {
         Ok(CiStatus::Canceled)
     } else {
         Ok(CiStatus::Unknown)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_mr_number_exclamation_format() {
+        // Standard format: !123
+        assert_eq!(
+            parse_mr_number_from_output("Created merge request !123", "").unwrap(),
+            123
+        );
+        assert_eq!(
+            parse_mr_number_from_output("!456 created", "").unwrap(),
+            456
+        );
+        assert_eq!(
+            parse_mr_number_from_output("MR !789 is ready", "").unwrap(),
+            789
+        );
+    }
+
+    #[test]
+    fn test_parse_mr_number_exclamation_with_punctuation() {
+        // Format with trailing punctuation: !123.
+        assert_eq!(
+            parse_mr_number_from_output("Created !123.", "").unwrap(),
+            123
+        );
+        assert_eq!(parse_mr_number_from_output("See !456!", "").unwrap(), 456);
+        assert_eq!(parse_mr_number_from_output("Done: !789,", "").unwrap(), 789);
+    }
+
+    #[test]
+    fn test_parse_mr_number_url_format() {
+        // URL format
+        assert_eq!(
+            parse_mr_number_from_output("https://gitlab.com/user/repo/-/merge_requests/123", "")
+                .unwrap(),
+            123
+        );
+        assert_eq!(
+            parse_mr_number_from_output(
+                "View at https://gitlab.example.com/group/project/-/merge_requests/456 for details",
+                ""
+            )
+            .unwrap(),
+            456
+        );
+    }
+
+    #[test]
+    fn test_parse_mr_number_mr_prefix() {
+        // "MR N" format
+        assert_eq!(
+            parse_mr_number_from_output("Created MR 123", "").unwrap(),
+            123
+        );
+        assert_eq!(parse_mr_number_from_output("MR!456 done", "").unwrap(), 456);
+    }
+
+    #[test]
+    fn test_parse_mr_number_merge_request_text() {
+        // "merge request N" format
+        assert_eq!(
+            parse_mr_number_from_output("Created merge request 123 successfully", "").unwrap(),
+            123
+        );
+    }
+
+    #[test]
+    fn test_parse_mr_number_from_stderr() {
+        // Number in stderr
+        assert_eq!(
+            parse_mr_number_from_output("", "Created !789").unwrap(),
+            789
+        );
+        assert_eq!(
+            parse_mr_number_from_output("Some output", "MR 456 created").unwrap(),
+            456
+        );
+    }
+
+    #[test]
+    fn test_parse_mr_number_fallback_to_any_number() {
+        // Last resort: any number in output
+        assert_eq!(parse_mr_number_from_output("Success: 42", "").unwrap(), 42);
+    }
+
+    #[test]
+    fn test_parse_mr_number_ignores_zero() {
+        // Should not return 0
+        assert!(parse_mr_number_from_output("Nothing here", "").is_err());
+        // But should find non-zero after zero
+        assert_eq!(
+            parse_mr_number_from_output("0 errors, created 123", "").unwrap(),
+            123
+        );
+    }
+
+    #[test]
+    fn test_parse_mr_number_empty_output() {
+        assert!(parse_mr_number_from_output("", "").is_err());
+        assert!(parse_mr_number_from_output("   ", "   ").is_err());
+    }
+
+    #[test]
+    fn test_parse_mr_number_no_numbers() {
+        assert!(parse_mr_number_from_output("No numbers here", "none here either").is_err());
+    }
+
+    #[test]
+    fn test_parse_mr_number_real_glab_output() {
+        // Real glab output examples
+        assert_eq!(
+            parse_mr_number_from_output(
+                "Creating merge request for feature-branch into main in user/repo\n\n!42 Feature: Add new thing\nhttps://gitlab.com/user/repo/-/merge_requests/42",
+                ""
+            ).unwrap(),
+            42
+        );
     }
 }

@@ -52,12 +52,20 @@ pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
     // Format the branch name
     let branch_name = git::format_stack_branch(&username, &stack_name);
 
-    // Check if branch exists
+    // Check if main stack branch exists
     let branch_exists = repo.find_branch(&branch_name, BranchType::Local).is_ok();
 
     if branch_exists {
-        // Switch to existing branch
+        // Switch to existing main stack branch
         git::checkout_branch(&repo, &branch_name)?;
+        println!(
+            "{} Switched to stack {}",
+            style("OK").green().bold(),
+            style(&stack_name).cyan()
+        );
+    } else if let Some(entry_branch) = git::find_entry_branch_for_stack(&repo, &username, &stack_name) {
+        // Main stack branch doesn't exist, but an entry branch does - use that
+        git::checkout_branch(&repo, &entry_branch)?;
         println!(
             "{} Switched to stack {}",
             style("OK").green().bold(),

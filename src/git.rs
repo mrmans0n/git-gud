@@ -58,6 +58,20 @@ pub fn parse_stack_branch(branch_name: &str) -> Option<(String, String)> {
     }
 }
 
+/// Parse an entry branch name into (username, stack_name, entry_id)
+pub fn parse_entry_branch(branch_name: &str) -> Option<(String, String, String)> {
+    let parts: Vec<&str> = branch_name.split('/').collect();
+    if parts.len() == 3 {
+        Some((
+            parts[0].to_string(),
+            parts[1].to_string(),
+            parts[2].to_string(),
+        ))
+    } else {
+        None
+    }
+}
+
 /// Format a stack branch name
 pub fn format_stack_branch(username: &str, stack_name: &str) -> String {
     format!("{}/{}", username, stack_name)
@@ -66,6 +80,27 @@ pub fn format_stack_branch(username: &str, stack_name: &str) -> String {
 /// Format a remote branch name for a specific entry
 pub fn format_entry_branch(username: &str, stack_name: &str, entry_id: &str) -> String {
     format!("{}/{}/{}", username, stack_name, entry_id)
+}
+
+/// Find the first entry branch for a stack (username/stack_name/*)
+pub fn find_entry_branch_for_stack(
+    repo: &Repository,
+    username: &str,
+    stack_name: &str,
+) -> Option<String> {
+    let branches = repo.branches(Some(BranchType::Local)).ok()?;
+    for branch_result in branches {
+        if let Ok((branch, _)) = branch_result {
+            if let Ok(Some(name)) = branch.name() {
+                if let Some((branch_user, branch_stack, _entry_id)) = parse_entry_branch(name) {
+                    if branch_user == username && branch_stack == stack_name {
+                        return Some(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Check if the working directory is clean
@@ -269,6 +304,20 @@ mod tests {
             format_entry_branch("nacho", "my-feature", "c-abc123"),
             "nacho/my-feature/c-abc123"
         );
+    }
+
+    #[test]
+    fn test_parse_entry_branch() {
+        assert_eq!(
+            parse_entry_branch("nacho/my-feature/c-abc123"),
+            Some((
+                "nacho".to_string(),
+                "my-feature".to_string(),
+                "c-abc123".to_string()
+            ))
+        );
+        assert_eq!(parse_entry_branch("main"), None);
+        assert_eq!(parse_entry_branch("nacho/my-feature"), None);
     }
 
     #[test]

@@ -314,12 +314,21 @@ pub fn list_all_stacks(repo: &Repository, config: &Config, username: &str) -> Re
         stacks.push(name.to_string());
     }
 
-    // Also scan local branches matching username/stack-name pattern
+    // Also scan local branches matching username/stack-name or username/stack-name/entry-id pattern
     let branches = repo.branches(Some(git2::BranchType::Local))?;
     for branch_result in branches {
         let (branch, _) = branch_result?;
         if let Some(name) = branch.name()? {
+            // Check for 2-part stack branch (username/stack-name)
             if let Some((branch_user, stack_name)) = git::parse_stack_branch(name) {
+                if branch_user == username && !stacks.contains(&stack_name) {
+                    stacks.push(stack_name);
+                }
+            }
+            // Also check for 3-part entry branch (username/stack-name/entry-id)
+            else if let Some((branch_user, stack_name, _entry_id)) =
+                git::parse_entry_branch(name)
+            {
                 if branch_user == username && !stacks.contains(&stack_name) {
                     stacks.push(stack_name);
                 }

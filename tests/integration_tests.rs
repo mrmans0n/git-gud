@@ -444,7 +444,7 @@ fn test_gg_navigation_preserves_modifications() {
     fs::write(repo_path.join("file2.txt"), "v2-modified").expect("Failed to write file");
     run_git(&repo_path, &["add", "."]);
 
-    let (success, _, stderr) = run_gg(&repo_path, &["sc"]);
+    let (success, _, _stderr) = run_gg(&repo_path, &["sc"]);
     // Note: This might fail if there are conflicts, which is expected in some cases
     // The important thing is that if it succeeds, the changes should persist
 

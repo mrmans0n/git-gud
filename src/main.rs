@@ -150,7 +150,23 @@ enum Commands {
 
     /// Absorb staged changes into the appropriate commits
     #[command(name = "absorb")]
-    Absorb,
+    Absorb {
+        /// Show what would be done without making changes
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+
+        /// Automatically rebase after creating fixup commits
+        #[arg(short, long)]
+        and_rebase: bool,
+
+        /// Absorb whole files rather than individual hunks
+        #[arg(short, long)]
+        whole_file: bool,
+
+        /// Create at most one fixup per commit
+        #[arg(long)]
+        one_fixup_per_commit: bool,
+    },
 
     /// Generate shell completions
     #[command(name = "completions")]
@@ -185,7 +201,17 @@ fn main() {
         Some(Commands::Abort) => commands::rebase::abort_rebase(),
         Some(Commands::Lint { until }) => commands::lint::run(until),
         Some(Commands::Setup) => commands::setup::run(),
-        Some(Commands::Absorb) => commands::absorb::run(),
+        Some(Commands::Absorb {
+            dry_run,
+            and_rebase,
+            whole_file,
+            one_fixup_per_commit,
+        }) => commands::absorb::run(commands::absorb::AbsorbOptions {
+            dry_run,
+            and_rebase,
+            whole_file,
+            one_fixup_per_commit,
+        }),
         Some(Commands::Completions { shell }) => commands::completions::run(shell),
     };
 

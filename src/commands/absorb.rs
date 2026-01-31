@@ -1,18 +1,34 @@
 //! `gg absorb` - Absorb staged changes into the appropriate commits
-
-use std::process::Command;
+//!
+//! Uses the git-absorb library to automatically determine which commits
+//! staged changes should be absorbed into, then creates fixup commits
+//! and optionally rebases them.
 
 use console::style;
+use slog::{o, Drain, Logger};
 
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::stack::Stack;
 
+/// Options for the absorb command
+#[derive(Debug, Default)]
+pub struct AbsorbOptions {
+    /// Show what would be done without making changes
+    pub dry_run: bool,
+    /// Automatically rebase after creating fixup commits
+    pub and_rebase: bool,
+    /// Absorb whole files rather than individual hunks
+    pub whole_file: bool,
+    /// Create at most one fixup per commit
+    pub one_fixup_per_commit: bool,
+}
+
 /// Run the absorb command
-pub fn run() -> Result<()> {
+pub fn run(options: AbsorbOptions) -> Result<()> {
     let repo = git::open_repo()?;
-    let config = Config::load(repo.path())?;
+    let gg_config = Config::load(repo.path())?;
 
     // Check if there are staged changes
     let statuses = repo.statuses(None)?;
@@ -48,7 +64,7 @@ pub fn run() -> Result<()> {
     }
 
     // Load stack to get the base
-    let stack = Stack::load(&repo, &config)?;
+    let stack = Stack::load(&repo, &gg_config)?;
 
     if stack.is_empty() {
         return Err(GgError::Other(
@@ -56,77 +72,117 @@ pub fn run() -> Result<()> {
         ));
     }
 
-    println!("{}", style("Running git-absorb...").dim());
+    // Determine the base reference for absorb
+    // We want to absorb into commits between base and HEAD
+    let base_ref = stack.base.clone();
 
-    // Try to run git-absorb
-    // First check if it's installed
-    let check = Command::new("git").args(["absorb", "--version"]).output();
-
-    if check.is_err() || !check.unwrap().status.success() {
+    if options.dry_run {
         println!(
-            "{} git-absorb is not installed.",
-            style("Error:").red().bold()
-        );
-        println!();
-        println!("Install it with:");
-        println!("  cargo install git-absorb");
-        println!();
-        println!("Or on macOS:");
-        println!("  brew install git-absorb");
-        return Err(GgError::Other("git-absorb not installed".to_string()));
-    }
-
-    // Run git-absorb with the stack base
-    let base_ref = format!("{}^", stack.base);
-    let output = Command::new("git")
-        .args(["absorb", "--base", &base_ref, "--and-rebase"])
-        .output()?;
-
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if !stdout.is_empty() {
-            for line in stdout.lines() {
-                println!("  {}", line);
-            }
-        }
-
-        println!("{} Changes absorbed into stack", style("OK").green().bold());
-        println!(
-            "{}",
-            style("  Run `gg ls` to review and `gg sync` to push changes.").dim()
+            "{} (dry-run mode)",
+            style("Analyzing changes to absorb...").dim()
         );
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        // git-absorb may output useful info even on "failure"
-        if !stdout.is_empty() {
-            for line in stdout.lines() {
-                println!("  {}", line);
-            }
-        }
-
-        if stderr.contains("Could not find") || stderr.contains("No commit found") {
-            println!(
-                "{} Could not automatically determine where to absorb changes.",
-                style("Warning:").yellow()
-            );
-            println!("  The changes may be too ambiguous or span multiple commits.");
-            println!("  Try using `gg mv <pos>` and `gg sc` to manually squash changes.");
-        } else if !stderr.is_empty() {
-            for line in stderr.lines() {
-                println!("  {}", style(line).dim());
-            }
-        }
-
-        // git-absorb returns non-zero even when it works but has nothing to do
-        if stdout.contains("No changes absorbed") || stderr.contains("Nothing to absorb") {
-            println!(
-                "{}",
-                style("No changes could be absorbed automatically.").dim()
-            );
-        }
+        println!("{}", style("Absorbing staged changes...").dim());
     }
 
-    Ok(())
+    // Create a slog logger for git-absorb
+    // Use a quiet logger that only shows errors
+    let logger = create_logger(options.dry_run);
+
+    // Configure git-absorb
+    let rebase_options: Vec<&str> = Vec::new();
+    let absorb_config = git_absorb::Config {
+        dry_run: options.dry_run,
+        force_author: false,
+        force_detach: false,
+        base: Some(&base_ref),
+        and_rebase: options.and_rebase,
+        rebase_options: &rebase_options,
+        whole_file: options.whole_file,
+        one_fixup_per_commit: options.one_fixup_per_commit,
+        message: None,
+    };
+
+    // Run git-absorb
+    match git_absorb::run(&logger, &absorb_config) {
+        Ok(()) => {
+            if options.dry_run {
+                println!(
+                    "{} Dry-run complete. Run without --dry-run to apply changes.",
+                    style("OK").green().bold()
+                );
+            } else {
+                println!("{} Changes absorbed into stack", style("OK").green().bold());
+                if !options.and_rebase {
+                    println!(
+                        "{}",
+                        style("  Fixup commits created. Run `git rebase -i --autosquash` or use `gg absorb --and-rebase` to automatically rebase.").dim()
+                    );
+                } else {
+                    println!(
+                        "{}",
+                        style("  Run `gg ls` to review and `gg sync --force` to push changes.")
+                            .dim()
+                    );
+                }
+            }
+            Ok(())
+        }
+        Err(e) => {
+            let error_msg = e.to_string();
+
+            // Handle common error cases with helpful messages
+            if error_msg.contains("could not find")
+                || error_msg.contains("no commit found")
+                || error_msg.contains("nothing to absorb")
+            {
+                println!(
+                    "{} Could not automatically determine where to absorb changes.",
+                    style("Warning:").yellow()
+                );
+                println!("  The staged changes may not match any existing commit hunks.");
+                println!();
+                println!("  Suggestions:");
+                println!("    • Use `gg mv <pos>` to navigate to a commit, then `gg sc` to squash");
+                println!("    • Create a new commit with `git commit`");
+                println!("    • Try `gg absorb --whole-file` to match by file instead of hunk");
+                Ok(())
+            } else if error_msg.contains("uncommitted changes") {
+                Err(GgError::Other(
+                    "Please stage or stash your changes before running absorb.".to_string(),
+                ))
+            } else {
+                Err(GgError::Other(format!("git-absorb failed: {}", error_msg)))
+            }
+        }
+    }
+}
+
+/// Create a slog logger for git-absorb output
+fn create_logger(verbose: bool) -> Logger {
+    let decorator = slog_term::TermDecorator::new().build();
+    let drain = slog_term::FullFormat::new(decorator).build().fuse();
+    let drain = slog_async::Async::new(drain).build().fuse();
+
+    if verbose {
+        Logger::root(drain, o!())
+    } else {
+        // Filter to only show warnings and errors
+        let drain = slog::LevelFilter::new(drain, slog::Level::Warning).fuse();
+        Logger::root(drain, o!())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_absorb_options_default() {
+        let opts = AbsorbOptions::default();
+        assert!(!opts.dry_run);
+        assert!(!opts.and_rebase);
+        assert!(!opts.whole_file);
+        assert!(!opts.one_fixup_per_commit);
+    }
 }

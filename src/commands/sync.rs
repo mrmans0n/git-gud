@@ -1,4 +1,4 @@
-//! `gg sync` - Sync stack with GitHub (push branches and create/update PRs)
+//! `gg sync` - Sync stack with remote provider (push branches and create/update PRs/MRs)
 
 use console::style;
 use dialoguer::Confirm;
@@ -7,8 +7,8 @@ use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::config::Config;
 use crate::error::{GgError, Result};
-use crate::gh;
 use crate::git::{self, generate_gg_id, get_gg_id, set_gg_id_in_message, strip_gg_id_from_message};
+use crate::provider::Provider;
 use crate::stack::Stack;
 
 /// Run the sync command
@@ -17,9 +17,10 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
     let git_dir = repo.path();
     let mut config = Config::load(git_dir)?;
 
-    // Check gh is available
-    gh::check_gh_installed()?;
-    gh::check_gh_auth()?;
+    // Detect and check provider
+    let provider = Provider::detect(&repo)?;
+    provider.check_installed()?;
+    provider.check_auth()?;
 
     // Load current stack
     let stack = Stack::load(&repo, &config)?;
@@ -99,46 +100,51 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
 
         match existing_pr {
             Some(pr_num) => {
-                // Update PR base if needed
-                if let Err(e) = gh::update_pr_base(pr_num, &target_branch) {
+                // Update PR/MR base if needed
+                if let Err(e) = provider.update_pr_base(pr_num, &target_branch) {
                     pb.println(format!(
-                        "{} Could not update PR #{}: {}",
+                        "{} Could not update {} #{}: {}",
                         style("Warning:").yellow(),
+                        provider.pr_label(),
                         pr_num,
                         e
                     ));
                 }
                 pb.println(format!(
-                    "{} Force-pushed {} -> PR #{}",
+                    "{} Force-pushed {} -> {} #{}",
                     style("OK").green().bold(),
                     style(&entry_branch).cyan(),
+                    provider.pr_label(),
                     pr_num
                 ));
             }
             None => {
-                // Create new PR
+                // Create new PR/MR
                 let title = strip_gg_id_from_message(&entry.title);
                 let description = format!(
                     "Part of stack `{}`\n\nCommit: {}",
                     stack.name, entry.short_sha
                 );
 
-                match gh::create_pr(&entry_branch, &target_branch, &title, &description, draft) {
+                match provider.create_pr(&entry_branch, &target_branch, &title, &description, draft)
+                {
                     Ok(pr_num) => {
                         config.set_mr_for_entry(&stack.name, gg_id, pr_num);
                         let draft_label = if draft { " (draft)" } else { "" };
                         pb.println(format!(
-                            "{} Pushed {} -> PR #{}{}",
+                            "{} Pushed {} -> {} #{}{}",
                             style("OK").green().bold(),
                             style(&entry_branch).cyan(),
+                            provider.pr_label(),
                             pr_num,
                             draft_label
                         ));
                     }
                     Err(e) => {
                         pb.println(format!(
-                            "{} Failed to create PR for {}: {}",
+                            "{} Failed to create {} for {}: {}",
                             style("Error:").red().bold(),
+                            provider.pr_label(),
                             entry_branch,
                             e
                         ));

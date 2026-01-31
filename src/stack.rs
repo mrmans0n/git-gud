@@ -10,8 +10,8 @@ use git2::{Commit, Repository};
 
 use crate::config::Config;
 use crate::error::{GgError, Result};
-use crate::gh::{self, CiStatus, PrState};
 use crate::git::{self, get_gg_id, short_sha};
+use crate::provider::{CiStatus, PrState, Provider};
 
 /// File to store the current stack when in detached HEAD mode
 const CURRENT_STACK_FILE: &str = "gg/current_stack";
@@ -248,28 +248,28 @@ impl Stack {
             .map(|gg_id| git::format_entry_branch(&self.username, &self.name, gg_id))
     }
 
-    /// Refresh PR info for all entries from GitHub
-    pub fn refresh_mr_info(&mut self) -> Result<()> {
+    /// Refresh PR/MR info for all entries from provider
+    pub fn refresh_mr_info(&mut self, provider: &Provider) -> Result<()> {
         for entry in &mut self.entries {
             if let Some(pr_num) = entry.mr_number {
-                match gh::get_pr_info(pr_num) {
+                match provider.get_pr_info(pr_num) {
                     Ok(info) => {
                         entry.mr_state = Some(info.state);
                         entry.approved = info.approved;
                     }
                     Err(_) => {
-                        // PR might have been deleted
+                        // PR/MR might have been deleted
                         entry.mr_state = None;
                     }
                 }
 
                 // Get CI status
-                if let Ok(ci) = gh::get_pr_ci_status(pr_num) {
+                if let Ok(ci) = provider.get_pr_ci_status(pr_num) {
                     entry.ci_status = Some(ci);
                 }
 
                 // Check approval status
-                if let Ok(approved) = gh::check_pr_approved(pr_num) {
+                if let Ok(approved) = provider.check_pr_approved(pr_num) {
                     entry.approved = approved;
                 }
             }

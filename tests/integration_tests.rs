@@ -526,3 +526,235 @@ fn test_nav_context_persistence() {
         context
     );
 }
+
+#[test]
+fn test_gg_reorder_with_positions() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with 3 commits
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "test-reorder"]);
+    assert!(success, "Failed to checkout: {}", stderr);
+
+    fs::write(repo_path.join("a.txt"), "A").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Add A"]);
+
+    fs::write(repo_path.join("b.txt"), "B").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Add B"]);
+
+    fs::write(repo_path.join("c.txt"), "C").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Add C"]);
+
+    // Get original order
+    let (_, log_before) = run_git(&repo_path, &["log", "--oneline", "-3"]);
+    assert!(log_before.contains("Add A"));
+    assert!(log_before.contains("Add B"));
+    assert!(log_before.contains("Add C"));
+
+    // Reorder using positions: move C to bottom, then A, then B on top
+    let (success, _, stderr) = run_gg(&repo_path, &["reorder", "--order", "3,1,2"]);
+    assert!(success, "Failed to reorder: {}", stderr);
+
+    // Verify new order in log (most recent first)
+    let (_, log_after) = run_git(&repo_path, &["log", "--oneline", "-3"]);
+    let lines: Vec<&str> = log_after.trim().lines().collect();
+
+    // After reorder "3,1,2": C becomes [1], A becomes [2], B becomes [3]
+    // git log shows most recent first, so: B, A, C
+    assert!(
+        lines[0].contains("Add B"),
+        "Expected B on top, got: {}",
+        log_after
+    );
+    assert!(
+        lines[1].contains("Add A"),
+        "Expected A in middle, got: {}",
+        log_after
+    );
+    assert!(
+        lines[2].contains("Add C"),
+        "Expected C at bottom, got: {}",
+        log_after
+    );
+}
+
+#[test]
+fn test_gg_reorder_with_spaces() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with 3 commits
+    run_gg(&repo_path, &["co", "test-reorder-spaces"]);
+
+    fs::write(repo_path.join("x.txt"), "X").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Add X"]);
+
+    fs::write(repo_path.join("y.txt"), "Y").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Add Y"]);
+
+    fs::write(repo_path.join("z.txt"), "Z").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Add Z"]);
+
+    // Reorder using space-separated positions
+    let (success, _, stderr) = run_gg(&repo_path, &["reorder", "--order", "2 3 1"]);
+    assert!(success, "Failed to reorder with spaces: {}", stderr);
+
+    // Verify new order
+    let (_, log_after) = run_git(&repo_path, &["log", "--oneline", "-3"]);
+    let lines: Vec<&str> = log_after.trim().lines().collect();
+
+    // After reorder "2 3 1": Y becomes [1], Z becomes [2], X becomes [3]
+    // git log shows: X, Z, Y
+    assert!(
+        lines[0].contains("Add X"),
+        "Expected X on top, got: {}",
+        log_after
+    );
+    assert!(
+        lines[1].contains("Add Z"),
+        "Expected Z in middle, got: {}",
+        log_after
+    );
+    assert!(
+        lines[2].contains("Add Y"),
+        "Expected Y at bottom, got: {}",
+        log_after
+    );
+}
+
+#[test]
+fn test_gg_reorder_invalid_position() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with 2 commits
+    run_gg(&repo_path, &["co", "test-reorder-invalid"]);
+
+    fs::write(repo_path.join("one.txt"), "1").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 1"]);
+
+    fs::write(repo_path.join("two.txt"), "2").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 2"]);
+
+    // Try to reorder with position 0 (invalid, 1-indexed)
+    let (success, _, stderr) = run_gg(&repo_path, &["reorder", "--order", "0,1"]);
+    assert!(!success, "Should fail with position 0");
+    assert!(
+        stderr.contains("out of range") || stderr.contains("Position 0"),
+        "Error should mention invalid position: {}",
+        stderr
+    );
+
+    // Try to reorder with position > stack length
+    let (success, _, stderr) = run_gg(&repo_path, &["reorder", "--order", "1,5"]);
+    assert!(!success, "Should fail with position > stack length");
+    assert!(
+        stderr.contains("out of range") || stderr.contains("Position 5"),
+        "Error should mention out of range: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_gg_reorder_duplicate_position() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with 2 commits
+    run_gg(&repo_path, &["co", "test-reorder-dup"]);
+
+    fs::write(repo_path.join("one.txt"), "1").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 1"]);
+
+    fs::write(repo_path.join("two.txt"), "2").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 2"]);
+
+    // Try to reorder with duplicate position
+    let (success, _, stderr) = run_gg(&repo_path, &["reorder", "--order", "1,1"]);
+    assert!(!success, "Should fail with duplicate position");
+    assert!(
+        stderr.to_lowercase().contains("duplicate"),
+        "Error should mention duplicate: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_gg_reorder_missing_commits() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with 3 commits
+    run_gg(&repo_path, &["co", "test-reorder-missing"]);
+
+    fs::write(repo_path.join("one.txt"), "1").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 1"]);
+
+    fs::write(repo_path.join("two.txt"), "2").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 2"]);
+
+    fs::write(repo_path.join("three.txt"), "3").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 3"]);
+
+    // Try to reorder with only 2 positions for 3 commits
+    let (success, _, stderr) = run_gg(&repo_path, &["reorder", "--order", "1,2"]);
+    assert!(!success, "Should fail when not all commits included");
+    assert!(
+        stderr.contains("must include all") || stderr.contains("3 commits"),
+        "Error should mention missing commits: {}",
+        stderr
+    );
+}

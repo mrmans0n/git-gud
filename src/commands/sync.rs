@@ -8,7 +8,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git::{self, generate_gg_id, get_gg_id, set_gg_id_in_message, strip_gg_id_from_message};
-use crate::glab;
+use crate::provider;
 use crate::stack::Stack;
 
 /// Run the sync command
@@ -17,9 +17,10 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
     let git_dir = repo.path();
     let mut config = Config::load(git_dir)?;
 
-    // Check glab is available
-    glab::check_glab_installed()?;
-    glab::check_glab_auth()?;
+    // Get provider and check it's available
+    let provider = provider::get_provider(&config, &repo)?;
+    provider.check_installed()?;
+    provider.check_auth()?;
 
     // Load current stack
     let stack = Stack::load(&repo, &config)?;
@@ -58,6 +59,26 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
         }
     }
 
+    // Check if we're on the stack branch - if so, we need to temporarily move off it
+    // to avoid git ref conflicts when creating entry branches (e.g., can't create
+    // "user/stack/c-abc" when "user/stack" exists as a branch file)
+    let stack_branch = stack.branch_name();
+    let on_stack_branch = git::current_branch_name(&repo)
+        .map(|b| b == stack_branch)
+        .unwrap_or(false);
+
+    let original_head = if on_stack_branch {
+        Some(repo.head()?.peel_to_commit()?.id())
+    } else {
+        None
+    };
+
+    // Temporarily detach HEAD if we're on the stack branch
+    if on_stack_branch {
+        let head_commit = repo.head()?.peel_to_commit()?;
+        repo.set_head_detached(head_commit.id())?;
+    }
+
     // Sync progress
     let pb = ProgressBar::new(stack.len() as u64);
     pb.set_style(
@@ -75,12 +96,26 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
         pb.set_message(format!("Processing {}...", entry.short_sha));
 
         // Create/update the remote branch for this commit
-        create_entry_branch(&repo, &stack, entry, &entry_branch)?;
+        if let Err(e) = create_entry_branch(&repo, &stack, entry, &entry_branch) {
+            // Restore HEAD before returning error
+            if original_head.is_some() {
+                let stack_branch_ref = format!("refs/heads/{}", stack_branch);
+                let _ = repo.set_head(&stack_branch_ref);
+            }
+            return Err(e);
+        }
 
         // Push the branch
         let push_result = git::push_branch(&entry_branch, force);
         if let Err(e) = push_result {
             pb.abandon_with_message(format!("Failed to push {}: {}", entry_branch, e));
+
+            // Restore HEAD before returning error
+            if original_head.is_some() {
+                let stack_branch_ref = format!("refs/heads/{}", stack_branch);
+                let _ = repo.set_head(&stack_branch_ref);
+            }
+
             return Err(e);
         }
 
@@ -97,47 +132,53 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
         // Create or update MR
         let existing_mr = config.get_mr_for_entry(&stack.name, gg_id);
 
+        let pr_prefix = provider.pr_prefix();
+
         match existing_mr {
             Some(mr_num) => {
-                // Update MR target if needed
-                if let Err(e) = glab::update_mr_target(mr_num, &target_branch) {
+                // Update PR/MR target if needed
+                if let Err(e) = provider.update_pr_target(mr_num, &target_branch) {
                     pb.println(format!(
-                        "{} Could not update MR !{}: {}",
+                        "{} Could not update PR/MR {}{}: {}",
                         style("Warning:").yellow(),
+                        pr_prefix,
                         mr_num,
                         e
                     ));
                 }
                 pb.println(format!(
-                    "{} Force-pushed {} -> MR !{}",
+                    "{} Force-pushed {} -> {}{}",
                     style("OK").green().bold(),
                     style(&entry_branch).cyan(),
+                    pr_prefix,
                     mr_num
                 ));
             }
             None => {
-                // Create new MR
+                // Create new PR/MR
                 let title = strip_gg_id_from_message(&entry.title);
                 let description = format!(
                     "Part of stack `{}`\n\nCommit: {}",
                     stack.name, entry.short_sha
                 );
 
-                match glab::create_mr(&entry_branch, &target_branch, &title, &description, draft) {
+                match provider.create_pr(&entry_branch, &target_branch, &title, &description, draft)
+                {
                     Ok(mr_num) => {
                         config.set_mr_for_entry(&stack.name, gg_id, mr_num);
                         let draft_label = if draft { " (draft)" } else { "" };
                         pb.println(format!(
-                            "{} Pushed {} -> MR !{}{}",
+                            "{} Pushed {} -> {}{}{}",
                             style("OK").green().bold(),
                             style(&entry_branch).cyan(),
+                            pr_prefix,
                             mr_num,
                             draft_label
                         ));
                     }
                     Err(e) => {
                         pb.println(format!(
-                            "{} Failed to create MR for {}: {}",
+                            "{} Failed to create PR/MR for {}: {}",
                             style("Error:").red().bold(),
                             entry_branch,
                             e
@@ -151,6 +192,13 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
     }
 
     pb.finish_with_message("Done!");
+
+    // Restore HEAD to stack branch if we temporarily detached it
+    if let Some(_original_oid) = original_head {
+        // Re-attach HEAD to the stack branch
+        let stack_branch_ref = format!("refs/heads/{}", stack_branch);
+        repo.set_head(&stack_branch_ref)?;
+    }
 
     // Save updated config
     config.save(git_dir)?;
@@ -177,6 +225,20 @@ fn create_entry_branch(
     // Delete existing branch if it exists
     if let Ok(mut branch) = repo.find_branch(branch_name, git2::BranchType::Local) {
         branch.delete()?;
+    }
+
+    // Delete any parent branches that would conflict with this path
+    // For example, if creating "user/stack/c-abc", delete "user/stack" if it exists
+    // This handles the case where the stack branch name conflicts with entry branches
+    let parts: Vec<&str> = branch_name.split('/').collect();
+    for i in 1..parts.len() {
+        let parent_path = parts[..i].join("/");
+        if let Ok(mut branch) = repo.find_branch(&parent_path, git2::BranchType::Local) {
+            // Only delete if it's not the current branch
+            if !branch.is_head() {
+                branch.delete()?;
+            }
+        }
     }
 
     // Create new branch at commit

@@ -2,7 +2,7 @@
 name = "git-gud"
 version = "0.1.0"
 edition = "2021"
-description = "A stacked-diffs CLI tool for GitLab"
+description = "A stacked-diffs CLI tool for GitHub and GitLab"
 authors = ["Nacho Lopez"]
 
 [[bin]]

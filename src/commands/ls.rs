@@ -5,7 +5,7 @@ use console::style;
 use crate::config::Config;
 use crate::error::Result;
 use crate::git;
-use crate::glab::{self, CiStatus, MrState};
+use crate::provider::{self, CiStatus, PrState};
 use crate::stack::{self, Stack};
 
 /// Run the list command
@@ -17,24 +17,34 @@ pub fn run(all: bool, refresh: bool) -> Result<()> {
     // Try to load current stack
     let current_stack = Stack::load(&repo, &config).ok();
 
+    // Get provider if available (for refresh and username fallback)
+    let provider = provider::get_provider(&config, &repo).ok();
+
     match current_stack {
         None => {
             // List all stacks
-            list_all_stacks(&repo, &config)?;
+            list_all_stacks(&repo, &config, provider.as_deref())?;
         }
         Some(mut stack) if !all => {
             // Show current stack details
             if refresh {
-                print!("Refreshing MR status... ");
-                stack.refresh_mr_info()?;
-                println!("{}", style("done").green());
+                if let Some(ref p) = provider {
+                    print!("Refreshing PR/MR status... ");
+                    stack.refresh_mr_info(p.as_ref())?;
+                    println!("{}", style("done").green());
+                } else {
+                    println!(
+                        "{}",
+                        style("Warning: Could not detect provider for refresh").yellow()
+                    );
+                }
             }
 
-            show_stack(&stack)?;
+            show_stack(&stack, provider.as_deref())?;
         }
         Some(_) => {
             // List all stacks (--all flag)
-            list_all_stacks(&repo, &config)?;
+            list_all_stacks(&repo, &config, provider.as_deref())?;
         }
     }
 
@@ -42,13 +52,17 @@ pub fn run(all: bool, refresh: bool) -> Result<()> {
 }
 
 /// List all available stacks
-fn list_all_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
+fn list_all_stacks(
+    repo: &git2::Repository,
+    config: &Config,
+    provider: Option<&dyn provider::Provider>,
+) -> Result<()> {
     // Get username
     let username = config
         .defaults
         .branch_username
         .clone()
-        .or_else(|| glab::whoami().ok())
+        .or_else(|| provider.and_then(|p| p.whoami().ok()))
         .unwrap_or_else(|| "unknown".to_string());
 
     let stacks = stack::list_all_stacks(repo, config, &username)?;
@@ -124,7 +138,8 @@ fn count_stack_commits(repo: &git2::Repository, branch: &str, base: &str) -> Res
 }
 
 /// Show detailed stack view
-fn show_stack(stack: &Stack) -> Result<()> {
+fn show_stack(stack: &Stack, provider: Option<&dyn provider::Provider>) -> Result<()> {
+    let pr_prefix = provider.map(|p| p.pr_prefix()).unwrap_or("!");
     let synced = stack.synced_count();
     let total = stack.len();
 
@@ -161,11 +176,11 @@ fn show_stack(stack: &Stack) -> Result<()> {
         // Status indicator
         let status = entry.status_display();
         let status_styled = match &entry.mr_state {
-            Some(MrState::Merged) => style(&status).green(),
-            Some(MrState::Closed) => style(&status).red(),
-            Some(MrState::Draft) => style(&status).dim(),
-            Some(MrState::Open) if entry.approved => style(&status).green(),
-            Some(MrState::Open) => style(&status).yellow(),
+            Some(PrState::Merged) => style(&status).green(),
+            Some(PrState::Closed) => style(&status).red(),
+            Some(PrState::Draft) => style(&status).dim(),
+            Some(PrState::Open) if entry.approved => style(&status).green(),
+            Some(PrState::Open) => style(&status).yellow(),
             None => style(&status).dim(),
         };
 
@@ -181,10 +196,10 @@ fn show_stack(stack: &Stack) -> Result<()> {
         // GG-ID display
         let gg_id = entry.gg_id.as_deref().unwrap_or("-");
 
-        // MR number
+        // PR/MR number
         let mr_display = entry
             .mr_number
-            .map(|n| format!("!{}", n))
+            .map(|n| format!("{}{}", pr_prefix, n))
             .unwrap_or_default();
 
         // HEAD marker

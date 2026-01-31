@@ -4,8 +4,8 @@ use console::style;
 
 use crate::config::Config;
 use crate::error::Result;
-use crate::gh::{self, CiStatus, PrState};
 use crate::git;
+use crate::provider::{CiStatus, PrState, Provider};
 use crate::stack::{self, Stack};
 
 /// Run the list command
@@ -25,8 +25,10 @@ pub fn run(all: bool, refresh: bool) -> Result<()> {
         Some(mut stack) if !all => {
             // Show current stack details
             if refresh {
+                // Detect provider for refresh
+                let provider = Provider::detect(&repo)?;
                 print!("Refreshing MR status... ");
-                stack.refresh_mr_info()?;
+                stack.refresh_mr_info(&provider)?;
                 println!("{}", style("done").green());
             }
 
@@ -43,12 +45,12 @@ pub fn run(all: bool, refresh: bool) -> Result<()> {
 
 /// List all available stacks
 fn list_all_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
-    // Get username
+    // Get username - try provider if in a repo
     let username = config
         .defaults
         .branch_username
         .clone()
-        .or_else(|| gh::whoami().ok())
+        .or_else(|| Provider::detect(repo).ok().and_then(|p| p.whoami().ok()))
         .unwrap_or_else(|| "unknown".to_string());
 
     let stacks = stack::list_all_stacks(repo, config, &username)?;

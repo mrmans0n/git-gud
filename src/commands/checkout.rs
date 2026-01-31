@@ -6,8 +6,8 @@ use git2::BranchType;
 
 use crate::config::Config;
 use crate::error::{GgError, Result};
-use crate::gh;
 use crate::git;
+use crate::provider::Provider;
 use crate::stack;
 
 /// Run the checkout command
@@ -16,15 +16,19 @@ pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
     let git_dir = repo.path();
     let mut config = Config::load(git_dir)?;
 
-    // Get username from config or gh
+    // Get username from config or provider
     let username = config
         .defaults
         .branch_username
         .clone()
-        .or_else(|| gh::whoami().ok())
+        .or_else(|| {
+            Provider::detect(&repo)
+                .ok()
+                .and_then(|p| p.whoami().ok())
+        })
         .ok_or_else(|| GgError::Command(
-            "gh".to_string(),
-            "Could not determine username. Set branch_username in config or run `gh auth login`".to_string()
+            "git-provider".to_string(),
+            "Could not determine username. Set branch_username in config or authenticate with gh/glab".to_string()
         ))?;
 
     // If no stack name provided, show fuzzy selector

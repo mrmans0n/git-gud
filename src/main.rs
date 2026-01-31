@@ -8,6 +8,7 @@ mod error;
 mod gh;
 mod git;
 mod glab;
+mod provider;
 mod stack;
 
 use std::process::exit;

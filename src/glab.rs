@@ -214,6 +214,11 @@ pub fn view_mr(mr_number: u64) -> Result<MrInfo> {
     })
 }
 
+/// Alias for view_mr for compatibility with gh module
+pub fn get_mr_info(mr_number: u64) -> Result<MrInfo> {
+    view_mr(mr_number)
+}
+
 /// Update MR target branch
 pub fn update_mr_target(mr_number: u64, target_branch: &str) -> Result<()> {
     let output = Command::new("glab")

@@ -6,8 +6,8 @@ use git2::BranchType;
 
 use crate::config::Config;
 use crate::error::{GgError, Result};
-use crate::gh::{self, PrState};
 use crate::git;
+use crate::provider::{PrState, Provider};
 use crate::stack;
 
 /// Run the clean command
@@ -16,12 +16,15 @@ pub fn run(clean_all: bool) -> Result<()> {
     let git_dir = repo.path();
     let mut config = Config::load(git_dir)?;
 
+    // Detect provider
+    let provider = Provider::detect(&repo)?;
+
     // Get username
     let username = config
         .defaults
         .branch_username
         .clone()
-        .or_else(|| gh::whoami().ok())
+        .or_else(|| provider.whoami().ok())
         .unwrap_or_else(|| "unknown".to_string());
 
     // Get all stacks
@@ -47,7 +50,7 @@ pub fn run(clean_all: bool) -> Result<()> {
         }
 
         // Load the stack to check MR status
-        let is_merged = check_stack_merged(&repo, &config, stack_name, &username)?;
+        let is_merged = check_stack_merged(&repo, &config, stack_name, &username, &provider)?;
 
         if is_merged {
             if !clean_all {
@@ -130,6 +133,7 @@ fn check_stack_merged(
     config: &Config,
     stack_name: &str,
     username: &str,
+    provider: &Provider,
 ) -> Result<bool> {
     // Primary method: check if all MRs are merged
     // This works correctly with squash and rebase merges
@@ -139,7 +143,7 @@ fn check_stack_merged(
         } else {
             let mut all_merged = true;
             for mr_num in stack_config.mrs.values() {
-                match gh::get_pr_info(*mr_num) {
+                match provider.get_pr_info(*mr_num) {
                     Ok(info) => {
                         if info.state != PrState::Merged {
                             all_merged = false;
@@ -147,7 +151,7 @@ fn check_stack_merged(
                         }
                     }
                     Err(_) => {
-                        // PR might be deleted or inaccessible
+                        // PR/MR might be deleted or inaccessible
                         // If we can't verify, assume it's not merged to be safe
                         all_merged = false;
                         break;

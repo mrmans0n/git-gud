@@ -6,8 +6,8 @@ use dialoguer::{Confirm, Input};
 
 use crate::config::{Config, Defaults};
 use crate::error::{GgError, Result};
-use crate::gh;
 use crate::git;
+use crate::provider::Provider;
 
 /// Run the setup command
 pub fn run() -> Result<()> {
@@ -138,9 +138,13 @@ fn prompt_base_branch(
 }
 
 fn prompt_branch_username(existing: Option<&str>, theme: &ColorfulTheme) -> Result<Option<String>> {
-    let suggested = existing
-        .map(|s| s.to_string())
-        .or_else(|| gh::whoami().ok());
+    let suggested = existing.map(|s| s.to_string()).or_else(|| {
+        // Try to detect provider and get username
+        git::open_repo()
+            .ok()
+            .and_then(|repo| Provider::detect(&repo).ok())
+            .and_then(|p| p.whoami().ok())
+    });
 
     let input: String = if let Some(suggested) = suggested {
         Input::with_theme(theme)

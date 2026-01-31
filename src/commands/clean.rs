@@ -7,7 +7,7 @@ use git2::BranchType;
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
-use crate::glab::{self, MrState};
+use crate::provider::{self, PrState, Provider};
 use crate::stack;
 
 /// Run the clean command
@@ -16,12 +16,15 @@ pub fn run(clean_all: bool) -> Result<()> {
     let git_dir = repo.path();
     let mut config = Config::load(git_dir)?;
 
+    // Get provider if available
+    let provider = provider::get_provider(&config, &repo).ok();
+
     // Get username
     let username = config
         .defaults
         .branch_username
         .clone()
-        .or_else(|| glab::whoami().ok())
+        .or_else(|| provider.as_ref().and_then(|p| p.whoami().ok()))
         .unwrap_or_else(|| "unknown".to_string());
 
     // Get all stacks
@@ -47,7 +50,7 @@ pub fn run(clean_all: bool) -> Result<()> {
         }
 
         // Load the stack to check MR status
-        let is_merged = check_stack_merged(&repo, &config, stack_name, &username)?;
+        let is_merged = check_stack_merged(&repo, &config, stack_name, &username, provider.as_deref())?;
 
         if is_merged {
             if !clean_all {
@@ -130,6 +133,7 @@ fn check_stack_merged(
     config: &Config,
     stack_name: &str,
     username: &str,
+    provider: Option<&dyn Provider>,
 ) -> Result<bool> {
     let branch_name = git::format_stack_branch(username, stack_name);
 
@@ -154,24 +158,24 @@ fn check_stack_merged(
         return Ok(true);
     }
 
-    // Alternative: check if all MRs are merged
-    if let Some(stack_config) = config.get_stack(stack_name) {
+    // Alternative: check if all PRs/MRs are merged (requires provider)
+    if let (Some(stack_config), Some(p)) = (config.get_stack(stack_name), provider) {
         if stack_config.mrs.is_empty() {
-            // No MRs tracked, can't determine merge status
+            // No PRs/MRs tracked, can't determine merge status
             return Ok(false);
         }
 
         let mut all_merged = true;
         for mr_num in stack_config.mrs.values() {
-            match glab::view_mr(*mr_num) {
+            match p.view_pr(*mr_num) {
                 Ok(info) => {
-                    if info.state != MrState::Merged {
+                    if info.state != PrState::Merged {
                         all_merged = false;
                         break;
                     }
                 }
                 Err(_) => {
-                    // MR might be deleted, assume not merged
+                    // PR/MR might be deleted, assume not merged
                     all_merged = false;
                     break;
                 }

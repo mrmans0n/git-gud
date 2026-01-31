@@ -7,7 +7,7 @@ use dialoguer::{Confirm, Input};
 use crate::config::{Config, Defaults};
 use crate::error::{GgError, Result};
 use crate::git;
-use crate::glab;
+use crate::provider::{self, ProviderType};
 
 /// Run the setup command
 pub fn run() -> Result<()> {
@@ -59,7 +59,16 @@ fn prompt_defaults(
     let mut defaults = existing.clone();
 
     defaults.base = prompt_base_branch(repo, existing.base.as_deref(), theme)?;
-    defaults.branch_username = prompt_branch_username(existing.branch_username.as_deref(), theme)?;
+    defaults.provider = prompt_provider(repo, existing.provider.as_ref(), theme)?;
+
+    // Get provider for whoami fallback - use configured provider or detect from remote
+    let provider_for_whoami = defaults
+        .provider
+        .clone()
+        .or_else(|| provider::detect_provider(repo));
+
+    defaults.branch_username =
+        prompt_branch_username(existing.branch_username.as_deref(), provider_for_whoami.as_ref(), theme)?;
     defaults.lint = prompt_lint_commands(repo, &existing.lint, theme)?;
 
     Ok(defaults)
@@ -137,10 +146,57 @@ fn prompt_base_branch(
     })
 }
 
-fn prompt_branch_username(existing: Option<&str>, theme: &ColorfulTheme) -> Result<Option<String>> {
-    let suggested = existing
-        .map(|s| s.to_string())
-        .or_else(|| glab::whoami().ok());
+fn prompt_provider(
+    repo: &git2::Repository,
+    existing: Option<&ProviderType>,
+    theme: &ColorfulTheme,
+) -> Result<Option<ProviderType>> {
+    let detected = provider::detect_provider(repo);
+
+    // Build options
+    let options = ["Auto-detect", "GitHub", "GitLab"];
+    let default_idx = match existing.or(detected.as_ref()) {
+        Some(ProviderType::GitHub) => 1,
+        Some(ProviderType::GitLab) => 2,
+        None => 0,
+    };
+
+    let detection_hint = match &detected {
+        Some(ProviderType::GitHub) => " (detected: GitHub)",
+        Some(ProviderType::GitLab) => " (detected: GitLab)",
+        None => " (could not detect from remote)",
+    };
+
+    let selection = dialoguer::Select::with_theme(theme)
+        .with_prompt(format!("Git hosting provider{}", detection_hint))
+        .items(options)
+        .default(default_idx)
+        .interact()
+        .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?;
+
+    Ok(match selection {
+        0 => None, // Auto-detect
+        1 => Some(ProviderType::GitHub),
+        2 => Some(ProviderType::GitLab),
+        _ => None,
+    })
+}
+
+fn prompt_branch_username(
+    existing: Option<&str>,
+    provider_type: Option<&ProviderType>,
+    theme: &ColorfulTheme,
+) -> Result<Option<String>> {
+    // Try to get username from provider
+    let whoami_result = provider_type.and_then(|pt| {
+        let provider: Box<dyn provider::Provider> = match pt {
+            ProviderType::GitHub => Box::new(provider::github::GitHubProvider),
+            ProviderType::GitLab => Box::new(provider::gitlab::GitLabProvider),
+        };
+        provider.whoami().ok()
+    });
+
+    let suggested = existing.map(|s| s.to_string()).or(whoami_result);
 
     let input: String = if let Some(suggested) = suggested {
         Input::with_theme(theme)

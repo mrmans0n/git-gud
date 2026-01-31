@@ -1,4 +1,4 @@
-//! git-gud (gg) - A stacked-diffs CLI tool for GitLab
+//! git-gud (gg) - A stacked-diffs CLI tool for GitHub and GitLab
 //!
 //! Entry point for the CLI application.
 
@@ -7,6 +7,7 @@ mod config;
 mod error;
 mod git;
 mod glab;
+mod provider;
 mod stack;
 
 use std::process::exit;
@@ -19,7 +20,7 @@ use console::style;
     name = "gg",
     author = "Nacho Lopez",
     version,
-    about = "A stacked-diffs CLI tool for GitLab",
+    about = "A stacked-diffs CLI tool for GitHub and GitLab",
     long_about = None
 )]
 struct Cli {

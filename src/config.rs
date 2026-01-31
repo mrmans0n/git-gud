@@ -19,13 +19,17 @@ pub struct Defaults {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
 
-    /// Username for branch naming (default: glab whoami)
+    /// Username for branch naming (default: provider whoami)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch_username: Option<String>,
 
     /// Lint commands to run per commit
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lint: Vec<String>,
+
+    /// Git hosting provider (auto-detected if not set)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<crate::provider::ProviderType>,
 }
 
 /// Per-stack configuration

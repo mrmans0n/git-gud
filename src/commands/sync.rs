@@ -8,7 +8,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git::{self, generate_gg_id, get_gg_id, set_gg_id_in_message, strip_gg_id_from_message};
-use crate::glab;
+use crate::provider;
 use crate::stack::Stack;
 
 /// Run the sync command
@@ -17,9 +17,10 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
     let git_dir = repo.path();
     let mut config = Config::load(git_dir)?;
 
-    // Check glab is available
-    glab::check_glab_installed()?;
-    glab::check_glab_auth()?;
+    // Get provider and check it's available
+    let provider = provider::get_provider(&config, &repo)?;
+    provider.check_installed()?;
+    provider.check_auth()?;
 
     // Load current stack
     let stack = Stack::load(&repo, &config)?;
@@ -97,47 +98,53 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
         // Create or update MR
         let existing_mr = config.get_mr_for_entry(&stack.name, gg_id);
 
+        let pr_prefix = provider.pr_prefix();
+
         match existing_mr {
             Some(mr_num) => {
-                // Update MR target if needed
-                if let Err(e) = glab::update_mr_target(mr_num, &target_branch) {
+                // Update PR/MR target if needed
+                if let Err(e) = provider.update_pr_target(mr_num, &target_branch) {
                     pb.println(format!(
-                        "{} Could not update MR !{}: {}",
+                        "{} Could not update PR/MR {}{}: {}",
                         style("Warning:").yellow(),
+                        pr_prefix,
                         mr_num,
                         e
                     ));
                 }
                 pb.println(format!(
-                    "{} Force-pushed {} -> MR !{}",
+                    "{} Force-pushed {} -> {}{}",
                     style("OK").green().bold(),
                     style(&entry_branch).cyan(),
+                    pr_prefix,
                     mr_num
                 ));
             }
             None => {
-                // Create new MR
+                // Create new PR/MR
                 let title = strip_gg_id_from_message(&entry.title);
                 let description = format!(
                     "Part of stack `{}`\n\nCommit: {}",
                     stack.name, entry.short_sha
                 );
 
-                match glab::create_mr(&entry_branch, &target_branch, &title, &description, draft) {
+                match provider.create_pr(&entry_branch, &target_branch, &title, &description, draft)
+                {
                     Ok(mr_num) => {
                         config.set_mr_for_entry(&stack.name, gg_id, mr_num);
                         let draft_label = if draft { " (draft)" } else { "" };
                         pb.println(format!(
-                            "{} Pushed {} -> MR !{}{}",
+                            "{} Pushed {} -> {}{}{}",
                             style("OK").green().bold(),
                             style(&entry_branch).cyan(),
+                            pr_prefix,
                             mr_num,
                             draft_label
                         ));
                     }
                     Err(e) => {
                         pb.println(format!(
-                            "{} Failed to create MR for {}: {}",
+                            "{} Failed to create PR/MR for {}: {}",
                             style("Error:").red().bold(),
                             entry_branch,
                             e

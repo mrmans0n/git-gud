@@ -1,6 +1,6 @@
 # git-gud (gg)
 
-A stacked-diffs CLI tool for GitLab, inspired by Gerrit, Phabricator/Arcanist, and Graphite.
+A stacked-diffs CLI tool for GitHub and GitLab, inspired by Gerrit, Phabricator/Arcanist, and Graphite.
 
 ## What are Stacked Diffs?
 
@@ -26,12 +26,17 @@ cargo install git-gud
 
 ## Prerequisites
 
-- [glab](https://gitlab.com/gitlab-org/cli) - GitLab CLI (used for authentication and MR operations)
 - Git 2.x+
+- **For GitHub**: [gh](https://cli.github.com) - GitHub CLI
+- **For GitLab**: [glab](https://gitlab.com/gitlab-org/cli) - GitLab CLI
 
-Authenticate with GitLab before using git-gud:
+Authenticate with your provider before using git-gud:
 
 ```bash
+# For GitHub
+gh auth login
+
+# For GitLab
 glab auth login
 ```
 
@@ -49,7 +54,7 @@ git add . && git commit -m "Add UI component"
 # View your stack
 gg ls
 
-# Sync with GitLab (creates MRs)
+# Sync with remote (creates PRs/MRs)
 gg sync --draft
 
 # Navigate within the stack
@@ -81,7 +86,7 @@ gg clean
 | `gg ls --all` | List all stacks in the repository |
 | `gg clean` | Remove merged stacks and their remote branches |
 
-### Syncing with GitLab
+### Syncing
 
 | Command | Description |
 |---------|-------------|
@@ -208,7 +213,7 @@ user-auth (3 commits, 0 synced)
   [2] def5678 Add auth endpoints  (id: c-7c1b9d0) (not pushed)
   [3] ghi9012 Add login UI        (id: c-98ab321) (not pushed) <- HEAD
 
-# 4. Push to GitLab
+# 4. Push to remote
 $ gg sync --draft
 OK Pushed nacho/user-auth/c-f9a1e2b -> MR !101 (draft)
 OK Pushed nacho/user-auth/c-7c1b9d0 -> MR !102 (draft)
@@ -256,6 +261,21 @@ gg completions fish > ~/.config/fish/completions/gg.fish
 ```
 
 ## Troubleshooting
+
+### "gh is not installed"
+
+Install the GitHub CLI:
+```bash
+# macOS
+brew install gh
+
+# Other platforms
+# See https://cli.github.com
+```
+
+### "Not authenticated with GitHub"
+
+Run `gh auth login` to authenticate.
 
 ### "glab is not installed"
 

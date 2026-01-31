@@ -10,8 +10,8 @@ use git2::{Commit, Repository};
 
 use crate::config::Config;
 use crate::error::{GgError, Result};
+use crate::gh::{self, CiStatus, PrState};
 use crate::git::{self, get_gg_id, short_sha};
-use crate::glab::{self, CiStatus, MrState};
 
 /// File to store the current stack when in detached HEAD mode
 const CURRENT_STACK_FILE: &str = "gg/current_stack";
@@ -27,11 +27,11 @@ pub struct StackEntry {
     pub title: String,
     /// GG-ID (stable identifier)
     pub gg_id: Option<String>,
-    /// MR number if synced
+    /// PR number if synced
     pub mr_number: Option<u64>,
-    /// MR state if synced
-    pub mr_state: Option<MrState>,
-    /// Whether the MR is approved
+    /// PR state if synced
+    pub mr_state: Option<PrState>,
+    /// Whether the PR is approved
     pub approved: bool,
     /// CI status
     pub ci_status: Option<CiStatus>,
@@ -68,11 +68,11 @@ impl StackEntry {
     /// Get status display string
     pub fn status_display(&self) -> String {
         match (&self.mr_state, self.approved) {
-            (Some(MrState::Merged), _) => "merged".to_string(),
-            (Some(MrState::Closed), _) => "closed".to_string(),
-            (Some(MrState::Draft), _) => "draft".to_string(),
-            (Some(MrState::Open), true) => "approved".to_string(),
-            (Some(MrState::Open), false) => "open".to_string(),
+            (Some(PrState::Merged), _) => "merged".to_string(),
+            (Some(PrState::Closed), _) => "closed".to_string(),
+            (Some(PrState::Draft), _) => "draft".to_string(),
+            (Some(PrState::Open), true) => "approved".to_string(),
+            (Some(PrState::Open), false) => "open".to_string(),
             (None, _) => "not pushed".to_string(),
         }
     }
@@ -248,28 +248,28 @@ impl Stack {
             .map(|gg_id| git::format_entry_branch(&self.username, &self.name, gg_id))
     }
 
-    /// Refresh MR info for all entries from GitLab
+    /// Refresh PR info for all entries from GitHub
     pub fn refresh_mr_info(&mut self) -> Result<()> {
         for entry in &mut self.entries {
-            if let Some(mr_num) = entry.mr_number {
-                match glab::view_mr(mr_num) {
+            if let Some(pr_num) = entry.mr_number {
+                match gh::get_pr_info(pr_num) {
                     Ok(info) => {
                         entry.mr_state = Some(info.state);
                         entry.approved = info.approved;
                     }
                     Err(_) => {
-                        // MR might have been deleted
+                        // PR might have been deleted
                         entry.mr_state = None;
                     }
                 }
 
                 // Get CI status
-                if let Ok(ci) = glab::get_mr_ci_status(mr_num) {
+                if let Ok(ci) = gh::get_pr_ci_status(pr_num) {
                     entry.ci_status = Some(ci);
                 }
 
                 // Check approval status
-                if let Ok(approved) = glab::check_mr_approved(mr_num) {
+                if let Ok(approved) = gh::check_pr_approved(pr_num) {
                     entry.approved = approved;
                 }
             }
@@ -326,8 +326,7 @@ pub fn list_all_stacks(repo: &Repository, config: &Config, username: &str) -> Re
                 }
             }
             // Also check for 3-part entry branch (username/stack-name/entry-id)
-            else if let Some((branch_user, stack_name, _entry_id)) =
-                git::parse_entry_branch(name)
+            else if let Some((branch_user, stack_name, _entry_id)) = git::parse_entry_branch(name)
             {
                 if branch_user == username && !stacks.contains(&stack_name) {
                     stacks.push(stack_name);

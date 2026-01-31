@@ -6,8 +6,8 @@ use git2::BranchType;
 
 use crate::config::Config;
 use crate::error::{GgError, Result};
+use crate::gh::{self, PrState};
 use crate::git;
-use crate::glab::{self, MrState};
 use crate::stack;
 
 /// Run the clean command
@@ -21,7 +21,7 @@ pub fn run(clean_all: bool) -> Result<()> {
         .defaults
         .branch_username
         .clone()
-        .or_else(|| glab::whoami().ok())
+        .or_else(|| gh::whoami().ok())
         .unwrap_or_else(|| "unknown".to_string());
 
     // Get all stacks
@@ -163,9 +163,9 @@ fn check_stack_merged(
 
         let mut all_merged = true;
         for mr_num in stack_config.mrs.values() {
-            match glab::view_mr(*mr_num) {
+            match gh::get_pr_info(*mr_num) {
                 Ok(info) => {
-                    if info.state != MrState::Merged {
+                    if info.state != PrState::Merged {
                         all_merged = false;
                         break;
                     }

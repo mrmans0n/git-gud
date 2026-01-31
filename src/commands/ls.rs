@@ -4,8 +4,8 @@ use console::style;
 
 use crate::config::Config;
 use crate::error::Result;
+use crate::gh::{self, CiStatus, PrState};
 use crate::git;
-use crate::glab::{self, CiStatus, MrState};
 use crate::stack::{self, Stack};
 
 /// Run the list command
@@ -48,7 +48,7 @@ fn list_all_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
         .defaults
         .branch_username
         .clone()
-        .or_else(|| glab::whoami().ok())
+        .or_else(|| gh::whoami().ok())
         .unwrap_or_else(|| "unknown".to_string());
 
     let stacks = stack::list_all_stacks(repo, config, &username)?;
@@ -161,11 +161,11 @@ fn show_stack(stack: &Stack) -> Result<()> {
         // Status indicator
         let status = entry.status_display();
         let status_styled = match &entry.mr_state {
-            Some(MrState::Merged) => style(&status).green(),
-            Some(MrState::Closed) => style(&status).red(),
-            Some(MrState::Draft) => style(&status).dim(),
-            Some(MrState::Open) if entry.approved => style(&status).green(),
-            Some(MrState::Open) => style(&status).yellow(),
+            Some(PrState::Merged) => style(&status).green(),
+            Some(PrState::Closed) => style(&status).red(),
+            Some(PrState::Draft) => style(&status).dim(),
+            Some(PrState::Open) if entry.approved => style(&status).green(),
+            Some(PrState::Open) => style(&status).yellow(),
             None => style(&status).dim(),
         };
 

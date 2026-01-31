@@ -1,6 +1,9 @@
 //! GitLab CLI (glab) integration
 //!
 //! Wraps glab subprocess calls for MR management.
+//! NOTE: This module is kept for future GitLab support but is not currently used.
+
+#![allow(dead_code)]
 
 use std::process::Command;
 

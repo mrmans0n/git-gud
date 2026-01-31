@@ -7,6 +7,7 @@ use console::style;
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
+use crate::stack;
 use crate::stack::Stack;
 
 /// Run the squash command
@@ -38,10 +39,26 @@ pub fn run(all: bool) -> Result<()> {
         false
     };
 
-    // If we need to rebase after amend, ensure working directory is clean first
-    // This prevents leaving the repo in an inconsistent state
+    // If we need to rebase after amend, ensure there are no UNSTAGED changes
+    // Staged changes are fine (they'll be committed), but unstaged changes
+    // would be lost during the rebase
     if needs_rebase {
-        git::require_clean_working_directory(&repo)?;
+        let statuses = repo.statuses(None)?;
+        let has_unstaged = statuses.iter().any(|s| {
+            let flags = s.status();
+            // Check for unstaged changes (WT_* flags)
+            flags.is_wt_modified()
+                || flags.is_wt_deleted()
+                || flags.is_wt_renamed()
+                || flags.is_wt_typechange()
+        });
+
+        if has_unstaged {
+            return Err(GgError::Other(
+                "Unstaged changes detected. Please stage or stash them before squashing."
+                    .to_string(),
+            ));
+        }
     }
 
     // Perform the squash using git command (more reliable for amend)
@@ -123,6 +140,10 @@ pub fn run(all: bool) -> Result<()> {
         if let Some(entry) = new_stack.get_entry_by_position(our_pos + 1) {
             let commit = repo.find_commit(entry.oid)?;
             git::checkout_commit(&repo, &commit)?;
+            // Update nav context to reflect our new position after rebase
+            // entry.position is 1-indexed, so we need to subtract 1 for 0-indexed storage
+            let git_dir = repo.path();
+            stack::save_nav_context(git_dir, &branch_name, entry.position - 1, entry.oid)?;
         }
     }
 

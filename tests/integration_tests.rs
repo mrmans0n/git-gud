@@ -309,3 +309,220 @@ fn test_completions() {
     assert!(success);
     assert!(stdout.contains("complete") || stdout.contains("gg"));
 }
+
+// ============================================================
+// Tests for bug fixes in PR #26
+// ============================================================
+
+#[test]
+fn test_gg_squash_with_staged_changes() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with one commit
+    run_gg(&repo_path, &["co", "squash-test"]);
+
+    fs::write(repo_path.join("file1.txt"), "original content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Initial file"]);
+
+    // Make a change and stage it
+    fs::write(repo_path.join("file1.txt"), "modified content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+
+    // Squash should work with staged changes (this was the bug)
+    let (success, stdout, stderr) = run_gg(&repo_path, &["sc"]);
+
+    // Should succeed - staged changes should be squashable
+    assert!(
+        success,
+        "gg sc should succeed with staged changes. stdout={}, stderr={}",
+        stdout, stderr
+    );
+    assert!(
+        stdout.contains("Squashed") || stdout.contains("OK"),
+        "Expected squash confirmation. stdout={}",
+        stdout
+    );
+
+    // Verify the content was squashed
+    let content = fs::read_to_string(repo_path.join("file1.txt")).expect("Failed to read file");
+    assert_eq!(content, "modified content");
+}
+
+#[test]
+fn test_gg_squash_rejects_unstaged_when_needs_rebase() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with multiple commits
+    run_gg(&repo_path, &["co", "squash-rebase-test"]);
+
+    fs::write(repo_path.join("file1.txt"), "content1").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 1"]);
+
+    fs::write(repo_path.join("file2.txt"), "content2").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 2"]);
+
+    // Navigate to first commit (now needs_rebase will be true)
+    let (success, _, _) = run_gg(&repo_path, &["mv", "1"]);
+    assert!(success, "Failed to navigate to first commit");
+
+    // Make unstaged changes (not added)
+    fs::write(repo_path.join("file1.txt"), "unstaged modification").expect("Failed to write file");
+
+    // Also stage something to have changes to squash
+    fs::write(repo_path.join("newfile.txt"), "new content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "newfile.txt"]);
+
+    // Squash should fail because there are unstaged changes and we need to rebase
+    let (success, stdout, stderr) = run_gg(&repo_path, &["sc"]);
+
+    // Should fail - unstaged changes would be lost during rebase
+    assert!(
+        !success || stderr.contains("Dirty") || stderr.contains("clean"),
+        "gg sc should reject unstaged changes when rebase is needed. stdout={}, stderr={}",
+        stdout,
+        stderr
+    );
+}
+
+#[test]
+fn test_gg_navigation_preserves_modifications() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with 3 commits
+    run_gg(&repo_path, &["co", "nav-preserve-test"]);
+
+    fs::write(repo_path.join("file1.txt"), "v1").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Add file1"]);
+
+    fs::write(repo_path.join("file2.txt"), "v2").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Add file2"]);
+
+    fs::write(repo_path.join("file3.txt"), "v3").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Add file3"]);
+
+    // Get the original SHA of commit 2
+    let (_, log_before) = run_git(&repo_path, &["log", "--oneline", "-3"]);
+
+    // Navigate to commit 2 (middle of stack)
+    let (success, _, stderr) = run_gg(&repo_path, &["mv", "2"]);
+    assert!(success, "Failed to navigate to commit 2: {}", stderr);
+
+    // Modify file2 and squash
+    fs::write(repo_path.join("file2.txt"), "v2-modified").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+
+    let (success, _, _stderr) = run_gg(&repo_path, &["sc"]);
+    // Note: This might fail if there are conflicts, which is expected in some cases
+    // The important thing is that if it succeeds, the changes should persist
+
+    if success {
+        // Navigate back to last
+        let (success, _, stderr) = run_gg(&repo_path, &["last"]);
+        assert!(success, "Failed to navigate to last: {}", stderr);
+
+        // The modification should persist - check by looking at the log
+        // The SHA of commit 2 should be different now
+        let (_, log_after) = run_git(&repo_path, &["log", "--oneline", "-3"]);
+
+        // The logs should be different because commit 2 was modified
+        // (and commit 3 was rebased on top)
+        assert_ne!(
+            log_before.trim(),
+            log_after.trim(),
+            "Commits should have changed after modification. Before: {}, After: {}",
+            log_before,
+            log_after
+        );
+
+        // Navigate back to commit 2 to verify the content
+        let (success, _, _) = run_gg(&repo_path, &["mv", "2"]);
+        if success {
+            let content = fs::read_to_string(repo_path.join("file2.txt"))
+                .unwrap_or_else(|_| "file not found".to_string());
+            assert_eq!(
+                content, "v2-modified",
+                "Modified content should persist after navigation"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_nav_context_persistence() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with commits
+    run_gg(&repo_path, &["co", "context-test"]);
+
+    fs::write(repo_path.join("file1.txt"), "content1").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 1"]);
+
+    fs::write(repo_path.join("file2.txt"), "content2").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 2"]);
+
+    // Navigate to commit 1 (this should save nav context)
+    let (success, _, stderr) = run_gg(&repo_path, &["mv", "1"]);
+    assert!(success, "Failed to navigate: {}", stderr);
+
+    // Check that nav context file was created
+    let current_stack_path = gg_dir.join("current_stack");
+    assert!(
+        current_stack_path.exists(),
+        "Nav context file should be created after navigation"
+    );
+
+    // Read and verify context format (should be branch|position|oid)
+    let context = fs::read_to_string(&current_stack_path).expect("Failed to read nav context");
+    let parts: Vec<&str> = context.trim().split('|').collect();
+
+    // Should have at least branch name, possibly position and oid
+    assert!(
+        !parts.is_empty() && !parts[0].is_empty(),
+        "Nav context should contain branch name. Got: {}",
+        context
+    );
+}

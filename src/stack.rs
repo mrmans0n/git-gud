@@ -279,6 +279,7 @@ impl Stack {
 }
 
 /// Store the current stack branch for use in detached HEAD mode
+#[allow(dead_code)]
 pub fn save_current_stack(git_dir: &Path, branch_name: &str) -> Result<()> {
     let stack_file = git_dir.join(CURRENT_STACK_FILE);
     if let Some(parent) = stack_file.parent() {
@@ -288,12 +289,13 @@ pub fn save_current_stack(git_dir: &Path, branch_name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Read the stored current stack
+/// Read the stored current stack (returns branch name only)
 pub fn read_current_stack(git_dir: &Path) -> Option<String> {
     let stack_file = git_dir.join(CURRENT_STACK_FILE);
-    fs::read_to_string(stack_file)
-        .ok()
-        .map(|s| s.trim().to_string())
+    let content = fs::read_to_string(stack_file).ok()?;
+    let trimmed = content.trim();
+    // Handle new format (with |) and old format (just branch name)
+    Some(trimmed.split('|').next()?.to_string())
 }
 
 /// Clear the stored current stack (when returning to branch)
@@ -303,6 +305,39 @@ pub fn clear_current_stack(git_dir: &Path) -> Result<()> {
         fs::remove_file(stack_file)?;
     }
     Ok(())
+}
+
+/// Save navigation context (branch, position, and original OID) for detached HEAD tracking
+pub fn save_nav_context(
+    git_dir: &Path,
+    branch_name: &str,
+    position: usize,
+    oid: git2::Oid,
+) -> Result<()> {
+    let stack_file = git_dir.join(CURRENT_STACK_FILE);
+    if let Some(parent) = stack_file.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    // Format: branch_name|position|oid
+    let content = format!("{}|{}|{}", branch_name, position, oid);
+    fs::write(stack_file, content)?;
+    Ok(())
+}
+
+/// Read navigation context (branch, position, oid) if available
+pub fn read_nav_context(git_dir: &Path) -> Option<(String, usize, git2::Oid)> {
+    let stack_file = git_dir.join(CURRENT_STACK_FILE);
+    let content = fs::read_to_string(stack_file).ok()?;
+    let parts: Vec<&str> = content.trim().split('|').collect();
+    if parts.len() == 3 {
+        let branch = parts[0].to_string();
+        let position = parts[1].parse().ok()?;
+        let oid = git2::Oid::from_str(parts[2]).ok()?;
+        Some((branch, position, oid))
+    } else {
+        // Old format (just branch name) - return None
+        None
+    }
 }
 
 /// List all stacks in the repository

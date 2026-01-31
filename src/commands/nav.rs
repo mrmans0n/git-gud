@@ -69,17 +69,28 @@ pub fn last() -> Result<()> {
     let stack = Stack::load(&repo, &config)?;
 
     if let Some(entry) = stack.last() {
+        // Check if we're in detached HEAD and if the current commit has changed
+        let needs_rebase = check_and_rebase_if_modified(&repo, &stack)?;
+
         // For last, we should checkout the branch, not detach
         git::checkout_branch(&repo, &stack.branch_name())?;
         // Clear the saved stack since we're back on the branch
         stack::clear_current_stack(git_dir)?;
-        println!(
-            "{} Moved to stack head: [{}] {} {}",
-            style("OK").green().bold(),
-            entry.position,
-            style(&entry.short_sha).yellow(),
-            entry.title
-        );
+
+        if needs_rebase {
+            println!(
+                "{} Moved to stack head (rebased after modifications)",
+                style("OK").green().bold()
+            );
+        } else {
+            println!(
+                "{} Moved to stack head: [{}] {} {}",
+                style("OK").green().bold(),
+                entry.position,
+                style(&entry.short_sha).yellow(),
+                entry.title
+            );
+        }
         Ok(())
     } else {
         Err(GgError::Other("Stack is empty".to_string()))
@@ -108,6 +119,9 @@ pub fn next() -> Result<()> {
     let config = Config::load(git_dir)?;
     let stack = Stack::load(&repo, &config)?;
 
+    // Check if we need to rebase due to modifications
+    let needs_rebase = check_and_rebase_if_modified(&repo, &stack)?;
+
     // If we're at the last commit, we might just need to checkout the branch
     let current_pos = stack
         .current_position
@@ -117,9 +131,23 @@ pub fn next() -> Result<()> {
         // At stack head, ensure we're on the branch
         git::checkout_branch(&repo, &stack.branch_name())?;
         stack::clear_current_stack(git_dir)?;
-        println!("{} Already at stack head", style("OK").green().bold());
+        if needs_rebase {
+            println!(
+                "{} Already at stack head (rebased)",
+                style("OK").green().bold()
+            );
+        } else {
+            println!("{} Already at stack head", style("OK").green().bold());
+        }
         return Ok(());
     }
+
+    // Reload stack after potential rebase
+    let stack = if needs_rebase {
+        Stack::load(&repo, &config)?
+    } else {
+        stack
+    };
 
     if let Some(entry) = stack.next() {
         // If next is the last entry, checkout branch instead of detaching
@@ -146,8 +174,13 @@ pub fn next() -> Result<()> {
 
 /// Checkout a specific entry (detached HEAD)
 fn checkout_entry(repo: &git2::Repository, stack: &Stack, entry: &StackEntry) -> Result<()> {
-    // Save the stack branch for later use in detached HEAD mode
-    stack::save_current_stack(repo.path(), &stack.branch_name())?;
+    // Save the stack branch and navigation context for later use in detached HEAD mode
+    stack::save_nav_context(
+        repo.path(),
+        &stack.branch_name(),
+        entry.position - 1,
+        entry.oid,
+    )?;
 
     let commit = repo.find_commit(entry.oid)?;
     git::checkout_commit(repo, &commit)?;
@@ -175,4 +208,91 @@ fn checkout_entry(repo: &git2::Repository, stack: &Stack, entry: &StackEntry) ->
     );
 
     Ok(())
+}
+
+/// Check if the current HEAD has been modified from the original commit in the stack
+/// If modified and there are commits after this one, rebase them onto the new HEAD
+/// Returns true if a rebase was performed
+fn check_and_rebase_if_modified(repo: &git2::Repository, stack: &Stack) -> Result<bool> {
+    use std::process::Command;
+
+    // Try to read saved navigation context (branch, position, original_oid)
+    let git_dir = repo.path();
+    let nav_context = match stack::read_nav_context(git_dir) {
+        Some(ctx) => ctx,
+        None => return Ok(false), // No saved context, nothing to check
+    };
+
+    let (_saved_branch, saved_position, original_oid) = nav_context;
+
+    // Check if we're in the middle of the stack (have commits after us)
+    if saved_position >= stack.len() - 1 {
+        // At or past stack head, no need to rebase - just clear nav context
+        stack::clear_current_stack(git_dir)?;
+        return Ok(false);
+    }
+
+    // Get the current HEAD commit
+    let current_head = repo.head()?.peel_to_commit()?;
+    let current_oid = current_head.id();
+
+    // Check if we're still at a position that matches our saved context
+    // If current HEAD matches ANY position in the stack, and it's not the saved position,
+    // then we've already moved (e.g., via a previous rebase) - clear stale nav context
+    if let Some(current_stack_pos) = stack.current_position {
+        if current_stack_pos != saved_position {
+            // We've moved to a different position - nav context is stale, clear it
+            stack::clear_current_stack(git_dir)?;
+            return Ok(false);
+        }
+    }
+
+    // If they're the same, no modification occurred
+    if current_oid == original_oid {
+        return Ok(false);
+    }
+
+    // HEAD has been modified! We need to rebase subsequent commits
+    println!(
+        "{}",
+        style(format!(
+            "Detected modification at position {}. Rebasing {} subsequent commits...",
+            saved_position + 1,
+            stack.len() - saved_position - 1
+        ))
+        .yellow()
+    );
+
+    // Get the branch name to rebase
+    let branch_name = stack.branch_name();
+
+    // Use git rebase --onto to rebase the remaining commits
+    // git rebase --onto <new_base> <old_base> <branch>
+    let rebase_result = Command::new("git")
+        .args([
+            "rebase",
+            "--onto",
+            &current_oid.to_string(),
+            &original_oid.to_string(),
+            &branch_name,
+        ])
+        .output()?;
+
+    if !rebase_result.status.success() {
+        let stderr = String::from_utf8_lossy(&rebase_result.stderr);
+        if stderr.contains("CONFLICT") || stderr.contains("conflict") {
+            return Err(GgError::RebaseConflict);
+        }
+        return Err(GgError::Other(format!(
+            "Failed to rebase stack: {}",
+            stderr
+        )));
+    }
+
+    println!(
+        "{} Successfully rebased stack onto modified commit",
+        style("OK").green().bold()
+    );
+
+    Ok(true)
 }

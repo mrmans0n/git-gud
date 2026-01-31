@@ -435,5 +435,4 @@ mod tests {
         assert!(parsed.mergeable.is_none());
         assert!(parsed.reviews.is_empty()); // defaults to empty
     }
-
 }

@@ -63,6 +63,9 @@ pub fn run(all: bool) -> Result<()> {
 
     // If we need to rebase remaining commits
     if needs_rebase {
+        // Check for clean working directory before rebasing
+        git::require_clean_working_directory(&repo)?;
+
         let stack = stack_result.unwrap();
         let remaining = stack.len() - stack.current_position.unwrap() - 1;
 

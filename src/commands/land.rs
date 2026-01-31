@@ -114,7 +114,7 @@ pub fn run(land_all: bool, squash: bool) -> Result<()> {
 
         println!("{} Merging PR #{}...", style("→").cyan(), pr_num);
 
-        match gh::merge_pr(pr_num, squash, true) {
+        match gh::merge_pr(pr_num, squash, false) {
             Ok(()) => {
                 println!(
                     "{} Merged PR #{} into {}",
@@ -126,6 +126,38 @@ pub fn run(land_all: bool, squash: bool) -> Result<()> {
 
                 // Remove PR mapping from config
                 config.remove_mr_for_entry(&stack.name, gg_id);
+
+                // Update the base of remaining PRs to point to the main branch
+                // This is critical for stacked PRs - after merging PR #1, PR #2 should
+                // point to main instead of PR #1's branch (which no longer exists)
+                if land_all {
+                    let current_index = stack
+                        .entries
+                        .iter()
+                        .position(|e| e.mr_number == Some(pr_num))
+                        .unwrap_or(0);
+
+                    for remaining_entry in stack.entries.iter().skip(current_index + 1) {
+                        if let Some(remaining_pr) = remaining_entry.mr_number {
+                            println!(
+                                "{}",
+                                style(format!(
+                                    "  Updating PR #{} base to {}...",
+                                    remaining_pr, stack.base
+                                ))
+                                .dim()
+                            );
+                            if let Err(e) = gh::update_pr_base(remaining_pr, &stack.base) {
+                                println!(
+                                    "{} Warning: Failed to update PR #{} base: {}",
+                                    style("⚠").yellow(),
+                                    remaining_pr,
+                                    e
+                                );
+                            }
+                        }
+                    }
+                }
             }
             Err(e) => {
                 println!(

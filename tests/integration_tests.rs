@@ -758,3 +758,208 @@ fn test_gg_reorder_missing_commits() {
         stderr
     );
 }
+
+/// Helper to create a test repo with a bare remote
+fn create_test_repo_with_remote() -> (TempDir, PathBuf, PathBuf) {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let base_path = temp_dir.path().to_path_buf();
+
+    // Create a bare repo to act as remote
+    let remote_path = base_path.join("remote.git");
+    fs::create_dir_all(&remote_path).expect("Failed to create remote dir");
+
+    Command::new("git")
+        .args(["init", "--bare"])
+        .current_dir(&remote_path)
+        .output()
+        .expect("Failed to init bare repo");
+
+    // Create the working repo
+    let repo_path = base_path.join("repo");
+    fs::create_dir_all(&repo_path).expect("Failed to create repo dir");
+
+    Command::new("git")
+        .args(["init"])
+        .current_dir(&repo_path)
+        .output()
+        .expect("Failed to init git repo");
+
+    // Configure git user
+    Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(&repo_path)
+        .output()
+        .expect("Failed to configure git email");
+
+    Command::new("git")
+        .args(["config", "user.name", "Test User"])
+        .current_dir(&repo_path)
+        .output()
+        .expect("Failed to configure git name");
+
+    // Add remote
+    Command::new("git")
+        .args(["remote", "add", "origin", remote_path.to_str().unwrap()])
+        .current_dir(&repo_path)
+        .output()
+        .expect("Failed to add remote");
+
+    // Create initial commit on main
+    fs::write(repo_path.join("README.md"), "# Test Repo\n").expect("Failed to write README");
+
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(&repo_path)
+        .output()
+        .expect("Failed to add files");
+
+    Command::new("git")
+        .args(["commit", "-m", "Initial commit"])
+        .current_dir(&repo_path)
+        .output()
+        .expect("Failed to create initial commit");
+
+    // Push to remote
+    Command::new("git")
+        .args(["push", "-u", "origin", "main"])
+        .current_dir(&repo_path)
+        .output()
+        .expect("Failed to push to remote");
+
+    (temp_dir, repo_path, remote_path)
+}
+
+#[test]
+fn test_gg_ls_remote_no_stacks() {
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // List remote stacks - should show no stacks
+    let (success, stdout, _stderr) = run_gg(&repo_path, &["ls", "--remote"]);
+    assert!(success, "ls --remote should succeed");
+    assert!(
+        stdout.contains("No remote stacks") || stdout.contains("Remote stacks"),
+        "Should show remote stacks message: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_gg_ls_remote_with_stacks() {
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+
+    // Set up config with empty stacks (simulating fresh clone)
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack and push it
+    run_gg(&repo_path, &["co", "test-remote-stack"]);
+
+    fs::write(repo_path.join("test.txt"), "test").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Test commit"]);
+
+    // Push the branch to remote
+    run_git(
+        &repo_path,
+        &["push", "-u", "origin", "testuser/test-remote-stack"],
+    );
+
+    // Switch back to main and delete local stack branch
+    run_git(&repo_path, &["checkout", "main"]);
+    run_git(&repo_path, &["branch", "-D", "testuser/test-remote-stack"]);
+
+    // Reset config to remove the stack entry (simulating a fresh clone scenario)
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to reset config");
+
+    // List remote stacks - should show the stack
+    let (success, stdout, _stderr) = run_gg(&repo_path, &["ls", "--remote"]);
+    assert!(success, "ls --remote should succeed");
+    assert!(
+        stdout.contains("test-remote-stack"),
+        "Should list the remote stack: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_gg_checkout_remote_stack() {
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack and push it
+    run_gg(&repo_path, &["co", "remote-checkout-test"]);
+
+    fs::write(repo_path.join("test.txt"), "test content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Test commit for remote"]);
+
+    // Push the branch to remote
+    run_git(
+        &repo_path,
+        &["push", "-u", "origin", "testuser/remote-checkout-test"],
+    );
+
+    // Switch back to main and delete local stack branch
+    run_git(&repo_path, &["checkout", "main"]);
+    run_git(
+        &repo_path,
+        &["branch", "-D", "testuser/remote-checkout-test"],
+    );
+
+    // Verify we're on main and the stack branch doesn't exist locally
+    let (_, current_branch) = run_git(&repo_path, &["branch", "--show-current"]);
+    assert!(
+        current_branch.trim() == "main",
+        "Should be on main: {}",
+        current_branch
+    );
+
+    // Now checkout the remote stack
+    let (success, stdout, _stderr) = run_gg(&repo_path, &["co", "remote-checkout-test"]);
+    assert!(success, "Should successfully checkout remote stack");
+    assert!(
+        stdout.contains("Checked out remote stack") || stdout.contains("remote-checkout-test"),
+        "Should mention checking out remote: {}",
+        stdout
+    );
+
+    // Verify we're now on the stack branch
+    let (_, current_branch) = run_git(&repo_path, &["branch", "--show-current"]);
+    assert!(
+        current_branch.contains("remote-checkout-test"),
+        "Should be on the stack branch: {}",
+        current_branch
+    );
+
+    // Verify the file exists
+    assert!(
+        repo_path.join("test.txt").exists(),
+        "test.txt should exist after checkout"
+    );
+}

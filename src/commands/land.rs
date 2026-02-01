@@ -17,7 +17,7 @@ use crate::stack::Stack;
 const POLL_INTERVAL_SECS: u64 = 10;
 
 /// Run the land command
-pub fn run(land_all: bool, squash: bool, wait: bool) -> Result<()> {
+pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result<()> {
     let repo = git::open_repo()?;
     let git_dir = repo.path();
     let mut config = Config::load(git_dir)?;
@@ -281,14 +281,69 @@ pub fn run(land_all: bool, squash: bool, wait: bool) -> Result<()> {
                 style("  Run `gg rebase` to update remaining commits onto the new base.").dim()
             );
         } else {
-            println!(
-                "{}",
-                style(format!(
-                    "  All {}s landed! Run `gg clean` to remove the stack.",
-                    provider.pr_label()
-                ))
-                .dim()
-            );
+            // All PRs/MRs landed successfully - offer to clean up
+            let should_clean = if auto_clean {
+                true
+            } else if atty::is(atty::Stream::Stdout) {
+                // Interactive prompt (only if stdout is a TTY)
+                println!();
+                Confirm::new()
+                    .with_prompt("All PRs merged successfully. Clean up this stack?")
+                    .default(false)
+                    .interact()
+                    .unwrap_or(false)
+            } else {
+                // Non-interactive, don't clean
+                println!(
+                    "{}",
+                    style(format!(
+                        "  All {}s landed! Run `gg clean` to remove the stack.",
+                        provider.pr_label()
+                    ))
+                    .dim()
+                );
+                false
+            };
+
+            if should_clean {
+                println!();
+                println!("{}", style("Cleaning up stack...").dim());
+
+                // First, rebase to update main and detect merged commits
+                let rebase_result = crate::commands::rebase::run(Some(stack.base.clone()));
+                if let Err(e) = rebase_result {
+                    println!("{} Failed to rebase: {}", style("Warning:").yellow(), e);
+                    println!(
+                        "{}",
+                        style("  You may need to run `gg rebase` and `gg clean` manually.").dim()
+                    );
+                    return Ok(());
+                }
+
+                // Then, clean the stack
+                let clean_result = crate::commands::clean::run_for_stack(&stack.name, true);
+                match clean_result {
+                    Ok(()) => {
+                        println!("{} Stack cleaned successfully", style("OK").green().bold());
+                    }
+                    Err(e) => {
+                        println!(
+                            "{} Failed to clean stack: {}",
+                            style("Warning:").yellow(),
+                            e
+                        );
+                        println!(
+                            "{}",
+                            style("  You may need to run `gg clean` manually.").dim()
+                        );
+                    }
+                }
+            } else if !auto_clean && atty::is(atty::Stream::Stdout) {
+                println!(
+                    "{}",
+                    style("  Run `gg clean` to remove the stack when ready.").dim()
+                );
+            }
         }
     }
 

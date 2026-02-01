@@ -124,6 +124,10 @@ enum Commands {
         /// Wait for CI to pass and approvals before merging
         #[arg(short, long)]
         wait: bool,
+
+        /// Automatically clean up stack after landing all PRs/MRs
+        #[arg(short, long)]
+        clean: bool,
     },
 
     /// Clean up merged stacks
@@ -217,7 +221,8 @@ fn main() {
             all,
             no_squash,
             wait,
-        }) => commands::land::run(all, !no_squash, wait),
+            clean,
+        }) => commands::land::run(all, !no_squash, wait, clean),
         Some(Commands::Clean { all }) => commands::clean::run(all),
         Some(Commands::Rebase { target }) => commands::rebase::run(target),
         Some(Commands::Continue) => commands::rebase::continue_rebase(),

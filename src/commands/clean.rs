@@ -10,6 +10,68 @@ use crate::git;
 use crate::provider::{PrState, Provider};
 use crate::stack;
 
+/// Run the clean command for a specific stack (used by auto-clean)
+pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
+    let repo = git::open_repo()?;
+    let git_dir = repo.path();
+    let mut config = Config::load(git_dir)?;
+
+    // Detect provider (best-effort)
+    let provider = Provider::detect(&repo).ok();
+
+    // Get username
+    let username = config
+        .defaults
+        .branch_username
+        .clone()
+        .or_else(|| provider.as_ref().and_then(|p| p.whoami().ok()))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    // Check if the stack exists
+    let branch_name = git::format_stack_branch(&username, stack_name);
+
+    // Check if stack is fully merged
+    let is_merged = check_stack_merged(&repo, &config, stack_name, &username, provider.as_ref())?;
+
+    if !is_merged && !force {
+        return Err(GgError::Other(format!(
+            "Stack '{}' has unmerged commits",
+            stack_name
+        )));
+    }
+
+    // Delete local branch
+    if let Ok(mut branch) = repo.find_branch(&branch_name, BranchType::Local) {
+        // Make sure we're not on this branch
+        let current = git::current_branch_name(&repo);
+        if current.as_deref() == Some(&branch_name) {
+            // Switch to base branch first
+            let base = config
+                .get_base_for_stack(stack_name)
+                .map(|s| s.to_string())
+                .or_else(|| git::find_base_branch(&repo).ok())
+                .unwrap_or_else(|| "main".to_string());
+
+            git::checkout_branch(&repo, &base)?;
+        }
+
+        branch.delete()?;
+    }
+
+    // Delete entry branches (local and remote)
+    delete_entry_branches(
+        &repo, &config, stack_name, &username, /*delete_remote=*/ true,
+    );
+
+    // Remove from config
+    config.remove_stack(stack_name);
+
+    // Save updated config
+    config.save(git_dir)?;
+
+    Ok(())
+}
+
 /// Run the clean command
 pub fn run(clean_all: bool) -> Result<()> {
     let repo = git::open_repo()?;

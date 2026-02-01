@@ -47,14 +47,17 @@ pub fn run(clean_all: bool) -> Result<()> {
             // Branch doesn't exist: clean LOCAL orphan entry branches and config.
             // Be conservative: do NOT delete remote branches here because we can't
             // reliably verify merge status without the main stack branch.
-            delete_entry_branches(&repo, &config, stack_name, &username, /*delete_remote=*/ false);
+            delete_entry_branches(
+                &repo, &config, stack_name, &username, /*delete_remote=*/ false,
+            );
             config.remove_stack(stack_name);
             cleaned_count += 1;
             continue;
         }
 
         // Load the stack to check MR status
-        let is_merged = check_stack_merged(&repo, &config, stack_name, &username, provider.as_ref())?;
+        let is_merged =
+            check_stack_merged(&repo, &config, stack_name, &username, provider.as_ref())?;
 
         if is_merged {
             if !clean_all {
@@ -88,7 +91,9 @@ pub fn run(clean_all: bool) -> Result<()> {
             }
 
             // Delete entry branches (local and remote)
-            delete_entry_branches(&repo, &config, stack_name, &username, /*delete_remote=*/ true);
+            delete_entry_branches(
+                &repo, &config, stack_name, &username, /*delete_remote=*/ true,
+            );
 
             // Remove from config
             config.remove_stack(stack_name);

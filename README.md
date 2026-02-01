@@ -125,8 +125,12 @@ gg clean
 |---------|-------------|
 | `gg land` | Merge the first approved PR/MR (squash by default) |
 | `gg land --all` | Merge all approved PRs/MRs in sequence |
+| `gg land --wait` | Wait for CI to pass and approvals before merging |
+| `gg land --all --wait` | Wait and merge all PRs/MRs in sequence |
 | `gg land --no-squash` | Merge using merge commit instead of squash |
 | `gg rebase` | Rebase stack onto updated base branch |
+
+**Note:** The `--wait` flag polls for CI status and approvals with a configurable timeout (default: 30 minutes). Configure with `land_wait_timeout_minutes` in `.git/gg/config.json`.
 
 ### Utilities
 
@@ -166,11 +170,32 @@ Configuration is stored in `.git/gg/config.json`. Run `gg setup` to generate it 
 
 ### Configuration Options
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `defaults.base` | Default base branch | Auto-detect (main/master/trunk) |
-| `defaults.branch_username` | Username for branch naming | Auto-detect via `gh`/`glab` |
-| `defaults.lint` | Lint commands to run per commit | `[]` |
+All configuration options are in the `defaults` section:
+
+| Option | Type | Description | Default |
+|--------|------|-------------|---------|
+| `base` | `string` | Default base branch for new stacks | Auto-detect (main/master/trunk) |
+| `branch_username` | `string` | Username prefix for branch naming | Auto-detect via `gh whoami`/`glab whoami` |
+| `lint` | `array` | Lint commands to run on each commit with `gg lint` | `[]` |
+| `auto_add_gg_ids` | `boolean` | Automatically add GG-IDs to commits without prompting | `true` |
+| `land_wait_timeout_minutes` | `number` | Timeout in minutes for `gg land --wait` | `30` |
+
+Example configuration:
+
+```json
+{
+  "defaults": {
+    "base": "main",
+    "branch_username": "nacho",
+    "lint": [
+      "cargo fmt --check",
+      "cargo clippy -- -D warnings"
+    ],
+    "auto_add_gg_ids": true,
+    "land_wait_timeout_minutes": 60
+  }
+}
+```
 
 ## How It Works
 

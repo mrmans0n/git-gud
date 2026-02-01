@@ -30,6 +30,10 @@ pub struct Defaults {
     /// Automatically add GG-IDs to commits without prompting (default: true)
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub auto_add_gg_ids: bool,
+
+    /// Timeout in minutes for `gg land --wait` (default: 30)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub land_wait_timeout_minutes: Option<u64>,
 }
 
 fn default_true() -> bool {
@@ -144,6 +148,11 @@ impl Config {
     pub fn list_stacks(&self) -> Vec<&str> {
         self.stacks.keys().map(|s| s.as_str()).collect()
     }
+
+    /// Get the land wait timeout in minutes (default: 30)
+    pub fn get_land_wait_timeout_minutes(&self) -> u64 {
+        self.defaults.land_wait_timeout_minutes.unwrap_or(30)
+    }
 }
 
 #[cfg(test)]
@@ -180,5 +189,18 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let config = Config::load(temp_dir.path()).unwrap();
         assert!(config.stacks.is_empty());
+    }
+
+    #[test]
+    fn test_land_wait_timeout_default() {
+        let config = Config::default();
+        assert_eq!(config.get_land_wait_timeout_minutes(), 30);
+    }
+
+    #[test]
+    fn test_land_wait_timeout_custom() {
+        let mut config = Config::default();
+        config.defaults.land_wait_timeout_minutes = Some(60);
+        assert_eq!(config.get_land_wait_timeout_minutes(), 60);
     }
 }

@@ -9,34 +9,23 @@ This document describes how to publish a new version of `gg-stack` to crates.io.
 
 ## Release Process
 
-### 1. Update version and Cargo.lock
+### 1. Update version in Cargo.toml
 
 ```bash
 # Bump version in Cargo.toml (e.g., 0.1.0 -> 0.1.1)
 # Edit Cargo.toml manually or use cargo-edit:
 # cargo set-version 0.1.1
-
-# Regenerate Cargo.lock with the new version
-cargo check
-
-# Verify Cargo.lock was updated
-git status
 ```
 
-### 2. Commit the version bump
+### 2. Commit and push
 
 ```bash
-git add Cargo.toml Cargo.lock
+git add Cargo.toml
 git commit -m "Bump version to 0.1.1"
 git push
 ```
 
-> ⚠️ **Important**: Both `Cargo.toml` AND `Cargo.lock` must be committed together.
-> If you forget to commit `Cargo.lock`, the release workflow will fail with:
-> ```
-> error: 1 files in the working directory contain changes that were not yet committed into git:
-> Cargo.lock
-> ```
+> ℹ️ **Note**: `Cargo.lock` is automatically updated by a GitHub Action when you push changes to `Cargo.toml`. Wait for the "Update Cargo.lock" workflow to complete before creating the release.
 
 ### 3. Create a GitHub Release
 
@@ -64,7 +53,7 @@ Or visit: https://crates.io/crates/gg-stack
 
 ### "Cargo.lock contains uncommitted changes"
 
-You forgot to commit `Cargo.lock` after bumping the version. See step 1-2.
+The "Update Cargo.lock" workflow hasn't finished yet. Wait for it to complete, then re-run the release workflow, or manually trigger a new release.
 
 ### "Version mismatch" error
 
@@ -82,9 +71,9 @@ Settings → Secrets and variables → Actions → Repository secrets
 ```bash
 # Full release workflow (example for version 0.2.0)
 vim Cargo.toml                     # Set version = "0.2.0"
-cargo check                        # Update Cargo.lock
-git add Cargo.toml Cargo.lock
+git add Cargo.toml
 git commit -m "Bump version to 0.2.0"
 git push
+# Wait for "Update Cargo.lock" workflow to complete
 # Then create GitHub release with tag v0.2.0
 ```

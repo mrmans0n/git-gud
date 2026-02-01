@@ -106,23 +106,45 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
 
         match existing_pr {
             Some(pr_num) => {
-                // Update PR/MR base if needed
-                if let Err(e) = provider.update_pr_base(pr_num, &target_branch) {
+                // Check if PR is still open before updating
+                let pr_info = provider.get_pr_info(pr_num).ok();
+                let is_closed = pr_info
+                    .as_ref()
+                    .map(|info| {
+                        matches!(
+                            info.state,
+                            crate::provider::PrState::Merged | crate::provider::PrState::Closed
+                        )
+                    })
+                    .unwrap_or(false);
+
+                if is_closed {
+                    // Skip updating closed/merged PRs
                     pb.println(format!(
-                        "{} Could not update {} #{}: {}",
-                        style("Warning:").yellow(),
+                        "{} {} #{} already closed/merged, skipping",
+                        style("○").dim(),
                         provider.pr_label(),
-                        pr_num,
-                        e
+                        pr_num
+                    ));
+                } else {
+                    // Update PR/MR base if needed
+                    if let Err(e) = provider.update_pr_base(pr_num, &target_branch) {
+                        pb.println(format!(
+                            "{} Could not update {} #{}: {}",
+                            style("Warning:").yellow(),
+                            provider.pr_label(),
+                            pr_num,
+                            e
+                        ));
+                    }
+                    pb.println(format!(
+                        "{} Force-pushed {} -> {} #{}",
+                        style("OK").green().bold(),
+                        style(&entry_branch).cyan(),
+                        provider.pr_label(),
+                        pr_num
                     ));
                 }
-                pb.println(format!(
-                    "{} Force-pushed {} -> {} #{}",
-                    style("OK").green().bold(),
-                    style(&entry_branch).cyan(),
-                    provider.pr_label(),
-                    pr_num
-                ));
             }
             None => {
                 // Create new PR/MR

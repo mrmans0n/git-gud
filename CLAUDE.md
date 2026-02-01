@@ -131,6 +131,17 @@ cargo install --path .         # Install locally
 
 Use the `GgError` enum in `src/error.rs` for domain-specific errors. All errors should have user-friendly messages with actionable guidance.
 
+## Pull Request Workflow
+
+**Before merging any PR, you MUST:**
+
+1. **Wait for CI to be fully green** - All checks must pass (format, clippy, test)
+2. **Wait for Claude review feedback** - The `claude-review` check must complete
+3. **Address any feedback** - If Claude leaves comments/suggestions, address them before merging
+4. **Only then merge** - Use `gh pr merge <number> --squash --delete-branch`
+
+This applies to all PRs, including those created by subagents.
+
 ## Code Style
 
 - Follow standard Rust conventions

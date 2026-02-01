@@ -224,6 +224,40 @@ pub fn update_pr_base(pr_number: u64, base_branch: &str) -> Result<()> {
     Ok(())
 }
 
+/// Update PR description/body
+pub fn update_pr_description(pr_number: u64, description: &str) -> Result<()> {
+    let output = Command::new("gh")
+        .args(["pr", "edit", &pr_number.to_string(), "--body", description])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::Other(format!(
+            "Failed to update PR #{} description: {}",
+            pr_number, stderr
+        )));
+    }
+
+    Ok(())
+}
+
+/// Update PR title
+pub fn update_pr_title(pr_number: u64, title: &str) -> Result<()> {
+    let output = Command::new("gh")
+        .args(["pr", "edit", &pr_number.to_string(), "--title", title])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::Other(format!(
+            "Failed to update PR #{} title: {}",
+            pr_number, stderr
+        )));
+    }
+
+    Ok(())
+}
+
 /// Merge a PR
 pub fn merge_pr(pr_number: u64, squash: bool, delete_branch: bool) -> Result<()> {
     let pr_num_str = pr_number.to_string();

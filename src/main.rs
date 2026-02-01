@@ -68,6 +68,10 @@ enum Commands {
         /// Force push even if remote is ahead
         #[arg(short, long)]
         force: bool,
+
+        /// Update PR/MR titles and descriptions to match commit messages
+        #[arg(long)]
+        update_descriptions: bool,
     },
 
     /// Move to a specific commit in the stack
@@ -211,7 +215,11 @@ fn main() {
             refresh,
             remote,
         }) => commands::ls::run(all, refresh, remote),
-        Some(Commands::Sync { draft, force }) => commands::sync::run(draft, force),
+        Some(Commands::Sync {
+            draft,
+            force,
+            update_descriptions,
+        }) => commands::sync::run(draft, force, update_descriptions),
         Some(Commands::Move { target }) => commands::nav::move_to(&target),
         Some(Commands::First) => commands::nav::first(),
         Some(Commands::Last) => commands::nav::last(),

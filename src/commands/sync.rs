@@ -7,12 +7,15 @@ use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::config::Config;
 use crate::error::{GgError, Result};
-use crate::git::{self, generate_gg_id, get_gg_id, set_gg_id_in_message, strip_gg_id_from_message};
+use crate::git::{
+    self, generate_gg_id, get_commit_description, get_gg_id, set_gg_id_in_message,
+    strip_gg_id_from_message,
+};
 use crate::provider::Provider;
 use crate::stack::Stack;
 
 /// Run the sync command
-pub fn run(draft: bool, force: bool) -> Result<()> {
+pub fn run(draft: bool, force: bool, update_descriptions: bool) -> Result<()> {
     let repo = git::open_repo()?;
     let git_dir = repo.path();
     let mut config = Config::load(git_dir)?;
@@ -60,7 +63,7 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
         if should_add {
             add_gg_ids_to_commits(&repo, &stack)?;
             // Reload stack after rebase
-            return run(draft, force);
+            return run(draft, force, update_descriptions);
         } else {
             return Err(GgError::Other(
                 "Cannot sync without GG-IDs. Aborting.".to_string(),
@@ -81,6 +84,15 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
     for (i, entry) in stack.entries.iter().enumerate() {
         let gg_id = entry.gg_id.as_ref().unwrap();
         let entry_branch = stack.entry_branch_name(entry).unwrap();
+        let commit = repo.find_commit(entry.oid)?;
+        let raw_title = strip_gg_id_from_message(&entry.title);
+        let title = clean_title(&raw_title);
+        let (title, description) = build_pr_payload(
+            &title,
+            get_commit_description(&commit),
+            &stack.name,
+            &entry.short_sha,
+        );
 
         pb.set_message(format!("Processing {}...", entry.short_sha));
 
@@ -133,6 +145,28 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
                         pr_num
                     ));
                 } else {
+                    if update_descriptions {
+                        if let Err(e) = provider.update_pr_title(pr_num, &title) {
+                            pb.println(format!(
+                                "{} Could not update {} {}{} title: {}",
+                                style("Warning:").yellow(),
+                                provider.pr_label(),
+                                provider.pr_number_prefix(),
+                                pr_num,
+                                e
+                            ));
+                        }
+                        if let Err(e) = provider.update_pr_description(pr_num, &description) {
+                            pb.println(format!(
+                                "{} Could not update {} {}{} description: {}",
+                                style("Warning:").yellow(),
+                                provider.pr_label(),
+                                provider.pr_number_prefix(),
+                                pr_num,
+                                e
+                            ));
+                        }
+                    }
                     // Update PR/MR base if needed
                     if let Err(e) = provider.update_pr_base(pr_num, &target_branch) {
                         pb.println(format!(
@@ -156,12 +190,6 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
             }
             None => {
                 // Create new PR/MR
-                let title = strip_gg_id_from_message(&entry.title);
-                let description = format!(
-                    "Part of stack `{}`\n\nCommit: {}",
-                    stack.name, entry.short_sha
-                );
-
                 match provider.create_pr(&entry_branch, &target_branch, &title, &description, draft)
                 {
                     Ok(result) => {
@@ -210,6 +238,21 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
     );
 
     Ok(())
+}
+
+fn build_pr_payload(
+    title: &str,
+    description: Option<String>,
+    stack_name: &str,
+    short_sha: &str,
+) -> (String, String) {
+    let fallback = format!("Part of stack `{}`\n\nCommit: {}", stack_name, short_sha);
+    (title.to_string(), description.unwrap_or(fallback))
+}
+
+fn clean_title(title: &str) -> String {
+    let trimmed = title.trim();
+    trimmed.strip_suffix('.').unwrap_or(trimmed).to_string()
 }
 
 /// Create a branch pointing to a specific entry's commit
@@ -296,4 +339,35 @@ fn add_gg_ids_to_commits(repo: &Repository, stack: &Stack) -> Result<()> {
     println!("{} Added GG-IDs to commits", style("OK").green().bold());
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_pr_payload, clean_title};
+
+    #[test]
+    fn test_build_pr_payload_prefers_description() {
+        let (title, description) = build_pr_payload(
+            "Add feature",
+            Some("Details here".to_string()),
+            "stack",
+            "abc123",
+        );
+        assert_eq!(title, "Add feature");
+        assert_eq!(description, "Details here");
+    }
+
+    #[test]
+    fn test_build_pr_payload_falls_back_without_description() {
+        let (title, description) = build_pr_payload("Add feature", None, "stack", "abc123");
+        assert_eq!(title, "Add feature");
+        assert_eq!(description, "Part of stack `stack`\n\nCommit: abc123");
+    }
+
+    #[test]
+    fn test_clean_title_trims_trailing_period() {
+        assert_eq!(clean_title("Add feature."), "Add feature");
+        assert_eq!(clean_title("Add feature"), "Add feature");
+        assert_eq!(clean_title(" Add feature. "), "Add feature");
+    }
 }

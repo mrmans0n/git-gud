@@ -18,23 +18,49 @@ pub fn run(target: Option<String>) -> Result<()> {
     // Load stack
     let stack = Stack::load(&repo, &config)?;
 
+    // Remember current branch to return to after updating base
+    let current_branch = git::current_branch_name(&repo);
+
     // Determine target branch
     let target_branch = target.unwrap_or_else(|| stack.base.clone());
 
     println!(
         "{}",
-        style(format!("Rebasing stack onto {}...", target_branch)).dim()
+        style(format!("Updating {} and rebasing stack...", target_branch)).dim()
     );
 
     // Fetch the latest from remote first
-    let fetch_result = git::run_git_command(&["fetch", "origin", &target_branch]);
+    let fetch_result = git::run_git_command(&["fetch", "origin", "--prune"]);
     if let Err(e) = fetch_result {
         println!(
-            "{} Could not fetch {}: {}",
+            "{} Could not fetch from origin: {}",
+            style("Warning:").yellow(),
+            e
+        );
+    }
+
+    // Update local base branch to match remote (fast-forward)
+    // This ensures merged PRs are reflected in the local base
+    let update_result = update_local_branch(&target_branch);
+    if let Err(e) = update_result {
+        println!(
+            "{} Could not update local {}: {}",
             style("Warning:").yellow(),
             target_branch,
             e
         );
+        println!("  Continuing with rebase onto origin/{}...", target_branch);
+    } else {
+        println!(
+            "{} Updated local {} to latest",
+            style("→").cyan(),
+            target_branch
+        );
+    }
+
+    // Return to stack branch if we switched away
+    if let Some(ref branch) = current_branch {
+        let _ = git::run_git_command(&["checkout", branch]);
     }
 
     // Perform the rebase
@@ -62,6 +88,38 @@ pub fn run(target: Option<String>) -> Result<()> {
             }
         }
     }
+}
+
+/// Update a local branch to match its remote counterpart (fast-forward only)
+fn update_local_branch(branch: &str) -> Result<()> {
+    // Check if the local branch exists
+    let local_exists = git::run_git_command(&["rev-parse", "--verify", branch]).is_ok();
+
+    if !local_exists {
+        // Branch doesn't exist locally, nothing to update
+        return Ok(());
+    }
+
+    // Check if remote branch exists
+    let remote_ref = format!("origin/{}", branch);
+    if git::run_git_command(&["rev-parse", "--verify", &remote_ref]).is_err() {
+        // Remote branch doesn't exist
+        return Ok(());
+    }
+
+    // Get current branch so we can return to it
+    let current = git::run_git_command(&["rev-parse", "--abbrev-ref", "HEAD"])?;
+
+    // Switch to the target branch, update it, then switch back
+    git::run_git_command(&["checkout", branch])?;
+
+    // Try to fast-forward. If it fails (diverged), that's okay - we'll just use origin/
+    let ff_result = git::run_git_command(&["merge", "--ff-only", &remote_ref]);
+
+    // Switch back to original branch
+    let _ = git::run_git_command(&["checkout", &current]);
+
+    ff_result.map(|_| ())
 }
 
 /// Continue a paused rebase

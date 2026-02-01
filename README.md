@@ -21,10 +21,10 @@ Stacked diffs allow you to break large changes into small, reviewable commits th
 cargo install --path .
 ```
 
-### From crates.io (coming soon)
+### From crates.io
 
 ```bash
-cargo install git-gud
+cargo install gg-stack
 ```
 
 ## Prerequisites

@@ -203,6 +203,14 @@ impl Provider {
             Provider::GitLab => "MR",
         }
     }
+
+    /// Get PR/MR number prefix (# for GitHub, ! for GitLab)
+    pub fn pr_number_prefix(&self) -> &'static str {
+        match self {
+            Provider::GitHub => "#",
+            Provider::GitLab => "!",
+        }
+    }
 }
 
 // Conversion helpers
@@ -288,6 +296,12 @@ mod tests {
     fn test_provider_pr_label() {
         assert_eq!(Provider::GitHub.pr_label(), "PR");
         assert_eq!(Provider::GitLab.pr_label(), "MR");
+    }
+
+    #[test]
+    fn test_provider_pr_number_prefix() {
+        assert_eq!(Provider::GitHub.pr_number_prefix(), "#");
+        assert_eq!(Provider::GitLab.pr_number_prefix(), "!");
     }
 
     #[test]

@@ -103,9 +103,10 @@ pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result
         match pr_info.state {
             PrState::Merged => {
                 println!(
-                    "{} {} #{} already merged",
+                    "{} {} {}{} already merged",
                     style("✓").green(),
                     provider.pr_label(),
+                    provider.pr_number_prefix(),
                     pr_num
                 );
                 landed_count += 1;
@@ -113,18 +114,20 @@ pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result
             }
             PrState::Closed => {
                 println!(
-                    "{} {} #{} is closed. Stopping.",
+                    "{} {} {}{} is closed. Stopping.",
                     style("✗").red(),
                     provider.pr_label(),
+                    provider.pr_number_prefix(),
                     pr_num
                 );
                 break;
             }
             PrState::Draft => {
                 println!(
-                    "{} {} #{} is a draft. Mark as ready before landing.",
+                    "{} {} {}{} is a draft. Mark as ready before landing.",
                     style("○").yellow(),
                     provider.pr_label(),
+                    provider.pr_number_prefix(),
                     pr_num
                 );
                 break;
@@ -141,9 +144,10 @@ pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result
                         interrupted.as_ref(),
                     ) {
                         println!(
-                            "{} {} #{}: {}",
+                            "{} {} {}{}: {}",
                             style("Error:").red().bold(),
                             provider.pr_label(),
+                            provider.pr_number_prefix(),
                             pr_num,
                             e
                         );
@@ -155,9 +159,10 @@ pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result
                         let approved = provider.check_pr_approved(pr_num)?;
                         if !approved {
                             println!(
-                                "{} {} #{} is not approved. Stopping.",
+                                "{} {} {}{} is not approved. Stopping.",
                                 style("○").yellow(),
                                 provider.pr_label(),
+                                provider.pr_number_prefix(),
                                 pr_num
                             );
                             break;
@@ -171,8 +176,9 @@ pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result
         if !land_all && !wait {
             let confirm = Confirm::new()
                 .with_prompt(format!(
-                    "Merge {} #{} ({})? ",
+                    "Merge {} {}{} ({})? ",
                     provider.pr_label(),
+                    provider.pr_number_prefix(),
                     pr_num,
                     entry.title
                 ))
@@ -187,18 +193,20 @@ pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result
         }
 
         println!(
-            "{} Merging {} #{}...",
+            "{} Merging {} {}{}...",
             style("→").cyan(),
             provider.pr_label(),
+            provider.pr_number_prefix(),
             pr_num
         );
 
         match provider.merge_pr(pr_num, squash, false) {
             Ok(()) => {
                 println!(
-                    "{} Merged {} #{} into {}",
+                    "{} Merged {} {}{} into {}",
                     style("OK").green().bold(),
                     provider.pr_label(),
+                    provider.pr_number_prefix(),
                     pr_num,
                     stack.base
                 );
@@ -222,8 +230,9 @@ pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result
                             println!(
                                 "{}",
                                 style(format!(
-                                    "  Updating {} #{} base to {}...",
+                                    "  Updating {} {}{} base to {}...",
                                     provider.pr_label(),
+                                    provider.pr_number_prefix(),
                                     remaining_pr,
                                     stack.base
                                 ))
@@ -231,9 +240,10 @@ pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result
                             );
                             if let Err(e) = provider.update_pr_base(remaining_pr, &stack.base) {
                                 println!(
-                                    "{} Warning: Failed to update {} #{} base: {}",
+                                    "{} Warning: Failed to update {} {}{} base: {}",
                                     style("⚠").yellow(),
                                     provider.pr_label(),
+                                    provider.pr_number_prefix(),
                                     remaining_pr,
                                     e
                                 );
@@ -244,9 +254,10 @@ pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result
             }
             Err(e) => {
                 println!(
-                    "{} Failed to merge {} #{}: {}",
+                    "{} Failed to merge {} {}{}: {}",
                     style("Error:").red().bold(),
                     provider.pr_label(),
+                    provider.pr_number_prefix(),
                     pr_num,
                     e
                 );
@@ -363,9 +374,10 @@ fn wait_for_pr_ready(
     let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
 
     println!(
-        "{} Waiting for {} #{} to be ready...",
+        "{} Waiting for {} {}{} to be ready...",
         style("⏳").cyan(),
         provider.pr_label(),
+        provider.pr_number_prefix(),
         pr_num
     );
     println!(
@@ -381,8 +393,9 @@ fn wait_for_pr_ready(
         // Check timeout
         if start_time.elapsed() > timeout {
             return Err(GgError::Other(format!(
-                "Timeout waiting for {} #{} to be ready",
+                "Timeout waiting for {} {}{} to be ready",
                 provider.pr_label(),
+                provider.pr_number_prefix(),
                 pr_num
             )));
         }
@@ -412,15 +425,17 @@ fn wait_for_pr_ready(
             }
             CiStatus::Failed => {
                 return Err(GgError::Other(format!(
-                    "{} #{} CI failed",
+                    "{} {}{} CI failed",
                     provider.pr_label(),
+                    provider.pr_number_prefix(),
                     pr_num
                 )));
             }
             CiStatus::Canceled => {
                 return Err(GgError::Other(format!(
-                    "{} #{} CI was canceled",
+                    "{} {}{} CI was canceled",
                     provider.pr_label(),
+                    provider.pr_number_prefix(),
                     pr_num
                 )));
             }
@@ -444,9 +459,10 @@ fn wait_for_pr_ready(
         // If both CI and approval are ready, we're done
         if ci_ready && approval_ready {
             println!(
-                "{} {} #{} is ready to merge!",
+                "{} {} {}{} is ready to merge!",
                 style("✓").green(),
                 provider.pr_label(),
+                provider.pr_number_prefix(),
                 pr_num
             );
             return Ok(());

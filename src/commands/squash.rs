@@ -120,10 +120,29 @@ pub fn run(all: bool) -> Result<()> {
 
         if !rebase_result.status.success() {
             let stderr = String::from_utf8_lossy(&rebase_result.stderr);
-            if stderr.contains("CONFLICT") || stderr.contains("conflict") {
+            let stdout = String::from_utf8_lossy(&rebase_result.stdout);
+
+            if stderr.contains("CONFLICT")
+                || stderr.contains("conflict")
+                || stdout.contains("CONFLICT")
+                || stdout.contains("conflict")
+            {
+                eprintln!("{}", style("Rebase conflict detected.").yellow().bold());
+                eprintln!(
+                    "  Resolve conflicts, stage the changes with `git add`, then run `gg continue`"
+                );
+                eprintln!("  Or run `gg abort` to cancel the rebase");
                 return Err(GgError::RebaseConflict);
             }
-            return Err(GgError::Other(format!("Rebase failed: {}", stderr)));
+
+            let error_msg = if !stderr.is_empty() {
+                stderr.to_string()
+            } else if !stdout.is_empty() {
+                stdout.to_string()
+            } else {
+                "Unknown error (no output from git)".to_string()
+            };
+            return Err(GgError::Other(format!("Rebase failed: {}", error_msg)));
         }
 
         println!(

@@ -68,6 +68,14 @@ pub fn last() -> Result<()> {
     let config = Config::load(git_dir)?;
     let stack = Stack::load(&repo, &config)?;
 
+    // Check if a rebase is in progress
+    if git::is_rebase_in_progress(&repo) {
+        return Err(GgError::Other(
+            "A rebase is in progress. Run `gg continue` to continue or `gg abort` to cancel."
+                .to_string(),
+        ));
+    }
+
     if let Some(entry) = stack.last() {
         // Check if we're in detached HEAD and if the current commit has changed
         let needs_rebase = check_and_rebase_if_modified(&repo, &stack)?;
@@ -118,6 +126,14 @@ pub fn next() -> Result<()> {
     let git_dir = repo.path();
     let config = Config::load(git_dir)?;
     let stack = Stack::load(&repo, &config)?;
+
+    // Check if a rebase is in progress
+    if git::is_rebase_in_progress(&repo) {
+        return Err(GgError::Other(
+            "A rebase is in progress. Run `gg continue` to continue or `gg abort` to cancel."
+                .to_string(),
+        ));
+    }
 
     // Check if we need to rebase due to modifications
     let needs_rebase = check_and_rebase_if_modified(&repo, &stack)?;
@@ -216,6 +232,11 @@ fn checkout_entry(repo: &git2::Repository, stack: &Stack, entry: &StackEntry) ->
 fn check_and_rebase_if_modified(repo: &git2::Repository, stack: &Stack) -> Result<bool> {
     use std::process::Command;
 
+    // Don't try to rebase if a rebase is already in progress
+    if git::is_rebase_in_progress(repo) {
+        return Ok(false);
+    }
+
     // Try to read saved navigation context (branch, position, original_oid)
     let git_dir = repo.path();
     let nav_context = match stack::read_nav_context(git_dir) {
@@ -280,12 +301,31 @@ fn check_and_rebase_if_modified(repo: &git2::Repository, stack: &Stack) -> Resul
 
     if !rebase_result.status.success() {
         let stderr = String::from_utf8_lossy(&rebase_result.stderr);
-        if stderr.contains("CONFLICT") || stderr.contains("conflict") {
+        let stdout = String::from_utf8_lossy(&rebase_result.stdout);
+
+        if stderr.contains("CONFLICT")
+            || stderr.contains("conflict")
+            || stdout.contains("CONFLICT")
+            || stdout.contains("conflict")
+        {
+            eprintln!("{}", style("Rebase conflict detected.").yellow().bold());
+            eprintln!(
+                "  Resolve conflicts, stage the changes with `git add`, then run `gg continue`"
+            );
+            eprintln!("  Or run `gg abort` to cancel the rebase");
             return Err(GgError::RebaseConflict);
         }
+
+        let error_msg = if !stderr.is_empty() {
+            stderr.to_string()
+        } else if !stdout.is_empty() {
+            stdout.to_string()
+        } else {
+            "Unknown error (no output from git)".to_string()
+        };
         return Err(GgError::Other(format!(
             "Failed to rebase stack: {}",
-            stderr
+            error_msg
         )));
     }
 

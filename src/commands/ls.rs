@@ -135,7 +135,7 @@ fn list_remote_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
     // Get local stacks for comparison
     let local_stacks = stack::list_all_stacks(repo, config, &username)?;
 
-    // Scan remote branches
+    // Scan remote branches (both stack branches and entry branches)
     let mut remote_stacks: Vec<String> = Vec::new();
     let branches = repo.branches(Some(git2::BranchType::Remote))?;
 
@@ -144,8 +144,19 @@ fn list_remote_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
         if let Some(name) = branch.name()? {
             // Remote branches are prefixed with "origin/"
             if let Some(branch_name) = name.strip_prefix("origin/") {
-                // Check if it's a stack branch (username/stack-name, not entry branch)
+                // Check if it's a stack branch (username/stack-name)
                 if let Some((branch_user, stack_name)) = git::parse_stack_branch(branch_name) {
+                    if branch_user == username
+                        && !local_stacks.contains(&stack_name)
+                        && !remote_stacks.contains(&stack_name)
+                    {
+                        remote_stacks.push(stack_name);
+                    }
+                }
+                // Also check entry branches (username/stack-name--entry-id)
+                else if let Some((branch_user, stack_name, _entry_id)) =
+                    git::parse_entry_branch(branch_name)
+                {
                     if branch_user == username
                         && !local_stacks.contains(&stack_name)
                         && !remote_stacks.contains(&stack_name)

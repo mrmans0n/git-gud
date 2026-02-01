@@ -80,42 +80,39 @@ pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
         );
     } else if check_remote_stack_exists(&repo, &username, &stack_name) {
         // Stack exists on remote but not locally - fetch and checkout
-        let remote_branch = format!("origin/{}/{}", username, stack_name);
-        let local_branch = git::format_stack_branch(&username, &stack_name);
-
         println!(
             "{} Fetching remote stack {}...",
             style("→").cyan(),
             style(&stack_name).cyan()
         );
 
-        // Fetch the specific branch
-        std::process::Command::new("git")
-            .args(["fetch", "origin", &format!("{}/{}", username, stack_name)])
-            .output()
-            .map_err(|e| GgError::Command("git fetch".to_string(), e.to_string()))?;
+        // Fetch all branches for this stack
+        let _ = std::process::Command::new("git")
+            .args(["fetch", "origin"])
+            .output();
 
-        // Create local branch tracking the remote
-        let remote_ref = repo.revparse_single(&remote_branch)?;
+        // Try to find either the main stack branch or an entry branch
+        let remote_stack_branch = format!("origin/{}/{}", username, stack_name);
+        let target_branch = if repo.revparse_single(&remote_stack_branch).is_ok() {
+            // Main stack branch exists
+            remote_stack_branch
+        } else {
+            // Find an entry branch for this stack
+            find_remote_entry_branch(&repo, &username, &stack_name).ok_or_else(|| {
+                GgError::Other(format!(
+                    "Could not find remote branch for stack '{}'",
+                    stack_name
+                ))
+            })?
+        };
+
+        // Get the commit from the remote branch
+        let remote_ref = repo.revparse_single(&target_branch)?;
         let remote_commit = remote_ref.peel_to_commit()?;
+
+        // Create local stack branch pointing to this commit
+        let local_branch = git::format_stack_branch(&username, &stack_name);
         repo.branch(&local_branch, &remote_commit, false)?;
-
-        // Set up tracking
-        let _ = std::process::Command::new("git")
-            .args(["branch", "--set-upstream-to", &remote_branch, &local_branch])
-            .output();
-
-        // Also fetch entry branches for this stack
-        let _ = std::process::Command::new("git")
-            .args([
-                "fetch",
-                "origin",
-                &format!(
-                    "refs/heads/{}/{}--*:refs/remotes/origin/{}/{}--*",
-                    username, stack_name, username, stack_name
-                ),
-            ])
-            .output();
 
         // Checkout the branch
         git::checkout_branch(&repo, &local_branch)?;
@@ -175,8 +172,53 @@ pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
     Ok(())
 }
 
-/// Check if a stack exists on remote
+/// Find a remote entry branch for a stack (returns the first one found)
+fn find_remote_entry_branch(
+    repo: &git2::Repository,
+    username: &str,
+    stack_name: &str,
+) -> Option<String> {
+    let branches = repo.branches(Some(git2::BranchType::Remote)).ok()?;
+
+    for branch_result in branches.flatten() {
+        if let Ok(Some(name)) = branch_result.0.name() {
+            if let Some(branch_name) = name.strip_prefix("origin/") {
+                if let Some((branch_user, branch_stack, _)) = git::parse_entry_branch(branch_name) {
+                    if branch_user == username && branch_stack == stack_name {
+                        return Some(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Check if a stack exists on remote (either main branch or entry branches)
 fn check_remote_stack_exists(repo: &git2::Repository, username: &str, stack_name: &str) -> bool {
+    // Check for main stack branch
     let remote_branch = format!("origin/{}/{}", username, stack_name);
-    repo.revparse_single(&remote_branch).is_ok()
+    if repo.revparse_single(&remote_branch).is_ok() {
+        return true;
+    }
+
+    // Check for entry branches (origin/username/stack--c-xxx)
+    if let Ok(branches) = repo.branches(Some(git2::BranchType::Remote)) {
+        for branch_result in branches.flatten() {
+            if let Ok(Some(name)) = branch_result.0.name() {
+                if let Some(branch_name) = name.strip_prefix("origin/") {
+                    if let Some((branch_user, branch_stack, _)) =
+                        git::parse_entry_branch(branch_name)
+                    {
+                        if branch_user == username && branch_stack == stack_name {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    false
 }

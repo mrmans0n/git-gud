@@ -13,9 +13,6 @@ use crate::git;
 use crate::provider::{CiStatus, PrState, Provider};
 use crate::stack::Stack;
 
-/// Default timeout for waiting (30 minutes)
-const DEFAULT_WAIT_TIMEOUT_SECS: u64 = 30 * 60;
-
 /// Polling interval (10 seconds)
 const POLL_INTERVAL_SECS: u64 = 10;
 
@@ -135,9 +132,14 @@ pub fn run(land_all: bool, squash: bool, wait: bool) -> Result<()> {
             PrState::Open => {
                 // If wait flag is set, wait for CI and approvals
                 if wait {
-                    if let Err(e) =
-                        wait_for_pr_ready(&provider, pr_num, land_all, interrupted.as_ref())
-                    {
+                    let timeout_minutes = config.get_land_wait_timeout_minutes();
+                    if let Err(e) = wait_for_pr_ready(
+                        &provider,
+                        pr_num,
+                        land_all,
+                        timeout_minutes,
+                        interrupted.as_ref(),
+                    ) {
                         println!(
                             "{} {} #{}: {}",
                             style("Error:").red().bold(),
@@ -298,10 +300,11 @@ fn wait_for_pr_ready(
     provider: &Provider,
     pr_num: u64,
     skip_approval: bool,
+    timeout_minutes: u64,
     interrupted: Option<&Arc<AtomicBool>>,
 ) -> Result<()> {
     let start_time = Instant::now();
-    let timeout = Duration::from_secs(DEFAULT_WAIT_TIMEOUT_SECS);
+    let timeout = Duration::from_secs(timeout_minutes * 60);
     let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
 
     println!(
@@ -314,8 +317,7 @@ fn wait_for_pr_ready(
         "{}",
         style(format!(
             "  (Checking CI status and approvals every {}s, timeout after {}m)",
-            POLL_INTERVAL_SECS,
-            DEFAULT_WAIT_TIMEOUT_SECS / 60
+            POLL_INTERVAL_SECS, timeout_minutes
         ))
         .dim()
     );
@@ -406,14 +408,11 @@ mod tests {
 
     #[test]
     fn test_constants() {
-        assert_eq!(DEFAULT_WAIT_TIMEOUT_SECS, 30 * 60);
         assert_eq!(POLL_INTERVAL_SECS, 10);
     }
 
     #[test]
-    fn test_timeout_values_are_reasonable() {
-        // Timeout should be at least 5 minutes
-        const { assert!(DEFAULT_WAIT_TIMEOUT_SECS >= 5 * 60) };
+    fn test_poll_interval_is_reasonable() {
         // Poll interval should be between 1 and 60 seconds
         const { assert!(POLL_INTERVAL_SECS >= 1 && POLL_INTERVAL_SECS <= 60) };
     }

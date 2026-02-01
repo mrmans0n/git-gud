@@ -16,15 +16,16 @@ pub fn run(clean_all: bool) -> Result<()> {
     let git_dir = repo.path();
     let mut config = Config::load(git_dir)?;
 
-    // Detect provider
-    let provider = Provider::detect(&repo)?;
+    // Detect provider (best-effort).
+    // Some repos (e.g. local remotes in tests) won't match GitHub/GitLab.
+    let provider = Provider::detect(&repo).ok();
 
     // Get username
     let username = config
         .defaults
         .branch_username
         .clone()
-        .or_else(|| provider.whoami().ok())
+        .or_else(|| provider.as_ref().and_then(|p| p.whoami().ok()))
         .unwrap_or_else(|| "unknown".to_string());
 
     // Get all stacks
@@ -43,15 +44,17 @@ pub fn run(clean_all: bool) -> Result<()> {
 
         // Check if the branch exists
         if repo.find_branch(&branch_name, BranchType::Local).is_err() {
-            // Branch doesn't exist, clean orphan entry branches and config
-            delete_entry_branches(&repo, &config, stack_name, &username);
+            // Branch doesn't exist: clean LOCAL orphan entry branches and config.
+            // Be conservative: do NOT delete remote branches here because we can't
+            // reliably verify merge status without the main stack branch.
+            delete_entry_branches(&repo, &config, stack_name, &username, /*delete_remote=*/ false);
             config.remove_stack(stack_name);
             cleaned_count += 1;
             continue;
         }
 
         // Load the stack to check MR status
-        let is_merged = check_stack_merged(&repo, &config, stack_name, &username, &provider)?;
+        let is_merged = check_stack_merged(&repo, &config, stack_name, &username, provider.as_ref())?;
 
         if is_merged {
             if !clean_all {
@@ -84,8 +87,8 @@ pub fn run(clean_all: bool) -> Result<()> {
                 branch.delete()?;
             }
 
-            // Delete entry branches (both local and remote)
-            delete_entry_branches(&repo, &config, stack_name, &username);
+            // Delete entry branches (local and remote)
+            delete_entry_branches(&repo, &config, stack_name, &username, /*delete_remote=*/ true);
 
             // Remove from config
             config.remove_stack(stack_name);
@@ -128,14 +131,14 @@ fn check_stack_merged(
     config: &Config,
     stack_name: &str,
     username: &str,
-    provider: &Provider,
+    provider: Option<&Provider>,
 ) -> Result<bool> {
     // Primary method: check if all MRs are merged
     // This works correctly with squash and rebase merges
     if let Some(stack_config) = config.get_stack(stack_name) {
         if stack_config.mrs.is_empty() {
             // No MRs tracked, fall back to git merge check
-        } else {
+        } else if let Some(provider) = provider {
             let mut all_merged = true;
             for mr_num in stack_config.mrs.values() {
                 match provider.get_pr_info(*mr_num) {
@@ -188,6 +191,7 @@ fn delete_entry_branches(
     config: &Config,
     stack_name: &str,
     username: &str,
+    delete_remote: bool,
 ) {
     // First, delete entry branches from config (if any)
     if let Some(stack_config) = config.get_stack(stack_name) {
@@ -198,7 +202,9 @@ fn delete_entry_branches(
                 let _ = branch.delete();
             }
             // Delete remote entry branch
-            let _ = git::delete_remote_branch(&entry_branch);
+            if delete_remote {
+                let _ = git::delete_remote_branch(&entry_branch);
+            }
         }
     }
 
@@ -228,6 +234,8 @@ fn delete_entry_branches(
             let _ = branch.delete();
         }
         // Also try to delete from remote
-        let _ = git::delete_remote_branch(&branch_name);
+        if delete_remote {
+            let _ = git::delete_remote_branch(&branch_name);
+        }
     }
 }

@@ -1565,3 +1565,47 @@ fn test_rebase_with_prune_removes_deleted_remote_branches() {
         "Remote tracking branch should be pruned after rebase"
     );
 }
+
+#[test]
+fn test_clean_removes_orphan_entry_branches_when_stack_branch_missing() {
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+
+    // Set up config with username (provider detection not available in tests)
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create orphan entry branches (but NO main stack branch)
+    run_git(&repo_path, &["branch", "testuser/fix-dashboard--c-aaa111"]);
+    run_git(&repo_path, &["branch", "testuser/fix-dashboard--c-bbb222"]);
+
+    let (_success, stdout_before, _stderr_before) = run_gg(&repo_path, &[]);
+    assert!(
+        stdout_before.contains("fix-dashboard"),
+        "Expected stack to be listed before clean, got: {stdout_before}"
+    );
+
+    // Run clean (should remove local orphan entry branches)
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["clean", "--all"]);
+    assert!(success, "gg clean failed: {stderr}");
+
+    let (_success, branches) = run_git(&repo_path, &["branch", "--list"]);
+    assert!(
+        !branches.contains("testuser/fix-dashboard--c-aaa111"),
+        "Expected orphan entry branch to be deleted"
+    );
+    assert!(
+        !branches.contains("testuser/fix-dashboard--c-bbb222"),
+        "Expected orphan entry branch to be deleted"
+    );
+
+    let (_success, stdout_after, _stderr_after) = run_gg(&repo_path, &[]);
+    assert!(
+        !stdout_after.contains("fix-dashboard"),
+        "Expected stack to not be listed after clean, got: {stdout_after}"
+    );
+}

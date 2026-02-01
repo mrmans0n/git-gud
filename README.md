@@ -309,16 +309,28 @@ $ gg sync
 
 ## Shell Completions
 
-Generate completions for your shell:
+Generate completions for your shell, then enable them in your shell config:
 
 ```bash
 # Bash
+mkdir -p ~/.local/share/bash-completion/completions
 gg completions bash > ~/.local/share/bash-completion/completions/gg
 
+# Add to ~/.bashrc (if bash-completion isn't already enabled)
+# source /usr/share/bash-completion/bash_completion
+# or on some distros:
+# source /etc/bash_completion
+
 # Zsh
+mkdir -p ~/.zfunc
 gg completions zsh > ~/.zfunc/_gg
 
+# Add to ~/.zshrc
+# fpath=(~/.zfunc $fpath)
+# autoload -Uz compinit && compinit
+
 # Fish
+mkdir -p ~/.config/fish/completions
 gg completions fish > ~/.config/fish/completions/gg.fish
 ```
 

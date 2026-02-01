@@ -130,6 +130,33 @@ pub fn continue_rebase() -> Result<()> {
         return Err(GgError::NoRebaseInProgress);
     }
 
+    // Check for unstaged changes before continuing
+    let statuses = repo.statuses(None)?;
+    let has_unstaged = statuses.iter().any(|s| {
+        let flags = s.status();
+        // Check for modified/deleted files that aren't staged
+        flags.is_wt_modified() || flags.is_wt_deleted()
+    });
+
+    if has_unstaged {
+        return Err(GgError::Other(
+            "You have unstaged changes. Stage them with `git add` before running `gg continue`."
+                .to_string(),
+        ));
+    }
+
+    // Check for unresolved conflicts
+    let has_conflicts = statuses.iter().any(|s| {
+        let flags = s.status();
+        flags.is_conflicted()
+    });
+
+    if has_conflicts {
+        return Err(GgError::Other(
+            "You have unresolved conflicts. Resolve them and stage with `git add` before running `gg continue`.".to_string()
+        ));
+    }
+
     match git::rebase_continue() {
         Ok(_) => {
             println!(
@@ -147,6 +174,13 @@ pub fn continue_rebase() -> Result<()> {
                 );
                 Err(GgError::RebaseConflict)
             } else {
+                // Provide more helpful error message
+                eprintln!(
+                    "{} git rebase --continue failed",
+                    style("Error:").red().bold()
+                );
+                eprintln!("  {}", error_str);
+                eprintln!("  Hint: Run `git status` to see the current state");
                 Err(e)
             }
         }

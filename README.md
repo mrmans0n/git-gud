@@ -123,8 +123,9 @@ gg clean
 
 | Command | Description |
 |---------|-------------|
-| `gg land` | Merge the first approved PR/MR |
+| `gg land` | Merge the first approved PR/MR (squash by default) |
 | `gg land --all` | Merge all approved PRs/MRs in sequence |
+| `gg land --no-squash` | Merge using merge commit instead of squash |
 | `gg rebase` | Rebase stack onto updated base branch |
 
 ### Utilities

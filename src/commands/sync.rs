@@ -22,6 +22,10 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
     provider.check_installed()?;
     provider.check_auth()?;
 
+    // Fetch from remote to ensure we have up-to-date refs
+    // This prevents "stale info" errors when remote branches were deleted (e.g., after merge)
+    let _ = git::fetch_and_prune();
+
     // Load current stack
     let stack = Stack::load(&repo, &config)?;
 

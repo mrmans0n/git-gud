@@ -325,7 +325,11 @@ pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result
                         println!("{} Stack cleaned successfully", style("OK").green().bold());
                     }
                     Err(e) => {
-                        println!("{} Failed to clean stack: {}", style("Warning:").yellow(), e);
+                        println!(
+                            "{} Failed to clean stack: {}",
+                            style("Warning:").yellow(),
+                            e
+                        );
                         println!(
                             "{}",
                             style("  You may need to run `gg clean` manually.").dim()

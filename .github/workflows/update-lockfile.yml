@@ -1,0 +1,30 @@
+name: Update Cargo.lock
+
+on:
+  push:
+    branches: [main]
+    paths: [Cargo.toml]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  update-lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Update Cargo.lock
+        run: cargo check
+
+      - name: Commit updated Cargo.lock
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Update Cargo.lock [skip ci]"
+          file_pattern: Cargo.lock

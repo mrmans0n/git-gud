@@ -86,9 +86,10 @@ gg clean
 
 | Command | Description |
 |---------|-------------|
-| `gg co <name>` | Create a new stack or switch to existing one |
+| `gg co <name>` | Create a new stack, switch to existing, or checkout from remote |
 | `gg ls` | List current stack commits with PR/MR status |
 | `gg ls --all` | List all stacks in the repository |
+| `gg ls --remote` | List remote stacks not checked out locally |
 | `gg clean` | Remove merged stacks and their remote branches |
 
 ### Syncing
@@ -221,8 +222,11 @@ user-auth (3 commits, 0 synced)
 # 4. Push to remote
 $ gg sync --draft
 OK Pushed nacho/user-auth--c-f9a1e2b -> MR !101 (draft)
+   https://gitlab.com/user/repo/-/merge_requests/101
 OK Pushed nacho/user-auth--c-7c1b9d0 -> MR !102 (draft)
+   https://gitlab.com/user/repo/-/merge_requests/102
 OK Pushed nacho/user-auth--c-98ab321 -> MR !103 (draft)
+   https://gitlab.com/user/repo/-/merge_requests/103
 
 # 5. Address review feedback on commit 1
 $ gg mv 1
@@ -248,6 +252,27 @@ OK Merged MR !103 into main
 # 8. Clean up
 $ gg clean
 OK Deleted stack "user-auth" (all merged)
+```
+
+## Working with Remote Stacks
+
+You can continue working on stacks from another machine:
+
+```bash
+# List stacks that exist on remote but not locally
+$ gg ls --remote
+Remote stacks:
+  ○ user-auth (3 commits) [#101, #102, #103]
+  ○ api-refactor (2 commits)
+
+# Check out a remote stack
+$ gg co user-auth
+→ Fetching remote stack user-auth...
+OK Checked out remote stack user-auth
+
+# Continue working normally
+$ gg ls
+$ gg sync
 ```
 
 ## Shell Completions

@@ -117,9 +117,9 @@ enum Commands {
         #[arg(short, long)]
         all: bool,
 
-        /// Squash commits when merging
-        #[arg(short, long)]
-        squash: bool,
+        /// Disable squash when merging (default: squash enabled)
+        #[arg(long = "no-squash")]
+        no_squash: bool,
     },
 
     /// Clean up merged stacks
@@ -209,7 +209,7 @@ fn main() {
         Some(Commands::Reorder { order }) => {
             commands::reorder::run(commands::reorder::ReorderOptions { order })
         }
-        Some(Commands::Land { all, squash }) => commands::land::run(all, squash),
+        Some(Commands::Land { all, no_squash }) => commands::land::run(all, !no_squash),
         Some(Commands::Clean { all }) => commands::clean::run(all),
         Some(Commands::Rebase { target }) => commands::rebase::run(target),
         Some(Commands::Continue) => commands::rebase::continue_rebase(),

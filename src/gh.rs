@@ -310,7 +310,10 @@ pub fn check_pr_approved(pr_number: u64) -> Result<bool> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Ok(stdout == "APPROVED")
+    // APPROVED = explicitly approved
+    // Empty = no review required (e.g., no branch protection rules requiring review)
+    // "" = same as empty
+    Ok(stdout == "APPROVED" || stdout.is_empty() || stdout == "null")
 }
 
 /// Get CI status for a PR

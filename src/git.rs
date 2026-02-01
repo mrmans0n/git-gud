@@ -423,10 +423,7 @@ mod tests {
         );
 
         // Already valid
-        assert_eq!(
-            sanitize_stack_name("my-feature").unwrap(),
-            "my-feature"
-        );
+        assert_eq!(sanitize_stack_name("my-feature").unwrap(), "my-feature");
 
         // Invalid: contains /
         assert!(sanitize_stack_name("my/feature").is_err());

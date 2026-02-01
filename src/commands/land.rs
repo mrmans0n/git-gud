@@ -1,16 +1,26 @@
 //! `gg land` - Merge approved PRs/MRs starting from the first commit
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
 use console::style;
 use dialoguer::Confirm;
 
 use crate::config::Config;
-use crate::error::Result;
+use crate::error::{GgError, Result};
 use crate::git;
-use crate::provider::{PrState, Provider};
+use crate::provider::{CiStatus, PrState, Provider};
 use crate::stack::Stack;
 
+/// Default timeout for waiting (30 minutes)
+const DEFAULT_WAIT_TIMEOUT_SECS: u64 = 30 * 60;
+
+/// Polling interval (10 seconds)
+const POLL_INTERVAL_SECS: u64 = 10;
+
 /// Run the land command
-pub fn run(land_all: bool, squash: bool) -> Result<()> {
+pub fn run(land_all: bool, squash: bool, wait: bool) -> Result<()> {
     let repo = git::open_repo()?;
     let git_dir = repo.path();
     let mut config = Config::load(git_dir)?;
@@ -38,10 +48,33 @@ pub fn run(land_all: bool, squash: bool) -> Result<()> {
     );
     stack.refresh_mr_info(&provider)?;
 
+    // Set up Ctrl+C handler if waiting
+    let interrupted = if wait {
+        let flag = Arc::new(AtomicBool::new(false));
+        let flag_clone = Arc::clone(&flag);
+        ctrlc::set_handler(move || {
+            flag_clone.store(true, Ordering::SeqCst);
+            println!();
+            println!("{}", style("Interrupted. Stopping...").yellow());
+        })
+        .map_err(|e| GgError::Other(format!("Failed to set Ctrl+C handler: {}", e)))?;
+        Some(flag)
+    } else {
+        None
+    };
+
     // Find landable PRs (approved, open, from the start of the stack)
     let mut landed_count = 0;
 
     for entry in &stack.entries {
+        // Check if interrupted
+        if let Some(ref flag) = interrupted {
+            if flag.load(Ordering::SeqCst) {
+                println!("{}", style("Interrupted by user.").yellow());
+                break;
+            }
+        }
+
         let gg_id = match &entry.gg_id {
             Some(id) => id,
             None => {
@@ -100,24 +133,40 @@ pub fn run(land_all: bool, squash: bool) -> Result<()> {
                 break;
             }
             PrState::Open => {
-                // Check if approved (skip if --all is used)
-                if !land_all {
-                    let approved = provider.check_pr_approved(pr_num)?;
-                    if !approved {
+                // If wait flag is set, wait for CI and approvals
+                if wait {
+                    if let Err(e) =
+                        wait_for_pr_ready(&provider, pr_num, land_all, interrupted.as_ref())
+                    {
                         println!(
-                            "{} {} #{} is not approved. Stopping.",
-                            style("○").yellow(),
+                            "{} {} #{}: {}",
+                            style("Error:").red().bold(),
                             provider.pr_label(),
-                            pr_num
+                            pr_num,
+                            e
                         );
                         break;
+                    }
+                } else {
+                    // Check if approved (skip if --all is used)
+                    if !land_all {
+                        let approved = provider.check_pr_approved(pr_num)?;
+                        if !approved {
+                            println!(
+                                "{} {} #{} is not approved. Stopping.",
+                                style("○").yellow(),
+                                provider.pr_label(),
+                                pr_num
+                            );
+                            break;
+                        }
                     }
                 }
             }
         }
 
         // PR/MR is approved and open - land it
-        if !land_all {
+        if !land_all && !wait {
             let confirm = Confirm::new()
                 .with_prompt(format!(
                     "Merge {} #{} ({})? ",
@@ -207,8 +256,8 @@ pub fn run(land_all: bool, squash: bool) -> Result<()> {
             break;
         }
 
-        // Wait a bit for GitHub to process
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        // Wait a bit for the provider to process
+        std::thread::sleep(Duration::from_secs(2));
     }
 
     // Save updated config
@@ -242,4 +291,130 @@ pub fn run(land_all: bool, squash: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Wait for a PR/MR to be ready to merge (CI passes, approvals met)
+fn wait_for_pr_ready(
+    provider: &Provider,
+    pr_num: u64,
+    skip_approval: bool,
+    interrupted: Option<&Arc<AtomicBool>>,
+) -> Result<()> {
+    let start_time = Instant::now();
+    let timeout = Duration::from_secs(DEFAULT_WAIT_TIMEOUT_SECS);
+    let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
+
+    println!(
+        "{} Waiting for {} #{} to be ready...",
+        style("⏳").cyan(),
+        provider.pr_label(),
+        pr_num
+    );
+    println!(
+        "{}",
+        style(format!(
+            "  (Checking CI status and approvals every {}s, timeout after {}m)",
+            POLL_INTERVAL_SECS,
+            DEFAULT_WAIT_TIMEOUT_SECS / 60
+        ))
+        .dim()
+    );
+
+    loop {
+        // Check timeout
+        if start_time.elapsed() > timeout {
+            return Err(GgError::Other(format!(
+                "Timeout waiting for {} #{} to be ready",
+                provider.pr_label(),
+                pr_num
+            )));
+        }
+
+        // Check if interrupted
+        if let Some(flag) = interrupted {
+            if flag.load(Ordering::SeqCst) {
+                return Err(GgError::Other("Interrupted by user".to_string()));
+            }
+        }
+
+        // Check CI status
+        let ci_status = provider.get_pr_ci_status(pr_num)?;
+        let ci_ready = match ci_status {
+            CiStatus::Success => true,
+            CiStatus::Pending | CiStatus::Running => {
+                println!(
+                    "  {} CI is {}...",
+                    style("⏳").cyan(),
+                    match ci_status {
+                        CiStatus::Pending => "pending",
+                        CiStatus::Running => "running",
+                        _ => unreachable!(),
+                    }
+                );
+                false
+            }
+            CiStatus::Failed => {
+                return Err(GgError::Other(format!(
+                    "{} #{} CI failed",
+                    provider.pr_label(),
+                    pr_num
+                )));
+            }
+            CiStatus::Canceled => {
+                return Err(GgError::Other(format!(
+                    "{} #{} CI was canceled",
+                    provider.pr_label(),
+                    pr_num
+                )));
+            }
+            CiStatus::Unknown => {
+                println!("  {} CI status unknown, proceeding...", style("⚠").yellow());
+                true
+            }
+        };
+
+        // Check approval status (unless --all flag is used)
+        let approval_ready = if skip_approval {
+            true
+        } else {
+            let approved = provider.check_pr_approved(pr_num)?;
+            if !approved {
+                println!("  {} Waiting for approval...", style("⏳").cyan());
+            }
+            approved
+        };
+
+        // If both CI and approval are ready, we're done
+        if ci_ready && approval_ready {
+            println!(
+                "{} {} #{} is ready to merge!",
+                style("✓").green(),
+                provider.pr_label(),
+                pr_num
+            );
+            return Ok(());
+        }
+
+        // Wait before next poll
+        std::thread::sleep(poll_interval);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_constants() {
+        assert_eq!(DEFAULT_WAIT_TIMEOUT_SECS, 30 * 60);
+        assert_eq!(POLL_INTERVAL_SECS, 10);
+    }
+
+    #[test]
+    fn test_timeout_values_are_reasonable() {
+        // Timeout should be at least 5 minutes
+        const { assert!(DEFAULT_WAIT_TIMEOUT_SECS >= 5 * 60) };
+        // Poll interval should be between 1 and 60 seconds
+        const { assert!(POLL_INTERVAL_SECS >= 1 && POLL_INTERVAL_SECS <= 60) };
+    }
 }

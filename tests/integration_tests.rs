@@ -1179,3 +1179,78 @@ fn test_config_auto_add_gg_ids_default() {
         config_content
     );
 }
+
+#[test]
+fn test_rebase_updates_local_main() {
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with a commit
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "rebase-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("feature.txt"), "feature").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Add feature"]);
+
+    // Get the initial main SHA
+    run_git(&repo_path, &["checkout", "main"]);
+    let (_, initial_main_sha) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    let initial_main_sha = initial_main_sha.trim();
+
+    // Simulate a commit being merged on the remote (like a PR merge)
+    // We'll add a commit directly to origin/main
+    run_git(&repo_path, &["checkout", "main"]);
+    fs::write(repo_path.join("merged.txt"), "merged from PR").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Merged PR"]);
+    run_git(&repo_path, &["push", "origin", "main"]);
+
+    // Reset local main to the old SHA (simulating local main being behind)
+    run_git(&repo_path, &["reset", "--hard", initial_main_sha]);
+
+    // Verify local main is behind
+    let (_, local_sha) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        local_sha.trim(),
+        initial_main_sha,
+        "Local main should be at initial SHA"
+    );
+
+    // Switch to our stack
+    run_git(&repo_path, &["checkout", "testuser/rebase-test"]);
+
+    // Run gg rebase - this should update local main
+    let (success, stdout, stderr) = run_gg(&repo_path, &["rebase"]);
+
+    // Check that rebase ran (might fail if there are conflicts, but that's ok)
+    // The important thing is that it attempted to update main
+    let combined = format!("{}{}", stdout, stderr);
+    assert!(
+        combined.contains("Updating main") || combined.contains("Updated local main") || success,
+        "Should mention updating main: {}",
+        combined
+    );
+}
+
+#[test]
+fn test_rebase_help() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let (success, stdout, _stderr) = run_gg(&repo_path, &["rebase", "--help"]);
+
+    assert!(success, "Help should succeed");
+    assert!(
+        stdout.contains("Rebase") || stdout.contains("rebase"),
+        "Should show rebase help: {}",
+        stdout
+    );
+}

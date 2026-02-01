@@ -264,10 +264,23 @@ pub fn run_git_command(args: &[&str]) -> Result<String> {
     }
 }
 
+/// Fetch from origin and prune stale remote-tracking refs
+/// This ensures we have up-to-date remote state before operations like sync
+pub fn fetch_and_prune() -> Result<()> {
+    // Using subprocess because git2's fetch requires complex auth callback setup
+    let _ = std::process::Command::new("git")
+        .args(["fetch", "origin", "--prune"])
+        .output();
+    Ok(())
+}
+
 /// Push a branch to origin
 ///
 /// - `force_with_lease`: Use --force-with-lease (safe force, recommended for stacked diffs)
 /// - `hard_force`: Use --force (overrides force_with_lease, use only as escape hatch)
+///
+/// If force_with_lease fails with "stale info", retries without lease since
+/// the remote branch may have been deleted (e.g., after a PR was merged)
 pub fn push_branch(branch_name: &str, force_with_lease: bool, hard_force: bool) -> Result<()> {
     let mut args = vec!["push", "origin", branch_name];
     if hard_force {
@@ -275,8 +288,21 @@ pub fn push_branch(branch_name: &str, force_with_lease: bool, hard_force: bool) 
     } else if force_with_lease {
         args.insert(1, "--force-with-lease");
     }
-    run_git_command(&args)?;
-    Ok(())
+
+    let result = run_git_command(&args);
+
+    // If force-with-lease failed with "stale info", the remote branch was likely deleted
+    // Retry without lease (equivalent to creating a new branch)
+    if let Err(ref e) = result {
+        let err_msg = e.to_string();
+        if force_with_lease && !hard_force && err_msg.contains("stale info") {
+            // Retry with regular force push
+            let retry_args = vec!["push", "--force", "origin", branch_name];
+            return run_git_command(&retry_args).map(|_| ());
+        }
+    }
+
+    result.map(|_| ())
 }
 
 /// Delete a remote branch

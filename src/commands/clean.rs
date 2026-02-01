@@ -43,7 +43,8 @@ pub fn run(clean_all: bool) -> Result<()> {
 
         // Check if the branch exists
         if repo.find_branch(&branch_name, BranchType::Local).is_err() {
-            // Branch doesn't exist, just clean config
+            // Branch doesn't exist, clean orphan entry branches and config
+            delete_entry_branches(&repo, &config, stack_name, &username);
             config.remove_stack(stack_name);
             cleaned_count += 1;
             continue;
@@ -83,14 +84,8 @@ pub fn run(clean_all: bool) -> Result<()> {
                 branch.delete()?;
             }
 
-            // Delete remote entry branches
-            if let Some(stack_config) = config.get_stack(stack_name) {
-                for entry_id in stack_config.mrs.keys() {
-                    let entry_branch = git::format_entry_branch(&username, stack_name, entry_id);
-                    // Try to delete remote branch (ignore errors)
-                    let _ = git::delete_remote_branch(&entry_branch);
-                }
-            }
+            // Delete entry branches (both local and remote)
+            delete_entry_branches(&repo, &config, stack_name, &username);
 
             // Remove from config
             config.remove_stack(stack_name);
@@ -185,4 +180,54 @@ fn check_stack_merged(
 
     // If stack is ancestor of base, it's merged
     Ok(repo.merge_base(stack_oid, base_oid)? == stack_oid)
+}
+
+/// Delete all entry branches for a stack (both local and remote)
+fn delete_entry_branches(
+    repo: &git2::Repository,
+    config: &Config,
+    stack_name: &str,
+    username: &str,
+) {
+    // First, delete entry branches from config (if any)
+    if let Some(stack_config) = config.get_stack(stack_name) {
+        for entry_id in stack_config.mrs.keys() {
+            let entry_branch = git::format_entry_branch(username, stack_name, entry_id);
+            // Delete local entry branch
+            if let Ok(mut branch) = repo.find_branch(&entry_branch, BranchType::Local) {
+                let _ = branch.delete();
+            }
+            // Delete remote entry branch
+            let _ = git::delete_remote_branch(&entry_branch);
+        }
+    }
+
+    // Also scan for any orphaned entry branches matching this stack
+    // (in case config is out of sync with actual branches)
+    let branches: Vec<String> = repo
+        .branches(Some(BranchType::Local))
+        .ok()
+        .map(|branches| {
+            branches
+                .filter_map(|b| b.ok())
+                .filter_map(|(branch, _)| branch.name().ok().flatten().map(String::from))
+                .filter(|name| {
+                    // Match branches like "username/stack-name--c-XXXXX"
+                    if let Some((branch_user, branch_stack, _)) = git::parse_entry_branch(name) {
+                        branch_user == username && branch_stack == *stack_name
+                    } else {
+                        false
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    for branch_name in branches {
+        if let Ok(mut branch) = repo.find_branch(&branch_name, BranchType::Local) {
+            let _ = branch.delete();
+        }
+        // Also try to delete from remote
+        let _ = git::delete_remote_branch(&branch_name);
+    }
 }

@@ -5,6 +5,9 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 #[allow(dead_code)] // Some variants reserved for future use
 pub enum GgError {
+    #[error("Invalid stack name: {0}")]
+    InvalidStackName(String),
+
     #[error("Not in a git repository")]
     NotInRepo,
 

@@ -334,9 +334,125 @@ pub fn short_sha(commit: &Commit) -> String {
     commit.id().to_string()[..7].to_string()
 }
 
+/// Sanitize and validate a stack name
+///
+/// - Converts spaces to hyphens (kebab-case)
+/// - Rejects names containing `/` (conflicts with branch format)
+/// - Rejects names containing `--` (conflicts with entry branch format)
+/// - Rejects names with other invalid git ref characters
+///
+/// Returns the sanitized name or an error
+pub fn sanitize_stack_name(name: &str) -> Result<String> {
+    // First, convert spaces to hyphens
+    let sanitized = name.replace(' ', "-");
+
+    // Check for reserved sequences that conflict with gg branch format
+    if sanitized.contains('/') {
+        return Err(GgError::InvalidStackName(
+            "Stack name cannot contain '/' (conflicts with branch format)".to_string(),
+        ));
+    }
+
+    if sanitized.contains("--") {
+        return Err(GgError::InvalidStackName(
+            "Stack name cannot contain '--' (conflicts with entry branch format)".to_string(),
+        ));
+    }
+
+    // Check for other invalid git ref characters
+    // Git ref names cannot contain: space, ~, ^, :, ?, *, [, \, control chars
+    // Also cannot start or end with dot, contain "..", or end with ".lock"
+    let invalid_chars = ['~', '^', ':', '?', '*', '[', '\\', '@'];
+    for c in invalid_chars {
+        if sanitized.contains(c) {
+            return Err(GgError::InvalidStackName(format!(
+                "Stack name cannot contain '{}'",
+                c
+            )));
+        }
+    }
+
+    // Check for control characters
+    if sanitized.chars().any(|c| c.is_control()) {
+        return Err(GgError::InvalidStackName(
+            "Stack name cannot contain control characters".to_string(),
+        ));
+    }
+
+    // Check for ".." sequence
+    if sanitized.contains("..") {
+        return Err(GgError::InvalidStackName(
+            "Stack name cannot contain '..'".to_string(),
+        ));
+    }
+
+    // Check for starting/ending with dot
+    if sanitized.starts_with('.') || sanitized.ends_with('.') {
+        return Err(GgError::InvalidStackName(
+            "Stack name cannot start or end with '.'".to_string(),
+        ));
+    }
+
+    // Check for ending with .lock
+    if sanitized.ends_with(".lock") {
+        return Err(GgError::InvalidStackName(
+            "Stack name cannot end with '.lock'".to_string(),
+        ));
+    }
+
+    // Check for empty name after sanitization
+    if sanitized.is_empty() || sanitized.chars().all(|c| c == '-') {
+        return Err(GgError::InvalidStackName(
+            "Stack name cannot be empty".to_string(),
+        ));
+    }
+
+    Ok(sanitized)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_sanitize_stack_name() {
+        // Spaces converted to hyphens
+        assert_eq!(
+            sanitize_stack_name("my new feature").unwrap(),
+            "my-new-feature"
+        );
+
+        // Already valid
+        assert_eq!(
+            sanitize_stack_name("my-feature").unwrap(),
+            "my-feature"
+        );
+
+        // Invalid: contains /
+        assert!(sanitize_stack_name("my/feature").is_err());
+
+        // Invalid: contains --
+        assert!(sanitize_stack_name("my--feature").is_err());
+
+        // Invalid: contains special chars
+        assert!(sanitize_stack_name("my~feature").is_err());
+        assert!(sanitize_stack_name("my:feature").is_err());
+        assert!(sanitize_stack_name("my*feature").is_err());
+
+        // Invalid: starts/ends with dot
+        assert!(sanitize_stack_name(".myfeature").is_err());
+        assert!(sanitize_stack_name("myfeature.").is_err());
+
+        // Invalid: contains ..
+        assert!(sanitize_stack_name("my..feature").is_err());
+
+        // Invalid: ends with .lock
+        assert!(sanitize_stack_name("feature.lock").is_err());
+
+        // Invalid: empty
+        assert!(sanitize_stack_name("").is_err());
+        assert!(sanitize_stack_name("   ").is_err());
+    }
 
     #[test]
     fn test_parse_stack_branch() {

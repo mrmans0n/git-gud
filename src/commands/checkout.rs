@@ -33,7 +33,18 @@ pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
 
     // If no stack name provided, show fuzzy selector
     let stack_name = match stack_name {
-        Some(name) => name,
+        Some(name) => {
+            // Sanitize and validate the stack name
+            let sanitized = git::sanitize_stack_name(&name)?;
+            if sanitized != name {
+                println!(
+                    "{} Converted stack name to: {}",
+                    style("→").cyan(),
+                    style(&sanitized).cyan()
+                );
+            }
+            sanitized
+        }
         None => {
             // Get list of existing stacks
             let stacks = stack::list_all_stacks(&repo, &config, &username)?;

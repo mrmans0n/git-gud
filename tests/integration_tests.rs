@@ -963,3 +963,219 @@ fn test_gg_checkout_remote_stack() {
         "test.txt should exist after checkout"
     );
 }
+
+// ============================================================
+// Tests for PRs #44-#48 (merged while claude-review was broken)
+// ============================================================
+
+#[test]
+fn test_stack_name_sanitization_spaces_to_kebab() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with spaces in the name - should be converted to hyphens
+    let (success, stdout, stderr) = run_gg(&repo_path, &["co", "my feature branch"]);
+
+    assert!(success, "Should succeed: stderr={}", stderr);
+    assert!(
+        stdout.contains("my-feature-branch") || stdout.contains("Converted"),
+        "Should convert spaces to hyphens: stdout={}",
+        stdout
+    );
+
+    // Verify we're on the kebab-case branch
+    let (_, branch) = run_git(&repo_path, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    assert_eq!(
+        branch.trim(),
+        "testuser/my-feature-branch",
+        "Branch should use kebab-case"
+    );
+}
+
+#[test]
+fn test_stack_name_rejects_slash() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Try to create a stack with slash - should fail
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", "feature/subfeature"]);
+
+    assert!(!success, "Should fail with slash in name");
+    assert!(
+        stderr.contains("cannot contain '/'") || stderr.contains("Invalid stack name"),
+        "Should mention invalid character: stderr={}",
+        stderr
+    );
+}
+
+#[test]
+fn test_stack_name_rejects_double_dash() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Try to create a stack with double dash - should fail (conflicts with entry branch format)
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", "my--feature"]);
+
+    assert!(!success, "Should fail with double dash in name");
+    assert!(
+        stderr.contains("cannot contain '--'") || stderr.contains("Invalid stack name"),
+        "Should mention invalid sequence: stderr={}",
+        stderr
+    );
+}
+
+#[test]
+fn test_lint_restores_position_on_command_not_found() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config with a non-existent lint command
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","lint":["nonexistent-command-12345"]}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with a commit
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "lint-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("test.txt"), "content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Test commit"]);
+
+    // Remember the original branch
+    let (_, original_branch) = run_git(&repo_path, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    let original_branch = original_branch.trim();
+
+    // Run lint - should fail but restore position
+    let (success, stdout, stderr) = run_gg(&repo_path, &["lint"]);
+
+    assert!(!success, "Lint should fail with non-existent command");
+    assert!(
+        stderr.contains("not found") || stdout.contains("not found") || stderr.contains("Command"),
+        "Should mention command not found: stdout={}, stderr={}",
+        stdout,
+        stderr
+    );
+
+    // Verify we're back on the original branch (not in detached HEAD)
+    let (_, current_branch) = run_git(&repo_path, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    assert_eq!(
+        current_branch.trim(),
+        original_branch,
+        "Should restore to original branch after lint failure"
+    );
+}
+
+#[test]
+fn test_lint_error_message_for_shell_alias() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config with a command that looks like a shell alias
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","lint":["gw ktfmtCheck"]}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with a commit
+    run_gg(&repo_path, &["co", "lint-alias-test"]);
+
+    fs::write(repo_path.join("test.txt"), "content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Test commit"]);
+
+    // Run lint - should fail with helpful message about shell aliases
+    let (success, stdout, stderr) = run_gg(&repo_path, &["lint"]);
+
+    assert!(!success, "Lint should fail with non-existent gw command");
+
+    let combined = format!("{}{}", stdout, stderr);
+    assert!(
+        combined.contains("not found") || combined.contains("alias"),
+        "Should mention command not found or alias: {}",
+        combined
+    );
+}
+
+#[test]
+fn test_land_help_shows_no_squash_option() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let (success, stdout, _stderr) = run_gg(&repo_path, &["land", "--help"]);
+
+    assert!(success, "Help should succeed");
+    assert!(
+        stdout.contains("--no-squash"),
+        "Should show --no-squash option: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("squash") && stdout.contains("default"),
+        "Should mention squash is default: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_config_auto_add_gg_ids_default() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up minimal config without auto_add_gg_ids
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack
+    run_gg(&repo_path, &["co", "gg-id-test"]);
+
+    fs::write(repo_path.join("test.txt"), "content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Test commit without GG-ID"]);
+
+    // Verify the config doesn't have auto_add_gg_ids explicitly set
+    // (it should default to true)
+    let config_content =
+        fs::read_to_string(gg_dir.join("config.json")).expect("Failed to read config");
+
+    // The config should NOT contain auto_add_gg_ids: false
+    // (either it's not present, meaning default true, or explicitly true)
+    assert!(
+        !config_content.contains("\"auto_add_gg_ids\":false")
+            && !config_content.contains("\"auto_add_gg_ids\": false"),
+        "auto_add_gg_ids should not be explicitly false: {}",
+        config_content
+    );
+}

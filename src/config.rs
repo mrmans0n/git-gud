@@ -26,6 +26,18 @@ pub struct Defaults {
     /// Lint commands to run per commit
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lint: Vec<String>,
+
+    /// Automatically add GG-IDs to commits without prompting (default: true)
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub auto_add_gg_ids: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 /// Per-stack configuration

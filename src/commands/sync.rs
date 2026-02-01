@@ -39,20 +39,25 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
     if !missing_ids.is_empty() {
         println!(
             "{} {} commits are missing GG-IDs:",
-            style("Warning:").yellow().bold(),
+            style("→").cyan(),
             missing_ids.len()
         );
         for entry in &missing_ids {
             println!("  [{}] {} {}", entry.position, entry.short_sha, entry.title);
         }
 
-        let confirm = Confirm::new()
-            .with_prompt("Add GG-IDs to these commits? (requires rebase)")
-            .default(true)
-            .interact()
-            .unwrap_or(true); // Default to yes if not interactive
+        // Check config for auto_add_gg_ids (default: true)
+        let should_add = if config.defaults.auto_add_gg_ids {
+            true
+        } else {
+            Confirm::new()
+                .with_prompt("Add GG-IDs to these commits? (requires rebase)")
+                .default(true)
+                .interact()
+                .unwrap_or(true)
+        };
 
-        if confirm {
+        if should_add {
             add_gg_ids_to_commits(&repo, &stack)?;
             // Reload stack after rebase
             return run(draft, force);

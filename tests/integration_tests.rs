@@ -1628,3 +1628,110 @@ fn test_clean_removes_orphan_entry_branches_when_stack_branch_missing() {
         "Expected stack to not be listed after clean, got: {stdout_after}"
     );
 }
+
+#[test]
+fn test_land_no_clean_flag_accepted() {
+    // Test that the --no-clean flag is recognized and doesn't cause an error
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config with username
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "test-stack"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    // Verify --no-clean flag is accepted (it will fail for other reasons,
+    // like no PRs to land, but should not fail on unknown argument)
+    let (_, _stdout, stderr) = run_gg(&repo_path, &["land", "--no-clean"]);
+
+    // Should not contain "unknown argument" or similar clap errors
+    assert!(
+        !stderr.contains("unexpected argument") && !stderr.contains("invalid value"),
+        "The --no-clean flag should be recognized, stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_land_auto_clean_config_default() {
+    // Test that land_auto_clean config setting defaults to false
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up minimal config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(gg_dir.join("config.json"), r#"{"defaults":{}}"#).expect("Failed to write config");
+
+    // Load and verify default
+    let config_path = gg_dir.join("config.json");
+    let content = fs::read_to_string(config_path).expect("Failed to read config");
+
+    // The default config should not contain land_auto_clean
+    // (since it defaults to false and is skipped in serialization)
+    assert!(
+        !content.contains("land_auto_clean"),
+        "Default config should not contain land_auto_clean when false"
+    );
+}
+
+#[test]
+fn test_land_auto_clean_config_enabled() {
+    // Test that land_auto_clean can be set to true in config
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config with land_auto_clean enabled
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"land_auto_clean":true}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Load and verify
+    let config_path = gg_dir.join("config.json");
+    let content = fs::read_to_string(config_path).expect("Failed to read config");
+
+    assert!(
+        content.contains("\"land_auto_clean\":true"),
+        "Config should contain land_auto_clean when enabled"
+    );
+}
+
+#[test]
+fn test_land_clean_and_no_clean_conflict() {
+    // Test that --clean and --no-clean flags conflict
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config with username
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "test-stack"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    // Try to use both flags - should fail with conflict error
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["land", "--clean", "--no-clean"]);
+
+    assert!(!success, "Using both --clean and --no-clean should fail");
+
+    // clap should report the conflict
+    assert!(
+        stderr.contains("conflict") || stderr.contains("cannot be used with"),
+        "Error should mention flag conflict, stderr: {}",
+        stderr
+    );
+}

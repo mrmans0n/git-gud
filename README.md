@@ -128,9 +128,13 @@ gg clean
 | `gg land --wait` | Wait for CI to pass and approvals before merging |
 | `gg land --all --wait` | Wait and merge all PRs/MRs in sequence |
 | `gg land --no-squash` | Merge using merge commit instead of squash |
+| `gg land --clean` | Automatically clean up stack after landing all PRs/MRs |
+| `gg land --no-clean` | Disable automatic cleanup (overrides config default) |
 | `gg rebase` | Rebase stack onto updated base branch |
 
-**Note:** The `--wait` flag polls for CI status and approvals with a configurable timeout (default: 30 minutes). Configure with `land_wait_timeout_minutes` in `.git/gg/config.json`.
+**Notes:**
+- The `--wait` flag polls for CI status and approvals with a configurable timeout (default: 30 minutes). Configure with `land_wait_timeout_minutes` in `.git/gg/config.json`.
+- The `--clean` and `--no-clean` flags control automatic stack cleanup after landing all PRs/MRs. If neither is specified, the behavior is controlled by the `land_auto_clean` config option (default: `false`). Use `--clean` to enable cleanup for a single command, or `--no-clean` to override a `true` config default.
 
 ### Utilities
 
@@ -179,6 +183,7 @@ All configuration options are in the `defaults` section:
 | `lint` | `array` | Lint commands to run on each commit with `gg lint` | `[]` |
 | `auto_add_gg_ids` | `boolean` | Automatically add GG-IDs to commits without prompting | `true` |
 | `land_wait_timeout_minutes` | `number` | Timeout in minutes for `gg land --wait` | `30` |
+| `land_auto_clean` | `boolean` | Automatically clean up stack after landing all PRs/MRs | `false` |
 
 Example configuration:
 
@@ -192,7 +197,8 @@ Example configuration:
       "cargo clippy -- -D warnings"
     ],
     "auto_add_gg_ids": true,
-    "land_wait_timeout_minutes": 60
+    "land_wait_timeout_minutes": 60,
+    "land_auto_clean": true
   }
 }
 ```

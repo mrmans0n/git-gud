@@ -34,6 +34,10 @@ pub struct Defaults {
     /// Timeout in minutes for `gg land --wait` (default: 30)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub land_wait_timeout_minutes: Option<u64>,
+
+    /// Automatically clean up stack after landing all PRs/MRs (default: false)
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub land_auto_clean: bool,
 }
 
 fn default_true() -> bool {
@@ -42,6 +46,10 @@ fn default_true() -> bool {
 
 fn is_true(b: &bool) -> bool {
     *b
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Per-stack configuration
@@ -153,6 +161,11 @@ impl Config {
     pub fn get_land_wait_timeout_minutes(&self) -> u64 {
         self.defaults.land_wait_timeout_minutes.unwrap_or(30)
     }
+
+    /// Get whether to auto-clean after landing all PRs/MRs (default: false)
+    pub fn get_land_auto_clean(&self) -> bool {
+        self.defaults.land_auto_clean
+    }
 }
 
 #[cfg(test)]
@@ -202,5 +215,32 @@ mod tests {
         let mut config = Config::default();
         config.defaults.land_wait_timeout_minutes = Some(60);
         assert_eq!(config.get_land_wait_timeout_minutes(), 60);
+    }
+
+    #[test]
+    fn test_land_auto_clean_default() {
+        let config = Config::default();
+        assert!(!config.get_land_auto_clean());
+    }
+
+    #[test]
+    fn test_land_auto_clean_enabled() {
+        let mut config = Config::default();
+        config.defaults.land_auto_clean = true;
+        assert!(config.get_land_auto_clean());
+    }
+
+    #[test]
+    fn test_land_auto_clean_roundtrip() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_dir = temp_dir.path();
+
+        let mut config = Config::default();
+        config.defaults.land_auto_clean = true;
+
+        config.save(git_dir).unwrap();
+
+        let loaded = Config::load(git_dir).unwrap();
+        assert!(loaded.get_land_auto_clean());
     }
 }

@@ -126,8 +126,12 @@ enum Commands {
         wait: bool,
 
         /// Automatically clean up stack after landing all PRs/MRs
-        #[arg(short, long)]
+        #[arg(short, long, conflicts_with = "no_clean")]
         clean: bool,
+
+        /// Disable automatic cleanup after landing (overrides config default)
+        #[arg(long = "no-clean", conflicts_with = "clean")]
+        no_clean: bool,
     },
 
     /// Clean up merged stacks
@@ -222,7 +226,25 @@ fn main() {
             no_squash,
             wait,
             clean,
-        }) => commands::land::run(all, !no_squash, wait, clean),
+            no_clean,
+        }) => {
+            // Determine auto_clean based on flags and config
+            let auto_clean = if clean {
+                // --clean explicitly passed
+                true
+            } else if no_clean {
+                // --no-clean explicitly passed
+                false
+            } else {
+                // No explicit flag, use config default
+                match git::open_repo().and_then(|repo| config::Config::load(repo.path())) {
+                    Ok(cfg) => cfg.get_land_auto_clean(),
+                    Err(_) => false, // If we can't load config, default to false
+                }
+            };
+
+            commands::land::run(all, !no_squash, wait, auto_clean)
+        }
         Some(Commands::Clean { all }) => commands::clean::run(all),
         Some(Commands::Rebase { target }) => commands::rebase::run(target),
         Some(Commands::Continue) => commands::rebase::continue_rebase(),

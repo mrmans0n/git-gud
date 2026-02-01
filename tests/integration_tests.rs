@@ -769,7 +769,7 @@ fn create_test_repo_with_remote() -> (TempDir, PathBuf, PathBuf) {
     fs::create_dir_all(&remote_path).expect("Failed to create remote dir");
 
     Command::new("git")
-        .args(["init", "--bare"])
+        .args(["init", "--bare", "--initial-branch=main"])
         .current_dir(&remote_path)
         .output()
         .expect("Failed to init bare repo");
@@ -779,7 +779,7 @@ fn create_test_repo_with_remote() -> (TempDir, PathBuf, PathBuf) {
     fs::create_dir_all(&repo_path).expect("Failed to create repo dir");
 
     Command::new("git")
-        .args(["init"])
+        .args(["init", "--initial-branch=main"])
         .current_dir(&repo_path)
         .output()
         .expect("Failed to init git repo");

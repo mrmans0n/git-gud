@@ -113,8 +113,18 @@ pub fn find_entry_branch_for_stack(
 }
 
 /// Check if the working directory is clean
+/// Only checks for actual changes (modified, staged, deleted, etc.)
+/// Ignores untracked files and submodules to match `git status` behavior
 pub fn is_working_directory_clean(repo: &Repository) -> Result<bool> {
-    let statuses = repo.statuses(None)?;
+    use git2::StatusOptions;
+
+    let mut opts = StatusOptions::new();
+    opts.include_untracked(false)
+        .include_ignored(false)
+        .include_unmodified(false)
+        .exclude_submodules(true);
+
+    let statuses = repo.statuses(Some(&mut opts))?;
     Ok(statuses.is_empty())
 }
 

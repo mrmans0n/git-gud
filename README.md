@@ -99,6 +99,7 @@ gg clean
 | `gg sync` | Push all commits and create/update PRs/MRs |
 | `gg sync --draft` | Create new PRs/MRs as drafts |
 | `gg sync --force` | Force push even if remote diverged |
+| `gg sync --update-descriptions` | Update PR/MR titles and descriptions to match commit messages |
 
 ### Navigation
 

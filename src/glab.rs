@@ -350,6 +350,46 @@ pub fn update_mr_target(mr_number: u64, target_branch: &str) -> Result<()> {
     Ok(())
 }
 
+/// Update MR description/body
+pub fn update_mr_description(mr_number: u64, description: &str) -> Result<()> {
+    let output = Command::new("glab")
+        .args([
+            "mr",
+            "update",
+            &mr_number.to_string(),
+            "--description",
+            description,
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::GlabError(format!(
+            "Failed to update MR !{} description: {}",
+            mr_number, stderr
+        )));
+    }
+
+    Ok(())
+}
+
+/// Update MR title
+pub fn update_mr_title(mr_number: u64, title: &str) -> Result<()> {
+    let output = Command::new("glab")
+        .args(["mr", "update", &mr_number.to_string(), "--title", title])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::GlabError(format!(
+            "Failed to update MR !{} title: {}",
+            mr_number, stderr
+        )));
+    }
+
+    Ok(())
+}
+
 /// Merge an MR
 pub fn merge_mr(mr_number: u64, squash: bool, delete_branch: bool) -> Result<()> {
     let mr_num_str = mr_number.to_string();

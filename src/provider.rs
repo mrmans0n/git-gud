@@ -157,6 +157,22 @@ impl Provider {
         }
     }
 
+    /// Update PR/MR description/body
+    pub fn update_pr_description(&self, number: u64, description: &str) -> Result<()> {
+        match self {
+            Provider::GitHub => gh::update_pr_description(number, description),
+            Provider::GitLab => glab::update_mr_description(number, description),
+        }
+    }
+
+    /// Update PR/MR title
+    pub fn update_pr_title(&self, number: u64, title: &str) -> Result<()> {
+        match self {
+            Provider::GitHub => gh::update_pr_title(number, title),
+            Provider::GitLab => glab::update_mr_title(number, title),
+        }
+    }
+
     /// Merge a PR/MR
     pub fn merge_pr(&self, number: u64, squash: bool, delete_branch: bool) -> Result<()> {
         match self {

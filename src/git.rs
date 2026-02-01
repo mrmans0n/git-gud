@@ -220,9 +220,26 @@ pub fn strip_gg_id_from_message(message: &str) -> String {
     result.trim_end().to_string()
 }
 
+fn extract_description_from_message(message: &str) -> Option<String> {
+    let stripped = strip_gg_id_from_message(message);
+    let newline_idx = stripped.find('\n')?;
+    let description = stripped[newline_idx + 1..].trim();
+    if description.is_empty() {
+        None
+    } else {
+        Some(description.to_string())
+    }
+}
+
 /// Get the commit message title (first line)
 pub fn get_commit_title(commit: &Commit) -> String {
     commit.summary().unwrap_or("<no summary>").to_string()
+}
+
+/// Get the commit message description (body), if present
+pub fn get_commit_description(commit: &Commit) -> Option<String> {
+    let message = commit.message()?;
+    extract_description_from_message(message)
 }
 
 /// Checkout a branch by name
@@ -509,6 +526,21 @@ mod tests {
         assert!(!result.contains("GG-ID"));
         assert!(result.contains("Add feature"));
         assert!(result.contains("Some description"));
+    }
+
+    #[test]
+    fn test_extract_description_from_message() {
+        let msg = "Add feature\n\nSome description\n\nGG-ID: c-abc123";
+        let result = extract_description_from_message(msg);
+        assert_eq!(result.as_deref(), Some("Some description"));
+
+        let msg_no_body = "Add feature\n\nGG-ID: c-abc123";
+        let result = extract_description_from_message(msg_no_body);
+        assert!(result.is_none());
+
+        let msg_multi = "Add feature\n\nLine one\n\nLine two";
+        let result = extract_description_from_message(msg_multi);
+        assert_eq!(result.as_deref(), Some("Line one\n\nLine two"));
     }
 
     #[test]

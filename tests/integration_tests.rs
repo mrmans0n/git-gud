@@ -92,6 +92,15 @@ fn test_gg_help() {
 }
 
 #[test]
+fn test_gg_sync_help_has_update_descriptions() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    let (success, stdout, _stderr) = run_gg(&repo_path, &["sync", "--help"]);
+
+    assert!(success);
+    assert!(stdout.contains("--update-descriptions"));
+}
+
+#[test]
 fn test_gg_version() {
     let (_temp_dir, repo_path) = create_test_repo();
     let (success, stdout, _stderr) = run_gg(&repo_path, &["--version"]);

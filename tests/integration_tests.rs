@@ -1146,6 +1146,25 @@ fn test_land_help_shows_no_squash_option() {
 }
 
 #[test]
+fn test_land_help_shows_clean_option() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let (success, stdout, _stderr) = run_gg(&repo_path, &["land", "--help"]);
+
+    assert!(success, "Help should succeed");
+    assert!(
+        stdout.contains("--clean"),
+        "Should show --clean option: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("clean up stack") || stdout.contains("Automatically clean"),
+        "Should mention cleaning up stack: {}",
+        stdout
+    );
+}
+
+#[test]
 fn test_config_auto_add_gg_ids_default() {
     let (_temp_dir, repo_path) = create_test_repo();
 

@@ -78,6 +78,53 @@ pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
             style("OK").green().bold(),
             style(&stack_name).cyan()
         );
+    } else if check_remote_stack_exists(&repo, &username, &stack_name) {
+        // Stack exists on remote but not locally - fetch and checkout
+        let remote_branch = format!("origin/{}/{}", username, stack_name);
+        let local_branch = git::format_stack_branch(&username, &stack_name);
+
+        println!(
+            "{} Fetching remote stack {}...",
+            style("→").cyan(),
+            style(&stack_name).cyan()
+        );
+
+        // Fetch the specific branch
+        std::process::Command::new("git")
+            .args(["fetch", "origin", &format!("{}/{}", username, stack_name)])
+            .output()
+            .map_err(|e| GgError::Command("git fetch".to_string(), e.to_string()))?;
+
+        // Create local branch tracking the remote
+        let remote_ref = repo.revparse_single(&remote_branch)?;
+        let remote_commit = remote_ref.peel_to_commit()?;
+        repo.branch(&local_branch, &remote_commit, false)?;
+
+        // Set up tracking
+        let _ = std::process::Command::new("git")
+            .args(["branch", "--set-upstream-to", &remote_branch, &local_branch])
+            .output();
+
+        // Also fetch entry branches for this stack
+        let _ = std::process::Command::new("git")
+            .args([
+                "fetch",
+                "origin",
+                &format!(
+                    "refs/heads/{}/{}--*:refs/remotes/origin/{}/{}--*",
+                    username, stack_name, username, stack_name
+                ),
+            ])
+            .output();
+
+        // Checkout the branch
+        git::checkout_branch(&repo, &local_branch)?;
+
+        println!(
+            "{} Checked out remote stack {}",
+            style("OK").green().bold(),
+            style(&stack_name).cyan()
+        );
     } else {
         // Create new stack
         let base_branch = base
@@ -126,4 +173,10 @@ pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Check if a stack exists on remote
+fn check_remote_stack_exists(repo: &git2::Repository, username: &str, stack_name: &str) -> bool {
+    let remote_branch = format!("origin/{}/{}", username, stack_name);
+    repo.revparse_single(&remote_branch).is_ok()
 }

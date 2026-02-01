@@ -52,6 +52,10 @@ enum Commands {
         /// Refresh MR status from GitLab
         #[arg(short, long)]
         refresh: bool,
+
+        /// List remote stacks (branches on origin not yet checked out locally)
+        #[arg(long)]
+        remote: bool,
     },
 
     /// Sync stack with GitLab (push branches and create/update MRs)
@@ -187,10 +191,14 @@ fn main() {
 
     let result = match cli.command {
         // No command = show stacks (like `gg ls`)
-        None => commands::ls::run(false, false),
+        None => commands::ls::run(false, false, false),
 
         Some(Commands::Checkout { stack_name, base }) => commands::checkout::run(stack_name, base),
-        Some(Commands::List { all, refresh }) => commands::ls::run(all, refresh),
+        Some(Commands::List {
+            all,
+            refresh,
+            remote,
+        }) => commands::ls::run(all, refresh, remote),
         Some(Commands::Sync { draft, force }) => commands::sync::run(draft, force),
         Some(Commands::Move { target }) => commands::nav::move_to(&target),
         Some(Commands::First) => commands::nav::first(),

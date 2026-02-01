@@ -239,9 +239,6 @@ pub fn merge_pr(pr_number: u64, squash: bool, delete_branch: bool) -> Result<()>
         args.push("--delete-branch");
     }
 
-    // Skip confirmation prompt in non-interactive environments
-    args.push("--yes");
-
     let output = Command::new("gh").args(&args).output()?;
 
     if !output.status.success() {

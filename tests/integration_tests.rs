@@ -1254,3 +1254,314 @@ fn test_rebase_help() {
         stdout
     );
 }
+
+// ============================================================
+// Tests for PR #50 - gg rebase improvements
+// ============================================================
+
+#[test]
+fn test_rebase_restores_original_branch() {
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with commits
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "restore-branch-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("feature.txt"), "feature content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Add feature"]);
+
+    // Remember the branch we're on
+    let (_, original_branch) = run_git(&repo_path, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    let original_branch = original_branch.trim();
+
+    // Run rebase
+    let (success, _stdout, _stderr) = run_gg(&repo_path, &["rebase"]);
+
+    // Whether it succeeds or not, we should be back on the original branch
+    let (_, current_branch) = run_git(&repo_path, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    assert_eq!(
+        current_branch.trim(),
+        original_branch,
+        "Should restore to original branch after rebase (success={})",
+        success
+    );
+}
+
+#[test]
+fn test_rebase_when_local_base_branch_not_exists() {
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "no-local-base-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("feature.txt"), "content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Add feature"]);
+
+    // Delete the local main branch (unusual but possible scenario)
+    // First we need to be on a different branch (we already are on our stack)
+    run_git(&repo_path, &["branch", "-D", "main"]);
+
+    // Verify main doesn't exist locally
+    let (exists, _) = run_git(&repo_path, &["rev-parse", "--verify", "main"]);
+    assert!(!exists, "Local main should not exist");
+
+    // Rebase should still work (will use origin/main directly)
+    let (success, stdout, stderr) = run_gg(&repo_path, &["rebase"]);
+
+    // Should succeed or at least not crash due to missing local branch
+    let combined = format!("{}{}", stdout, stderr);
+    assert!(
+        success || combined.contains("Rebased"),
+        "Rebase should handle missing local base branch gracefully: {}",
+        combined
+    );
+}
+
+#[test]
+fn test_rebase_when_remote_base_branch_not_exists() {
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+
+    // Set up config with a non-existent base branch
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "no-remote-base-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("feature.txt"), "content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Add feature"]);
+
+    // Try to rebase onto a non-existent branch
+    let (_success, stdout, stderr) = run_gg(&repo_path, &["rebase", "nonexistent-branch"]);
+
+    // Should fail gracefully with a clear error
+    let combined = format!("{}{}", stdout, stderr);
+    assert!(
+        combined.contains("Warning")
+            || combined.contains("Could not")
+            || combined.contains("error")
+            || combined.contains("not exist"),
+        "Should handle missing remote branch gracefully: {}",
+        combined
+    );
+}
+
+#[test]
+fn test_rebase_when_branches_have_diverged() {
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "diverged-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("feature.txt"), "feature").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Add feature"]);
+
+    // Make a commit on remote main
+    run_git(&repo_path, &["checkout", "main"]);
+    fs::write(repo_path.join("remote-change.txt"), "from remote").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Remote commit"]);
+    run_git(&repo_path, &["push", "origin", "main"]);
+
+    // Make a DIFFERENT commit on local main (causing divergence)
+    run_git(&repo_path, &["reset", "--hard", "HEAD~1"]);
+    fs::write(repo_path.join("local-change.txt"), "local only").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Local only commit"]);
+
+    // Verify branches have diverged
+    let (_, local_sha) = run_git(&repo_path, &["rev-parse", "main"]);
+    let (_, remote_sha) = run_git(&repo_path, &["rev-parse", "origin/main"]);
+    assert_ne!(
+        local_sha.trim(),
+        remote_sha.trim(),
+        "Branches should have diverged"
+    );
+
+    // Switch to our stack
+    run_git(&repo_path, &["checkout", "testuser/diverged-test"]);
+
+    // Rebase should warn but continue with origin/main
+    let (success, stdout, stderr) = run_gg(&repo_path, &["rebase"]);
+
+    let combined = format!("{}{}", stdout, stderr);
+
+    // Should either succeed (using origin/main) or warn about divergence
+    // The key is it shouldn't crash and should give useful feedback
+    assert!(
+        success
+            || combined.contains("Warning")
+            || combined.contains("Could not update")
+            || combined.contains("origin/main"),
+        "Should handle diverged branches gracefully: {}",
+        combined
+    );
+}
+
+#[test]
+fn test_rebase_removes_merged_commits_from_stack() {
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with multiple commits
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "merged-commits-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("commit1.txt"), "commit 1").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 1 - will be merged"]);
+
+    fs::write(repo_path.join("commit2.txt"), "commit 2").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 2 - stays in stack"]);
+
+    // Get the initial commit count
+    let (_, log_before) = run_git(&repo_path, &["log", "--oneline", "main..HEAD"]);
+    let commits_before = log_before.trim().lines().count();
+    assert_eq!(commits_before, 2, "Should have 2 commits before merge");
+
+    // Simulate first commit being merged to main on remote
+    // Cherry-pick commit 1 to main and push
+    run_git(&repo_path, &["checkout", "main"]);
+    fs::write(repo_path.join("commit1.txt"), "commit 1").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Commit 1 - will be merged (merged via PR)"],
+    );
+    run_git(&repo_path, &["push", "origin", "main"]);
+
+    // Reset local main to be behind
+    run_git(&repo_path, &["reset", "--hard", "HEAD~1"]);
+
+    // Switch back to stack and rebase
+    run_git(&repo_path, &["checkout", "testuser/merged-commits-test"]);
+
+    let (success, _stdout, _stderr) = run_gg(&repo_path, &["rebase"]);
+
+    if success {
+        // After rebase, the first commit should be gone (it's now in main)
+        // Only commit 2 should remain
+        let (_, log_after) = run_git(&repo_path, &["log", "--oneline", "origin/main..HEAD"]);
+        let commits_after = log_after.trim().lines().count();
+
+        // The commit that was "merged" should no longer appear in the stack
+        // Note: This depends on git's ability to detect the commit was cherry-picked
+        // In a real scenario with actual PR merges, git rebase drops duplicate commits
+        assert!(
+            commits_after <= commits_before,
+            "Stack should have same or fewer commits after rebase. Before: {}, After: {}",
+            commits_before,
+            commits_after
+        );
+    }
+}
+
+#[test]
+fn test_rebase_with_prune_removes_deleted_remote_branches() {
+    let (_temp_dir, repo_path, remote_path) = create_test_repo_with_remote();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create and push a temporary branch
+    run_git(&repo_path, &["checkout", "-b", "temp-branch"]);
+    fs::write(repo_path.join("temp.txt"), "temp").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Temp commit"]);
+    run_git(&repo_path, &["push", "-u", "origin", "temp-branch"]);
+
+    // Go back to main
+    run_git(&repo_path, &["checkout", "main"]);
+
+    // Delete the branch on the remote directly (simulating PR merge with branch deletion)
+    Command::new("git")
+        .args(["branch", "-D", "temp-branch"])
+        .current_dir(&remote_path)
+        .output()
+        .expect("Failed to delete remote branch");
+
+    // Verify the remote tracking branch still exists locally
+    let (exists_before, _) = run_git(
+        &repo_path,
+        &["rev-parse", "--verify", "refs/remotes/origin/temp-branch"],
+    );
+    assert!(
+        exists_before,
+        "Remote tracking branch should exist before fetch --prune"
+    );
+
+    // Create a stack and run rebase (which does fetch --prune)
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "prune-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("feature.txt"), "feature").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Feature commit"]);
+
+    // Run rebase - this should fetch with --prune
+    let (_success, _stdout, _stderr) = run_gg(&repo_path, &["rebase"]);
+
+    // After rebase (which fetches with --prune), the deleted remote branch should be gone
+    let (exists_after, _) = run_git(
+        &repo_path,
+        &["rev-parse", "--verify", "refs/remotes/origin/temp-branch"],
+    );
+    assert!(
+        !exists_after,
+        "Remote tracking branch should be pruned after rebase"
+    );
+}

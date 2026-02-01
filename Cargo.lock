@@ -608,23 +608,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "git-absorb"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d1f3af8e8072014ad172abc9775bdd6c793378005eb2c6fe3e4ef939da1aea8"
-dependencies = [
- "anyhow",
- "clap",
- "clap_complete",
- "clap_complete_nushell",
- "git2",
- "memchr",
- "slog",
- "slog-term",
-]
-
-[[package]]
-name = "git-gud"
+name = "gg-stack"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -648,6 +632,22 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "git-absorb"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d1f3af8e8072014ad172abc9775bdd6c793378005eb2c6fe3e4ef939da1aea8"
+dependencies = [
+ "anyhow",
+ "clap",
+ "clap_complete",
+ "clap_complete_nushell",
+ "git2",
+ "memchr",
+ "slog",
+ "slog-term",
 ]
 
 [[package]]

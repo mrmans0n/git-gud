@@ -48,7 +48,7 @@ pub fn run(all: bool, refresh: bool, remote: bool) -> Result<()> {
     Ok(())
 }
 
-/// List all available stacks
+/// List all available stacks with their commits in a tree view
 fn list_all_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
     // Get username - try provider if in a repo
     let username = config
@@ -75,25 +75,23 @@ fn list_all_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
         .and_then(|b| git::parse_stack_branch(b))
         .map(|(_, name)| name);
 
+    // Get base branch for commit listing
+    let base_branch = git::find_base_branch(repo).unwrap_or_else(|_| "main".to_string());
+
     println!("{}", style("Stacks:").bold());
-    println!();
 
     for stack_name in &stacks {
         let is_current = current_stack.as_deref() == Some(stack_name);
         let marker = if is_current { "→ " } else { "  " };
 
-        // Count commits in stack if we can
-        let commit_info = if let Ok(branch_name) = git::find_base_branch(repo) {
-            let full_branch = git::format_stack_branch(&username, stack_name);
-            if let Ok(stack_commits) = count_stack_commits(repo, &full_branch, &branch_name) {
-                format!(" ({} commits)", stack_commits)
-            } else {
-                String::new()
-            }
-        } else {
-            String::new()
-        };
+        // Get commits for this stack
+        let full_branch = git::format_stack_branch(&username, stack_name);
+        let commits = get_stack_commits_info(repo, &full_branch, &base_branch);
 
+        let commit_count = commits.as_ref().map(|c| c.len()).unwrap_or(0);
+        let commit_info = format!(" ({} commits)", commit_count);
+
+        println!();
         if is_current {
             println!(
                 "{}{}{}",
@@ -103,6 +101,34 @@ fn list_all_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
             );
         } else {
             println!("{}{}{}", marker, stack_name, style(&commit_info).dim());
+        }
+
+        // Show commits in tree format
+        if let Ok(ref commits) = commits {
+            let total = commits.len();
+            for (i, (sha, title)) in commits.iter().enumerate() {
+                let is_last = i == total - 1;
+                let branch_char = if is_last { "└──" } else { "├──" };
+                let position = i + 1;
+
+                if is_current {
+                    println!(
+                        "    {} {} {} {}",
+                        style(branch_char).dim(),
+                        style(format!("[{}]", position)).dim(),
+                        style(sha).yellow(),
+                        title
+                    );
+                } else {
+                    println!(
+                        "    {} {} {} {}",
+                        style(branch_char).dim(),
+                        style(format!("[{}]", position)).dim(),
+                        style(sha).yellow().dim(),
+                        style(title).dim()
+                    );
+                }
+            }
         }
     }
 
@@ -114,6 +140,36 @@ fn list_all_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
     );
 
     Ok(())
+}
+
+/// Get commit info (sha, title) for a stack branch
+fn get_stack_commits_info(
+    repo: &git2::Repository,
+    branch: &str,
+    base: &str,
+) -> Result<Vec<(String, String)>> {
+    use git2::Sort;
+
+    let head = repo.revparse_single(branch)?;
+    let base_ref = repo
+        .revparse_single(base)
+        .or_else(|_| repo.revparse_single(&format!("origin/{}", base)))?;
+
+    let mut revwalk = repo.revwalk()?;
+    revwalk.set_sorting(Sort::TOPOLOGICAL | Sort::REVERSE)?;
+    revwalk.push(head.id())?;
+    revwalk.hide(base_ref.id())?;
+
+    let mut commits = Vec::new();
+    for oid in revwalk {
+        let oid = oid?;
+        let commit = repo.find_commit(oid)?;
+        let sha = oid.to_string()[..7].to_string();
+        let title = commit.summary().unwrap_or("<no message>").to_string();
+        commits.push((sha, title));
+    }
+
+    Ok(commits)
 }
 
 /// List remote stacks that aren't checked out locally

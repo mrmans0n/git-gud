@@ -73,6 +73,9 @@ impl StackEntry {
             (Some(PrState::Draft), _) => "draft".to_string(),
             (Some(PrState::Open), true) => "approved".to_string(),
             (Some(PrState::Open), false) => "open".to_string(),
+            // If we have an MR number but no state, it's pushed but status not fetched
+            // Use --refresh to fetch current state
+            (None, _) if self.mr_number.is_some() => String::new(),
             (None, _) => "not pushed".to_string(),
         }
     }

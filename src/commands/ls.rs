@@ -327,6 +327,14 @@ fn show_stack(stack: &Stack) -> Result<()> {
         return Ok(());
     }
 
+    // Try to detect provider for proper PR/MR prefix
+    let repo = git::open_repo()?;
+    let provider = Provider::detect(&repo).ok();
+    let pr_prefix = provider
+        .as_ref()
+        .map(|p| p.pr_number_prefix())
+        .unwrap_or("!");
+
     // Determine the current position
     let current_pos = stack
         .current_position
@@ -367,7 +375,7 @@ fn show_stack(stack: &Stack) -> Result<()> {
         // MR number
         let mr_display = entry
             .mr_number
-            .map(|n| format!("!{}", n))
+            .map(|n| format!("{}{}", pr_prefix, n))
             .unwrap_or_default();
 
         // HEAD marker

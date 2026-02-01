@@ -126,27 +126,30 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
                 if is_closed {
                     // Skip updating closed/merged PRs
                     pb.println(format!(
-                        "{} {} #{} already closed/merged, skipping",
+                        "{} {} {}{} already closed/merged, skipping",
                         style("○").dim(),
                         provider.pr_label(),
+                        provider.pr_number_prefix(),
                         pr_num
                     ));
                 } else {
                     // Update PR/MR base if needed
                     if let Err(e) = provider.update_pr_base(pr_num, &target_branch) {
                         pb.println(format!(
-                            "{} Could not update {} #{}: {}",
+                            "{} Could not update {} {}{}: {}",
                             style("Warning:").yellow(),
                             provider.pr_label(),
+                            provider.pr_number_prefix(),
                             pr_num,
                             e
                         ));
                     }
                     pb.println(format!(
-                        "{} Force-pushed {} -> {} #{}",
+                        "{} Force-pushed {} -> {} {}{}",
                         style("OK").green().bold(),
                         style(&entry_branch).cyan(),
                         provider.pr_label(),
+                        provider.pr_number_prefix(),
                         pr_num
                     ));
                 }
@@ -165,10 +168,11 @@ pub fn run(draft: bool, force: bool) -> Result<()> {
                         config.set_mr_for_entry(&stack.name, gg_id, result.number);
                         let draft_label = if draft { " (draft)" } else { "" };
                         pb.println(format!(
-                            "{} Pushed {} -> {} #{}{}",
+                            "{} Pushed {} -> {} {}{}{}",
                             style("OK").green().bold(),
                             style(&entry_branch).cyan(),
                             provider.pr_label(),
+                            provider.pr_number_prefix(),
                             result.number,
                             draft_label
                         ));

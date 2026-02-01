@@ -37,6 +37,7 @@ thiserror = "2"
 # Utilities
 uuid = { version = "1", features = ["v4"] }
 regex = "1"
+ctrlc = "3"
 
 # Absorb (library integration)
 git-absorb = "0.8"

@@ -2,8 +2,14 @@
 name = "gg-stack"
 version = "0.1.0"
 edition = "2021"
-description = "A stacked-diffs CLI tool for GitLab"
+description = "A stacked-diffs CLI tool for GitHub and GitLab"
 authors = ["Nacho Lopez"]
+license = "MIT"
+repository = "https://github.com/mrmans0n/git-gud"
+homepage = "https://github.com/mrmans0n/git-gud"
+keywords = ["git", "stacked-diffs", "github", "gitlab", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+readme = "README.md"
 
 [[bin]]
 name = "gg"

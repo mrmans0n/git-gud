@@ -440,8 +440,11 @@ fn wait_for_pr_ready(
                 )));
             }
             CiStatus::Unknown => {
-                println!("  {} CI status unknown, proceeding...", style("⚠").yellow());
-                true
+                println!(
+                    "  {} CI status unknown, waiting for checks to start...",
+                    style("⏳").cyan()
+                );
+                false
             }
         };
 

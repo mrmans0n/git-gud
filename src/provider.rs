@@ -4,7 +4,8 @@
 
 use git2::Repository;
 
-use crate::error::Result;
+use crate::config::Config;
+use crate::error::{GgError, Result};
 use crate::gh::{self, CiStatus as GhCiStatus, PrState as GhPrState};
 use crate::git;
 use crate::glab::{self, CiStatus as GlabCiStatus, MrState as GlabMrState};
@@ -57,12 +58,46 @@ pub struct PrCreationResult {
 }
 
 impl Provider {
-    /// Detect provider from repository
+    /// Detect provider from config or repository URL
+    ///
+    /// Priority:
+    /// 1. Config `defaults.provider` if set ("github" or "gitlab")
+    /// 2. Auto-detect from remote URL (github.com, gitlab.com)
     pub fn detect(repo: &Repository) -> Result<Self> {
+        // Try to load config and check for explicit provider setting
+        let git_dir = repo.path();
+        if let Ok(config) = Config::load(git_dir) {
+            if let Some(provider) = config.defaults.provider.as_deref() {
+                return Self::from_str(provider);
+            }
+        }
+
+        // Fallback to URL-based detection
         match git::detect_remote_provider(repo) {
             Ok(git::RemoteProvider::GitHub) => Ok(Provider::GitHub),
             Ok(git::RemoteProvider::GitLab) => Ok(Provider::GitLab),
             Err(e) => Err(e),
+        }
+    }
+
+    /// Create provider from string ("github" or "gitlab")
+    pub fn from_str(s: &str) -> Result<Self> {
+        match s.to_lowercase().as_str() {
+            "github" => Ok(Provider::GitHub),
+            "gitlab" => Ok(Provider::GitLab),
+            _ => Err(GgError::Other(format!(
+                "Unknown provider '{}'. Supported: github, gitlab",
+                s
+            ))),
+        }
+    }
+
+    /// Convert provider to config string
+    #[allow(dead_code)]
+    pub fn as_config_str(self) -> &'static str {
+        match self {
+            Provider::GitHub => "github",
+            Provider::GitLab => "gitlab",
         }
     }
 
@@ -414,5 +449,27 @@ mod tests {
             convert_glab_ci_status(GlabCiStatus::Unknown),
             CiStatus::Unknown
         );
+    }
+
+    #[test]
+    fn test_provider_from_str() {
+        // Valid providers (case-insensitive)
+        assert_eq!(Provider::from_str("github").unwrap(), Provider::GitHub);
+        assert_eq!(Provider::from_str("GitHub").unwrap(), Provider::GitHub);
+        assert_eq!(Provider::from_str("GITHUB").unwrap(), Provider::GitHub);
+        assert_eq!(Provider::from_str("gitlab").unwrap(), Provider::GitLab);
+        assert_eq!(Provider::from_str("GitLab").unwrap(), Provider::GitLab);
+        assert_eq!(Provider::from_str("GITLAB").unwrap(), Provider::GitLab);
+
+        // Invalid providers
+        assert!(Provider::from_str("bitbucket").is_err());
+        assert!(Provider::from_str("").is_err());
+        assert!(Provider::from_str("git").is_err());
+    }
+
+    #[test]
+    fn test_provider_as_config_str() {
+        assert_eq!(Provider::GitHub.as_config_str(), "github");
+        assert_eq!(Provider::GitLab.as_config_str(), "gitlab");
     }
 }

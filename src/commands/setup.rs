@@ -2,7 +2,7 @@
 
 use console::style;
 use dialoguer::theme::ColorfulTheme;
-use dialoguer::{Confirm, Input};
+use dialoguer::{Confirm, Input, Select};
 
 use crate::config::{Config, Defaults};
 use crate::error::{GgError, Result};
@@ -58,8 +58,13 @@ fn prompt_defaults(
 ) -> Result<Defaults> {
     let mut defaults = existing.clone();
 
+    defaults.provider = prompt_provider(repo, existing.provider.as_deref(), theme)?;
     defaults.base = prompt_base_branch(repo, existing.base.as_deref(), theme)?;
-    defaults.branch_username = prompt_branch_username(existing.branch_username.as_deref(), theme)?;
+    defaults.branch_username = prompt_branch_username(
+        existing.branch_username.as_deref(),
+        defaults.provider.as_deref(),
+        theme,
+    )?;
     defaults.lint = prompt_lint_commands(repo, &existing.lint, theme)?;
 
     Ok(defaults)
@@ -137,12 +142,83 @@ fn prompt_base_branch(
     })
 }
 
-fn prompt_branch_username(existing: Option<&str>, theme: &ColorfulTheme) -> Result<Option<String>> {
+fn prompt_provider(
+    repo: &git2::Repository,
+    existing: Option<&str>,
+    theme: &ColorfulTheme,
+) -> Result<Option<String>> {
+    // Detect default based on remote URL
+    let remote_url = repo
+        .find_remote("origin")
+        .ok()
+        .and_then(|r| r.url().map(|s| s.to_string()));
+
+    let detected_default = remote_url.as_ref().and_then(|url| {
+        if url.contains("github.com") {
+            Some(0usize) // GitHub
+        } else if url.to_lowercase().contains("gitlab") {
+            Some(1usize) // GitLab (any domain containing "gitlab")
+        } else {
+            None
+        }
+    });
+
+    let providers = &["GitHub", "GitLab"];
+
+    // If we have an existing value, use that as default
+    let existing_index = existing.and_then(|p| match p.to_lowercase().as_str() {
+        "github" => Some(0),
+        "gitlab" => Some(1),
+        _ => None,
+    });
+
+    let default_index = existing_index.or(detected_default);
+
+    // Show URL for context if we couldn't auto-detect
+    if default_index.is_none() {
+        if let Some(url) = &remote_url {
+            println!("{}", style(format!("Remote URL: {}", url)).dim());
+            println!(
+                "{}",
+                style("Could not auto-detect provider from URL.").yellow()
+            );
+        }
+    }
+
+    let selection = if let Some(default) = default_index {
+        Select::with_theme(theme)
+            .with_prompt("Git hosting provider")
+            .items(providers)
+            .default(default)
+            .interact()
+            .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?
+    } else {
+        // No default - user must choose
+        Select::with_theme(theme)
+            .with_prompt("Git hosting provider (required)")
+            .items(providers)
+            .interact()
+            .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?
+    };
+
+    let provider = match selection {
+        0 => "github",
+        1 => "gitlab",
+        _ => unreachable!(),
+    };
+
+    Ok(Some(provider.to_string()))
+}
+
+fn prompt_branch_username(
+    existing: Option<&str>,
+    provider: Option<&str>,
+    theme: &ColorfulTheme,
+) -> Result<Option<String>> {
     let suggested = existing.map(|s| s.to_string()).or_else(|| {
-        // Try to detect provider and get username
-        git::open_repo()
-            .ok()
-            .and_then(|repo| Provider::detect(&repo).ok())
+        // Try to get username from the configured provider
+        provider
+            .and_then(|p| Provider::from_str(p).ok())
             .and_then(|p| p.whoami().ok())
     });
 

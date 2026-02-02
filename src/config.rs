@@ -15,6 +15,11 @@ use crate::error::Result;
 /// Default configuration values
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Defaults {
+    /// Git hosting provider ("github" or "gitlab")
+    /// Used for self-hosted instances where URL detection fails
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+
     /// Base branch name (default: auto-detect main/master/trunk)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,

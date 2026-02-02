@@ -529,6 +529,44 @@ mod tests {
     }
 
     #[test]
+    fn test_strip_gg_id_edge_cases() {
+        // Case insensitive
+        let msg = "Title\n\nBody\n\ngg-id: c-abc123";
+        let result = strip_gg_id_from_message(msg);
+        assert!(!result.to_lowercase().contains("gg-id"));
+        assert_eq!(result, "Title\n\nBody");
+
+        // Mixed case
+        let msg = "Title\n\nBody\n\nGg-Id: c-abc123";
+        let result = strip_gg_id_from_message(msg);
+        assert!(!result.to_lowercase().contains("gg-id"));
+
+        // Multiple GG-IDs (shouldn't happen but should handle)
+        let msg = "Title\n\nBody\n\nGG-ID: c-abc123\nGG-ID: c-def456";
+        let result = strip_gg_id_from_message(msg);
+        assert!(!result.contains("GG-ID"));
+        assert_eq!(result, "Title\n\nBody");
+
+        // GG-ID with extra spaces after colon
+        let msg = "Title\n\nBody\n\nGG-ID:   c-abc123";
+        let result = strip_gg_id_from_message(msg);
+        assert!(!result.contains("GG-ID"));
+
+        // GG-ID only (no body)
+        let msg = "Title\n\nGG-ID: c-abc123";
+        let result = strip_gg_id_from_message(msg);
+        assert!(!result.contains("GG-ID"));
+        assert_eq!(result, "Title");
+
+        // GG-ID in middle of body (rare but possible)
+        let msg = "Title\n\nFirst paragraph\n\nGG-ID: c-abc123\n\nSecond paragraph";
+        let result = strip_gg_id_from_message(msg);
+        assert!(!result.contains("GG-ID"));
+        assert!(result.contains("First paragraph"));
+        assert!(result.contains("Second paragraph"));
+    }
+
+    #[test]
     fn test_extract_description_from_message() {
         let msg = "Add feature\n\nSome description\n\nGG-ID: c-abc123";
         let result = extract_description_from_message(msg);
@@ -541,6 +579,36 @@ mod tests {
         let msg_multi = "Add feature\n\nLine one\n\nLine two";
         let result = extract_description_from_message(msg_multi);
         assert_eq!(result.as_deref(), Some("Line one\n\nLine two"));
+    }
+
+    #[test]
+    fn test_extract_description_filters_gg_id() {
+        // Ensure GG-ID is never present in extracted description
+        // This is critical for PR/MR descriptions
+
+        // GG-ID at end of body
+        let msg = "Title\n\nThis is the body.\n\nMore details here.\n\nGG-ID: c-abc123";
+        let result = extract_description_from_message(msg);
+        assert!(result.is_some());
+        let desc = result.unwrap();
+        assert!(!desc.contains("GG-ID"));
+        assert!(desc.contains("This is the body."));
+        assert!(desc.contains("More details here."));
+
+        // GG-ID with lowercase
+        let msg = "Title\n\nBody text\n\ngg-id: c-abc123";
+        let result = extract_description_from_message(msg);
+        assert!(result.is_some());
+        assert!(!result.unwrap().to_lowercase().contains("gg-id"));
+
+        // Multiple paragraphs with GG-ID at end
+        let msg = "feat: add new feature\n\nFirst paragraph explaining the change.\n\nSecond paragraph with more details.\n\n- Bullet point 1\n- Bullet point 2\n\nGG-ID: c-1234567";
+        let result = extract_description_from_message(msg);
+        assert!(result.is_some());
+        let desc = result.unwrap();
+        assert!(!desc.contains("GG-ID"));
+        assert!(desc.contains("First paragraph"));
+        assert!(desc.contains("Bullet point"));
     }
 
     #[test]

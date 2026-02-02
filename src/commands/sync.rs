@@ -370,4 +370,23 @@ mod tests {
         assert_eq!(clean_title("Add feature"), "Add feature");
         assert_eq!(clean_title(" Add feature. "), "Add feature");
     }
+
+    #[test]
+    fn test_build_pr_payload_description_should_not_contain_gg_id() {
+        // The description passed to build_pr_payload should already be filtered
+        // by get_commit_description (which uses strip_gg_id_from_message internally).
+        // This test documents that expectation - the caller is responsible for
+        // passing a clean description without any GG-ID trailers.
+        let clean_description = "This is the body.\n\nMore details about the change.";
+        let (_, description) = build_pr_payload(
+            "Add feature",
+            Some(clean_description.to_string()),
+            "stack",
+            "abc123",
+        );
+        // Verify the description is passed through unchanged
+        assert_eq!(description, clean_description);
+        // And confirm no GG-ID trailer is present (which would indicate a bug in the caller)
+        assert!(!description.contains("GG-ID:"));
+    }
 }

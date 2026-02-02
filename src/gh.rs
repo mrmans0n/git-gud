@@ -401,6 +401,50 @@ pub fn get_pr_ci_status(pr_number: u64) -> Result<CiStatus> {
     }
 }
 
+/// List PRs for a specific head branch
+/// Returns a list of PR numbers for open PRs with the given head branch
+pub fn list_prs_for_branch(branch: &str) -> Result<Vec<u64>> {
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--head",
+            branch,
+            "--json",
+            "number",
+            "--jq",
+            ".[].number",
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        // If no PRs found, gh returns success with empty output
+        // If there's an actual error, return it
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.is_empty() {
+            return Err(GgError::Other(format!(
+                "Failed to list PRs for branch {}: {}",
+                branch, stderr
+            )));
+        }
+        return Ok(vec![]);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut prs = Vec::new();
+
+    for line in stdout.lines() {
+        let line = line.trim();
+        if !line.is_empty() {
+            if let Ok(num) = line.parse::<u64>() {
+                prs.push(num);
+            }
+        }
+    }
+
+    Ok(prs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

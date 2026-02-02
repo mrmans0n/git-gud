@@ -145,6 +145,8 @@ gg clean
 |---------|-------------|
 | `gg setup` | Generate or update `.git/gg/config.json` interactively |
 | `gg lint` | Run lint commands on each commit |
+| `gg reconcile` | Reconcile stacks that were pushed without using `gg sync` |
+| `gg reconcile --dry-run` | Show what reconcile would do without making changes |
 | `gg continue` | Continue after resolving conflicts |
 | `gg abort` | Abort current operation |
 | `gg completions <shell>` | Generate shell completions |
@@ -338,6 +340,47 @@ gg completions zsh > ~/.zfunc/_gg
 mkdir -p ~/.config/fish/completions
 gg completions fish > ~/.config/fish/completions/gg.fish
 ```
+
+## Reconciling Out-of-Sync Stacks
+
+If you (or someone else) pushed commits without using `gg sync`, your stack may be out of sync:
+- Commits missing GG-IDs
+- PRs/MRs exist but aren't tracked in config
+
+Use `gg reconcile` to fix this:
+
+```bash
+# Check what would be reconciled (safe, no changes made)
+$ gg reconcile --dry-run
+→ Analyzing stack my-feature (3 commits)...
+
+→ 2 commits need GG-IDs:
+  • abc1234 Add data model
+  • def5678 Add API endpoint
+
+→ 1 existing PRs found to map:
+  • nacho/my-feature--c-9a8b7c6 → PR #42
+
+→ Dry run complete. No changes made.
+
+# Actually reconcile (will prompt before making changes)
+$ gg reconcile
+→ Analyzing stack my-feature (3 commits)...
+→ 2 commits need GG-IDs
+Add GG-IDs to commits? (requires rebase) [y/n]: y
+OK Added GG-IDs to commits
+OK Mapped c-9a8b7c6 → PR #42
+OK Reconciliation complete!
+```
+
+**What reconcile does:**
+1. **Adds GG-IDs to commits** that don't have them (via rebase)
+2. **Finds existing PRs/MRs** for your entry branches and maps them in config
+
+**When to use:**
+- After pushing with `git push` instead of `gg sync`
+- When inheriting a stack from another machine that got out of sync
+- When PRs were created manually outside of git-gud
 
 ## Troubleshooting
 

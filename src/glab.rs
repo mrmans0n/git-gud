@@ -477,6 +477,41 @@ pub fn get_mr_ci_status(mr_number: u64) -> Result<CiStatus> {
     }
 }
 
+/// List MRs for a specific source branch
+/// Returns a list of MR numbers (iids) for open MRs with the given source branch
+pub fn list_mrs_for_branch(branch: &str) -> Result<Vec<u64>> {
+    let output = Command::new("glab")
+        .args(["mr", "list", "--source-branch", branch, "--output", "json"])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.is_empty() {
+            return Err(GgError::GlabError(format!(
+                "Failed to list MRs for branch {}: {}",
+                branch, stderr
+            )));
+        }
+        return Ok(vec![]);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stdout.trim().is_empty() || stdout.trim() == "[]" {
+        return Ok(vec![]);
+    }
+
+    // Parse JSON array of MRs
+    #[derive(Deserialize)]
+    struct MrListItem {
+        iid: u64,
+    }
+
+    let mrs: Vec<MrListItem> = serde_json::from_str(&stdout)
+        .map_err(|e| GgError::GlabError(format!("Failed to parse MR list: {}", e)))?;
+
+    Ok(mrs.into_iter().map(|mr| mr.iid).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -9,6 +9,7 @@ pub mod lint;
 pub mod ls;
 pub mod nav;
 pub mod rebase;
+pub mod reconcile;
 pub mod reorder;
 pub mod setup;
 pub mod squash;

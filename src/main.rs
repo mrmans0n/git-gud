@@ -200,6 +200,14 @@ enum Commands {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+
+    /// Reconcile stacks that were pushed without using `gg sync`
+    #[command(name = "reconcile")]
+    Reconcile {
+        /// Show what would be done without making changes
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+    },
 }
 
 fn main() {
@@ -271,6 +279,7 @@ fn main() {
             one_fixup_per_commit,
         }),
         Some(Commands::Completions { shell }) => commands::completions::run(shell),
+        Some(Commands::Reconcile { dry_run }) => commands::reconcile::run(dry_run),
     };
 
     if let Err(e) = result {

@@ -247,6 +247,15 @@ impl Provider {
         }
     }
 
+    /// List PRs/MRs for a specific branch
+    /// Returns PR/MR numbers for open PRs/MRs with the given branch as source/head
+    pub fn list_prs_for_branch(&self, branch: &str) -> Result<Vec<u64>> {
+        match self {
+            Provider::GitHub => gh::list_prs_for_branch(branch),
+            Provider::GitLab => glab::list_mrs_for_branch(branch),
+        }
+    }
+
     /// Get PR/MR label (PR or MR)
     pub fn pr_label(&self) -> &'static str {
         match self {

@@ -248,4 +248,62 @@ mod tests {
         let loaded = Config::load(git_dir).unwrap();
         assert!(loaded.get_land_auto_clean());
     }
+
+    #[test]
+    fn test_provider_config_default_is_none() {
+        let config = Config::default();
+        assert!(config.defaults.provider.is_none());
+    }
+
+    #[test]
+    fn test_provider_config_github() {
+        let mut config = Config::default();
+        config.defaults.provider = Some("github".to_string());
+        assert_eq!(config.defaults.provider.as_deref(), Some("github"));
+    }
+
+    #[test]
+    fn test_provider_config_gitlab() {
+        let mut config = Config::default();
+        config.defaults.provider = Some("gitlab".to_string());
+        assert_eq!(config.defaults.provider.as_deref(), Some("gitlab"));
+    }
+
+    #[test]
+    fn test_provider_config_roundtrip() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_dir = temp_dir.path();
+
+        // Test with GitHub
+        let mut config = Config::default();
+        config.defaults.provider = Some("github".to_string());
+        config.save(git_dir).unwrap();
+
+        let loaded = Config::load(git_dir).unwrap();
+        assert_eq!(loaded.defaults.provider, Some("github".to_string()));
+
+        // Test with GitLab
+        let mut config = Config::default();
+        config.defaults.provider = Some("gitlab".to_string());
+        config.save(git_dir).unwrap();
+
+        let loaded = Config::load(git_dir).unwrap();
+        assert_eq!(loaded.defaults.provider, Some("gitlab".to_string()));
+    }
+
+    #[test]
+    fn test_provider_config_not_serialized_when_none() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_dir = temp_dir.path();
+
+        let config = Config::default();
+        config.save(git_dir).unwrap();
+
+        // Read the raw JSON to verify provider is not included
+        let contents = std::fs::read_to_string(Config::config_path(git_dir)).unwrap();
+        assert!(
+            !contents.contains("provider"),
+            "provider should not be serialized when None"
+        );
+    }
 }

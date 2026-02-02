@@ -51,10 +51,15 @@ pub fn run(dry_run: bool) -> Result<()> {
     let git_dir = repo.path();
     let mut config = Config::load(git_dir)?;
 
-    // Detect and check provider
+    // Detect provider
     let provider = Provider::detect(&repo)?;
-    provider.check_installed()?;
-    provider.check_auth()?;
+
+    // Only check installed/auth if not doing a dry run
+    // (dry run can show what would be done without actual provider access)
+    if !dry_run {
+        provider.check_installed()?;
+        provider.check_auth()?;
+    }
 
     // Load current stack
     let stack = Stack::load(&repo, &config)?;
@@ -83,7 +88,21 @@ pub fn run(dry_run: bool) -> Result<()> {
         .collect();
 
     // Phase 2: Find PRs/MRs for entry branches that aren't mapped
-    let prs_to_map = find_unmapped_prs(&repo, &stack, &config, &provider)?;
+    // In dry-run mode, try to find PRs but don't fail if provider isn't available
+    let prs_to_map = if dry_run {
+        // Check if provider is available before trying to list PRs
+        if provider.check_installed().is_ok() && provider.check_auth().is_ok() {
+            find_unmapped_prs(&repo, &stack, &config, &provider)?
+        } else {
+            println!(
+                "{}",
+                style("  (Skipping PR discovery - provider not authenticated)").dim()
+            );
+            Vec::new()
+        }
+    } else {
+        find_unmapped_prs(&repo, &stack, &config, &provider)?
+    };
 
     let actions = ReconcileActions {
         commits_needing_ids,

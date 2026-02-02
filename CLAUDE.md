@@ -4,7 +4,7 @@ This file provides guidance for Claude Code and other AI assistants working on t
 
 ## Project Overview
 
-**git-gud (gg)** is a stacked-diffs CLI tool for GitLab, inspired by Gerrit, Phabricator/Arcanist, and Graphite. It enables developers to break large changes into small, reviewable commits where each commit becomes its own Merge Request (MR) with proper dependency chains.
+**git-gud (gg)** is a stacked-diffs CLI tool for GitHub and GitLab, inspired by Gerrit, Phabricator/Arcanist, and Graphite. It enables developers to break large changes into small, reviewable commits where each commit becomes its own PR/MR with proper dependency chains.
 
 **Status**: Early-stage (v0.1.0) - not battle-tested. Exercise caution.
 
@@ -41,7 +41,7 @@ src/
     ├── checkout.rs  # Create/switch stacks (gg co)
     ├── clean.rs     # Remove merged stacks
     ├── completions.rs # Shell completions
-    ├── land.rs      # Merge approved MRs
+    ├── land.rs      # Merge approved PRs/MRs
     ├── lint.rs      # Run lint commands per commit
     ├── ls.rs        # List stacks and commits
     ├── nav.rs       # Navigation (first/last/next/prev/mv)
@@ -49,7 +49,7 @@ src/
     ├── reorder.rs   # Interactive reorder commits
     ├── setup.rs     # Config setup wizard
     ├── squash.rs    # Squash changes into current commit
-    └── sync.rs      # Push branches and create/update MRs
+    └── sync.rs      # Push branches and create/update PRs/MRs
 
 tests/
 └── integration_tests.rs  # Integration tests with temp repos
@@ -73,7 +73,7 @@ docs/
 
 ### Configuration
 - Stored in `.git/gg/config.json` (per-repository)
-- Contains: base branch, username, lint commands, stack configs, MR mappings
+- Contains: base branch, username, lint commands, stack configs, PR/MR mappings
 
 ## Testing Patterns
 

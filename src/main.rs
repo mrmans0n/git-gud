@@ -61,7 +61,7 @@ enum Commands {
     /// Sync stack with remote (push branches and create/update PRs/MRs)
     #[command(name = "sync", alias = "diff")]
     Sync {
-        /// Create new MRs as drafts
+        /// Create new PRs/MRs as drafts
         #[arg(short, long)]
         draft: bool,
 
@@ -114,10 +114,10 @@ enum Commands {
         order: Option<String>,
     },
 
-    /// Land (merge) approved MRs starting from the first commit
+    /// Land (merge) approved PRs/MRs starting from the first commit
     #[command(name = "land", alias = "merge")]
     Land {
-        /// Land all approved MRs in sequence
+        /// Land all approved PRs/MRs in sequence
         #[arg(short, long)]
         all: bool,
 

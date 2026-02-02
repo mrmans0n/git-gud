@@ -1,4 +1,4 @@
-//! git-gud (gg) - A stacked-diffs CLI tool for GitLab
+//! git-gud (gg) - A stacked-diffs CLI tool for GitHub and GitLab
 //!
 //! Entry point for the CLI application.
 
@@ -21,7 +21,7 @@ use console::style;
     name = "gg",
     author = "Nacho Lopez",
     version,
-    about = "A stacked-diffs CLI tool for GitLab",
+    about = "A stacked-diffs CLI tool for GitHub and GitLab",
     long_about = None
 )]
 struct Cli {
@@ -49,7 +49,7 @@ enum Commands {
         #[arg(short, long)]
         all: bool,
 
-        /// Refresh MR status from GitLab
+        /// Refresh PR/MR status from remote
         #[arg(short, long)]
         refresh: bool,
 
@@ -58,7 +58,7 @@ enum Commands {
         remote: bool,
     },
 
-    /// Sync stack with GitLab (push branches and create/update MRs)
+    /// Sync stack with remote (push branches and create/update PRs/MRs)
     #[command(name = "sync", alias = "diff")]
     Sync {
         /// Create new MRs as drafts

@@ -33,7 +33,9 @@ cargo install gg-stack
 - For **GitHub** repositories: [gh](https://cli.github.com/) - GitHub CLI
 - For **GitLab** repositories: [glab](https://gitlab.com/gitlab-org/cli) - GitLab CLI
 
-git-gud automatically detects your remote provider and uses the appropriate CLI tool.
+git-gud automatically detects your remote provider from the URL (`github.com` or `gitlab.com`) and uses the appropriate CLI tool.
+
+> **Self-hosted instances**: For GitHub Enterprise or self-hosted GitLab (e.g., `gitlab.mycompany.com`), run `gg setup` to manually select your provider.
 
 Authenticate with your provider before using git-gud:
 
@@ -154,6 +156,7 @@ Configuration is stored in `.git/gg/config.json`. Run `gg setup` to generate it 
 ```json
 {
   "defaults": {
+    "provider": "gitlab",
     "base": "main",
     "branch_username": "your-username",
     "lint": [
@@ -179,6 +182,7 @@ All configuration options are in the `defaults` section:
 
 | Option | Type | Description | Default |
 |--------|------|-------------|---------|
+| `provider` | `string` | Git hosting provider (`"github"` or `"gitlab"`). Required for self-hosted instances. | Auto-detect from URL |
 | `base` | `string` | Default base branch for new stacks | Auto-detect (main/master/trunk) |
 | `branch_username` | `string` | Username prefix for branch naming | Auto-detect via `gh whoami`/`glab whoami` |
 | `lint` | `array` | Lint commands to run on each commit with `gg lint` | `[]` |

@@ -99,7 +99,7 @@ enum Commands {
     Next,
 
     /// Squash staged changes into the current commit
-    #[command(name = "sc", alias = "squash")]
+    #[command(name = "sc", aliases = ["squash", "amend"])]
     Squash {
         /// Squash all changes (staged and unstaged)
         #[arg(short, long)]

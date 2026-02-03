@@ -8,7 +8,7 @@ use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::gh::{self, CiStatus as GhCiStatus, PrState as GhPrState};
 use crate::git;
-use crate::glab::{self, CiStatus as GlabCiStatus, MrState as GlabMrState};
+use crate::glab::{self, AutoMergeResult, CiStatus as GlabCiStatus, MrState as GlabMrState};
 
 /// Supported git hosting providers
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,12 +219,17 @@ impl Provider {
     /// Request auto-merge ("merge when pipeline succeeds").
     ///
     /// GitLab only.
+    ///
+    /// Returns:
+    /// - `Ok(AutoMergeResult::Queued)` if successfully queued for auto-merge
+    /// - `Ok(AutoMergeResult::AlreadyQueued)` if already set to auto-merge
+    /// - `Err(...)` for other errors or if provider is GitHub
     pub fn auto_merge_pr_when_pipeline_succeeds(
         &self,
         number: u64,
         squash: bool,
         delete_branch: bool,
-    ) -> Result<()> {
+    ) -> Result<AutoMergeResult> {
         match self {
             Provider::GitHub => Err(GgError::Other(
                 "Auto-merge-on-land is only supported for GitLab".to_string(),
@@ -302,7 +307,12 @@ impl Provider {
 
     /// Add PR/MR to merge train (GitLab only)
     /// Falls back to regular merge for GitHub
-    pub fn add_to_merge_train(&self, number: u64) -> Result<()> {
+    ///
+    /// Returns:
+    /// - `Ok(AutoMergeResult::Queued)` if successfully added to the merge train
+    /// - `Ok(AutoMergeResult::AlreadyQueued)` if already in the merge train
+    /// - `Err(...)` for other errors or if provider is GitHub
+    pub fn add_to_merge_train(&self, number: u64) -> Result<AutoMergeResult> {
         match self {
             Provider::GitHub => {
                 // GitHub doesn't support merge trains, fallback to regular merge

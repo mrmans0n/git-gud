@@ -10,6 +10,7 @@ use dialoguer::Confirm;
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
+use crate::glab::AutoMergeResult;
 use crate::provider::{CiStatus, PrState, Provider};
 use crate::stack::Stack;
 
@@ -276,7 +277,7 @@ pub fn run(
             );
 
             match provider.add_to_merge_train(pr_num) {
-                Ok(()) => {
+                Ok(AutoMergeResult::Queued) => {
                     println!(
                         "{} Added {} {}{} to merge train",
                         style("OK").green().bold(),
@@ -287,45 +288,27 @@ pub fn run(
                     landed_count += 1;
                     cleanup_after_merge(&mut config, &stack, &provider, gg_id, pr_num, land_all);
                 }
+                Ok(AutoMergeResult::AlreadyQueued) => {
+                    println!(
+                        "{} {} {}{} is already in the merge train",
+                        style("✓").green(),
+                        provider.pr_label(),
+                        provider.pr_number_prefix(),
+                        pr_num
+                    );
+                    landed_count += 1;
+                    cleanup_after_merge(&mut config, &stack, &provider, gg_id, pr_num, land_all);
+                }
                 Err(e) => {
                     println!(
-                        "{} Failed to add to merge train, attempting direct merge: {}",
-                        style("Warning:").yellow(),
+                        "{} Failed to add {} {}{} to merge train: {}",
+                        style("Error:").red().bold(),
+                        provider.pr_label(),
+                        provider.pr_number_prefix(),
+                        pr_num,
                         e
                     );
-                    // Fallback to direct merge
-                    match provider.merge_pr(pr_num, squash, false) {
-                        Ok(()) => {
-                            println!(
-                                "{} Merged {} {}{} into {}",
-                                style("OK").green().bold(),
-                                provider.pr_label(),
-                                provider.pr_number_prefix(),
-                                pr_num,
-                                stack.base
-                            );
-                            landed_count += 1;
-                            cleanup_after_merge(
-                                &mut config,
-                                &stack,
-                                &provider,
-                                gg_id,
-                                pr_num,
-                                land_all,
-                            );
-                        }
-                        Err(e) => {
-                            println!(
-                                "{} Failed to merge {} {}{}: {}",
-                                style("Error:").red().bold(),
-                                provider.pr_label(),
-                                provider.pr_number_prefix(),
-                                pr_num,
-                                e
-                            );
-                            break;
-                        }
-                    }
+                    break;
                 }
             }
         } else if auto_merge_on_land {
@@ -338,7 +321,7 @@ pub fn run(
             );
 
             match provider.auto_merge_pr_when_pipeline_succeeds(pr_num, squash, false) {
-                Ok(()) => {
+                Ok(AutoMergeResult::Queued) => {
                     println!(
                         "{} Queued auto-merge for {} {}{} into {}",
                         style("OK").green().bold(),
@@ -346,6 +329,20 @@ pub fn run(
                         provider.pr_number_prefix(),
                         pr_num,
                         stack.base
+                    );
+                    landed_count += 1;
+
+                    // Note: we intentionally do not clean up config mappings here.
+                    // The MR has not merged yet; cleanup and stacked base updates
+                    // would be premature.
+                }
+                Ok(AutoMergeResult::AlreadyQueued) => {
+                    println!(
+                        "{} {} {}{} is already set to auto-merge",
+                        style("✓").green(),
+                        provider.pr_label(),
+                        provider.pr_number_prefix(),
+                        pr_num
                     );
                     landed_count += 1;
 

@@ -16,6 +16,58 @@ use crate::stack::Stack;
 /// Polling interval (10 seconds)
 const POLL_INTERVAL_SECS: u64 = 10;
 
+/// Cleanup after successfully merging a PR/MR:
+/// - Remove the PR/MR mapping from config
+/// - Update the base of remaining PRs/MRs if landing all
+fn cleanup_after_merge(
+    config: &mut Config,
+    stack: &Stack,
+    provider: &Provider,
+    gg_id: &str,
+    pr_num: u64,
+    land_all: bool,
+) {
+    // Remove PR/MR mapping from config
+    config.remove_mr_for_entry(&stack.name, gg_id);
+
+    // Update the base of remaining PRs/MRs to point to the main branch
+    // This is critical for stacked PRs - after merging PR #1, PR #2 should
+    // point to main instead of PR #1's branch (which no longer exists)
+    if land_all {
+        let current_index = stack
+            .entries
+            .iter()
+            .position(|e| e.mr_number == Some(pr_num))
+            .unwrap_or(0);
+
+        for remaining_entry in stack.entries.iter().skip(current_index + 1) {
+            if let Some(remaining_pr) = remaining_entry.mr_number {
+                println!(
+                    "{}",
+                    style(format!(
+                        "  Updating {} {}{} base to {}...",
+                        provider.pr_label(),
+                        provider.pr_number_prefix(),
+                        remaining_pr,
+                        stack.base
+                    ))
+                    .dim()
+                );
+                if let Err(e) = provider.update_pr_base(remaining_pr, &stack.base) {
+                    println!(
+                        "{} Warning: Failed to update {} {}{} base: {}",
+                        style("⚠").yellow(),
+                        provider.pr_label(),
+                        provider.pr_number_prefix(),
+                        remaining_pr,
+                        e
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Run the land command
 pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result<()> {
     let repo = git::open_repo()?;
@@ -151,6 +203,7 @@ pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result
                         land_all,
                         timeout_minutes,
                         interrupted.as_ref(),
+                        &stack.base,
                     ) {
                         println!(
                             "{} {} {}{}: {}",
@@ -221,6 +274,7 @@ pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result
                         pr_num
                     );
                     landed_count += 1;
+                    cleanup_after_merge(&mut config, &stack, &provider, gg_id, pr_num, land_all);
                 }
                 Err(e) => {
                     println!(
@@ -240,6 +294,14 @@ pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result
                                 stack.base
                             );
                             landed_count += 1;
+                            cleanup_after_merge(
+                                &mut config,
+                                &stack,
+                                &provider,
+                                gg_id,
+                                pr_num,
+                                land_all,
+                            );
                         }
                         Err(e) => {
                             println!(
@@ -275,46 +337,7 @@ pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result
                         stack.base
                     );
                     landed_count += 1;
-
-                    // Remove PR/MR mapping from config
-                    config.remove_mr_for_entry(&stack.name, gg_id);
-
-                    // Update the base of remaining PRs/MRs to point to the main branch
-                    // This is critical for stacked PRs - after merging PR #1, PR #2 should
-                    // point to main instead of PR #1's branch (which no longer exists)
-                    if land_all {
-                        let current_index = stack
-                            .entries
-                            .iter()
-                            .position(|e| e.mr_number == Some(pr_num))
-                            .unwrap_or(0);
-
-                        for remaining_entry in stack.entries.iter().skip(current_index + 1) {
-                            if let Some(remaining_pr) = remaining_entry.mr_number {
-                                println!(
-                                    "{}",
-                                    style(format!(
-                                        "  Updating {} {}{} base to {}...",
-                                        provider.pr_label(),
-                                        provider.pr_number_prefix(),
-                                        remaining_pr,
-                                        stack.base
-                                    ))
-                                    .dim()
-                                );
-                                if let Err(e) = provider.update_pr_base(remaining_pr, &stack.base) {
-                                    println!(
-                                        "{} Warning: Failed to update {} {}{} base: {}",
-                                        style("⚠").yellow(),
-                                        provider.pr_label(),
-                                        provider.pr_number_prefix(),
-                                        remaining_pr,
-                                        e
-                                    );
-                                }
-                            }
-                        }
-                    }
+                    cleanup_after_merge(&mut config, &stack, &provider, gg_id, pr_num, land_all);
                 }
                 Err(e) => {
                     println!(
@@ -434,6 +457,7 @@ fn wait_for_pr_ready(
     skip_approval: bool,
     timeout_minutes: u64,
     interrupted: Option<&Arc<AtomicBool>>,
+    target_branch: &str,
 ) -> Result<()> {
     let start_time = Instant::now();
     let timeout = Duration::from_secs(timeout_minutes * 60);
@@ -478,8 +502,7 @@ fn wait_for_pr_ready(
 
         // Check merge train status if enabled
         if merge_trains_enabled {
-            // Note: Using "main" as target branch - in production, this should be retrieved from stack config
-            if let Ok(Some(train_info)) = provider.get_merge_train_status(pr_num, "main") {
+            if let Ok(Some(train_info)) = provider.get_merge_train_status(pr_num, target_branch) {
                 use crate::glab::MergeTrainStatus;
                 match train_info.status {
                     MergeTrainStatus::Merged => {
@@ -598,6 +621,8 @@ fn wait_for_pr_ready(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{Config, Defaults, StackConfig};
+    use std::collections::HashMap;
 
     #[test]
     fn test_constants() {
@@ -608,5 +633,144 @@ mod tests {
     fn test_poll_interval_is_reasonable() {
         // Poll interval should be between 1 and 60 seconds
         const { assert!(POLL_INTERVAL_SECS >= 1 && POLL_INTERVAL_SECS <= 60) };
+    }
+
+    #[test]
+    fn test_config_remove_mr_for_entry_removes_single_entry() {
+        // Create a config with multiple MR mappings
+        let mut config = Config {
+            defaults: Defaults::default(),
+            stacks: HashMap::new(),
+        };
+
+        let mut stack_config = StackConfig {
+            base: None,
+            mrs: HashMap::new(),
+        };
+        stack_config.mrs.insert("c-abc1234".to_string(), 123);
+        stack_config.mrs.insert("c-def5678".to_string(), 456);
+        config.stacks.insert("test-stack".to_string(), stack_config);
+
+        // Verify initial state
+        assert_eq!(config.stacks.get("test-stack").unwrap().mrs.len(), 2);
+
+        // Remove one entry
+        config.remove_mr_for_entry("test-stack", "c-abc1234");
+
+        // Verify the correct entry was removed
+        let stack = config.stacks.get("test-stack").unwrap();
+        assert_eq!(stack.mrs.len(), 1);
+        assert!(!stack.mrs.contains_key("c-abc1234"));
+        assert_eq!(stack.mrs.get("c-def5678"), Some(&456));
+    }
+
+    #[test]
+    fn test_config_remove_mr_for_entry_handles_nonexistent_entry() {
+        let mut config = Config {
+            defaults: Defaults::default(),
+            stacks: HashMap::new(),
+        };
+
+        let mut stack_config = StackConfig {
+            base: None,
+            mrs: HashMap::new(),
+        };
+        stack_config.mrs.insert("c-abc1234".to_string(), 123);
+        config.stacks.insert("test-stack".to_string(), stack_config);
+
+        // Try to remove non-existent entry - should not panic
+        config.remove_mr_for_entry("test-stack", "c-xyz9999");
+
+        // Original entry should still be there
+        assert_eq!(config.stacks.get("test-stack").unwrap().mrs.len(), 1);
+        assert_eq!(
+            config
+                .stacks
+                .get("test-stack")
+                .unwrap()
+                .mrs
+                .get("c-abc1234"),
+            Some(&123)
+        );
+    }
+
+    #[test]
+    fn test_config_remove_mr_for_entry_handles_nonexistent_stack() {
+        let mut config = Config {
+            defaults: Defaults::default(),
+            stacks: HashMap::new(),
+        };
+
+        // Try to remove from non-existent stack - should not panic
+        config.remove_mr_for_entry("nonexistent-stack", "c-abc1234");
+
+        // Should still have no stacks
+        assert_eq!(config.stacks.len(), 0);
+    }
+
+    #[test]
+    fn test_config_remove_mr_for_entry_removes_multiple_entries() {
+        let mut config = Config {
+            defaults: Defaults::default(),
+            stacks: HashMap::new(),
+        };
+
+        let mut stack_config = StackConfig {
+            base: None,
+            mrs: HashMap::new(),
+        };
+        stack_config.mrs.insert("c-abc1234".to_string(), 123);
+        stack_config.mrs.insert("c-def5678".to_string(), 456);
+        stack_config.mrs.insert("c-ghi9012".to_string(), 789);
+        config.stacks.insert("test-stack".to_string(), stack_config);
+
+        assert_eq!(config.stacks.get("test-stack").unwrap().mrs.len(), 3);
+
+        // Remove entries one by one
+        config.remove_mr_for_entry("test-stack", "c-abc1234");
+        assert_eq!(config.stacks.get("test-stack").unwrap().mrs.len(), 2);
+
+        config.remove_mr_for_entry("test-stack", "c-def5678");
+        assert_eq!(config.stacks.get("test-stack").unwrap().mrs.len(), 1);
+
+        config.remove_mr_for_entry("test-stack", "c-ghi9012");
+        assert_eq!(config.stacks.get("test-stack").unwrap().mrs.len(), 0);
+    }
+
+    // Note: cleanup_after_merge is tested indirectly through the land command
+    // integration. Direct unit testing would require mocking Config, Stack,
+    // and Provider. The function is well-defined with:
+    // - config.remove_mr_for_entry() called unconditionally
+    // - Base update logic only runs when land_all=true
+    // - Updates remaining entries in stack after current index
+
+    #[test]
+    #[allow(clippy::type_complexity)]
+    fn test_cleanup_after_merge_signature() {
+        // This test ensures the helper function signature stays stable.
+        // The function takes:
+        // - config: &mut Config (for remove_mr_for_entry)
+        // - stack: &Stack (for stack.name, stack.base, stack.entries)
+        // - provider: &Provider (for pr_label, pr_number_prefix, update_pr_base)
+        // - gg_id: &str (commit id to clean up)
+        // - pr_num: u64 (PR number that was merged)
+        // - land_all: bool (whether to update remaining PR bases)
+
+        // Type-level assertion that cleanup_after_merge exists with the correct signature
+        let _fn_ptr: fn(&mut Config, &Stack, &Provider, &str, u64, bool) = cleanup_after_merge;
+    }
+
+    #[test]
+    #[allow(clippy::type_complexity)]
+    fn test_wait_for_pr_ready_takes_target_branch() {
+        // This test documents that wait_for_pr_ready accepts target_branch parameter
+        // instead of using a hardcoded "main". The actual function requires a real
+        // Provider and network access, so we just verify the signature.
+
+        use std::sync::Arc;
+
+        // Type assertion that the function signature includes target_branch: &str
+        let _fn_ptr: fn(&Provider, u64, bool, u64, Option<&Arc<AtomicBool>>, &str) -> Result<()> =
+            wait_for_pr_ready;
     }
 }

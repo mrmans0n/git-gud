@@ -906,4 +906,75 @@ mod tests {
         assert_eq!(info.position, None);
         assert!(!info.pipeline_running);
     }
+
+    #[test]
+    fn test_merge_train_status_all_variants() {
+        // Test all status variants can be created and compared
+        let statuses = vec![
+            MergeTrainStatus::Idle,
+            MergeTrainStatus::Stale,
+            MergeTrainStatus::Fresh,
+            MergeTrainStatus::Merging,
+            MergeTrainStatus::Merged,
+            MergeTrainStatus::SkipMerged,
+            MergeTrainStatus::Unknown,
+        ];
+
+        // Each status should equal itself
+        for status in &statuses {
+            assert_eq!(status, status);
+        }
+
+        // Different statuses should not be equal
+        assert_ne!(MergeTrainStatus::Fresh, MergeTrainStatus::Merging);
+        assert_ne!(MergeTrainStatus::Merged, MergeTrainStatus::SkipMerged);
+        assert_ne!(MergeTrainStatus::Unknown, MergeTrainStatus::Idle);
+    }
+
+    #[test]
+    fn test_merge_train_info_with_position() {
+        // Test various positions
+        for pos in [1, 5, 10, 100] {
+            let info = MergeTrainInfo {
+                status: MergeTrainStatus::Fresh,
+                position: Some(pos),
+                pipeline_running: false,
+            };
+            assert_eq!(info.position, Some(pos));
+        }
+    }
+
+    #[test]
+    fn test_merge_train_info_pipeline_states() {
+        // Pipeline running
+        let running = MergeTrainInfo {
+            status: MergeTrainStatus::Fresh,
+            position: Some(1),
+            pipeline_running: true,
+        };
+        assert!(running.pipeline_running);
+
+        // Pipeline not running
+        let not_running = MergeTrainInfo {
+            status: MergeTrainStatus::Fresh,
+            position: Some(1),
+            pipeline_running: false,
+        };
+        assert!(!not_running.pipeline_running);
+    }
+
+    #[test]
+    fn test_merge_train_status_debug_format() {
+        // Ensure Debug trait works correctly
+        let status = MergeTrainStatus::Fresh;
+        let debug_str = format!("{:?}", status);
+        assert_eq!(debug_str, "Fresh");
+    }
+
+    #[test]
+    fn test_merge_train_status_clone() {
+        let original = MergeTrainStatus::Merging;
+        let cloned = original.clone();
+        assert_eq!(original, cloned);
+    }
 }

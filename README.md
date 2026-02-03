@@ -70,7 +70,7 @@ gg last           # Return to stack head
 # After review feedback, modify a commit
 gg mv 1           # Move to commit 1
 # make changes...
-gg sc             # Squash changes into current commit
+gg sc             # Squash changes into current commit (or: gg amend)
 
 # Land approved PRs/MRs
 gg land --all
@@ -114,7 +114,7 @@ gg clean
 
 | Command | Description |
 |---------|-------------|
-| `gg sc` | Squash staged changes into current commit |
+| `gg sc` / `gg amend` | Squash staged changes into current commit |
 | `gg sc --all` | Squash all changes (staged + unstaged) |
 | `gg reorder` | Reorder commits interactively |
 | `gg absorb` | Auto-distribute changes to appropriate commits |
@@ -310,7 +310,7 @@ $ gg mv 1
 OK Moved to: [1] abc1234 Add user model
 
 $ # make changes...
-$ gg sc
+$ gg sc  # or: gg amend
 OK Squashed into abc1234
 OK Rebased 2 commits on top
 

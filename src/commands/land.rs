@@ -641,6 +641,7 @@ mod tests {
     // - Updates remaining entries in stack after current index
 
     #[test]
+    #[allow(clippy::type_complexity)]
     fn test_cleanup_after_merge_signature() {
         // This test ensures the helper function signature stays stable.
         // The function takes:
@@ -656,6 +657,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::type_complexity)]
     fn test_wait_for_pr_ready_takes_target_branch() {
         // This test documents that wait_for_pr_ready accepts target_branch parameter
         // instead of using a hardcoded "main". The actual function requires a real

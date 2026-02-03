@@ -234,9 +234,7 @@ fn check_stack_merged(
 
             // Additional safety: verify commits are reachable from base branch
             // This catches edge cases where PR is marked merged but commits aren't in base
-            if all_merged
-                && verify_commits_reachable(repo, config, stack_name, username).is_err()
-            {
+            if all_merged && verify_commits_reachable(repo, config, stack_name, username).is_err() {
                 // If we can't verify reachability, be conservative
                 all_merged = false;
             }

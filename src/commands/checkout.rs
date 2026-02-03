@@ -13,6 +13,10 @@ use crate::stack;
 /// Run the checkout command
 pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
     let repo = git::open_repo()?;
+
+    // Acquire operation lock to prevent concurrent operations
+    let _lock = git::acquire_operation_lock(&repo, "checkout")?;
+
     let git_dir = repo.path();
     let mut config = Config::load(git_dir)?;
 
@@ -30,6 +34,8 @@ pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
             "git-provider".to_string(),
             "Could not determine username. Set branch_username in config or authenticate with gh/glab".to_string()
         ))?;
+
+    git::validate_branch_username(&username)?;
 
     // If no stack name provided, show fuzzy selector
     let stack_name = match stack_name {

@@ -239,6 +239,7 @@ fn prompt_branch_username(
     Ok(if trimmed.is_empty() {
         None
     } else {
+        git::validate_branch_username(trimmed)?;
         Some(trimmed.to_string())
     })
 }

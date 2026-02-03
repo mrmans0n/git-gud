@@ -10,6 +10,17 @@ use crate::stack::{self, Stack, StackEntry};
 /// Move to a specific position, entry ID, or SHA
 pub fn move_to(target: &str) -> Result<()> {
     let repo = git::open_repo()?;
+
+    // Acquire operation lock to prevent concurrent operations
+    let _lock = git::acquire_operation_lock(&repo, "nav")?;
+
+    if git::is_rebase_in_progress(&repo) {
+        return Err(GgError::Other(
+            "A rebase is in progress. Run `gg continue` to continue or `gg abort` to cancel."
+                .to_string(),
+        ));
+    }
+
     let config = Config::load(repo.path())?;
     let stack = Stack::load(&repo, &config)?;
 
@@ -51,6 +62,17 @@ pub fn move_to(target: &str) -> Result<()> {
 /// Move to the first commit in the stack
 pub fn first() -> Result<()> {
     let repo = git::open_repo()?;
+
+    // Acquire operation lock to prevent concurrent operations
+    let _lock = git::acquire_operation_lock(&repo, "nav")?;
+
+    if git::is_rebase_in_progress(&repo) {
+        return Err(GgError::Other(
+            "A rebase is in progress. Run `gg continue` to continue or `gg abort` to cancel."
+                .to_string(),
+        ));
+    }
+
     let config = Config::load(repo.path())?;
     let stack = Stack::load(&repo, &config)?;
 
@@ -64,6 +86,10 @@ pub fn first() -> Result<()> {
 /// Move to the last commit (stack head)
 pub fn last() -> Result<()> {
     let repo = git::open_repo()?;
+
+    // Acquire operation lock to prevent concurrent operations
+    let _lock = git::acquire_operation_lock(&repo, "nav")?;
+
     let git_dir = repo.path();
     let config = Config::load(git_dir)?;
     let stack = Stack::load(&repo, &config)?;
@@ -108,6 +134,17 @@ pub fn last() -> Result<()> {
 /// Move to the previous commit
 pub fn prev() -> Result<()> {
     let repo = git::open_repo()?;
+
+    // Acquire operation lock to prevent concurrent operations
+    let _lock = git::acquire_operation_lock(&repo, "nav")?;
+
+    if git::is_rebase_in_progress(&repo) {
+        return Err(GgError::Other(
+            "A rebase is in progress. Run `gg continue` to continue or `gg abort` to cancel."
+                .to_string(),
+        ));
+    }
+
     let config = Config::load(repo.path())?;
     let stack = Stack::load(&repo, &config)?;
 
@@ -123,6 +160,10 @@ pub fn prev() -> Result<()> {
 /// Move to the next commit
 pub fn next() -> Result<()> {
     let repo = git::open_repo()?;
+
+    // Acquire operation lock to prevent concurrent operations
+    let _lock = git::acquire_operation_lock(&repo, "nav")?;
+
     let git_dir = repo.path();
     let config = Config::load(git_dir)?;
     let stack = Stack::load(&repo, &config)?;

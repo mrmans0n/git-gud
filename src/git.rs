@@ -4,7 +4,6 @@
 //! commit traversal, and rebase operations.
 
 use std::fs::{self, File};
-use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
@@ -27,13 +26,12 @@ pub fn open_repo() -> Result<Repository> {
 /// Operation lock handle that automatically releases on drop
 pub struct OperationLock {
     _lock_file: File,
-    lock_path: PathBuf,
 }
 
 impl Drop for OperationLock {
     fn drop(&mut self) {
-        // Release lock by closing file and removing lock file
-        let _ = fs::remove_file(&self.lock_path);
+        // Lock is released when the file handle is dropped.
+        // Do not delete the lock file to avoid races with new lock acquisitions.
     }
 }
 
@@ -65,7 +63,6 @@ pub fn acquire_operation_lock(repo: &Repository, operation: &str) -> Result<Oper
 
                 return Ok(OperationLock {
                     _lock_file: lock_file,
-                    lock_path,
                 });
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -258,7 +255,8 @@ pub fn get_gg_id(commit: &Commit) -> Option<String> {
 
     for line in message.lines() {
         if let Some(captures) = re.captures(line.trim()) {
-            return captures.get(1).map(|m| m.as_str().trim().to_string());
+            let raw = captures.get(1).map(|m| m.as_str().trim())?;
+            return normalize_gg_id(raw);
         }
     }
     None
@@ -541,6 +539,75 @@ pub fn sanitize_stack_name(name: &str) -> Result<String> {
     Ok(sanitized)
 }
 
+/// Validate branch username used in branch names.
+///
+/// The username must not contain `/` or other invalid git ref characters.
+pub fn validate_branch_username(username: &str) -> Result<()> {
+    if username.is_empty() {
+        return Err(GgError::InvalidBranchUsername(
+            "Branch username cannot be empty".to_string(),
+        ));
+    }
+
+    if username.contains('/') {
+        return Err(GgError::InvalidBranchUsername(
+            "Branch username cannot contain '/'".to_string(),
+        ));
+    }
+
+    if username.chars().any(|c| c.is_whitespace()) {
+        return Err(GgError::InvalidBranchUsername(
+            "Branch username cannot contain whitespace".to_string(),
+        ));
+    }
+
+    let invalid_chars = ['~', '^', ':', '?', '*', '[', '\\', '@'];
+    for c in invalid_chars {
+        if username.contains(c) {
+            return Err(GgError::InvalidBranchUsername(format!(
+                "Branch username cannot contain '{}'",
+                c
+            )));
+        }
+    }
+
+    if username.chars().any(|c| c.is_control()) {
+        return Err(GgError::InvalidBranchUsername(
+            "Branch username cannot contain control characters".to_string(),
+        ));
+    }
+
+    if username.contains("..") {
+        return Err(GgError::InvalidBranchUsername(
+            "Branch username cannot contain '..'".to_string(),
+        ));
+    }
+
+    if username.starts_with('.') || username.ends_with('.') {
+        return Err(GgError::InvalidBranchUsername(
+            "Branch username cannot start or end with '.'".to_string(),
+        ));
+    }
+
+    if username.ends_with(".lock") {
+        return Err(GgError::InvalidBranchUsername(
+            "Branch username cannot end with '.lock'".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Validate GG-ID format and normalize to lowercase.
+pub fn normalize_gg_id(gg_id: &str) -> Option<String> {
+    let re = Regex::new(r"(?i)^c-[0-9a-f]{7}$").ok()?;
+    if re.is_match(gg_id) {
+        Some(gg_id.to_lowercase())
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -580,6 +647,31 @@ mod tests {
         // Invalid: empty
         assert!(sanitize_stack_name("").is_err());
         assert!(sanitize_stack_name("   ").is_err());
+    }
+
+    #[test]
+    fn test_validate_branch_username() {
+        assert!(validate_branch_username("nacho").is_ok());
+        assert!(validate_branch_username("nacho-lopez").is_ok());
+        assert!(validate_branch_username("nacho.lopez").is_ok());
+
+        assert!(validate_branch_username("").is_err());
+        assert!(validate_branch_username("na/cho").is_err());
+        assert!(validate_branch_username("na cho").is_err());
+        assert!(validate_branch_username("na..cho").is_err());
+        assert!(validate_branch_username(".nacho").is_err());
+        assert!(validate_branch_username("nacho.").is_err());
+        assert!(validate_branch_username("nacho.lock").is_err());
+        assert!(validate_branch_username("nacho@home").is_err());
+    }
+
+    #[test]
+    fn test_normalize_gg_id() {
+        assert_eq!(normalize_gg_id("c-abc1234"), Some("c-abc1234".to_string()));
+        assert_eq!(normalize_gg_id("C-ABC1234"), Some("c-abc1234".to_string()));
+        assert_eq!(normalize_gg_id("c-abcdefg"), None);
+        assert_eq!(normalize_gg_id("c-123456"), None);
+        assert_eq!(normalize_gg_id("invalid"), None);
     }
 
     #[test]

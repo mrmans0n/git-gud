@@ -447,6 +447,33 @@ pub enum CiStatus {
     Unknown,
 }
 
+/// Merge train status
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeTrainStatus {
+    /// MR is idle (not in train)
+    Idle,
+    /// MR is stale (needs rebase)
+    Stale,
+    /// MR is fresh (ready to merge)
+    Fresh,
+    /// MR is currently merging
+    Merging,
+    /// MR has been merged
+    Merged,
+    /// MR was skipped from the train
+    SkipMerged,
+    /// Status unknown or error
+    Unknown,
+}
+
+/// Merge train information for an MR
+#[derive(Debug, Clone)]
+pub struct MergeTrainInfo {
+    pub status: MergeTrainStatus,
+    pub position: Option<usize>,
+    pub pipeline_running: bool,
+}
+
 pub fn get_mr_ci_status(mr_number: u64) -> Result<CiStatus> {
     let output = Command::new("glab")
         .args(["mr", "view", &mr_number.to_string(), "--output", "json"])
@@ -510,6 +537,130 @@ pub fn list_mrs_for_branch(branch: &str) -> Result<Vec<u64>> {
         .map_err(|e| GgError::GlabError(format!("Failed to parse MR list: {}", e)))?;
 
     Ok(mrs.into_iter().map(|mr| mr.iid).collect())
+}
+
+/// Check if merge trains are enabled for the current project
+/// Returns true if merge trains are enabled, false otherwise
+/// Uses caching to avoid repeated API calls (stored in memory)
+pub fn check_merge_trains_enabled() -> Result<bool> {
+    // Use glab api to check project settings
+    let output = Command::new("glab")
+        .args([
+            "api",
+            "projects/:id",
+            "--jq",
+            ".merge_trains_enabled // false",
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        // If the call fails, assume merge trains are not enabled
+        return Ok(false);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(stdout == "true")
+}
+
+/// Add an MR to the merge train
+/// This is used instead of direct merge when merge trains are enabled
+pub fn add_to_merge_train(mr_number: u64) -> Result<()> {
+    let output = Command::new("glab")
+        .args([
+            "api",
+            "-X",
+            "POST",
+            &format!("projects/:id/merge_trains/merge_requests/{}", mr_number),
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::GlabError(format!(
+            "Failed to add MR !{} to merge train: {}",
+            mr_number, stderr
+        )));
+    }
+
+    Ok(())
+}
+
+/// Get merge train status for an MR
+/// Returns information about the MR's position and status in the merge train
+pub fn get_merge_train_status(mr_number: u64, target_branch: &str) -> Result<MergeTrainInfo> {
+    // First, check if the MR is in the merge train by listing all merge trains
+    let output = Command::new("glab")
+        .args([
+            "api",
+            &format!("projects/:id/merge_trains/{}", target_branch),
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        // If the call fails, assume MR is not in train
+        return Ok(MergeTrainInfo {
+            status: MergeTrainStatus::Idle,
+            position: None,
+            pipeline_running: false,
+        });
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Parse the JSON array of merge trains
+    #[derive(Deserialize)]
+    struct MergeTrainEntry {
+        merge_request: MergeTrainMr,
+        status: String,
+        #[serde(default)]
+        pipeline: Option<MergeTrainPipeline>,
+    }
+
+    #[derive(Deserialize)]
+    struct MergeTrainMr {
+        iid: u64,
+    }
+
+    #[derive(Deserialize)]
+    struct MergeTrainPipeline {
+        status: String,
+    }
+
+    let trains: Vec<MergeTrainEntry> = serde_json::from_str(&stdout).unwrap_or_default();
+
+    // Find this MR in the merge train
+    for (idx, entry) in trains.iter().enumerate() {
+        if entry.merge_request.iid == mr_number {
+            let status = match entry.status.as_str() {
+                "idle" => MergeTrainStatus::Idle,
+                "stale" => MergeTrainStatus::Stale,
+                "fresh" => MergeTrainStatus::Fresh,
+                "merging" => MergeTrainStatus::Merging,
+                "merged" => MergeTrainStatus::Merged,
+                "skip_merged" => MergeTrainStatus::SkipMerged,
+                _ => MergeTrainStatus::Unknown,
+            };
+
+            let pipeline_running = entry
+                .pipeline
+                .as_ref()
+                .map(|p| matches!(p.status.as_str(), "running" | "pending"))
+                .unwrap_or(false);
+
+            return Ok(MergeTrainInfo {
+                status,
+                position: Some(idx + 1), // 1-indexed position
+                pipeline_running,
+            });
+        }
+    }
+
+    // MR not found in train
+    Ok(MergeTrainInfo {
+        status: MergeTrainStatus::Idle,
+        position: None,
+        pipeline_running: false,
+    })
 }
 
 #[cfg(test)]
@@ -721,5 +872,38 @@ mod tests {
             result.url,
             "https://gitlab.com/test/repo/-/merge_requests/42"
         );
+    }
+
+    #[test]
+    fn test_merge_train_status_equality() {
+        assert_eq!(MergeTrainStatus::Idle, MergeTrainStatus::Idle);
+        assert_eq!(MergeTrainStatus::Fresh, MergeTrainStatus::Fresh);
+        assert_eq!(MergeTrainStatus::Merging, MergeTrainStatus::Merging);
+        assert_eq!(MergeTrainStatus::Merged, MergeTrainStatus::Merged);
+        assert_ne!(MergeTrainStatus::Idle, MergeTrainStatus::Fresh);
+    }
+
+    #[test]
+    fn test_merge_train_info_construction() {
+        let info = MergeTrainInfo {
+            status: MergeTrainStatus::Fresh,
+            position: Some(3),
+            pipeline_running: true,
+        };
+        assert_eq!(info.status, MergeTrainStatus::Fresh);
+        assert_eq!(info.position, Some(3));
+        assert!(info.pipeline_running);
+    }
+
+    #[test]
+    fn test_merge_train_info_idle() {
+        let info = MergeTrainInfo {
+            status: MergeTrainStatus::Idle,
+            position: None,
+            pipeline_running: false,
+        };
+        assert_eq!(info.status, MergeTrainStatus::Idle);
+        assert_eq!(info.position, None);
+        assert!(!info.pipeline_running);
     }
 }

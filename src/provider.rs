@@ -271,6 +271,42 @@ impl Provider {
             Provider::GitLab => "!",
         }
     }
+
+    /// Check if merge trains are enabled (GitLab only)
+    /// Returns false for GitHub (not supported)
+    pub fn check_merge_trains_enabled(&self) -> Result<bool> {
+        match self {
+            Provider::GitHub => Ok(false),
+            Provider::GitLab => glab::check_merge_trains_enabled(),
+        }
+    }
+
+    /// Add PR/MR to merge train (GitLab only)
+    /// Falls back to regular merge for GitHub
+    pub fn add_to_merge_train(&self, number: u64) -> Result<()> {
+        match self {
+            Provider::GitHub => {
+                // GitHub doesn't support merge trains, fallback to regular merge
+                Err(GgError::Other(
+                    "Merge trains are not supported on GitHub".to_string(),
+                ))
+            }
+            Provider::GitLab => glab::add_to_merge_train(number),
+        }
+    }
+
+    /// Get merge train status (GitLab only)
+    /// Returns None for GitHub (not supported)
+    pub fn get_merge_train_status(
+        &self,
+        number: u64,
+        target_branch: &str,
+    ) -> Result<Option<glab::MergeTrainInfo>> {
+        match self {
+            Provider::GitHub => Ok(None),
+            Provider::GitLab => Ok(Some(glab::get_merge_train_status(number, target_branch)?)),
+        }
+    }
 }
 
 // Conversion helpers

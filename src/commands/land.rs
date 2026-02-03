@@ -16,6 +16,58 @@ use crate::stack::Stack;
 /// Polling interval (10 seconds)
 const POLL_INTERVAL_SECS: u64 = 10;
 
+/// Cleanup after successfully merging a PR/MR:
+/// - Remove the PR/MR mapping from config
+/// - Update the base of remaining PRs/MRs if landing all
+fn cleanup_after_merge(
+    config: &mut Config,
+    stack: &Stack,
+    provider: &Provider,
+    gg_id: &str,
+    pr_num: u64,
+    land_all: bool,
+) {
+    // Remove PR/MR mapping from config
+    config.remove_mr_for_entry(&stack.name, gg_id);
+
+    // Update the base of remaining PRs/MRs to point to the main branch
+    // This is critical for stacked PRs - after merging PR #1, PR #2 should
+    // point to main instead of PR #1's branch (which no longer exists)
+    if land_all {
+        let current_index = stack
+            .entries
+            .iter()
+            .position(|e| e.mr_number == Some(pr_num))
+            .unwrap_or(0);
+
+        for remaining_entry in stack.entries.iter().skip(current_index + 1) {
+            if let Some(remaining_pr) = remaining_entry.mr_number {
+                println!(
+                    "{}",
+                    style(format!(
+                        "  Updating {} {}{} base to {}...",
+                        provider.pr_label(),
+                        provider.pr_number_prefix(),
+                        remaining_pr,
+                        stack.base
+                    ))
+                    .dim()
+                );
+                if let Err(e) = provider.update_pr_base(remaining_pr, &stack.base) {
+                    println!(
+                        "{} Warning: Failed to update {} {}{} base: {}",
+                        style("⚠").yellow(),
+                        provider.pr_label(),
+                        provider.pr_number_prefix(),
+                        remaining_pr,
+                        e
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Run the land command
 pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result<()> {
     let repo = git::open_repo()?;

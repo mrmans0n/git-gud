@@ -254,7 +254,8 @@ impl Stack {
         entry
             .gg_id
             .as_ref()
-            .map(|gg_id| git::format_entry_branch(&self.username, &self.name, gg_id))
+            .and_then(|gg_id| git::normalize_gg_id(gg_id))
+            .map(|gg_id| git::format_entry_branch(&self.username, &self.name, &gg_id))
     }
 
     /// Refresh PR/MR info for all entries from provider

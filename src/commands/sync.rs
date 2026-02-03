@@ -69,18 +69,53 @@ pub fn run(draft: bool, force: bool, update_descriptions: bool) -> Result<()> {
         };
 
         if should_add {
-            add_gg_ids_to_commits(&repo, &stack)?;
+            let needs_stash = !git::is_working_directory_clean(&repo)?;
+            if needs_stash {
+                println!("{}", style("Auto-stashing uncommitted changes...").dim());
+                git::run_git_command(&["stash", "push", "-m", "gg-sync-autostash"])?;
+            }
+
+            if let Err(err) = add_gg_ids_to_commits(&repo, &stack) {
+                if needs_stash && !git::is_rebase_in_progress(&repo) {
+                    println!(
+                        "{}",
+                        style("Attempting to restore stashed changes...").dim()
+                    );
+                    let _ = git::run_git_command(&["stash", "pop"]);
+                }
+                return Err(err);
+            }
 
             // Check if rebase completed successfully
             // SAFETY: Prevent recursive call if rebase is still in progress
             if git::is_rebase_in_progress(&repo) {
-                return Err(GgError::Other(
+                let note = if needs_stash {
+                    "\nNote: Your uncommitted changes are stashed and will be restored after the rebase completes."
+                } else {
+                    ""
+                };
+                return Err(GgError::Other(format!(
                     "Rebase in progress after adding GG-IDs.\n\
                      Please resolve any conflicts, then run:\n\
                      - 'git rebase --continue' (or 'gg continue') to finish the rebase\n\
-                     - 'gg sync' again once the rebase is complete"
-                        .to_string(),
-                ));
+                     - 'gg sync' again once the rebase is complete{}",
+                    note
+                )));
+            }
+
+            if needs_stash {
+                println!("{}", style("Restoring stashed changes...").dim());
+                match git::run_git_command(&["stash", "pop"]) {
+                    Ok(_) => println!("{}", style("Changes restored").cyan()),
+                    Err(e) => {
+                        println!(
+                            "{} Could not restore stashed changes: {}",
+                            style("Warning:").yellow(),
+                            e
+                        );
+                        println!("  Your changes are in the stash. Run 'git stash pop' manually.");
+                    }
+                }
             }
 
             println!(

@@ -13,6 +13,10 @@ use crate::stack::Stack;
 /// Run the squash command
 pub fn run(all: bool) -> Result<()> {
     let repo = git::open_repo()?;
+
+    // Acquire operation lock to prevent concurrent operations
+    let _lock = git::acquire_operation_lock(&repo, "squash")?;
+
     let config = Config::load(repo.path())?;
 
     // Check if we have changes to squash

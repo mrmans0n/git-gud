@@ -58,6 +58,8 @@ fn list_all_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
         .or_else(|| Provider::detect(repo).ok().and_then(|p| p.whoami().ok()))
         .unwrap_or_else(|| "unknown".to_string());
 
+    git::validate_branch_username(&username)?;
+
     let stacks = stack::list_all_stacks(repo, config, &username)?;
 
     if stacks.is_empty() {
@@ -181,6 +183,8 @@ fn list_remote_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
         .clone()
         .or_else(|| Provider::detect(repo).ok().and_then(|p| p.whoami().ok()))
         .unwrap_or_else(|| "unknown".to_string());
+
+    git::validate_branch_username(&username)?;
 
     // Fetch latest from origin first
     println!("{}", style("Fetching from origin...").dim());

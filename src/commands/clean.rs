@@ -31,13 +31,16 @@ pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
         .or_else(|| provider.as_ref().and_then(|p| p.whoami().ok()))
         .unwrap_or_else(|| "unknown".to_string());
 
+    git::validate_branch_username(&username)?;
+
     // Check if the stack exists
     let branch_name = git::format_stack_branch(&username, stack_name);
 
     // Check if stack is fully merged
-    let is_merged = check_stack_merged(&repo, &config, stack_name, &username, provider.as_ref())?;
+    let merge_status =
+        check_stack_merged(&repo, &config, stack_name, &username, provider.as_ref())?;
 
-    if !is_merged && !force {
+    if !merge_status.merged && !force {
         return Err(GgError::Other(format!(
             "Stack '{}' has unmerged commits",
             stack_name
@@ -62,9 +65,22 @@ pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
         branch.delete()?;
     }
 
-    // Delete entry branches (local and remote)
+    let allow_remote_delete = merge_status.verified;
+    if !allow_remote_delete {
+        println!(
+            "{} Skipping remote branch deletion for '{}' because merge verification is unavailable.",
+            style("Warning:").yellow(),
+            stack_name
+        );
+    }
+
+    // Delete entry branches (local and remote when verified)
     delete_entry_branches(
-        &repo, &config, stack_name, &username, /*delete_remote=*/ true,
+        &repo,
+        &config,
+        stack_name,
+        &username,
+        /*delete_remote=*/ allow_remote_delete,
     );
 
     // Remove from config
@@ -98,6 +114,8 @@ pub fn run(clean_all: bool) -> Result<()> {
         .or_else(|| provider.as_ref().and_then(|p| p.whoami().ok()))
         .unwrap_or_else(|| "unknown".to_string());
 
+    git::validate_branch_username(&username)?;
+
     // Get all stacks
     let stacks = stack::list_all_stacks(&repo, &config, &username)?;
 
@@ -126,10 +144,10 @@ pub fn run(clean_all: bool) -> Result<()> {
         }
 
         // Load the stack to check MR status
-        let is_merged =
+        let merge_status =
             check_stack_merged(&repo, &config, stack_name, &username, provider.as_ref())?;
 
-        if is_merged {
+        if merge_status.merged {
             if !clean_all {
                 let confirm = Confirm::new()
                     .with_prompt(format!("Delete merged stack '{}'? ", stack_name))
@@ -160,9 +178,22 @@ pub fn run(clean_all: bool) -> Result<()> {
                 branch.delete()?;
             }
 
-            // Delete entry branches (local and remote)
+            let allow_remote_delete = merge_status.verified;
+            if !allow_remote_delete {
+                println!(
+                    "{} Skipping remote branch deletion for '{}' because merge verification is unavailable.",
+                    style("Warning:").yellow(),
+                    stack_name
+                );
+            }
+
+            // Delete entry branches (local and remote when verified)
             delete_entry_branches(
-                &repo, &config, stack_name, &username, /*delete_remote=*/ true,
+                &repo,
+                &config,
+                stack_name,
+                &username,
+                /*delete_remote=*/ allow_remote_delete,
             );
 
             // Remove from config
@@ -200,6 +231,13 @@ pub fn run(clean_all: bool) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy)]
+struct MergeStatus {
+    merged: bool,
+    /// True when merge state was verified via provider checks.
+    verified: bool,
+}
+
 /// Check if a stack is fully merged
 fn check_stack_merged(
     repo: &git2::Repository,
@@ -207,7 +245,7 @@ fn check_stack_merged(
     stack_name: &str,
     username: &str,
     provider: Option<&Provider>,
-) -> Result<bool> {
+) -> Result<MergeStatus> {
     // Primary method: check if all MRs are merged
     // This works correctly with squash and rebase merges
     if let Some(stack_config) = config.get_stack(stack_name) {
@@ -215,20 +253,24 @@ fn check_stack_merged(
             // No MRs tracked, fall back to git merge check
         } else if let Some(provider) = provider {
             let mut all_merged = true;
+            let mut provider_verified = true;
             for mr_num in stack_config.mrs.values() {
                 match provider.get_pr_info(*mr_num) {
                     Ok(info) => {
                         if info.state != PrState::Merged {
                             all_merged = false;
-                            break;
                         }
                     }
                     Err(_) => {
                         // PR/MR might be deleted or inaccessible
                         // If we can't verify, assume it's not merged to be safe
                         all_merged = false;
+                        provider_verified = false;
                         break;
                     }
+                }
+                if !all_merged {
+                    break;
                 }
             }
 
@@ -237,9 +279,13 @@ fn check_stack_merged(
             if all_merged && verify_commits_reachable(repo, config, stack_name, username).is_err() {
                 // If we can't verify reachability, be conservative
                 all_merged = false;
+                provider_verified = false;
             }
 
-            return Ok(all_merged);
+            return Ok(MergeStatus {
+                merged: all_merged,
+                verified: provider_verified && all_merged,
+            });
         }
     }
 
@@ -264,7 +310,12 @@ fn check_stack_merged(
     let base_oid = base_ref.id();
 
     // If stack is ancestor of base, it's merged
-    Ok(repo.merge_base(stack_oid, base_oid)? == stack_oid)
+    let merged = repo.merge_base(stack_oid, base_oid)? == stack_oid;
+
+    Ok(MergeStatus {
+        merged,
+        verified: false,
+    })
 }
 
 /// Verify that all commits in the stack are reachable from the base branch
@@ -323,7 +374,18 @@ fn delete_entry_branches(
     // First, delete entry branches from config (if any)
     if let Some(stack_config) = config.get_stack(stack_name) {
         for entry_id in stack_config.mrs.keys() {
-            let entry_branch = git::format_entry_branch(username, stack_name, entry_id);
+            let entry_id = match git::normalize_gg_id(entry_id) {
+                Some(id) => id,
+                None => {
+                    println!(
+                        "{} Skipping invalid GG-ID '{}' in config.",
+                        style("Warning:").yellow(),
+                        entry_id
+                    );
+                    continue;
+                }
+            };
+            let entry_branch = git::format_entry_branch(username, stack_name, &entry_id);
             // Delete local entry branch
             if let Ok(mut branch) = repo.find_branch(&entry_branch, BranchType::Local) {
                 let _ = branch.delete();

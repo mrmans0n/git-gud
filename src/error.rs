@@ -8,6 +8,9 @@ pub enum GgError {
     #[error("Invalid stack name: {0}")]
     InvalidStackName(String),
 
+    #[error("Invalid branch username: {0}")]
+    InvalidBranchUsername(String),
+
     #[error("Not in a git repository")]
     NotInRepo,
 

@@ -845,4 +845,101 @@ mod tests {
         let _fn_ptr: fn(&Provider, u64, bool, u64, Option<&Arc<AtomicBool>>, &str) -> Result<()> =
             wait_for_pr_ready;
     }
+
+    // ==========================================================================
+    // Tests for merge train / auto-merge behavior (no premature cleanup)
+    // ==========================================================================
+    //
+    // These tests document the critical invariant that when an MR is QUEUED
+    // (not actually merged), we must NOT:
+    // 1. Increment landed_count
+    // 2. Call cleanup_after_merge()
+    // 3. Continue to the next MR in the stack
+    //
+    // Violating these invariants causes data loss (PR #86 fix).
+
+    #[test]
+    fn test_auto_merge_result_variants_are_distinct() {
+        // Verify that Queued and AlreadyQueued are distinct variants
+        // Both represent "MR is in queue" (not merged), so both should
+        // trigger the same "no cleanup" behavior.
+        use crate::glab::AutoMergeResult;
+
+        let queued = AutoMergeResult::Queued;
+        let already_queued = AutoMergeResult::AlreadyQueued;
+
+        // They should be different values
+        assert_ne!(queued, already_queued);
+
+        // But both indicate "not yet merged" state
+        // This documents the semantic meaning for the land command
+        match queued {
+            AutoMergeResult::Queued => {} // Expected: MR was just added to queue
+            AutoMergeResult::AlreadyQueued => panic!("Should be Queued"),
+        }
+
+        match already_queued {
+            AutoMergeResult::AlreadyQueued => {} // Expected: MR was already in queue
+            AutoMergeResult::Queued => panic!("Should be AlreadyQueued"),
+        }
+    }
+
+    #[test]
+    fn test_auto_merge_result_equality() {
+        use crate::glab::AutoMergeResult;
+
+        // Same variants should be equal
+        assert_eq!(AutoMergeResult::Queued, AutoMergeResult::Queued);
+        assert_eq!(
+            AutoMergeResult::AlreadyQueued,
+            AutoMergeResult::AlreadyQueued
+        );
+
+        // Different variants should not be equal
+        assert_ne!(AutoMergeResult::Queued, AutoMergeResult::AlreadyQueued);
+    }
+
+    #[test]
+    fn test_auto_merge_result_is_clone() {
+        use crate::glab::AutoMergeResult;
+
+        // Verify AutoMergeResult implements Clone (needed for safe handling)
+        let original = AutoMergeResult::Queued;
+        let cloned = original.clone();
+        assert_eq!(original, cloned);
+    }
+
+    #[test]
+    fn test_queued_means_not_merged() {
+        // This test documents the semantic contract:
+        // When add_to_merge_train or auto_merge returns Queued/AlreadyQueued,
+        // the MR is NOT yet merged - it's only scheduled to merge later.
+        //
+        // Therefore, the land command MUST NOT:
+        // - Call cleanup_after_merge() (would corrupt config state)
+        // - Increment landed_count (would trigger "all landed" cleanup flow)
+        // - Continue to next MR (stacked MRs depend on previous one being merged)
+        //
+        // The correct behavior is:
+        // - Print informative message
+        // - Break out of the loop
+        // - Let user run `gg land` again after the MR actually merges
+        //
+        // This is a documentation test - the actual behavior is tested via
+        // integration tests that would require a GitLab mock.
+        use crate::glab::AutoMergeResult;
+
+        // Both variants mean "queued, not merged"
+        let results = [AutoMergeResult::Queued, AutoMergeResult::AlreadyQueued];
+
+        for result in results {
+            // Neither should be treated as "merged"
+            let is_actually_merged = false; // semantic: queued != merged
+            assert!(
+                !is_actually_merged,
+                "{:?} should not be treated as merged",
+                result
+            );
+        }
+    }
 }

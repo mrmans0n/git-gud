@@ -229,7 +229,9 @@ impl Provider {
             Provider::GitHub => Err(GgError::Other(
                 "Auto-merge-on-land is only supported for GitLab".to_string(),
             )),
-            Provider::GitLab => glab::auto_merge_mr_when_pipeline_succeeds(number, squash, delete_branch),
+            Provider::GitLab => {
+                glab::auto_merge_mr_when_pipeline_succeeds(number, squash, delete_branch)
+            }
         }
     }
 

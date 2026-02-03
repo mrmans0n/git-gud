@@ -87,8 +87,8 @@ pub fn run(
 
     // Determine whether to use GitLab auto-merge-on-land.
     // CLI flag overrides config.
-    let auto_merge_on_land = provider == Provider::GitLab
-        && (auto_merge_flag || config.get_gitlab_auto_merge_on_land());
+    let auto_merge_on_land =
+        provider == Provider::GitLab && (auto_merge_flag || config.get_gitlab_auto_merge_on_land());
 
     // Check if merge trains are enabled (GitLab only)
     let merge_trains_enabled = provider.check_merge_trains_enabled().unwrap_or(false);

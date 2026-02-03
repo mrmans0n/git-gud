@@ -434,7 +434,10 @@ pub fn auto_merge_mr_when_pipeline_succeeds(
             "-f",
             "merge_when_pipeline_succeeds=true",
             "-f",
-            &format!("should_remove_source_branch={}", if delete_branch { "true" } else { "false" }),
+            &format!(
+                "should_remove_source_branch={}",
+                if delete_branch { "true" } else { "false" }
+            ),
             "-f",
             &format!("squash={}", if squash { "true" } else { "false" }),
         ])

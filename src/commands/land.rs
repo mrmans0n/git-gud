@@ -485,7 +485,8 @@ pub fn run(
                 println!("{}", style("Cleaning up stack...").dim());
 
                 // First, rebase to update main and detect merged commits
-                let rebase_result = crate::commands::rebase::run(Some(stack.base.clone()));
+                let rebase_result =
+                    crate::commands::rebase::run_with_repo(&repo, Some(stack.base.clone()));
                 if let Err(e) = rebase_result {
                     println!("{} Failed to rebase: {}", style("Warning:").yellow(), e);
                     println!(
@@ -496,7 +497,8 @@ pub fn run(
                 }
 
                 // Then, clean the stack
-                let clean_result = crate::commands::clean::run_for_stack(&stack.name, true);
+                let clean_result =
+                    crate::commands::clean::run_for_stack_with_repo(&repo, &stack.name, true);
                 match clean_result {
                     Ok(()) => {
                         println!("{} Stack cleaned successfully", style("OK").green().bold());

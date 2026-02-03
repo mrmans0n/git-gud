@@ -1,6 +1,7 @@
 //! `gg rebase` - Rebase the stack onto an updated base branch
 
 use console::style;
+use git2::Repository;
 
 use crate::config::Config;
 use crate::error::{GgError, Result};
@@ -14,10 +15,15 @@ pub fn run(target: Option<String>) -> Result<()> {
     // Acquire operation lock to prevent concurrent operations
     let _lock = git::acquire_operation_lock(&repo, "rebase")?;
 
+    run_with_repo(&repo, target)
+}
+
+/// Run rebase with an already-open repository (no lock acquisition)
+pub fn run_with_repo(repo: &Repository, target: Option<String>) -> Result<()> {
     let config = Config::load(repo.path())?;
 
     // Auto-stash uncommitted changes if present
-    let needs_stash = !git::is_working_directory_clean(&repo)?;
+    let needs_stash = !git::is_working_directory_clean(repo)?;
     if needs_stash {
         println!("{}", style("Auto-stashing uncommitted changes...").dim());
         git::run_git_command(&["stash", "push", "-m", "gg-rebase-autostash"])?;
@@ -29,12 +35,12 @@ pub fn run(target: Option<String>) -> Result<()> {
         t
     } else {
         // No target provided, must be on a stack
-        let stack = Stack::load(&repo, &config)?;
+        let stack = Stack::load(repo, &config)?;
         stack.base.clone()
     };
 
     // Remember current branch to return to after updating base
-    let current_branch = git::current_branch_name(&repo);
+    let current_branch = git::current_branch_name(repo);
 
     println!(
         "{}",

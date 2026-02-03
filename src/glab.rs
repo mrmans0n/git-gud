@@ -93,16 +93,17 @@ pub fn whoami() -> Result<String> {
     }
 
     // Fallback: try `glab api user`
-    let api_output = Command::new("glab")
-        .args(["api", "user", "--jq", ".username"])
-        .output()?;
+    // Note: We don't use --jq flag as it's not available in all glab versions
+    let api_output = Command::new("glab").args(["api", "user"]).output()?;
 
     if api_output.status.success() {
-        let username = String::from_utf8_lossy(&api_output.stdout)
-            .trim()
-            .to_string();
-        if !username.is_empty() {
-            return Ok(username);
+        let stdout = String::from_utf8_lossy(&api_output.stdout);
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&stdout) {
+            if let Some(username) = json.get("username").and_then(|v| v.as_str()) {
+                if !username.is_empty() {
+                    return Ok(username.to_string());
+                }
+            }
         }
     }
 
@@ -457,12 +458,11 @@ pub fn auto_merge_mr_when_pipeline_succeeds(
 /// Check approvals for an MR
 pub fn check_mr_approved(mr_number: u64) -> Result<bool> {
     // Use glab api to check approvals
+    // Note: We don't use --jq flag as it's not available in all glab versions
     let output = Command::new("glab")
         .args([
             "api",
             &format!("projects/:id/merge_requests/{}/approvals", mr_number),
-            "--jq",
-            ".approved",
         ])
         .output()?;
 
@@ -471,8 +471,17 @@ pub fn check_mr_approved(mr_number: u64) -> Result<bool> {
         return Ok(false);
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Ok(stdout == "true")
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Parse JSON and extract .approved field
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&stdout) {
+        return Ok(json
+            .get("approved")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false));
+    }
+
+    Ok(false)
 }
 
 /// Get CI status for an MR
@@ -583,13 +592,9 @@ pub fn list_mrs_for_branch(branch: &str) -> Result<Vec<u64>> {
 /// Uses caching to avoid repeated API calls (stored in memory)
 pub fn check_merge_trains_enabled() -> Result<bool> {
     // Use glab api to check project settings
+    // Note: We don't use --jq flag as it's not available in all glab versions
     let output = Command::new("glab")
-        .args([
-            "api",
-            "projects/:id",
-            "--jq",
-            ".merge_trains_enabled // false",
-        ])
+        .args(["api", "projects/:id"])
         .output()?;
 
     if !output.status.success() {
@@ -597,8 +602,17 @@ pub fn check_merge_trains_enabled() -> Result<bool> {
         return Ok(false);
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Ok(stdout == "true")
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Parse JSON and extract .merge_trains_enabled field (defaults to false)
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&stdout) {
+        return Ok(json
+            .get("merge_trains_enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false));
+    }
+
+    Ok(false)
 }
 
 /// Add an MR to the merge train

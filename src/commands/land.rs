@@ -285,8 +285,15 @@ pub fn run(
                         provider.pr_number_prefix(),
                         pr_num
                     );
-                    landed_count += 1;
-                    cleanup_after_merge(&mut config, &stack, &provider, gg_id, pr_num, land_all);
+                    println!(
+                        "{}",
+                        style("  Note: MR is queued but not yet merged. Run `gg land` again after it merges to clean up.")
+                            .dim()
+                    );
+                    // Note: We intentionally do NOT clean up config mappings or increment
+                    // landed_count here. The MR is only queued in the merge train, not
+                    // actually merged yet. Cleanup would be premature and could cause
+                    // data loss if the MR is later removed from the train.
                 }
                 Ok(AutoMergeResult::AlreadyQueued) => {
                     println!(
@@ -296,8 +303,12 @@ pub fn run(
                         provider.pr_number_prefix(),
                         pr_num
                     );
-                    landed_count += 1;
-                    cleanup_after_merge(&mut config, &stack, &provider, gg_id, pr_num, land_all);
+                    println!(
+                        "{}",
+                        style("  Note: MR is queued but not yet merged. Run `gg land` again after it merges to clean up.")
+                            .dim()
+                    );
+                    // Note: We intentionally do NOT clean up here - MR is not merged yet.
                 }
                 Err(e) => {
                     println!(
@@ -311,6 +322,9 @@ pub fn run(
                     break;
                 }
             }
+            // When using merge trains, we don't continue to the next MR because
+            // they need to merge sequentially through the train.
+            break;
         } else if auto_merge_on_land {
             println!(
                 "{} Requesting auto-merge for {} {}{} (merge when pipeline succeeds)...",
@@ -330,11 +344,14 @@ pub fn run(
                         pr_num,
                         stack.base
                     );
-                    landed_count += 1;
-
-                    // Note: we intentionally do not clean up config mappings here.
-                    // The MR has not merged yet; cleanup and stacked base updates
-                    // would be premature.
+                    println!(
+                        "{}",
+                        style("  Note: MR is queued but not yet merged. Run `gg land` again after it merges to clean up.")
+                            .dim()
+                    );
+                    // Note: We intentionally do NOT increment landed_count or clean up
+                    // config mappings here. The MR is only queued for auto-merge, not
+                    // actually merged yet. Cleanup would be premature.
                 }
                 Ok(AutoMergeResult::AlreadyQueued) => {
                     println!(
@@ -344,11 +361,12 @@ pub fn run(
                         provider.pr_number_prefix(),
                         pr_num
                     );
-                    landed_count += 1;
-
-                    // Note: we intentionally do not clean up config mappings here.
-                    // The MR has not merged yet; cleanup and stacked base updates
-                    // would be premature.
+                    println!(
+                        "{}",
+                        style("  Note: MR is queued but not yet merged. Run `gg land` again after it merges to clean up.")
+                            .dim()
+                    );
+                    // Note: We intentionally do NOT increment landed_count or clean up here.
                 }
                 Err(e) => {
                     println!(
@@ -362,6 +380,9 @@ pub fn run(
                     break;
                 }
             }
+            // When using auto-merge, we don't continue to the next MR because
+            // it needs to merge first before we can update bases of stacked MRs.
+            break;
         } else {
             println!(
                 "{} Merging {} {}{}...",

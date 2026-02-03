@@ -35,19 +35,23 @@ pub fn run(draft: bool, force: bool, update_descriptions: bool) -> Result<()> {
     let _ = git::fetch_and_prune();
 
     // Load current stack
-    let stack = Stack::load(&repo, &config)?;
+    // Use a loop to handle GG-ID addition + re-sync without recursive calls
+    // This ensures the operation lock is held for the entire operation
+    let stack = loop {
+        let stack = Stack::load(&repo, &config)?;
 
-    // Load optional PR template
-    let pr_template = template::load_template(git_dir);
+        if stack.is_empty() {
+            println!("{}", style("Stack is empty. Nothing to sync.").dim());
+            return Ok(());
+        }
 
-    if stack.is_empty() {
-        println!("{}", style("Stack is empty. Nothing to sync.").dim());
-        return Ok(());
-    }
+        // Check for missing GG-IDs
+        let missing_ids = stack.entries_needing_gg_ids();
+        if missing_ids.is_empty() {
+            // All commits have GG-IDs, proceed with sync
+            break stack;
+        }
 
-    // Check for missing GG-IDs
-    let missing_ids = stack.entries_needing_gg_ids();
-    if !missing_ids.is_empty() {
         println!(
             "{} {} commits are missing GG-IDs:",
             style("→").cyan(),
@@ -68,69 +72,71 @@ pub fn run(draft: bool, force: bool, update_descriptions: bool) -> Result<()> {
                 .unwrap_or(true)
         };
 
-        if should_add {
-            let needs_stash = !git::is_working_directory_clean(&repo)?;
-            if needs_stash {
-                println!("{}", style("Auto-stashing uncommitted changes...").dim());
-                git::run_git_command(&["stash", "push", "-m", "gg-sync-autostash"])?;
-            }
-
-            if let Err(err) = add_gg_ids_to_commits(&repo, &stack) {
-                if needs_stash && !git::is_rebase_in_progress(&repo) {
-                    println!(
-                        "{}",
-                        style("Attempting to restore stashed changes...").dim()
-                    );
-                    let _ = git::run_git_command(&["stash", "pop"]);
-                }
-                return Err(err);
-            }
-
-            // Check if rebase completed successfully
-            // SAFETY: Prevent recursive call if rebase is still in progress
-            if git::is_rebase_in_progress(&repo) {
-                let note = if needs_stash {
-                    "\nNote: Your uncommitted changes are stashed and will be restored after the rebase completes."
-                } else {
-                    ""
-                };
-                return Err(GgError::Other(format!(
-                    "Rebase in progress after adding GG-IDs.\n\
-                     Please resolve any conflicts, then run:\n\
-                     - 'git rebase --continue' (or 'gg continue') to finish the rebase\n\
-                     - 'gg sync' again once the rebase is complete{}",
-                    note
-                )));
-            }
-
-            if needs_stash {
-                println!("{}", style("Restoring stashed changes...").dim());
-                match git::run_git_command(&["stash", "pop"]) {
-                    Ok(_) => println!("{}", style("Changes restored").cyan()),
-                    Err(e) => {
-                        println!(
-                            "{} Could not restore stashed changes: {}",
-                            style("Warning:").yellow(),
-                            e
-                        );
-                        println!("  Your changes are in the stash. Run 'git stash pop' manually.");
-                    }
-                }
-            }
-
-            println!(
-                "{}",
-                console::style("GG-IDs added successfully. Re-syncing...").dim()
-            );
-
-            // Reload stack after rebase and continue
-            return run(draft, force, update_descriptions);
-        } else {
+        if !should_add {
             return Err(GgError::Other(
                 "Cannot sync without GG-IDs. Aborting.".to_string(),
             ));
         }
-    }
+
+        let needs_stash = !git::is_working_directory_clean(&repo)?;
+        if needs_stash {
+            println!("{}", style("Auto-stashing uncommitted changes...").dim());
+            git::run_git_command(&["stash", "push", "-m", "gg-sync-autostash"])?;
+        }
+
+        if let Err(err) = add_gg_ids_to_commits(&repo, &stack) {
+            if needs_stash && !git::is_rebase_in_progress(&repo) {
+                println!(
+                    "{}",
+                    style("Attempting to restore stashed changes...").dim()
+                );
+                let _ = git::run_git_command(&["stash", "pop"]);
+            }
+            return Err(err);
+        }
+
+        // Check if rebase completed successfully
+        if git::is_rebase_in_progress(&repo) {
+            let note = if needs_stash {
+                "\nNote: Your uncommitted changes are stashed and will be restored after the rebase completes."
+            } else {
+                ""
+            };
+            return Err(GgError::Other(format!(
+                "Rebase in progress after adding GG-IDs.\n\
+                 Please resolve any conflicts, then run:\n\
+                 - 'git rebase --continue' (or 'gg continue') to finish the rebase\n\
+                 - 'gg sync' again once the rebase is complete{}",
+                note
+            )));
+        }
+
+        if needs_stash {
+            println!("{}", style("Restoring stashed changes...").dim());
+            match git::run_git_command(&["stash", "pop"]) {
+                Ok(_) => println!("{}", style("Changes restored").cyan()),
+                Err(e) => {
+                    println!(
+                        "{} Could not restore stashed changes: {}",
+                        style("Warning:").yellow(),
+                        e
+                    );
+                    println!("  Your changes are in the stash. Run 'git stash pop' manually.");
+                }
+            }
+        }
+
+        println!(
+            "{}",
+            console::style("GG-IDs added successfully. Re-syncing...").dim()
+        );
+
+        // Loop continues: reload stack and check for any remaining missing GG-IDs
+        // (or proceed to sync if all commits now have GG-IDs)
+    };
+
+    // Load optional PR template
+    let pr_template = template::load_template(git_dir);
 
     // Sync progress
     let pb = ProgressBar::new(stack.len() as u64);

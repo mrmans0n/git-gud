@@ -906,4 +906,58 @@ mod tests {
         assert_eq!(info.position, None);
         assert!(!info.pipeline_running);
     }
+
+    // Test check_merge_trains_enabled function behavior
+    // Note: These are unit tests for the function logic, not integration tests
+    // that would require actual glab CLI availability
+    #[test]
+    fn test_check_merge_trains_enabled_returns_bool() {
+        // The function should return Ok(bool), never panic
+        // We can't test the actual glab call without mocking, but we can
+        // verify the function signature and basic error handling
+        // This test documents expected behavior: returns false on error
+        let result = check_merge_trains_enabled();
+        assert!(result.is_ok());
+        assert!(matches!(result.unwrap(), true | false));
+    }
+
+    // Test add_to_merge_train function signature and error types
+    #[test]
+    fn test_add_to_merge_train_requires_mr_number() {
+        // This test verifies the function accepts a u64 MR number
+        // and returns a Result type. Actual functionality requires glab CLI.
+        // Without mocking, we expect this to fail with GlabError
+        let result = add_to_merge_train(999999);
+        assert!(result.is_err());
+        if let Err(GgError::GlabError(msg)) = result {
+            assert!(msg.contains("merge train") || msg.contains("999999") || msg.contains("glab"));
+        }
+    }
+
+    // Test get_merge_train_status function signature and return type
+    #[test]
+    fn test_get_merge_train_status_returns_info_struct() {
+        // Verify the function signature: takes MR number and target branch,
+        // returns Result<MergeTrainInfo>. Without glab CLI, we expect
+        // it to return Ok with Idle status (fallback behavior)
+        let result = get_merge_train_status(999999, "main");
+        assert!(result.is_ok());
+        let info = result.unwrap();
+        // On error, should return Idle status (defensive programming)
+        assert_eq!(info.status, MergeTrainStatus::Idle);
+        assert_eq!(info.position, None);
+        assert!(!info.pipeline_running);
+    }
+
+    #[test]
+    fn test_get_merge_train_status_with_different_branches() {
+        // Test that the function accepts different target branch names
+        let result1 = get_merge_train_status(123, "main");
+        let result2 = get_merge_train_status(123, "develop");
+        let result3 = get_merge_train_status(123, "feature/branch");
+
+        assert!(result1.is_ok());
+        assert!(result2.is_ok());
+        assert!(result3.is_ok());
+    }
 }

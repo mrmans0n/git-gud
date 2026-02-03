@@ -151,6 +151,7 @@ pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result
                         land_all,
                         timeout_minutes,
                         interrupted.as_ref(),
+                        &stack.base,
                     ) {
                         println!(
                             "{} {} {}{}: {}",
@@ -221,6 +222,46 @@ pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result
                         pr_num
                     );
                     landed_count += 1;
+
+                    // Remove PR/MR mapping from config
+                    config.remove_mr_for_entry(&stack.name, gg_id);
+
+                    // Update the base of remaining PRs/MRs to point to the main branch
+                    // This is critical for stacked PRs - after merging PR #1, PR #2 should
+                    // point to main instead of PR #1's branch (which no longer exists)
+                    if land_all {
+                        let current_index = stack
+                            .entries
+                            .iter()
+                            .position(|e| e.mr_number == Some(pr_num))
+                            .unwrap_or(0);
+
+                        for remaining_entry in stack.entries.iter().skip(current_index + 1) {
+                            if let Some(remaining_pr) = remaining_entry.mr_number {
+                                println!(
+                                    "{}",
+                                    style(format!(
+                                        "  Updating {} {}{} base to {}...",
+                                        provider.pr_label(),
+                                        provider.pr_number_prefix(),
+                                        remaining_pr,
+                                        stack.base
+                                    ))
+                                    .dim()
+                                );
+                                if let Err(e) = provider.update_pr_base(remaining_pr, &stack.base) {
+                                    println!(
+                                        "{} Warning: Failed to update {} {}{} base: {}",
+                                        style("⚠").yellow(),
+                                        provider.pr_label(),
+                                        provider.pr_number_prefix(),
+                                        remaining_pr,
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     println!(
@@ -240,6 +281,49 @@ pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result
                                 stack.base
                             );
                             landed_count += 1;
+
+                            // Remove PR/MR mapping from config
+                            config.remove_mr_for_entry(&stack.name, gg_id);
+
+                            // Update the base of remaining PRs/MRs to point to the main branch
+                            // This is critical for stacked PRs - after merging PR #1, PR #2 should
+                            // point to main instead of PR #1's branch (which no longer exists)
+                            if land_all {
+                                let current_index = stack
+                                    .entries
+                                    .iter()
+                                    .position(|e| e.mr_number == Some(pr_num))
+                                    .unwrap_or(0);
+
+                                for remaining_entry in stack.entries.iter().skip(current_index + 1)
+                                {
+                                    if let Some(remaining_pr) = remaining_entry.mr_number {
+                                        println!(
+                                            "{}",
+                                            style(format!(
+                                                "  Updating {} {}{} base to {}...",
+                                                provider.pr_label(),
+                                                provider.pr_number_prefix(),
+                                                remaining_pr,
+                                                stack.base
+                                            ))
+                                            .dim()
+                                        );
+                                        if let Err(e) =
+                                            provider.update_pr_base(remaining_pr, &stack.base)
+                                        {
+                                            println!(
+                                                "{} Warning: Failed to update {} {}{} base: {}",
+                                                style("⚠").yellow(),
+                                                provider.pr_label(),
+                                                provider.pr_number_prefix(),
+                                                remaining_pr,
+                                                e
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                         }
                         Err(e) => {
                             println!(
@@ -434,6 +518,7 @@ fn wait_for_pr_ready(
     skip_approval: bool,
     timeout_minutes: u64,
     interrupted: Option<&Arc<AtomicBool>>,
+    base_branch: &str,
 ) -> Result<()> {
     let start_time = Instant::now();
     let timeout = Duration::from_secs(timeout_minutes * 60);
@@ -478,8 +563,7 @@ fn wait_for_pr_ready(
 
         // Check merge train status if enabled
         if merge_trains_enabled {
-            // Note: Using "main" as target branch - in production, this should be retrieved from stack config
-            if let Ok(Some(train_info)) = provider.get_merge_train_status(pr_num, "main") {
+            if let Ok(Some(train_info)) = provider.get_merge_train_status(pr_num, base_branch) {
                 use crate::glab::MergeTrainStatus;
                 match train_info.status {
                     MergeTrainStatus::Merged => {

@@ -13,6 +13,7 @@ use crate::git::{
 };
 use crate::provider::Provider;
 use crate::stack::Stack;
+use crate::template;
 
 /// Run the sync command
 pub fn run(draft: bool, force: bool, update_descriptions: bool) -> Result<()> {
@@ -88,6 +89,7 @@ pub fn run(draft: bool, force: bool, update_descriptions: bool) -> Result<()> {
         let raw_title = strip_gg_id_from_message(&entry.title);
         let title = clean_title(&raw_title);
         let (title, description) = build_pr_payload(
+            git_dir,
             &title,
             get_commit_description(&commit),
             &stack.name,
@@ -241,13 +243,36 @@ pub fn run(draft: bool, force: bool, update_descriptions: bool) -> Result<()> {
 }
 
 fn build_pr_payload(
+    git_dir: &std::path::Path,
     title: &str,
     description: Option<String>,
     stack_name: &str,
     short_sha: &str,
 ) -> (String, String) {
-    let fallback = format!("Part of stack `{}`\n\nCommit: {}", stack_name, short_sha);
-    (title.to_string(), description.unwrap_or(fallback))
+    use std::collections::HashMap;
+
+    // Try to load and process template
+    let mut placeholders = HashMap::new();
+    placeholders.insert("title", title);
+    placeholders.insert("stack_name", stack_name);
+    placeholders.insert("commit_sha", short_sha);
+
+    let description_text = description.unwrap_or_default();
+    placeholders.insert("description", description_text.as_str());
+
+    if let Ok(Some(processed)) = template::load_and_process_template(git_dir, &placeholders) {
+        // Template exists and was processed successfully
+        return (title.to_string(), processed);
+    }
+
+    // No template - use original behavior
+    let fallback = if description_text.is_empty() {
+        format!("Part of stack `{}`\n\nCommit: {}", stack_name, short_sha)
+    } else {
+        description_text
+    };
+
+    (title.to_string(), fallback)
 }
 
 fn clean_title(title: &str) -> String {
@@ -344,10 +369,16 @@ fn add_gg_ids_to_commits(repo: &Repository, stack: &Stack) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{build_pr_payload, clean_title};
+    use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn test_build_pr_payload_prefers_description() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_dir = temp_dir.path();
+
         let (title, description) = build_pr_payload(
+            git_dir,
             "Add feature",
             Some("Details here".to_string()),
             "stack",
@@ -359,7 +390,11 @@ mod tests {
 
     #[test]
     fn test_build_pr_payload_falls_back_without_description() {
-        let (title, description) = build_pr_payload("Add feature", None, "stack", "abc123");
+        let temp_dir = TempDir::new().unwrap();
+        let git_dir = temp_dir.path();
+
+        let (title, description) =
+            build_pr_payload(git_dir, "Add feature", None, "stack", "abc123");
         assert_eq!(title, "Add feature");
         assert_eq!(description, "Part of stack `stack`\n\nCommit: abc123");
     }
@@ -373,12 +408,16 @@ mod tests {
 
     #[test]
     fn test_build_pr_payload_description_should_not_contain_gg_id() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_dir = temp_dir.path();
+
         // The description passed to build_pr_payload should already be filtered
         // by get_commit_description (which uses strip_gg_id_from_message internally).
         // This test documents that expectation - the caller is responsible for
         // passing a clean description without any GG-ID trailers.
         let clean_description = "This is the body.\n\nMore details about the change.";
         let (_, description) = build_pr_payload(
+            git_dir,
             "Add feature",
             Some(clean_description.to_string()),
             "stack",
@@ -388,5 +427,63 @@ mod tests {
         assert_eq!(description, clean_description);
         // And confirm no GG-ID trailer is present (which would indicate a bug in the caller)
         assert!(!description.contains("GG-ID:"));
+    }
+
+    #[test]
+    fn test_build_pr_payload_with_template() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_dir = temp_dir.path();
+
+        // Create gg directory and template file
+        fs::create_dir_all(git_dir.join("gg")).unwrap();
+        let template =
+            "## {{title}}\n\n{{description}}\n\n---\nStack: {{stack_name}}\nCommit: {{commit_sha}}";
+        fs::write(git_dir.join("gg").join("pr_template.md"), template).unwrap();
+
+        let (title, description) = build_pr_payload(
+            git_dir,
+            "Add feature",
+            Some("This is the description".to_string()),
+            "my-stack",
+            "abc1234",
+        );
+
+        assert_eq!(title, "Add feature");
+        assert_eq!(
+            description,
+            "## Add feature\n\nThis is the description\n\n---\nStack: my-stack\nCommit: abc1234"
+        );
+    }
+
+    #[test]
+    fn test_build_pr_payload_with_template_empty_description() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_dir = temp_dir.path();
+
+        // Create gg directory and template file
+        fs::create_dir_all(git_dir.join("gg")).unwrap();
+        let template = "## {{title}}\n\n{{description}}\n\nStack: {{stack_name}}";
+        fs::write(git_dir.join("gg").join("pr_template.md"), template).unwrap();
+
+        let (title, description) =
+            build_pr_payload(git_dir, "Add feature", None, "my-stack", "abc1234");
+
+        assert_eq!(title, "Add feature");
+        // Empty description should be replaced by empty string in template
+        assert_eq!(description, "## Add feature\n\n\n\nStack: my-stack");
+    }
+
+    #[test]
+    fn test_build_pr_payload_without_template_fallback() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_dir = temp_dir.path();
+
+        // No template file created - should use fallback behavior
+
+        let (title, description) =
+            build_pr_payload(git_dir, "Add feature", None, "my-stack", "abc1234");
+
+        assert_eq!(title, "Add feature");
+        assert_eq!(description, "Part of stack `my-stack`\n\nCommit: abc1234");
     }
 }

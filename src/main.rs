@@ -10,6 +10,7 @@ mod git;
 mod glab;
 mod provider;
 mod stack;
+mod template;
 
 use std::process::exit;
 

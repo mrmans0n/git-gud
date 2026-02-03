@@ -27,6 +27,15 @@ pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result
     provider.check_installed()?;
     provider.check_auth()?;
 
+    // Check if merge trains are enabled (GitLab only)
+    let merge_trains_enabled = provider.check_merge_trains_enabled().unwrap_or(false);
+    if merge_trains_enabled {
+        println!(
+            "{}",
+            style("Merge trains enabled - MRs will be added to the merge train").dim()
+        );
+    }
+
     // Note: We don't require a clean working directory here because land
     // only performs remote operations (merging PRs via the API). It doesn't
     // modify local files.
@@ -192,76 +201,132 @@ pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result
             }
         }
 
-        println!(
-            "{} Merging {} {}{}...",
-            style("→").cyan(),
-            provider.pr_label(),
-            provider.pr_number_prefix(),
-            pr_num
-        );
+        // Use merge trains if enabled (GitLab only)
+        if merge_trains_enabled {
+            println!(
+                "{} Adding {} {}{} to merge train...",
+                style("→").cyan(),
+                provider.pr_label(),
+                provider.pr_number_prefix(),
+                pr_num
+            );
 
-        match provider.merge_pr(pr_num, squash, false) {
-            Ok(()) => {
-                println!(
-                    "{} Merged {} {}{} into {}",
-                    style("OK").green().bold(),
-                    provider.pr_label(),
-                    provider.pr_number_prefix(),
-                    pr_num,
-                    stack.base
-                );
-                landed_count += 1;
-
-                // Remove PR/MR mapping from config
-                config.remove_mr_for_entry(&stack.name, gg_id);
-
-                // Update the base of remaining PRs/MRs to point to the main branch
-                // This is critical for stacked PRs - after merging PR #1, PR #2 should
-                // point to main instead of PR #1's branch (which no longer exists)
-                if land_all {
-                    let current_index = stack
-                        .entries
-                        .iter()
-                        .position(|e| e.mr_number == Some(pr_num))
-                        .unwrap_or(0);
-
-                    for remaining_entry in stack.entries.iter().skip(current_index + 1) {
-                        if let Some(remaining_pr) = remaining_entry.mr_number {
+            match provider.add_to_merge_train(pr_num) {
+                Ok(()) => {
+                    println!(
+                        "{} Added {} {}{} to merge train",
+                        style("OK").green().bold(),
+                        provider.pr_label(),
+                        provider.pr_number_prefix(),
+                        pr_num
+                    );
+                    landed_count += 1;
+                }
+                Err(e) => {
+                    println!(
+                        "{} Failed to add to merge train, attempting direct merge: {}",
+                        style("Warning:").yellow(),
+                        e
+                    );
+                    // Fallback to direct merge
+                    match provider.merge_pr(pr_num, squash, false) {
+                        Ok(()) => {
                             println!(
-                                "{}",
-                                style(format!(
-                                    "  Updating {} {}{} base to {}...",
-                                    provider.pr_label(),
-                                    provider.pr_number_prefix(),
-                                    remaining_pr,
-                                    stack.base
-                                ))
-                                .dim()
+                                "{} Merged {} {}{} into {}",
+                                style("OK").green().bold(),
+                                provider.pr_label(),
+                                provider.pr_number_prefix(),
+                                pr_num,
+                                stack.base
                             );
-                            if let Err(e) = provider.update_pr_base(remaining_pr, &stack.base) {
-                                println!(
-                                    "{} Warning: Failed to update {} {}{} base: {}",
-                                    style("⚠").yellow(),
-                                    provider.pr_label(),
-                                    provider.pr_number_prefix(),
-                                    remaining_pr,
-                                    e
-                                );
-                            }
+                            landed_count += 1;
+                        }
+                        Err(e) => {
+                            println!(
+                                "{} Failed to merge {} {}{}: {}",
+                                style("Error:").red().bold(),
+                                provider.pr_label(),
+                                provider.pr_number_prefix(),
+                                pr_num,
+                                e
+                            );
+                            break;
                         }
                     }
                 }
             }
-            Err(e) => {
-                println!(
-                    "{} Failed to merge {} {}{}: {}",
-                    style("Error:").red().bold(),
-                    provider.pr_label(),
-                    provider.pr_number_prefix(),
-                    pr_num,
-                    e
-                );
-                break;
+        } else {
+            println!(
+                "{} Merging {} {}{}...",
+                style("→").cyan(),
+                provider.pr_label(),
+                provider.pr_number_prefix(),
+                pr_num
+            );
+
+            match provider.merge_pr(pr_num, squash, false) {
+                Ok(()) => {
+                    println!(
+                        "{} Merged {} {}{} into {}",
+                        style("OK").green().bold(),
+                        provider.pr_label(),
+                        provider.pr_number_prefix(),
+                        pr_num,
+                        stack.base
+                    );
+                    landed_count += 1;
+
+                    // Remove PR/MR mapping from config
+                    config.remove_mr_for_entry(&stack.name, gg_id);
+
+                    // Update the base of remaining PRs/MRs to point to the main branch
+                    // This is critical for stacked PRs - after merging PR #1, PR #2 should
+                    // point to main instead of PR #1's branch (which no longer exists)
+                    if land_all {
+                        let current_index = stack
+                            .entries
+                            .iter()
+                            .position(|e| e.mr_number == Some(pr_num))
+                            .unwrap_or(0);
+
+                        for remaining_entry in stack.entries.iter().skip(current_index + 1) {
+                            if let Some(remaining_pr) = remaining_entry.mr_number {
+                                println!(
+                                    "{}",
+                                    style(format!(
+                                        "  Updating {} {}{} base to {}...",
+                                        provider.pr_label(),
+                                        provider.pr_number_prefix(),
+                                        remaining_pr,
+                                        stack.base
+                                    ))
+                                    .dim()
+                                );
+                                if let Err(e) = provider.update_pr_base(remaining_pr, &stack.base) {
+                                    println!(
+                                        "{} Warning: Failed to update {} {}{} base: {}",
+                                        style("⚠").yellow(),
+                                        provider.pr_label(),
+                                        provider.pr_number_prefix(),
+                                        remaining_pr,
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!(
+                        "{} Failed to merge {} {}{}: {}",
+                        style("Error:").red().bold(),
+                        provider.pr_label(),
+                        provider.pr_number_prefix(),
+                        pr_num,
+                        e
+                    );
+                    break;
+                }
             }
         }
 
@@ -362,6 +427,7 @@ pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result
 }
 
 /// Wait for a PR/MR to be ready to merge (CI passes, approvals met)
+/// Also monitors merge train status if merge trains are enabled
 fn wait_for_pr_ready(
     provider: &Provider,
     pr_num: u64,
@@ -372,6 +438,9 @@ fn wait_for_pr_ready(
     let start_time = Instant::now();
     let timeout = Duration::from_secs(timeout_minutes * 60);
     let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
+
+    // Check if merge trains are enabled
+    let merge_trains_enabled = provider.check_merge_trains_enabled().unwrap_or(false);
 
     println!(
         "{} Waiting for {} {}{} to be ready...",
@@ -404,6 +473,56 @@ fn wait_for_pr_ready(
         if let Some(flag) = interrupted {
             if flag.load(Ordering::SeqCst) {
                 return Err(GgError::Other("Interrupted by user".to_string()));
+            }
+        }
+
+        // Check merge train status if enabled
+        if merge_trains_enabled {
+            // Note: Using "main" as target branch - in production, this should be retrieved from stack config
+            if let Ok(Some(train_info)) = provider.get_merge_train_status(pr_num, "main") {
+                use crate::glab::MergeTrainStatus;
+                match train_info.status {
+                    MergeTrainStatus::Merged => {
+                        println!(
+                            "{} {} {}{} has been merged via merge train!",
+                            style("✓").green(),
+                            provider.pr_label(),
+                            provider.pr_number_prefix(),
+                            pr_num
+                        );
+                        return Ok(());
+                    }
+                    MergeTrainStatus::Merging => {
+                        println!("  {} Merge train: merging now...", style("🚂").cyan());
+                    }
+                    MergeTrainStatus::Fresh => {
+                        if let Some(pos) = train_info.position {
+                            println!(
+                                "  {} Merge train: position {} (fresh, ready to merge)",
+                                style("🚂").cyan(),
+                                pos
+                            );
+                        }
+                    }
+                    MergeTrainStatus::Stale => {
+                        println!(
+                            "  {} Merge train: MR is stale (needs rebase)",
+                            style("⚠").yellow()
+                        );
+                    }
+                    _ => {
+                        if let Some(pos) = train_info.position {
+                            println!("  {} Merge train: position {}", style("🚂").cyan(), pos);
+                        }
+                    }
+                }
+
+                if train_info.pipeline_running {
+                    println!(
+                        "  {} Merge train pipeline is running...",
+                        style("⏳").cyan()
+                    );
+                }
             }
         }
 

@@ -37,6 +37,10 @@ pub struct StackEntry {
     pub ci_status: Option<CiStatus>,
     /// Position in the stack (1-indexed)
     pub position: usize,
+    /// Whether this MR is in a merge train (GitLab only)
+    pub in_merge_train: bool,
+    /// Position in merge train if applicable
+    pub merge_train_position: Option<usize>,
 }
 
 impl StackEntry {
@@ -52,6 +56,8 @@ impl StackEntry {
             approved: false,
             ci_status: None,
             position,
+            in_merge_train: false,
+            merge_train_position: None,
         }
     }
 
@@ -274,6 +280,13 @@ impl Stack {
                 // Check approval status
                 if let Ok(approved) = provider.check_pr_approved(pr_num) {
                     entry.approved = approved;
+                }
+
+                // Check merge train status (GitLab only)
+                if let Ok(Some(train_info)) = provider.get_merge_train_status(pr_num, &self.base) {
+                    use crate::glab::MergeTrainStatus;
+                    entry.in_merge_train = !matches!(train_info.status, MergeTrainStatus::Idle);
+                    entry.merge_train_position = train_info.position;
                 }
             }
         }

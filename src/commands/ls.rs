@@ -369,6 +369,9 @@ fn show_stack(stack: &Stack) -> Result<()> {
             _ => String::new(),
         };
 
+        // Merge train indicator
+        let train = if entry.in_merge_train { " 🚂" } else { "" };
+
         // GG-ID display
         let gg_id = entry.gg_id.as_deref().unwrap_or("-");
 
@@ -383,30 +386,43 @@ fn show_stack(stack: &Stack) -> Result<()> {
 
         if is_current {
             println!(
-                "  {} {} {} {} {} (id: {}){}",
+                "  {} {} {} {} {}{} (id: {}){}",
                 style(&position).bold(),
                 style(sha).yellow().bold(),
                 style(title).bold(),
                 status_styled,
                 ci,
+                train,
                 style(gg_id).dim(),
                 style(head_marker).cyan().bold()
             );
         } else {
             println!(
-                "  {} {} {} {} {} (id: {})",
+                "  {} {} {} {} {}{} (id: {})",
                 style(&position).dim(),
                 style(sha).yellow(),
                 title,
                 status_styled,
                 ci,
+                train,
                 style(gg_id).dim()
             );
         }
 
-        // Show MR link if available
+        // Show MR link and merge train info if available
         if !mr_display.is_empty() {
-            println!("      {}", style(&mr_display).blue());
+            let mut mr_line = mr_display.clone();
+
+            // Add merge train indicator if in train
+            if entry.in_merge_train {
+                if let Some(pos) = entry.merge_train_position {
+                    mr_line.push_str(&format!(" [train pos {}]", pos));
+                } else {
+                    mr_line.push_str(" [train]");
+                }
+            }
+
+            println!("      {}", style(&mr_line).blue());
         }
     }
 

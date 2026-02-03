@@ -208,11 +208,30 @@ impl Provider {
         }
     }
 
-    /// Merge a PR/MR
+    /// Merge a PR/MR immediately.
     pub fn merge_pr(&self, number: u64, squash: bool, delete_branch: bool) -> Result<()> {
         match self {
             Provider::GitHub => gh::merge_pr(number, squash, delete_branch),
             Provider::GitLab => glab::merge_mr(number, squash, delete_branch),
+        }
+    }
+
+    /// Request auto-merge ("merge when pipeline succeeds").
+    ///
+    /// GitLab only.
+    pub fn auto_merge_pr_when_pipeline_succeeds(
+        &self,
+        number: u64,
+        squash: bool,
+        delete_branch: bool,
+    ) -> Result<()> {
+        match self {
+            Provider::GitHub => Err(GgError::Other(
+                "Auto-merge-on-land is only supported for GitLab".to_string(),
+            )),
+            Provider::GitLab => {
+                glab::auto_merge_mr_when_pipeline_succeeds(number, squash, delete_branch)
+            }
         }
     }
 

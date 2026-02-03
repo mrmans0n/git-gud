@@ -69,7 +69,13 @@ fn cleanup_after_merge(
 }
 
 /// Run the land command
-pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result<()> {
+pub fn run(
+    land_all: bool,
+    squash: bool,
+    wait: bool,
+    auto_clean: bool,
+    auto_merge_flag: bool,
+) -> Result<()> {
     let repo = git::open_repo()?;
     let git_dir = repo.path();
     let mut config = Config::load(git_dir)?;
@@ -78,6 +84,11 @@ pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result
     let provider = Provider::detect(&repo)?;
     provider.check_installed()?;
     provider.check_auth()?;
+
+    // Determine whether to use GitLab auto-merge-on-land.
+    // CLI flag overrides config.
+    let auto_merge_on_land =
+        provider == Provider::GitLab && (auto_merge_flag || config.get_gitlab_auto_merge_on_land());
 
     // Check if merge trains are enabled (GitLab only)
     let merge_trains_enabled = provider.check_merge_trains_enabled().unwrap_or(false);
@@ -317,6 +328,43 @@ pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result
                     }
                 }
             }
+        } else if auto_merge_on_land {
+            println!(
+                "{} Requesting auto-merge for {} {}{} (merge when pipeline succeeds)...",
+                style("→").cyan(),
+                provider.pr_label(),
+                provider.pr_number_prefix(),
+                pr_num
+            );
+
+            match provider.auto_merge_pr_when_pipeline_succeeds(pr_num, squash, false) {
+                Ok(()) => {
+                    println!(
+                        "{} Queued auto-merge for {} {}{} into {}",
+                        style("OK").green().bold(),
+                        provider.pr_label(),
+                        provider.pr_number_prefix(),
+                        pr_num,
+                        stack.base
+                    );
+                    landed_count += 1;
+
+                    // Note: we intentionally do not clean up config mappings here.
+                    // The MR has not merged yet; cleanup and stacked base updates
+                    // would be premature.
+                }
+                Err(e) => {
+                    println!(
+                        "{} Failed to request auto-merge for {} {}{}: {}",
+                        style("Error:").red().bold(),
+                        provider.pr_label(),
+                        provider.pr_number_prefix(),
+                        pr_num,
+                        e
+                    );
+                    break;
+                }
+            }
         } else {
             println!(
                 "{} Merging {} {}{}...",
@@ -351,6 +399,12 @@ pub fn run(land_all: bool, squash: bool, wait: bool, auto_clean: bool) -> Result
                     break;
                 }
             }
+        }
+
+        // Auto-merge is queued asynchronously; landing the rest of a stack
+        // requires the earlier MR(s) to actually merge and bases to update.
+        if auto_merge_on_land {
+            break;
         }
 
         if !land_all {

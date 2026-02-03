@@ -131,12 +131,14 @@ gg clean
 | `gg land --wait` | Wait for CI to pass and approvals before merging |
 | `gg land --all --wait` | Wait and merge all PRs/MRs in sequence |
 | `gg land --no-squash` | Merge using merge commit instead of squash |
+| `gg land --auto-merge` | *(GitLab only)* Queue MR auto-merge ("merge when pipeline succeeds") instead of merging immediately |
 | `gg land --clean` | Automatically clean up stack after landing all PRs/MRs |
 | `gg land --no-clean` | Disable automatic cleanup (overrides config default) |
 | `gg rebase` | Rebase stack onto updated base branch |
 
 **Notes:**
 - The `--wait` flag polls for CI status and approvals with a configurable timeout (default: 30 minutes). Configure with `land_wait_timeout_minutes` in `.git/gg/config.json`.
+- The `--auto-merge` flag is GitLab-only and requests "merge when pipeline succeeds" instead of an immediate merge. You can enable this behavior by default with `defaults.gitlab.auto_merge_on_land` in `.git/gg/config.json`.
 - The `--clean` and `--no-clean` flags control automatic stack cleanup after landing all PRs/MRs. If neither is specified, the behavior is controlled by the `land_auto_clean` config option (default: `false`). Use `--clean` to enable cleanup for a single command, or `--no-clean` to override a `true` config default.
 
 ### Utilities
@@ -180,7 +182,7 @@ Configuration is stored in `.git/gg/config.json`. Run `gg setup` to generate it 
 
 ### Configuration Options
 
-All configuration options are in the `defaults` section:
+All configuration options are in the `defaults` section (with provider-specific options nested under `defaults.gitlab`, etc):
 
 | Option | Type | Description | Default |
 |--------|------|-------------|---------|
@@ -191,6 +193,7 @@ All configuration options are in the `defaults` section:
 | `auto_add_gg_ids` | `boolean` | Automatically add GG-IDs to commits without prompting | `true` |
 | `land_wait_timeout_minutes` | `number` | Timeout in minutes for `gg land --wait` | `30` |
 | `land_auto_clean` | `boolean` | Automatically clean up stack after landing all PRs/MRs | `false` |
+| `gitlab.auto_merge_on_land` | `boolean` | *(GitLab only)* Use "merge when pipeline succeeds" for `gg land` by default | `false` |
 
 Example configuration:
 
@@ -205,7 +208,10 @@ Example configuration:
     ],
     "auto_add_gg_ids": true,
     "land_wait_timeout_minutes": 60,
-    "land_auto_clean": true
+    "land_auto_clean": true,
+    "gitlab": {
+      "auto_merge_on_land": true
+    }
   }
 }
 ```

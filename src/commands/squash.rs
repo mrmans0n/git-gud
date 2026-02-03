@@ -19,6 +19,9 @@ pub fn run(all: bool) -> Result<()> {
 
     let config = Config::load(repo.path())?;
 
+    // Verify we're on a stack
+    let stack = Stack::load(&repo, &config)?;
+
     // Check if we have changes to squash
     let statuses = repo.statuses(None)?;
     if statuses.is_empty() {
@@ -31,17 +34,11 @@ pub fn run(all: bool) -> Result<()> {
     let head_sha = git::short_sha(&head);
     let head_title = git::get_commit_title(&head);
 
-    // Try to load stack to determine if we need to rebase
-    let stack_result = Stack::load(&repo, &config);
-    let needs_rebase = if let Ok(ref stack) = stack_result {
-        // Check if we're not at stack head (current_position is Some and not last)
-        stack
-            .current_position
-            .map(|p| p < stack.len() - 1)
-            .unwrap_or(false)
-    } else {
-        false
-    };
+    // Check if we're not at stack head (current_position is Some and not last)
+    let needs_rebase = stack
+        .current_position
+        .map(|p| p < stack.len() - 1)
+        .unwrap_or(false);
 
     // If we need to rebase after amend, ensure there are no UNSTAGED changes
     // Staged changes are fine (they'll be committed), but unstaged changes
@@ -90,7 +87,6 @@ pub fn run(all: bool) -> Result<()> {
 
     // If we need to rebase remaining commits
     if needs_rebase {
-        let stack = stack_result.unwrap();
         let remaining = stack.len() - stack.current_position.unwrap() - 1;
 
         println!(

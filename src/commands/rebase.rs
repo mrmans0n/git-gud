@@ -23,14 +23,18 @@ pub fn run(target: Option<String>) -> Result<()> {
         git::run_git_command(&["stash", "push", "-m", "gg-rebase-autostash"])?;
     }
 
-    // Load stack
-    let stack = Stack::load(&repo, &config)?;
+    // Determine target branch
+    // If no target provided, we need to be on a stack to get the base branch
+    let target_branch = if let Some(t) = target {
+        t
+    } else {
+        // No target provided, must be on a stack
+        let stack = Stack::load(&repo, &config)?;
+        stack.base.clone()
+    };
 
     // Remember current branch to return to after updating base
     let current_branch = git::current_branch_name(&repo);
-
-    // Determine target branch
-    let target_branch = target.unwrap_or_else(|| stack.base.clone());
 
     println!(
         "{}",

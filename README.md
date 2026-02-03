@@ -210,6 +210,41 @@ Example configuration:
 }
 ```
 
+### PR/MR Description Templates
+
+You can customize PR/MR descriptions by creating a template file at `.git/gg/pr_template.md`. When this file exists, it will be used for all new PR/MR descriptions created by `gg sync`.
+
+#### Template Placeholders
+
+| Placeholder | Description |
+|-------------|-------------|
+| `{{title}}` | The PR/MR title (from commit subject) |
+| `{{description}}` | The commit body/description (empty if none) |
+| `{{stack_name}}` | Name of the current stack |
+| `{{commit_sha}}` | Short SHA of the commit |
+
+#### Example Template
+
+Create `.git/gg/pr_template.md`:
+
+```markdown
+## Summary
+
+{{description}}
+
+---
+
+**Stack:** `{{stack_name}}`
+**Commit:** {{commit_sha}}
+
+## Checklist
+
+- [ ] Tests added/updated
+- [ ] Documentation updated
+```
+
+If no template file exists, git-gud uses the commit description directly, or a default fallback message if the commit has no body.
+
 ## How It Works
 
 ### Branch Naming

@@ -13,6 +13,7 @@ use crate::git::{
 };
 use crate::provider::Provider;
 use crate::stack::Stack;
+use crate::template::{self, TemplateContext};
 
 /// Run the sync command
 pub fn run(draft: bool, force: bool, update_descriptions: bool) -> Result<()> {
@@ -31,6 +32,9 @@ pub fn run(draft: bool, force: bool, update_descriptions: bool) -> Result<()> {
 
     // Load current stack
     let stack = Stack::load(&repo, &config)?;
+
+    // Load optional PR template
+    let pr_template = template::load_template(git_dir);
 
     if stack.is_empty() {
         println!("{}", style("Stack is empty. Nothing to sync.").dim());
@@ -92,6 +96,7 @@ pub fn run(draft: bool, force: bool, update_descriptions: bool) -> Result<()> {
             get_commit_description(&commit),
             &stack.name,
             &entry.short_sha,
+            pr_template.as_deref(),
         );
 
         pb.set_message(format!("Processing {}...", entry.short_sha));
@@ -245,9 +250,26 @@ fn build_pr_payload(
     description: Option<String>,
     stack_name: &str,
     short_sha: &str,
+    template: Option<&str>,
 ) -> (String, String) {
-    let fallback = format!("Part of stack `{}`\n\nCommit: {}", stack_name, short_sha);
-    (title.to_string(), description.unwrap_or(fallback))
+    let body = match template {
+        Some(tmpl) => {
+            // Use template with placeholders
+            let ctx = TemplateContext {
+                description: description.as_deref(),
+                stack_name,
+                commit_sha: short_sha,
+                title,
+            };
+            template::render_template(tmpl, &ctx)
+        }
+        None => {
+            // Default behavior: use description or fallback
+            let fallback = format!("Part of stack `{}`\n\nCommit: {}", stack_name, short_sha);
+            description.unwrap_or(fallback)
+        }
+    };
+    (title.to_string(), body)
 }
 
 fn clean_title(title: &str) -> String {
@@ -352,6 +374,7 @@ mod tests {
             Some("Details here".to_string()),
             "stack",
             "abc123",
+            None,
         );
         assert_eq!(title, "Add feature");
         assert_eq!(description, "Details here");
@@ -359,7 +382,7 @@ mod tests {
 
     #[test]
     fn test_build_pr_payload_falls_back_without_description() {
-        let (title, description) = build_pr_payload("Add feature", None, "stack", "abc123");
+        let (title, description) = build_pr_payload("Add feature", None, "stack", "abc123", None);
         assert_eq!(title, "Add feature");
         assert_eq!(description, "Part of stack `stack`\n\nCommit: abc123");
     }
@@ -383,10 +406,50 @@ mod tests {
             Some(clean_description.to_string()),
             "stack",
             "abc123",
+            None,
         );
         // Verify the description is passed through unchanged
         assert_eq!(description, clean_description);
         // And confirm no GG-ID trailer is present (which would indicate a bug in the caller)
         assert!(!description.contains("GG-ID:"));
+    }
+
+    #[test]
+    fn test_build_pr_payload_with_template() {
+        let template =
+            "# {{title}}\n\n{{description}}\n\n---\nStack: {{stack_name}} | Commit: {{commit_sha}}";
+        let (title, description) = build_pr_payload(
+            "Add feature",
+            Some("This is the description".to_string()),
+            "my-stack",
+            "abc1234",
+            Some(template),
+        );
+        assert_eq!(title, "Add feature");
+        assert_eq!(
+            description,
+            "# Add feature\n\nThis is the description\n\n---\nStack: my-stack | Commit: abc1234"
+        );
+    }
+
+    #[test]
+    fn test_build_pr_payload_with_template_no_description() {
+        let template = "## {{title}}\n\n{{description}}\n\nPart of `{{stack_name}}`";
+        let (title, description) =
+            build_pr_payload("Fix bug", None, "bugfix", "def5678", Some(template));
+        assert_eq!(title, "Fix bug");
+        // {{description}} should be replaced with empty string when None
+        assert_eq!(description, "## Fix bug\n\n\n\nPart of `bugfix`");
+    }
+
+    #[test]
+    fn test_build_pr_payload_template_overrides_default_behavior() {
+        // When template is provided, it should be used even if description is None
+        // (instead of the default fallback)
+        let template = "Custom: {{title}}";
+        let (_, description) = build_pr_payload("Test", None, "stack", "abc", Some(template));
+        assert_eq!(description, "Custom: Test");
+        // Should NOT contain the default fallback
+        assert!(!description.contains("Part of stack"));
     }
 }

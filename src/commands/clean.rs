@@ -2,7 +2,7 @@
 
 use console::style;
 use dialoguer::Confirm;
-use git2::BranchType;
+use git2::{BranchType, Repository};
 
 use crate::config::Config;
 use crate::error::{GgError, Result};
@@ -11,17 +11,23 @@ use crate::provider::{PrState, Provider};
 use crate::stack;
 
 /// Run the clean command for a specific stack (used by auto-clean)
+#[allow(dead_code)]
 pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
     let repo = git::open_repo()?;
 
     // Acquire operation lock to prevent concurrent operations
     let _lock = git::acquire_operation_lock(&repo, "clean")?;
 
+    run_for_stack_with_repo(&repo, stack_name, force)
+}
+
+/// Run clean for a stack with an already-open repository (no lock acquisition)
+pub fn run_for_stack_with_repo(repo: &Repository, stack_name: &str, force: bool) -> Result<()> {
     let git_dir = repo.path();
     let mut config = Config::load(git_dir)?;
 
     // Detect provider (best-effort)
-    let provider = Provider::detect(&repo).ok();
+    let provider = Provider::detect(repo).ok();
 
     // Get username
     let username = config
@@ -37,8 +43,7 @@ pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
     let branch_name = git::format_stack_branch(&username, stack_name);
 
     // Check if stack is fully merged
-    let merge_status =
-        check_stack_merged(&repo, &config, stack_name, &username, provider.as_ref())?;
+    let merge_status = check_stack_merged(repo, &config, stack_name, &username, provider.as_ref())?;
 
     if !merge_status.merged && !force {
         return Err(GgError::Other(format!(
@@ -50,16 +55,16 @@ pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
     // Delete local branch
     if let Ok(mut branch) = repo.find_branch(&branch_name, BranchType::Local) {
         // Make sure we're not on this branch
-        let current = git::current_branch_name(&repo);
+        let current = git::current_branch_name(repo);
         if current.as_deref() == Some(&branch_name) {
             // Switch to base branch first
             let base = config
                 .get_base_for_stack(stack_name)
                 .map(|s| s.to_string())
-                .or_else(|| git::find_base_branch(&repo).ok())
+                .or_else(|| git::find_base_branch(repo).ok())
                 .unwrap_or_else(|| "main".to_string());
 
-            git::checkout_branch(&repo, &base)?;
+            git::checkout_branch(repo, &base)?;
         }
 
         branch.delete()?;
@@ -76,7 +81,7 @@ pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
 
     // Delete entry branches (local and remote when verified)
     delete_entry_branches(
-        &repo,
+        repo,
         &config,
         stack_name,
         &username,

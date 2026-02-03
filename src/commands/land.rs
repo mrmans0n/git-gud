@@ -621,6 +621,8 @@ fn wait_for_pr_ready(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{Config, Defaults, StackConfig};
+    use std::collections::HashMap;
 
     #[test]
     fn test_constants() {
@@ -631,6 +633,108 @@ mod tests {
     fn test_poll_interval_is_reasonable() {
         // Poll interval should be between 1 and 60 seconds
         const { assert!(POLL_INTERVAL_SECS >= 1 && POLL_INTERVAL_SECS <= 60) };
+    }
+
+    #[test]
+    fn test_config_remove_mr_for_entry_removes_single_entry() {
+        // Create a config with multiple MR mappings
+        let mut config = Config {
+            defaults: Defaults::default(),
+            stacks: HashMap::new(),
+        };
+
+        let mut stack_config = StackConfig {
+            base: None,
+            mrs: HashMap::new(),
+        };
+        stack_config.mrs.insert("c-abc1234".to_string(), 123);
+        stack_config.mrs.insert("c-def5678".to_string(), 456);
+        config.stacks.insert("test-stack".to_string(), stack_config);
+
+        // Verify initial state
+        assert_eq!(config.stacks.get("test-stack").unwrap().mrs.len(), 2);
+
+        // Remove one entry
+        config.remove_mr_for_entry("test-stack", "c-abc1234");
+
+        // Verify the correct entry was removed
+        let stack = config.stacks.get("test-stack").unwrap();
+        assert_eq!(stack.mrs.len(), 1);
+        assert!(!stack.mrs.contains_key("c-abc1234"));
+        assert_eq!(stack.mrs.get("c-def5678"), Some(&456));
+    }
+
+    #[test]
+    fn test_config_remove_mr_for_entry_handles_nonexistent_entry() {
+        let mut config = Config {
+            defaults: Defaults::default(),
+            stacks: HashMap::new(),
+        };
+
+        let mut stack_config = StackConfig {
+            base: None,
+            mrs: HashMap::new(),
+        };
+        stack_config.mrs.insert("c-abc1234".to_string(), 123);
+        config.stacks.insert("test-stack".to_string(), stack_config);
+
+        // Try to remove non-existent entry - should not panic
+        config.remove_mr_for_entry("test-stack", "c-xyz9999");
+
+        // Original entry should still be there
+        assert_eq!(config.stacks.get("test-stack").unwrap().mrs.len(), 1);
+        assert_eq!(
+            config
+                .stacks
+                .get("test-stack")
+                .unwrap()
+                .mrs
+                .get("c-abc1234"),
+            Some(&123)
+        );
+    }
+
+    #[test]
+    fn test_config_remove_mr_for_entry_handles_nonexistent_stack() {
+        let mut config = Config {
+            defaults: Defaults::default(),
+            stacks: HashMap::new(),
+        };
+
+        // Try to remove from non-existent stack - should not panic
+        config.remove_mr_for_entry("nonexistent-stack", "c-abc1234");
+
+        // Should still have no stacks
+        assert_eq!(config.stacks.len(), 0);
+    }
+
+    #[test]
+    fn test_config_remove_mr_for_entry_removes_multiple_entries() {
+        let mut config = Config {
+            defaults: Defaults::default(),
+            stacks: HashMap::new(),
+        };
+
+        let mut stack_config = StackConfig {
+            base: None,
+            mrs: HashMap::new(),
+        };
+        stack_config.mrs.insert("c-abc1234".to_string(), 123);
+        stack_config.mrs.insert("c-def5678".to_string(), 456);
+        stack_config.mrs.insert("c-ghi9012".to_string(), 789);
+        config.stacks.insert("test-stack".to_string(), stack_config);
+
+        assert_eq!(config.stacks.get("test-stack").unwrap().mrs.len(), 3);
+
+        // Remove entries one by one
+        config.remove_mr_for_entry("test-stack", "c-abc1234");
+        assert_eq!(config.stacks.get("test-stack").unwrap().mrs.len(), 2);
+
+        config.remove_mr_for_entry("test-stack", "c-def5678");
+        assert_eq!(config.stacks.get("test-stack").unwrap().mrs.len(), 1);
+
+        config.remove_mr_for_entry("test-stack", "c-ghi9012");
+        assert_eq!(config.stacks.get("test-stack").unwrap().mrs.len(), 0);
     }
 
     // Note: cleanup_after_merge is tested indirectly through the land command

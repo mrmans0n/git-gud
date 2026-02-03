@@ -2630,3 +2630,95 @@ fn test_sync_fails_gracefully_without_provider() {
         "Should provide an error message about missing provider"
     );
 }
+
+#[test]
+fn test_squash_requires_stack() {
+    // Test that squash fails when not on a stack
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Create a commit on main branch
+    fs::write(repo_path.join("file.txt"), "content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Test commit"]);
+
+    // Make some changes to squash
+    fs::write(repo_path.join("file.txt"), "modified").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+
+    // Try to squash while not on a stack
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["squash"]);
+
+    // Should fail
+    assert!(!success, "Squash should fail when not on a stack");
+
+    // Should have helpful error message
+    assert!(
+        stderr.contains("Not on a stack") || stderr.contains("gg co"),
+        "Should suggest using 'gg co' to create a stack. Got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_rebase_without_stack_requires_target() {
+    // Test that rebase works on any branch if target is provided
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+
+    // Create a feature branch (not a stack)
+    run_git(&repo_path, &["checkout", "-b", "feature-branch"]);
+
+    // Create a commit
+    fs::write(repo_path.join("file.txt"), "content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Feature commit"]);
+
+    // Try rebase without target (should fail - not on stack)
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["rebase"]);
+    assert!(
+        !success,
+        "Rebase without target should fail when not on a stack"
+    );
+    assert!(
+        stderr.contains("Not on a stack"),
+        "Should indicate not on a stack. Got: {}",
+        stderr
+    );
+
+    // Try rebase with target (should work on any branch)
+    let (success, stdout, stderr) = run_gg(&repo_path, &["rebase", "main"]);
+    assert!(
+        success,
+        "Rebase with target should work on any branch. stdout: {}, stderr: {}",
+        stdout, stderr
+    );
+}
+
+#[test]
+fn test_nav_requires_stack() {
+    // Test that navigation commands require being on a stack
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Try nav first while not on a stack
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["first"]);
+    assert!(!success, "Nav first should fail when not on a stack");
+    assert!(
+        stderr.contains("Not on a stack"),
+        "Should indicate not on a stack. Got: {}",
+        stderr
+    );
+
+    // Try nav last while not on a stack
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["last"]);
+    assert!(!success, "Nav last should fail when not on a stack");
+    assert!(stderr.contains("Not on a stack"));
+
+    // Try nav next while not on a stack
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["next"]);
+    assert!(!success, "Nav next should fail when not on a stack");
+    assert!(stderr.contains("Not on a stack"));
+
+    // Try nav prev while not on a stack
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["prev"]);
+    assert!(!success, "Nav prev should fail when not on a stack");
+    assert!(stderr.contains("Not on a stack"));
+}

@@ -18,6 +18,10 @@ use crate::template::{self, TemplateContext};
 /// Run the sync command
 pub fn run(draft: bool, force: bool, update_descriptions: bool) -> Result<()> {
     let repo = git::open_repo()?;
+
+    // Acquire operation lock to prevent concurrent operations
+    let _lock = git::acquire_operation_lock(&repo, "sync")?;
+
     let git_dir = repo.path();
     let mut config = Config::load(git_dir)?;
 
@@ -66,7 +70,25 @@ pub fn run(draft: bool, force: bool, update_descriptions: bool) -> Result<()> {
 
         if should_add {
             add_gg_ids_to_commits(&repo, &stack)?;
-            // Reload stack after rebase
+
+            // Check if rebase completed successfully
+            // SAFETY: Prevent recursive call if rebase is still in progress
+            if git::is_rebase_in_progress(&repo) {
+                return Err(GgError::Other(
+                    "Rebase in progress after adding GG-IDs.\n\
+                     Please resolve any conflicts, then run:\n\
+                     - 'git rebase --continue' (or 'gg continue') to finish the rebase\n\
+                     - 'gg sync' again once the rebase is complete"
+                        .to_string(),
+                ));
+            }
+
+            println!(
+                "{}",
+                console::style("GG-IDs added successfully. Re-syncing...").dim()
+            );
+
+            // Reload stack after rebase and continue
             return run(draft, force, update_descriptions);
         } else {
             return Err(GgError::Other(

@@ -5,12 +5,14 @@
 //! - Per-stack settings and MR mappings
 
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
+use crate::error::{GgError, Result};
 
 /// Default configuration values
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -102,6 +104,7 @@ pub struct Config {
 
 impl Config {
     /// Load config from the given git directory
+    /// Uses file locking to prevent race conditions with concurrent operations
     pub fn load(git_dir: &Path) -> Result<Self> {
         let config_path = Self::config_path(git_dir);
 
@@ -109,12 +112,19 @@ impl Config {
             return Ok(Config::default());
         }
 
+        // Acquire shared lock for reading (multiple readers allowed)
+        let lock = Self::acquire_lock(git_dir, /*exclusive=*/ false)?;
+
         let contents = fs::read_to_string(&config_path)?;
         let config: Config = serde_json::from_str(&contents)?;
+
+        // Lock automatically released when dropped
+        drop(lock);
         Ok(config)
     }
 
     /// Save config to the given git directory
+    /// Uses file locking and atomic write to prevent corruption
     pub fn save(&self, git_dir: &Path) -> Result<()> {
         let config_path = Self::config_path(git_dir);
 
@@ -123,9 +133,67 @@ impl Config {
             fs::create_dir_all(parent)?;
         }
 
+        // Acquire exclusive lock for writing
+        let lock = Self::acquire_lock(git_dir, /*exclusive=*/ true)?;
+
+        // Atomic write: write to temp file, then rename
+        let temp_path = config_path.with_extension("tmp");
         let contents = serde_json::to_string_pretty(self)?;
-        fs::write(&config_path, contents)?;
+        fs::write(&temp_path, contents)?;
+
+        // Atomic rename (overwrites existing file)
+        fs::rename(&temp_path, &config_path)?;
+
+        // Lock automatically released when dropped
+        drop(lock);
         Ok(())
+    }
+
+    /// Acquire a file lock on the config file
+    /// Returns a File handle that holds the lock until dropped
+    fn acquire_lock(git_dir: &Path, exclusive: bool) -> Result<File> {
+        let lock_path = Self::config_path(git_dir).with_extension("lock");
+
+        // Ensure the parent directory exists
+        if let Some(parent) = lock_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        // Open or create lock file
+        let lock_file = File::create(&lock_path)?;
+
+        // Try to acquire lock with timeout to avoid indefinite hangs
+        let timeout = Duration::from_secs(5);
+        let start = std::time::Instant::now();
+
+        loop {
+            // Try to acquire lock (different methods have different return types on some platforms)
+            let lock_result = if exclusive {
+                lock_file.try_lock_exclusive()
+            } else {
+                lock_file.try_lock_shared().map_err(|e| {
+                    // Convert shared lock error to io::Error
+                    std::io::Error::new(std::io::ErrorKind::WouldBlock, e)
+                })
+            };
+
+            match lock_result {
+                Ok(()) => return Ok(lock_file),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    // Lock is held by another process, retry
+                    if start.elapsed() >= timeout {
+                        return Err(GgError::Other(
+                            "Timeout waiting for config file lock. \
+                             Another gg process may be running. \
+                             Try again in a moment."
+                                .to_string(),
+                        ));
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
     }
 
     /// Get the config file path

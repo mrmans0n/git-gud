@@ -13,6 +13,10 @@ use crate::stack;
 /// Run the clean command for a specific stack (used by auto-clean)
 pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
     let repo = git::open_repo()?;
+
+    // Acquire operation lock to prevent concurrent operations
+    let _lock = git::acquire_operation_lock(&repo, "clean")?;
+
     let git_dir = repo.path();
     let mut config = Config::load(git_dir)?;
 
@@ -75,6 +79,10 @@ pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
 /// Run the clean command
 pub fn run(clean_all: bool) -> Result<()> {
     let repo = git::open_repo()?;
+
+    // Acquire operation lock to prevent concurrent operations
+    let _lock = git::acquire_operation_lock(&repo, "clean")?;
+
     let git_dir = repo.path();
     let mut config = Config::load(git_dir)?;
 
@@ -224,6 +232,13 @@ fn check_stack_merged(
                 }
             }
 
+            // Additional safety: verify commits are reachable from base branch
+            // This catches edge cases where PR is marked merged but commits aren't in base
+            if all_merged && verify_commits_reachable(repo, config, stack_name, username).is_err() {
+                // If we can't verify reachability, be conservative
+                all_merged = false;
+            }
+
             return Ok(all_merged);
         }
     }
@@ -250,6 +265,51 @@ fn check_stack_merged(
 
     // If stack is ancestor of base, it's merged
     Ok(repo.merge_base(stack_oid, base_oid)? == stack_oid)
+}
+
+/// Verify that all commits in the stack are reachable from the base branch
+/// This provides additional safety before deleting remote branches
+fn verify_commits_reachable(
+    repo: &git2::Repository,
+    config: &Config,
+    stack_name: &str,
+    username: &str,
+) -> Result<()> {
+    let branch_name = git::format_stack_branch(username, stack_name);
+
+    // Get base branch
+    let base = config
+        .get_base_for_stack(stack_name)
+        .map(|s| s.to_string())
+        .or_else(|| git::find_base_branch(repo).ok())
+        .ok_or(GgError::NoBaseBranch)?;
+
+    // Get base commit (prefer origin/<base> for most up-to-date state)
+    let base_ref = repo
+        .revparse_single(&format!("origin/{}", base))
+        .or_else(|_| repo.revparse_single(&base))?;
+    let base_commit = base_ref.peel_to_commit()?;
+
+    // Get stack branch commit
+    let stack_ref = repo.revparse_single(&branch_name)?;
+    let stack_commit = stack_ref.peel_to_commit()?;
+
+    // Walk commits from stack to base
+    let mut revwalk = repo.revwalk()?;
+    revwalk.push(stack_commit.id())?;
+    revwalk.hide(base_commit.id())?;
+
+    // If there are any commits not reachable from base, it's not fully merged
+    if let Some(oid) = revwalk.next() {
+        let _oid = oid?;
+        // If we get here, there are commits in stack not in base
+        return Err(GgError::Other(format!(
+            "Stack '{}' has commits not reachable from {}",
+            stack_name, base
+        )));
+    }
+
+    Ok(())
 }
 
 /// Delete all entry branches for a stack (both local and remote)

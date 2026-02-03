@@ -78,6 +78,10 @@ pub fn run(
     auto_merge_flag: bool,
 ) -> Result<()> {
     let repo = git::open_repo()?;
+
+    // Acquire operation lock to prevent concurrent operations
+    let _lock = git::acquire_operation_lock(&repo, "land")?;
+
     let git_dir = repo.path();
     let mut config = Config::load(git_dir)?;
 

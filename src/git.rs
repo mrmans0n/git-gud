@@ -3,8 +3,12 @@
 //! Provides utilities for repository discovery, branch management,
 //! commit traversal, and rebase operations.
 
+use std::fs::{self, File};
+use std::path::PathBuf;
 use std::process::Command;
+use std::time::Duration;
 
+use fs2::FileExt;
 #[allow(unused_imports)]
 use git2::Branch;
 use git2::{BranchType, Commit, Oid, Repository, Signature, Sort};
@@ -18,6 +22,73 @@ pub const GG_ID_PREFIX: &str = "GG-ID:";
 /// Open the repository at the current directory or its parents
 pub fn open_repo() -> Result<Repository> {
     Repository::discover(".").map_err(|_| GgError::NotInRepo)
+}
+
+/// Operation lock handle that automatically releases on drop
+pub struct OperationLock {
+    _lock_file: File,
+    lock_path: PathBuf,
+}
+
+impl Drop for OperationLock {
+    fn drop(&mut self) {
+        // Release lock by closing file and removing lock file
+        let _ = fs::remove_file(&self.lock_path);
+    }
+}
+
+/// Acquire an exclusive operation lock to prevent concurrent gg operations
+/// Returns a lock handle that will automatically release when dropped
+pub fn acquire_operation_lock(repo: &Repository, operation: &str) -> Result<OperationLock> {
+    let git_dir = repo.path();
+    let gg_dir = git_dir.join("gg");
+
+    // Ensure gg directory exists
+    fs::create_dir_all(&gg_dir)?;
+
+    let lock_path = gg_dir.join("operation.lock");
+
+    // Try to open or create lock file
+    let lock_file = File::create(&lock_path)?;
+
+    // Try to acquire exclusive lock with timeout
+    let timeout = Duration::from_secs(10);
+    let start = std::time::Instant::now();
+
+    loop {
+        match lock_file.try_lock_exclusive() {
+            Ok(()) => {
+                // Successfully acquired lock
+                // Write operation info for debugging
+                let info = format!("operation: {}\npid: {}\n", operation, std::process::id());
+                let _ = fs::write(&lock_path, info);
+
+                return Ok(OperationLock {
+                    _lock_file: lock_file,
+                    lock_path,
+                });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                // Lock is held by another process
+                if start.elapsed() >= timeout {
+                    // Try to read lock info for better error message
+                    let lock_info = fs::read_to_string(&lock_path)
+                        .unwrap_or_else(|_| "unknown operation".to_string());
+
+                    return Err(GgError::Other(format!(
+                        "Another gg operation is currently running.\n\
+                         Lock info:\n{}\n\
+                         If no other gg process is running, the lock may be stale.\n\
+                         You can manually remove: {}",
+                        lock_info.trim(),
+                        lock_path.display()
+                    )));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
 }
 
 /// Find the base branch (main, master, or trunk)
@@ -308,12 +379,55 @@ pub fn push_branch(branch_name: &str, force_with_lease: bool, hard_force: bool) 
 
     let result = run_git_command(&args);
 
-    // If force-with-lease failed with "stale info", the remote branch was likely deleted
-    // Retry without lease (equivalent to creating a new branch)
+    // If force-with-lease failed with "stale info", prompt user for confirmation
+    // SAFETY: Never automatically retry with --force to prevent data loss
     if let Err(ref e) = result {
         let err_msg = e.to_string();
         if force_with_lease && !hard_force && err_msg.contains("stale info") {
-            // Retry with regular force push
+            // Check if we're in a non-interactive environment
+            if !atty::is(atty::Stream::Stdin) {
+                return Err(GgError::Other(format!(
+                    "Remote branch '{}' has been updated since your last fetch.\n\
+                     This could mean someone else has pushed changes.\n\
+                     \n\
+                     To proceed safely:\n\
+                     1. Run 'git fetch origin'\n\
+                     2. Review the changes\n\
+                     3. Run 'gg sync' again\n\
+                     \n\
+                     If you're certain you want to overwrite remote changes, run with --force flag.",
+                    branch_name
+                )));
+            }
+
+            // In interactive mode, prompt user for confirmation
+            use dialoguer::Confirm;
+            eprintln!(
+                "\n{} Remote branch '{}' has been updated since your last fetch.",
+                console::style("Warning:").yellow().bold(),
+                branch_name
+            );
+            eprintln!("This could mean someone else has pushed changes to this branch.");
+            eprintln!();
+
+            let should_force = Confirm::new()
+                .with_prompt(format!(
+                    "Do you want to force-push and overwrite remote changes on '{}'?",
+                    branch_name
+                ))
+                .default(false)
+                .interact()
+                .unwrap_or(false);
+
+            if !should_force {
+                return Err(GgError::Other(
+                    "Push cancelled. Run 'git fetch origin' to update your local state."
+                        .to_string(),
+                ));
+            }
+
+            // User confirmed, proceed with force push
+            eprintln!("{}", console::style("Force-pushing...").dim());
             let retry_args = vec!["push", "--force", "origin", branch_name];
             return run_git_command(&retry_args).map(|_| ());
         }

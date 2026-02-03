@@ -10,10 +10,18 @@ use crate::stack::Stack;
 /// Run the rebase command
 pub fn run(target: Option<String>) -> Result<()> {
     let repo = git::open_repo()?;
+
+    // Acquire operation lock to prevent concurrent operations
+    let _lock = git::acquire_operation_lock(&repo, "rebase")?;
+
     let config = Config::load(repo.path())?;
 
-    // Require clean working directory
-    git::require_clean_working_directory(&repo)?;
+    // Auto-stash uncommitted changes if present
+    let needs_stash = !git::is_working_directory_clean(&repo)?;
+    if needs_stash {
+        println!("{}", style("Auto-stashing uncommitted changes...").dim());
+        git::run_git_command(&["stash", "push", "-m", "gg-rebase-autostash"])?;
+    }
 
     // Load stack
     let stack = Stack::load(&repo, &config)?;
@@ -74,6 +82,25 @@ pub fn run(target: Option<String>) -> Result<()> {
                 style("OK").green().bold(),
                 target_branch
             );
+
+            // Restore stashed changes if we stashed earlier
+            if needs_stash {
+                println!("{}", style("Restoring stashed changes...").dim());
+                match git::run_git_command(&["stash", "pop"]) {
+                    Ok(_) => {
+                        println!("{} Changes restored", style("→").cyan());
+                    }
+                    Err(e) => {
+                        println!(
+                            "{} Could not restore stashed changes: {}",
+                            style("Warning:").yellow(),
+                            e
+                        );
+                        println!("  Your changes are in the stash. Run 'git stash pop' manually.");
+                    }
+                }
+            }
+
             Ok(())
         }
         Err(e) => {
@@ -82,8 +109,24 @@ pub fn run(target: Option<String>) -> Result<()> {
                 println!("{} Rebase conflict detected.", style("!").yellow().bold());
                 println!("  Resolve conflicts, then run `gg continue`");
                 println!("  Or run `gg abort` to cancel the rebase");
+
+                if needs_stash {
+                    println!(
+                        "  {}",
+                        style("Note: Your uncommitted changes are stashed. They will be restored after the rebase completes.").dim()
+                    );
+                }
+
                 Err(GgError::RebaseConflict)
             } else {
+                // On other errors, try to restore stash
+                if needs_stash {
+                    println!(
+                        "{}",
+                        style("Attempting to restore stashed changes...").dim()
+                    );
+                    let _ = git::run_git_command(&["stash", "pop"]);
+                }
                 Err(e)
             }
         }

@@ -20,6 +20,10 @@ pub struct Defaults {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
 
+    /// GitLab-specific defaults
+    #[serde(default, skip_serializing_if = "GitLabDefaults::is_default")]
+    pub gitlab: GitLabDefaults,
+
     /// Base branch name (default: auto-detect main/master/trunk)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
@@ -55,6 +59,21 @@ fn is_true(b: &bool) -> bool {
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+/// GitLab-specific default settings
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct GitLabDefaults {
+    /// When landing, request GitLab to auto-merge the MR when the pipeline succeeds
+    /// ("merge when pipeline succeeds") instead of attempting an immediate merge.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub auto_merge_on_land: bool,
+}
+
+impl GitLabDefaults {
+    fn is_default(this: &GitLabDefaults) -> bool {
+        this == &GitLabDefaults::default()
+    }
 }
 
 /// Per-stack configuration
@@ -170,6 +189,11 @@ impl Config {
     /// Get whether to auto-clean after landing all PRs/MRs (default: false)
     pub fn get_land_auto_clean(&self) -> bool {
         self.defaults.land_auto_clean
+    }
+
+    /// Get whether GitLab auto-merge-on-land is enabled by default (default: false)
+    pub fn get_gitlab_auto_merge_on_land(&self) -> bool {
+        self.defaults.gitlab.auto_merge_on_land
     }
 }
 
@@ -306,4 +330,39 @@ mod tests {
             "provider should not be serialized when None"
         );
     }
+
+    #[test]
+    fn test_gitlab_auto_merge_on_land_default_is_false() {
+        let config = Config::default();
+        assert!(!config.get_gitlab_auto_merge_on_land());
+    }
+
+    #[test]
+    fn test_gitlab_auto_merge_on_land_roundtrip() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_dir = temp_dir.path();
+
+        let mut config = Config::default();
+        config.defaults.gitlab.auto_merge_on_land = true;
+        config.save(git_dir).unwrap();
+
+        let loaded = Config::load(git_dir).unwrap();
+        assert!(loaded.get_gitlab_auto_merge_on_land());
+    }
+
+    #[test]
+    fn test_gitlab_defaults_not_serialized_when_default() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_dir = temp_dir.path();
+
+        let config = Config::default();
+        config.save(git_dir).unwrap();
+
+        let contents = std::fs::read_to_string(Config::config_path(git_dir)).unwrap();
+        assert!(
+            !contents.contains("gitlab"),
+            "gitlab defaults should not be serialized when default"
+        );
+    }
 }
+

@@ -122,6 +122,10 @@ enum Commands {
         #[arg(short, long)]
         all: bool,
 
+        /// (GitLab only) Request auto-merge ("merge when pipeline succeeds") instead of merging immediately
+        #[arg(long)]
+        auto_merge: bool,
+
         /// Disable squash when merging (default: squash enabled)
         #[arg(long = "no-squash")]
         no_squash: bool,
@@ -240,6 +244,7 @@ fn main() {
         }
         Some(Commands::Land {
             all,
+            auto_merge,
             no_squash,
             wait,
             clean,
@@ -260,7 +265,7 @@ fn main() {
                 }
             };
 
-            commands::land::run(all, !no_squash, wait, auto_clean)
+            commands::land::run(all, !no_squash, wait, auto_clean, auto_merge)
         }
         Some(Commands::Clean { all }) => commands::clean::run(all),
         Some(Commands::Rebase { target }) => commands::rebase::run(target),

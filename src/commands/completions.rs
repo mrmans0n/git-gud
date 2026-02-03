@@ -60,8 +60,21 @@ enum Commands {
     Land {
         #[arg(short, long)]
         all: bool,
+
+        #[arg(long)]
+        auto_merge: bool,
+
+        #[arg(long = "no-squash")]
+        no_squash: bool,
+
         #[arg(short, long)]
-        squash: bool,
+        wait: bool,
+
+        #[arg(short, long, conflicts_with = "no_clean")]
+        clean: bool,
+
+        #[arg(long = "no-clean", conflicts_with = "clean")]
+        no_clean: bool,
     },
     #[command(name = "clean")]
     Clean {

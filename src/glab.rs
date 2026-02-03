@@ -415,6 +415,42 @@ pub fn merge_mr(mr_number: u64, squash: bool, delete_branch: bool) -> Result<()>
     Ok(())
 }
 
+/// Request GitLab to auto-merge an MR when the pipeline succeeds.
+///
+/// This sets GitLab's "merge when pipeline succeeds" flag via the API.
+///
+/// Note: this does not wait for the pipeline; it only queues the merge.
+pub fn auto_merge_mr_when_pipeline_succeeds(
+    mr_number: u64,
+    squash: bool,
+    delete_branch: bool,
+) -> Result<()> {
+    let output = Command::new("glab")
+        .args([
+            "api",
+            "--method",
+            "PUT",
+            &format!("projects/:id/merge_requests/{}/merge", mr_number),
+            "-f",
+            "merge_when_pipeline_succeeds=true",
+            "-f",
+            &format!("should_remove_source_branch={}", if delete_branch { "true" } else { "false" }),
+            "-f",
+            &format!("squash={}", if squash { "true" } else { "false" }),
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::GlabError(format!(
+            "Failed to request auto-merge for MR !{}: {}",
+            mr_number, stderr
+        )));
+    }
+
+    Ok(())
+}
+
 /// Check approvals for an MR
 pub fn check_mr_approved(mr_number: u64) -> Result<bool> {
     // Use glab api to check approvals

@@ -44,6 +44,13 @@ pub enum GgError {
     #[error("Invalid PR number: {0}")]
     InvalidPrNumber(String),
 
+    #[error("Push failed for branch {branch}")]
+    PushFailed {
+        branch: String,
+        hook_error: Option<String>,
+        git_error: Option<String>,
+    },
+
     #[error("Command '{0}' failed: {1}")]
     Command(String, String),
 

@@ -94,18 +94,39 @@ pub fn run(
     let git_dir = repo.path();
     let mut config = Config::load(git_dir)?;
 
-    // Run lint if requested
+    // Load stack early to validate --until
+    let initial_stack = Stack::load(&repo, &config)?;
+    if initial_stack.is_empty() {
+        println!("{}", style("Stack is empty. Nothing to sync.").dim());
+        return Ok(());
+    }
+
+    // Validate --until parameter early (before provider checks and network calls)
+    let lint_end_pos = if let Some(ref target) = until {
+        Some(resolve_target(&initial_stack, target)?)
+    } else {
+        None
+    };
+
+    // Detect and check provider
+    let provider = Provider::detect(&repo)?;
+    provider.check_installed()?;
+    provider.check_auth()?;
+
+    // Fetch from remote to ensure we have up-to-date refs
+    let _ = git::fetch_and_prune();
+
+    // Run lint ONCE if requested (before GG-ID addition loop)
     if run_lint {
+        let end_pos = lint_end_pos.unwrap_or(initial_stack.len());
         println!("{}", console::style("Running lint before sync...").dim());
-        // Run lint on all commits in the stack (None = lint all)
-        crate::commands::lint::run(None)?;
+        crate::commands::lint::run(Some(end_pos))?;
         println!();
     }
 
-    // Load current stack early to validate --until before doing expensive remote operations
-    // Use a loop to handle GG-ID addition + re-sync without recursive calls
-    // This ensures the operation lock is held for the entire operation
-    let mut stack = loop {
+    // Now handle GG-ID addition in a loop (lint may have changed commits)
+    // This loop ensures the operation lock is held for the entire operation
+    let stack = loop {
         let stack = Stack::load(&repo, &config)?;
 
         if stack.is_empty() {
@@ -113,9 +134,8 @@ pub fn run(
             return Ok(());
         }
 
-        // Validate --until parameter early (before provider checks and network calls)
+        // Re-validate --until against potentially updated stack
         if let Some(ref target) = until {
-            // This will return an error if the target is invalid
             resolve_target(&stack, target)?;
         }
 
@@ -208,49 +228,6 @@ pub fn run(
         // Loop continues: reload stack and check for any remaining missing GG-IDs
         // (or proceed to sync if all commits now have GG-IDs)
     };
-
-    // Run lint if requested
-    if run_lint {
-        println!("{}", console::style("Running lint before sync...").dim());
-        // Run lint on all commits in the stack (None = lint all)
-        crate::commands::lint::run(None)?;
-        println!();
-    }
-
-    // Now that we have a valid stack and --until is validated, check provider and fetch
-    let provider = Provider::detect(&repo)?;
-    provider.check_installed()?;
-    provider.check_auth()?;
-
-    // Fetch from remote to ensure we have up-to-date refs
-    // This prevents "stale info" errors when remote branches were deleted (e.g., after merge)
-    let _ = git::fetch_and_prune();
-
-    // Run lint if requested
-    if run_lint {
-        // Determine how far to lint (match --until if provided)
-        let lint_end_pos = if let Some(ref target) = until {
-            resolve_target(&stack, target)?
-        } else {
-            stack.len()
-        };
-
-        println!("{}", console::style("Running lint before sync...").dim());
-        crate::commands::lint::run(Some(lint_end_pos))?;
-        println!();
-
-        // Lint may have amended commits; reload stack before proceeding
-        stack = Stack::load(&repo, &config)?;
-        if stack.is_empty() {
-            println!("{}", style("Stack is empty. Nothing to sync.").dim());
-            return Ok(());
-        }
-
-        // Re-validate --until against the updated stack
-        if let Some(ref target) = until {
-            resolve_target(&stack, target)?;
-        }
-    }
 
     // Determine sync range based on --until flag
     let sync_until = if let Some(ref target) = until {

@@ -12,7 +12,7 @@ use crate::error::{GgError, Result};
 use crate::git;
 use crate::glab::AutoMergeResult;
 use crate::provider::{CiStatus, PrState, Provider};
-use crate::stack::Stack;
+use crate::stack::{resolve_target, Stack};
 
 /// Polling interval (10 seconds)
 const POLL_INTERVAL_SECS: u64 = 10;
@@ -76,6 +76,7 @@ pub fn run(
     wait: bool,
     auto_clean: bool,
     auto_merge_flag: bool,
+    until: Option<String>,
 ) -> Result<()> {
     let repo = git::open_repo()?;
 
@@ -122,6 +123,20 @@ pub fn run(
     );
     stack.refresh_mr_info(&provider)?;
 
+    let land_until = if let Some(ref target) = until {
+        Some(resolve_target(&stack, target)?)
+    } else {
+        None
+    };
+
+    let entries_to_land = if let Some(end_pos) = land_until {
+        &stack.entries[..end_pos]
+    } else {
+        &stack.entries[..]
+    };
+
+    let land_multiple = land_all || land_until.is_some();
+
     // Set up Ctrl+C handler if waiting
     let interrupted = if wait {
         let flag = Arc::new(AtomicBool::new(false));
@@ -140,7 +155,7 @@ pub fn run(
     // Find landable PRs (approved, open, from the start of the stack)
     let mut landed_count = 0;
 
-    for entry in &stack.entries {
+    for entry in entries_to_land {
         // Check if interrupted
         if let Some(ref flag) = interrupted {
             if flag.load(Ordering::SeqCst) {
@@ -251,7 +266,7 @@ pub fn run(
         }
 
         // PR/MR is approved and open - land it
-        if !land_all && !wait {
+        if !land_multiple && !wait {
             let confirm = Confirm::new()
                 .with_prompt(format!(
                     "Merge {} {}{} ({})? ",
@@ -407,7 +422,14 @@ pub fn run(
                         stack.base
                     );
                     landed_count += 1;
-                    cleanup_after_merge(&mut config, &stack, &provider, gg_id, pr_num, land_all);
+                    cleanup_after_merge(
+                        &mut config,
+                        &stack,
+                        &provider,
+                        gg_id,
+                        pr_num,
+                        land_multiple,
+                    );
                 }
                 Err(e) => {
                     println!(
@@ -429,7 +451,7 @@ pub fn run(
             break;
         }
 
-        if !land_all {
+        if !land_multiple {
             break;
         }
 

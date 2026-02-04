@@ -3014,7 +3014,10 @@ fn test_sync_until_by_sha() {
 
     // Get SHA of commit 1
     let (_, sha_output) = run_git(&repo_path, &["rev-parse", "HEAD"]);
-    let sha_prefix = sha_output.trim()[..7].to_string();
+    let sha = sha_output.trim();
+    let first_non_digit = sha.chars().position(|c| !c.is_ascii_digit()).unwrap_or(6);
+    let prefix_len = std::cmp::max(7, first_non_digit + 1);
+    let sha_prefix = sha[..prefix_len].to_string();
 
     // Commit 2 (with GG-ID)
     fs::write(repo_path.join("file2.txt"), "content2").expect("Failed to write file2");

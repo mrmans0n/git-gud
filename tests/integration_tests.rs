@@ -319,6 +319,24 @@ fn test_completions() {
     assert!(stdout.contains("complete") || stdout.contains("gg"));
 }
 
+#[test]
+fn test_wp_alias_for_clean() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Test that `gg wp --help` works and shows clean command help
+    let (success, stdout, _) = run_gg(&repo_path, &["wp", "--help"]);
+    assert!(success, "gg wp --help should succeed");
+    assert!(
+        stdout.contains("Clean up merged stacks"),
+        "wp should be an alias for clean: {}",
+        stdout
+    );
+
+    // Test that `gg wp` runs without error (same as `gg clean`)
+    let (success, _, _) = run_gg(&repo_path, &["wp"]);
+    assert!(success, "gg wp should succeed");
+}
+
 // ============================================================
 // Tests for bug fixes in PR #26
 // ============================================================

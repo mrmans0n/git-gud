@@ -144,7 +144,7 @@ enum Commands {
     },
 
     /// Clean up merged stacks
-    #[command(name = "clean")]
+    #[command(name = "clean", alias = "wp")]
     Clean {
         /// Clean all merged stacks without prompting
         #[arg(short, long)]

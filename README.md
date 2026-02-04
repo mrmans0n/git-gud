@@ -99,6 +99,9 @@ gg clean
 | `gg sync --draft` | Create new PRs/MRs as drafts |
 | `gg sync --force` | Force push even if remote diverged |
 | `gg sync --update-descriptions` | Update PR/MR titles and descriptions to match commit messages |
+| `gg sync --until <target>` | Sync only up to a specific commit (by position, GG-ID, or SHA) |
+
+**Draft propagation:** If a commit title starts with `WIP:` or `Draft:` (case-insensitive), that PR/MR and all subsequent ones in the stack are created/kept as drafts automatically (even without `--draft`).
 
 ### Navigation
 

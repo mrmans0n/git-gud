@@ -2792,3 +2792,247 @@ fn test_nav_requires_stack() {
     assert!(!success, "Nav prev should fail when not on a stack");
     assert!(stderr.contains("Not on a stack"));
 }
+
+#[test]
+fn test_sync_until_by_position() {
+    // Test sync --until with numeric position
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Setup config first
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create stack
+    run_gg(&repo_path, &["co", "test-until"]);
+
+    // Commit 1
+    fs::write(repo_path.join("file1.txt"), "content1").expect("Failed to write file1");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 1"]);
+
+    // Commit 2
+    fs::write(repo_path.join("file2.txt"), "content2").expect("Failed to write file2");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 2"]);
+
+    // Commit 3
+    fs::write(repo_path.join("file3.txt"), "content3").expect("Failed to write file3");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 3"]);
+
+    // List stack to verify 3 commits
+    let (success, stdout, _stderr) = run_gg(&repo_path, &["ls"]);
+    assert!(success, "gg ls should succeed");
+    assert!(
+        stdout.contains("[1]") && stdout.contains("[2]") && stdout.contains("[3]"),
+        "Stack should have 3 commits. stdout: {}",
+        stdout
+    );
+
+    // Test sync --until 2 - will fail on remote but shouldn't fail on parsing
+    let (_success, stdout, stderr) = run_gg(&repo_path, &["sync", "--until", "2"]);
+
+    // Should not fail with "Could not find commit matching" error
+    assert!(
+        !stderr.contains("Could not find commit matching"),
+        "Should parse --until position correctly. stderr: {}",
+        stderr
+    );
+
+    // Will fail on remote/provider, but that's expected and OK
+    assert!(
+        stdout.contains("2 commits")
+            || stderr.contains("provider")
+            || stderr.contains("remote")
+            || stderr.contains("origin"),
+        "Should either mention 2 commits or fail on provider/remote. stdout: {}, stderr: {}",
+        stdout,
+        stderr
+    );
+}
+
+#[test]
+fn test_sync_until_invalid_position() {
+    // Test sync --until with out-of-range position
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Setup config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create stack with 2 commits
+    run_gg(&repo_path, &["co", "test-invalid"]);
+
+    fs::write(repo_path.join("file1.txt"), "content1").expect("Failed to write file1");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 1"]);
+
+    fs::write(repo_path.join("file2.txt"), "content2").expect("Failed to write file2");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 2"]);
+
+    // Try sync --until 5 (out of range)
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["sync", "--until", "5"]);
+
+    assert!(!success, "Should fail with out-of-range position");
+    assert!(
+        stderr.contains("out of range") || stderr.contains("Position"),
+        "Should indicate position is out of range. stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_sync_until_by_sha() {
+    // Test sync --until with SHA prefix
+    // Important: ensure all commits have GG-IDs to avoid sync doing a rebase (which would change SHAs).
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Setup config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create stack with 2 commits
+    run_gg(&repo_path, &["co", "test-sha"]);
+
+    // Commit 1 (with GG-ID)
+    fs::write(repo_path.join("file1.txt"), "content1").expect("Failed to write file1");
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Commit 1\n\nGG-ID: c-aaaaaaa"],
+    );
+
+    // Get SHA of commit 1
+    let (_, sha_output) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    let sha_prefix = sha_output.trim()[..7].to_string();
+
+    // Commit 2 (with GG-ID)
+    fs::write(repo_path.join("file2.txt"), "content2").expect("Failed to write file2");
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Commit 2\n\nGG-ID: c-bbbbbbb"],
+    );
+
+    // Test sync --until <sha_prefix> (should sync only commit 1)
+    let (_success, stdout, stderr) = run_gg(&repo_path, &["sync", "--until", &sha_prefix]);
+
+    assert!(
+        !stderr.contains("Could not find commit matching"),
+        "Should find commit by SHA prefix. stderr: {}",
+        stderr
+    );
+
+    assert!(
+        stdout.contains("1 commit")
+            || stdout.contains("1 commits")
+            || stderr.contains("provider")
+            || stderr.contains("remote")
+            || stderr.contains("origin"),
+        "Should either mention 1 commit or fail on provider/remote. stdout: {}, stderr: {}",
+        stdout,
+        stderr
+    );
+}
+
+#[test]
+fn test_sync_until_by_gg_id() {
+    // Test sync --until with explicit GG-ID trailer
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Setup config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create stack with 2 commits
+    run_gg(&repo_path, &["co", "test-ggid"]);
+
+    // Commit 1 with fixed GG-ID
+    fs::write(repo_path.join("file1.txt"), "content1").expect("Failed to write file1");
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Commit 1\n\nGG-ID: c-abc1234"],
+    );
+
+    // Commit 2 with GG-ID as well to avoid rebase
+    fs::write(repo_path.join("file2.txt"), "content2").expect("Failed to write file2");
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Commit 2\n\nGG-ID: c-def5678"],
+    );
+
+    // Test sync --until c-abc1234 (should sync only commit 1)
+    let (_success, stdout, stderr) = run_gg(&repo_path, &["sync", "--until", "c-abc1234"]);
+
+    assert!(
+        !stderr.contains("Could not find commit matching"),
+        "Should find commit by GG-ID. stderr: {}",
+        stderr
+    );
+
+    assert!(
+        stdout.contains("1 commit")
+            || stdout.contains("1 commits")
+            || stderr.contains("provider")
+            || stderr.contains("remote")
+            || stderr.contains("origin"),
+        "Should either mention 1 commit or fail on provider/remote. stdout: {}, stderr: {}",
+        stdout,
+        stderr
+    );
+}
+
+#[test]
+fn test_sync_until_nonexistent_target() {
+    // Test sync --until with non-existent target
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Setup config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create stack with 1 commit
+    run_gg(&repo_path, &["co", "test-nonexistent"]);
+
+    fs::write(repo_path.join("file1.txt"), "content1").expect("Failed to write file1");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 1"]);
+
+    // Try sync --until with non-existent target
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["sync", "--until", "nonexistent"]);
+
+    assert!(!success, "Should fail with non-existent target");
+    assert!(
+        stderr.contains("Could not find commit matching"),
+        "Should indicate commit not found. stderr: {}",
+        stderr
+    );
+}

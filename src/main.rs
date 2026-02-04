@@ -81,6 +81,10 @@ enum Commands {
         /// Disable lint before sync (overrides config default)
         #[arg(long = "no-lint", conflicts_with = "lint")]
         no_lint: bool,
+
+        /// Sync only up to this commit (position, GG-ID, or SHA)
+        #[arg(short, long)]
+        until: Option<String>,
     },
 
     /// Move to a specific commit in the stack
@@ -242,6 +246,7 @@ fn main() {
             update_descriptions,
             lint,
             no_lint,
+            until,
         }) => {
             // Determine run_lint based on flags and config
             let run_lint = if lint {
@@ -258,7 +263,7 @@ fn main() {
                 }
             };
 
-            commands::sync::run(draft, force, update_descriptions, run_lint)
+            commands::sync::run(draft, force, update_descriptions, run_lint, until)
         }
         Some(Commands::Move { target }) => commands::nav::move_to(&target),
         Some(Commands::First) => commands::nav::first(),

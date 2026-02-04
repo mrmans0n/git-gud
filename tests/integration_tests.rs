@@ -101,6 +101,15 @@ fn test_gg_sync_help_has_update_descriptions() {
 }
 
 #[test]
+fn test_gg_land_help_has_until() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    let (success, stdout, _stderr) = run_gg(&repo_path, &["land", "--help"]);
+
+    assert!(success);
+    assert!(stdout.contains("--until"));
+}
+
+#[test]
 fn test_gg_version() {
     let (_temp_dir, repo_path) = create_test_repo();
     let (success, stdout, _stderr) = run_gg(&repo_path, &["--version"]);

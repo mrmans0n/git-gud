@@ -12,7 +12,7 @@ use crate::git::{
     strip_gg_id_from_message,
 };
 use crate::provider::Provider;
-use crate::stack::Stack;
+use crate::stack::{resolve_target, Stack};
 use crate::template::{self, TemplateContext};
 
 /// Format and display a push error with helpful context
@@ -459,38 +459,6 @@ pub fn run(
     );
 
     Ok(())
-}
-
-/// Resolve a target string (position, GG-ID, or SHA) to a position in the stack
-fn resolve_target(stack: &Stack, target: &str) -> Result<usize> {
-    // Try to parse target as position (1-indexed number)
-    if let Ok(pos) = target.parse::<usize>() {
-        if pos == 0 || pos > stack.len() {
-            return Err(GgError::Other(format!(
-                "Position {} is out of range (1-{})",
-                pos,
-                stack.len()
-            )));
-        }
-        return Ok(pos);
-    }
-
-    // Try to find by GG-ID
-    if let Some(entry) = stack.get_entry_by_gg_id(target) {
-        return Ok(entry.position);
-    }
-
-    // Try to find by SHA prefix
-    for entry in &stack.entries {
-        if entry.short_sha.starts_with(target) || entry.oid.to_string().starts_with(target) {
-            return Ok(entry.position);
-        }
-    }
-
-    Err(GgError::Other(format!(
-        "Could not find commit matching '{}' in stack",
-        target
-    )))
 }
 
 fn build_pr_payload(

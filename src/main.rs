@@ -146,6 +146,10 @@ enum Commands {
         #[arg(short, long)]
         wait: bool,
 
+        /// Land commits only up to this target (position, GG-ID, or SHA)
+        #[arg(short, long)]
+        until: Option<String>,
+
         /// Automatically clean up stack after landing all PRs/MRs
         #[arg(short, long, conflicts_with = "no_clean")]
         clean: bool,
@@ -279,6 +283,7 @@ fn main() {
             auto_merge,
             no_squash,
             wait,
+            until,
             clean,
             no_clean,
         }) => {
@@ -297,7 +302,7 @@ fn main() {
                 }
             };
 
-            commands::land::run(all, !no_squash, wait, auto_clean, auto_merge)
+            commands::land::run(all, !no_squash, wait, auto_clean, auto_merge, until)
         }
         Some(Commands::Clean { all }) => commands::clean::run(all),
         Some(Commands::Rebase { target }) => commands::rebase::run(target),

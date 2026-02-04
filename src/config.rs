@@ -49,6 +49,10 @@ pub struct Defaults {
     /// Automatically clean up stack after landing all PRs/MRs (default: false)
     #[serde(default, skip_serializing_if = "is_false")]
     pub land_auto_clean: bool,
+
+    /// Automatically run lint before sync (default: false)
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub sync_auto_lint: bool,
 }
 
 fn default_true() -> bool {
@@ -263,6 +267,11 @@ impl Config {
     pub fn get_gitlab_auto_merge_on_land(&self) -> bool {
         self.defaults.gitlab.auto_merge_on_land
     }
+
+    /// Get whether to auto-lint before sync (default: false)
+    pub fn get_sync_auto_lint(&self) -> bool {
+        self.defaults.sync_auto_lint
+    }
 }
 
 #[cfg(test)]
@@ -431,5 +440,32 @@ mod tests {
             !contents.contains("gitlab"),
             "gitlab defaults should not be serialized when default"
         );
+    }
+
+    #[test]
+    fn test_sync_auto_lint_default() {
+        let config = Config::default();
+        assert!(!config.get_sync_auto_lint());
+    }
+
+    #[test]
+    fn test_sync_auto_lint_enabled() {
+        let mut config = Config::default();
+        config.defaults.sync_auto_lint = true;
+        assert!(config.get_sync_auto_lint());
+    }
+
+    #[test]
+    fn test_sync_auto_lint_roundtrip() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_dir = temp_dir.path();
+
+        let mut config = Config::default();
+        config.defaults.sync_auto_lint = true;
+
+        config.save(git_dir).unwrap();
+
+        let loaded = Config::load(git_dir).unwrap();
+        assert!(loaded.get_sync_auto_lint());
     }
 }

@@ -73,6 +73,14 @@ enum Commands {
         /// Update PR/MR titles and descriptions to match commit messages
         #[arg(long)]
         update_descriptions: bool,
+
+        /// Run lint before sync
+        #[arg(short, long, conflicts_with = "no_lint")]
+        lint: bool,
+
+        /// Disable lint before sync (overrides config default)
+        #[arg(long = "no-lint", conflicts_with = "lint")]
+        no_lint: bool,
     },
 
     /// Move to a specific commit in the stack
@@ -232,7 +240,26 @@ fn main() {
             draft,
             force,
             update_descriptions,
-        }) => commands::sync::run(draft, force, update_descriptions),
+            lint,
+            no_lint,
+        }) => {
+            // Determine run_lint based on flags and config
+            let run_lint = if lint {
+                // --lint explicitly passed
+                true
+            } else if no_lint {
+                // --no-lint explicitly passed
+                false
+            } else {
+                // No explicit flag, use config default
+                match git::open_repo().and_then(|repo| config::Config::load(repo.path())) {
+                    Ok(cfg) => cfg.get_sync_auto_lint(),
+                    Err(_) => false, // If we can't load config, default to false
+                }
+            };
+
+            commands::sync::run(draft, force, update_descriptions, run_lint)
+        }
         Some(Commands::Move { target }) => commands::nav::move_to(&target),
         Some(Commands::First) => commands::nav::first(),
         Some(Commands::Last) => commands::nav::last(),

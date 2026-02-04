@@ -10,6 +10,8 @@ use crate::git;
 use crate::provider::Provider;
 use crate::stack;
 
+use std::collections::HashSet;
+
 /// Run the checkout command
 pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
     let repo = git::open_repo()?;
@@ -137,6 +139,22 @@ pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
             // Checkout the branch
             git::checkout_branch(&repo, &local_branch)?;
 
+            // Import PR mappings from remote
+            if let Err(e) =
+                import_pr_mappings_for_remote_stack(&repo, &mut config, &username, &stack_name)
+            {
+                println!(
+                    "{} Could not import PR mappings: {}",
+                    style("Warning:").yellow(),
+                    e
+                );
+                println!(
+                    "{}",
+                    style("Continuing without PR mappings. Run `gg sync` to create/update PRs.")
+                        .dim()
+                );
+            }
+
             println!(
                 "{} Checked out remote stack {}",
                 style("OK").green().bold(),
@@ -242,4 +260,102 @@ fn check_remote_stack_exists(repo: &git2::Repository, username: &str, stack_name
     }
 
     false
+}
+
+/// Import PR/MR mappings for a remote stack by querying the provider
+/// This is called after checking out a remote stack to populate the local config
+/// with existing PR/MR numbers, preventing "PR already exists" errors on sync.
+fn import_pr_mappings_for_remote_stack(
+    repo: &git2::Repository,
+    config: &mut Config,
+    username: &str,
+    stack_name: &str,
+) -> Result<()> {
+    // Detect and check provider
+    let provider = Provider::detect(repo)?;
+
+    // Only attempt to import if provider tools are installed and authenticated
+    // If they're not, just skip silently - sync will handle it later
+    if provider.check_installed().is_err() || provider.check_auth().is_err() {
+        return Ok(());
+    }
+
+    let git_dir = repo.path();
+    let mut imported_count = 0;
+    let mut skipped_branches: HashSet<String> = HashSet::new();
+
+    // Find all entry branches for this stack (both local and remote)
+    let branches = repo.branches(None)?;
+
+    for branch_result in branches {
+        let (branch, branch_type) = branch_result?;
+        let branch_name = match branch.name()? {
+            Some(name) => name,
+            None => continue,
+        };
+
+        // Parse the branch name to extract username, stack name, and GG-ID
+        let parsed = match branch_type {
+            BranchType::Local => git::parse_entry_branch(branch_name),
+            BranchType::Remote => {
+                // Strip "origin/" prefix for remote branches
+                branch_name
+                    .strip_prefix("origin/")
+                    .and_then(git::parse_entry_branch)
+            }
+        };
+
+        let (branch_user, branch_stack, gg_id) = match parsed {
+            Some(p) => p,
+            None => continue,
+        };
+
+        // Only process branches for this specific stack
+        if branch_user != username || branch_stack != stack_name {
+            continue;
+        }
+
+        // Check if we already have a mapping for this GG-ID
+        if config.get_mr_for_entry(stack_name, &gg_id).is_some() {
+            continue;
+        }
+
+        // Query the provider for PRs on this branch
+        // Use the branch name without "origin/" prefix
+        let query_branch = match branch_type {
+            BranchType::Local => branch_name.to_string(),
+            BranchType::Remote => branch_name
+                .strip_prefix("origin/")
+                .unwrap_or(branch_name)
+                .to_string(),
+        };
+
+        match provider.list_prs_for_branch(&query_branch) {
+            Ok(pr_numbers) => {
+                if let Some(&pr_number) = pr_numbers.first() {
+                    // Save the mapping
+                    config.set_mr_for_entry(stack_name, &gg_id, pr_number);
+                    imported_count += 1;
+                }
+            }
+            Err(_) => {
+                // If we can't query this branch, just skip it
+                // This might happen if the branch doesn't exist remotely yet
+                skipped_branches.insert(query_branch);
+            }
+        }
+    }
+
+    if imported_count > 0 {
+        // Save config with new mappings
+        config.save(git_dir)?;
+        println!(
+            "{} Imported {} PR mapping(s) for stack {}",
+            style("→").cyan(),
+            imported_count,
+            style(stack_name).cyan()
+        );
+    }
+
+    Ok(())
 }

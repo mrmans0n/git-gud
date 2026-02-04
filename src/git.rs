@@ -321,6 +321,14 @@ pub fn checkout_branch(repo: &Repository, branch_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Move a branch to point at the current HEAD commit
+pub fn move_branch_to_head(repo: &Repository, branch_name: &str) -> Result<()> {
+    let head_oid = repo.head()?.peel_to_commit()?.id();
+    let mut reference = repo.find_reference(&format!("refs/heads/{}", branch_name))?;
+    reference.set_target(head_oid, "gg lint: update branch")?;
+    Ok(())
+}
+
 /// Checkout a specific commit (detached HEAD)
 pub fn checkout_commit(repo: &Repository, commit: &Commit) -> Result<()> {
     let obj = commit.as_object();

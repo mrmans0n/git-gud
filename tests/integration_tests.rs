@@ -1121,6 +1121,58 @@ fn test_lint_restores_position_on_command_not_found() {
 }
 
 #[test]
+fn test_lint_restores_branch_after_changes() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config with a lint command that modifies files
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","lint":["./lint.sh"]}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with a commit
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "lint-change-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("test.txt"), "content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Test commit"]);
+
+    // Create a lint script that modifies the file
+    fs::write(
+        repo_path.join("lint.sh"),
+        "#!/bin/sh\necho \"linted\" >> test.txt\n",
+    )
+    .expect("Failed to write lint script");
+    Command::new("chmod")
+        .args(["+x", "lint.sh"])
+        .current_dir(&repo_path)
+        .output()
+        .expect("Failed to chmod lint script");
+
+    // Remember the original branch
+    let (_, original_branch) = run_git(&repo_path, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    let original_branch = original_branch.trim();
+
+    // Run lint - should succeed and restore branch
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["lint"]);
+    assert!(success, "Lint should succeed: {}", stderr);
+
+    let (_, current_branch) = run_git(&repo_path, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    assert_eq!(
+        current_branch.trim(),
+        original_branch,
+        "Should return to stack branch after lint changes"
+    );
+
+    let content = fs::read_to_string(repo_path.join("test.txt")).expect("Failed to read file");
+    assert!(content.contains("linted"), "Lint changes should be applied");
+}
+
+#[test]
 fn test_lint_error_message_for_shell_alias() {
     let (_temp_dir, repo_path) = create_test_repo();
 

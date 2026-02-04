@@ -177,8 +177,11 @@ fn run_lint_on_commits(
     println!();
     if let Some(branch) = original_branch {
         if had_changes {
-            // If we made changes, we need to rebase the remaining commits
-            // This is complex - for now, stay at the last linted commit
+            if end_pos == stack.len() {
+                git::move_branch_to_head(repo, &branch)?;
+                git::checkout_branch(repo, &branch)?;
+            }
+
             println!(
                 "{}",
                 style("Lint made changes. Review with `gg ls` and sync with `gg sync`.").dim()

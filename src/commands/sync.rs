@@ -15,6 +15,69 @@ use crate::provider::Provider;
 use crate::stack::Stack;
 use crate::template::{self, TemplateContext};
 
+/// Format and display a push error with helpful context
+fn format_push_error(error: &GgError, branch_name: &str) {
+    match error {
+        GgError::PushFailed {
+            branch,
+            hook_error,
+            git_error,
+        } => {
+            println!();
+            println!(
+                "{} Push failed for {}",
+                style("✗").red().bold(),
+                style(branch).cyan()
+            );
+            println!();
+
+            // Display hook error if present
+            if let Some(hook_msg) = hook_error {
+                println!("{}", style("Pre-push hook failed:").yellow().bold());
+
+                // Indent the hook error output
+                for line in hook_msg.lines() {
+                    println!("  {}", line);
+                }
+                println!();
+
+                println!("{}", style("Suggestion:").cyan().bold());
+                println!("  Fix the issue, then retry {}", style("`gg sync`").green());
+            }
+
+            // Display git error if present (and different from hook error)
+            if let Some(git_msg) = git_error {
+                if hook_error.is_none() {
+                    // No hook error, so this is the main issue
+                    println!("{}", style("Git error:").red().bold());
+                    for line in git_msg.lines() {
+                        println!("  {}", line);
+                    }
+                    println!();
+                }
+            }
+
+            // If no specific errors were captured, show generic message
+            if hook_error.is_none() && git_error.is_none() {
+                println!("  The push command failed without a clear error message.");
+                println!("  This might be due to network issues or server-side hooks.");
+                println!();
+            }
+        }
+        _ => {
+            // For other error types, show the error as-is
+            println!();
+            println!(
+                "{} Push failed for {}: {}",
+                style("✗").red().bold(),
+                style(branch_name).cyan(),
+                error
+            );
+            println!();
+        }
+    }
+}
+
 /// Run the sync command
 pub fn run(draft: bool, force: bool, update_descriptions: bool) -> Result<()> {
     let repo = git::open_repo()?;
@@ -172,7 +235,8 @@ pub fn run(draft: bool, force: bool, update_descriptions: bool) -> Result<()> {
         // If --force is passed, use hard force as an escape hatch
         let push_result = git::push_branch(&entry_branch, true, force);
         if let Err(e) = push_result {
-            pb.abandon_with_message(format!("Failed to push {}: {}", entry_branch, e));
+            pb.finish_and_clear();
+            format_push_error(&e, &entry_branch);
             return Err(e);
         }
 

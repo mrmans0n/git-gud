@@ -383,63 +383,117 @@ pub fn push_branch(branch_name: &str, force_with_lease: bool, hard_force: bool) 
         args.insert(1, "--force-with-lease");
     }
 
-    let result = run_git_command(&args);
+    let output = Command::new("git").args(&args).output()?;
 
-    // If force-with-lease failed with "stale info", prompt user for confirmation
-    // SAFETY: Never automatically retry with --force to prevent data loss
-    if let Err(ref e) = result {
-        let err_msg = e.to_string();
-        if force_with_lease && !hard_force && err_msg.contains("stale info") {
-            // Check if we're in a non-interactive environment
-            if !atty::is(atty::Stream::Stdin) {
-                return Err(GgError::Other(format!(
-                    "Remote branch '{}' has been updated since your last fetch.\n\
-                     This could mean someone else has pushed changes.\n\
-                     \n\
-                     To proceed safely:\n\
-                     1. Run 'git fetch origin'\n\
-                     2. Review the changes\n\
-                     3. Run 'gg sync' again\n\
-                     \n\
-                     If you're certain you want to overwrite remote changes, run with --force flag.",
-                    branch_name
-                )));
-            }
+    if output.status.success() {
+        return Ok(());
+    }
 
-            // In interactive mode, prompt user for confirmation
-            use dialoguer::Confirm;
-            eprintln!(
-                "\n{} Remote branch '{}' has been updated since your last fetch.",
-                console::style("Warning:").yellow().bold(),
+    // Push failed - parse stderr for better error messages
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr_str = stderr.trim();
+
+    // Check for "stale info" error (force-with-lease conflict)
+    if force_with_lease && !hard_force && stderr_str.contains("stale info") {
+        // Check if we're in a non-interactive environment
+        if !atty::is(atty::Stream::Stdin) {
+            return Err(GgError::Other(format!(
+                "Remote branch '{}' has been updated since your last fetch.\n\
+                 This could mean someone else has pushed changes.\n\
+                 \n\
+                 To proceed safely:\n\
+                 1. Run 'git fetch origin'\n\
+                 2. Review the changes\n\
+                 3. Run 'gg sync' again\n\
+                 \n\
+                 If you're certain you want to overwrite remote changes, run with --force flag.",
                 branch_name
-            );
-            eprintln!("This could mean someone else has pushed changes to this branch.");
-            eprintln!();
+            )));
+        }
 
-            let should_force = Confirm::new()
-                .with_prompt(format!(
-                    "Do you want to force-push and overwrite remote changes on '{}'?",
-                    branch_name
-                ))
-                .default(false)
-                .interact()
-                .unwrap_or(false);
+        // In interactive mode, prompt user for confirmation
+        use dialoguer::Confirm;
+        eprintln!(
+            "\n{} Remote branch '{}' has been updated since your last fetch.",
+            console::style("Warning:").yellow().bold(),
+            branch_name
+        );
+        eprintln!("This could mean someone else has pushed changes to this branch.");
+        eprintln!();
 
-            if !should_force {
-                return Err(GgError::Other(
-                    "Push cancelled. Run 'git fetch origin' to update your local state."
-                        .to_string(),
-                ));
+        let should_force = Confirm::new()
+            .with_prompt(format!(
+                "Do you want to force-push and overwrite remote changes on '{}'?",
+                branch_name
+            ))
+            .default(false)
+            .interact()
+            .unwrap_or(false);
+
+        if !should_force {
+            return Err(GgError::Other(
+                "Push cancelled. Run 'git fetch origin' to update your local state.".to_string(),
+            ));
+        }
+
+        // User confirmed, proceed with force push
+        eprintln!("{}", console::style("Force-pushing...").dim());
+        let retry_args = vec!["push", "--force", "origin", branch_name];
+        return run_git_command(&retry_args).map(|_| ());
+    }
+
+    // Parse stderr to extract hook errors vs git errors
+    let (hook_error, git_error) = parse_push_error(stderr_str);
+
+    Err(GgError::PushFailed {
+        branch: branch_name.to_string(),
+        hook_error,
+        git_error,
+    })
+}
+
+/// Parse git push stderr to separate hook errors from git errors
+fn parse_push_error(stderr: &str) -> (Option<String>, Option<String>) {
+    let lines: Vec<&str> = stderr.lines().collect();
+
+    // Look for pre-push hook output (usually appears before "error: failed to push")
+    // Hook output typically doesn't start with "error:" or "remote:"
+    let mut hook_lines = Vec::new();
+    let mut git_lines = Vec::new();
+
+    for line in lines {
+        let trimmed = line.trim();
+
+        // Skip empty lines
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Git error messages typically start with "error:" or "remote:"
+        if trimmed.starts_with("error:") || trimmed.starts_with("remote:") {
+            // Skip the generic "failed to push some refs" message (it's redundant)
+            if !trimmed.contains("failed to push some refs") {
+                git_lines.push(trimmed);
             }
-
-            // User confirmed, proceed with force push
-            eprintln!("{}", console::style("Force-pushing...").dim());
-            let retry_args = vec!["push", "--force", "origin", branch_name];
-            return run_git_command(&retry_args).map(|_| ());
+        } else {
+            // Assume this is hook output
+            hook_lines.push(trimmed);
         }
     }
 
-    result.map(|_| ())
+    let hook_error = if hook_lines.is_empty() {
+        None
+    } else {
+        Some(hook_lines.join("\n"))
+    };
+
+    let git_error = if git_lines.is_empty() {
+        None
+    } else {
+        Some(git_lines.join("\n"))
+    };
+
+    (hook_error, git_error)
 }
 
 /// Delete a remote branch
@@ -830,6 +884,60 @@ mod tests {
         let id = generate_gg_id();
         assert!(id.starts_with("c-"));
         assert_eq!(id.len(), 9); // "c-" + 7 chars
+    }
+
+    #[test]
+    fn test_parse_push_error_with_hook() {
+        let stderr = "😢 ktlint found style violations in Kotlin code.\nerror: failed to push some refs to 'gitlab.example.com:user/repo.git'";
+        let (hook_error, git_error) = parse_push_error(stderr);
+
+        assert!(hook_error.is_some());
+        assert_eq!(
+            hook_error.unwrap(),
+            "😢 ktlint found style violations in Kotlin code."
+        );
+        assert!(git_error.is_none()); // Generic "failed to push" is filtered out
+    }
+
+    #[test]
+    fn test_parse_push_error_hook_only() {
+        let stderr = "Pre-push hook failed\nSome detailed error message";
+        let (hook_error, git_error) = parse_push_error(stderr);
+
+        assert!(hook_error.is_some());
+        assert!(hook_error.unwrap().contains("Pre-push hook failed"));
+        assert!(git_error.is_none());
+    }
+
+    #[test]
+    fn test_parse_push_error_git_only() {
+        let stderr = "error: failed to push some refs to 'origin'\nremote: Permission denied";
+        let (hook_error, git_error) = parse_push_error(stderr);
+
+        assert!(hook_error.is_none());
+        assert!(git_error.is_some());
+        assert_eq!(git_error.unwrap(), "remote: Permission denied");
+    }
+
+    #[test]
+    fn test_parse_push_error_both() {
+        let stderr =
+            "Hook output line 1\nHook output line 2\nerror: some git error\nremote: remote error";
+        let (hook_error, git_error) = parse_push_error(stderr);
+
+        assert!(hook_error.is_some());
+        assert!(hook_error.unwrap().contains("Hook output line 1"));
+        assert!(git_error.is_some());
+        assert!(git_error.unwrap().contains("some git error"));
+    }
+
+    #[test]
+    fn test_parse_push_error_empty() {
+        let stderr = "";
+        let (hook_error, git_error) = parse_push_error(stderr);
+
+        assert!(hook_error.is_none());
+        assert!(git_error.is_none());
     }
 }
 

@@ -207,6 +207,28 @@ pub fn get_pr_info(pr_number: u64) -> Result<PrInfo> {
     view_pr(pr_number)
 }
 
+/// Convert an existing PR to draft (GitHub only)
+pub fn convert_pr_to_draft(pr_number: u64) -> Result<()> {
+    let output = Command::new("gh")
+        .args(["pr", "ready", "--undo", &pr_number.to_string()])
+        .output()?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Best-effort: if it's already a draft, gh may still return a non-zero status in some cases.
+    if stderr.to_lowercase().contains("already") && stderr.to_lowercase().contains("draft") {
+        return Ok(());
+    }
+
+    Err(GgError::Other(format!(
+        "Failed to convert PR #{} to draft: {}",
+        pr_number, stderr
+    )))
+}
+
 /// Update PR base branch
 pub fn update_pr_base(pr_number: u64, base_branch: &str) -> Result<()> {
     let output = Command::new("gh")

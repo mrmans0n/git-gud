@@ -79,7 +79,13 @@ fn format_push_error(error: &GgError, branch_name: &str) {
 }
 
 /// Run the sync command
-pub fn run(draft: bool, force: bool, update_descriptions: bool, run_lint: bool) -> Result<()> {
+pub fn run(
+    draft: bool,
+    force: bool,
+    update_descriptions: bool,
+    run_lint: bool,
+    until: Option<String>,
+) -> Result<()> {
     let repo = git::open_repo()?;
 
     // Acquire operation lock to prevent concurrent operations
@@ -87,15 +93,6 @@ pub fn run(draft: bool, force: bool, update_descriptions: bool, run_lint: bool) 
 
     let git_dir = repo.path();
     let mut config = Config::load(git_dir)?;
-
-    // Detect and check provider
-    let provider = Provider::detect(&repo)?;
-    provider.check_installed()?;
-    provider.check_auth()?;
-
-    // Fetch from remote to ensure we have up-to-date refs
-    // This prevents "stale info" errors when remote branches were deleted (e.g., after merge)
-    let _ = git::fetch_and_prune();
 
     // Run lint if requested
     if run_lint {
@@ -105,15 +102,21 @@ pub fn run(draft: bool, force: bool, update_descriptions: bool, run_lint: bool) 
         println!();
     }
 
-    // Load current stack
+    // Load current stack early to validate --until before doing expensive remote operations
     // Use a loop to handle GG-ID addition + re-sync without recursive calls
     // This ensures the operation lock is held for the entire operation
-    let stack = loop {
+    let mut stack = loop {
         let stack = Stack::load(&repo, &config)?;
 
         if stack.is_empty() {
             println!("{}", style("Stack is empty. Nothing to sync.").dim());
             return Ok(());
+        }
+
+        // Validate --until parameter early (before provider checks and network calls)
+        if let Some(ref target) = until {
+            // This will return an error if the target is invalid
+            resolve_target(&stack, target)?;
         }
 
         // Check for missing GG-IDs
@@ -206,11 +209,67 @@ pub fn run(draft: bool, force: bool, update_descriptions: bool, run_lint: bool) 
         // (or proceed to sync if all commits now have GG-IDs)
     };
 
+    // Run lint if requested
+    if run_lint {
+        println!("{}", console::style("Running lint before sync...").dim());
+        // Run lint on all commits in the stack (None = lint all)
+        crate::commands::lint::run(None)?;
+        println!();
+    }
+
+    // Now that we have a valid stack and --until is validated, check provider and fetch
+    let provider = Provider::detect(&repo)?;
+    provider.check_installed()?;
+    provider.check_auth()?;
+
+    // Fetch from remote to ensure we have up-to-date refs
+    // This prevents "stale info" errors when remote branches were deleted (e.g., after merge)
+    let _ = git::fetch_and_prune();
+
+    // Run lint if requested
+    if run_lint {
+        // Determine how far to lint (match --until if provided)
+        let lint_end_pos = if let Some(ref target) = until {
+            resolve_target(&stack, target)?
+        } else {
+            stack.len()
+        };
+
+        println!("{}", console::style("Running lint before sync...").dim());
+        crate::commands::lint::run(Some(lint_end_pos))?;
+        println!();
+
+        // Lint may have amended commits; reload stack before proceeding
+        stack = Stack::load(&repo, &config)?;
+        if stack.is_empty() {
+            println!("{}", style("Stack is empty. Nothing to sync.").dim());
+            return Ok(());
+        }
+
+        // Re-validate --until against the updated stack
+        if let Some(ref target) = until {
+            resolve_target(&stack, target)?;
+        }
+    }
+
+    // Determine sync range based on --until flag
+    let sync_until = if let Some(ref target) = until {
+        Some(resolve_target(&stack, target)?)
+    } else {
+        None
+    };
+
+    let entries_to_sync = if let Some(end_pos) = sync_until {
+        &stack.entries[..end_pos]
+    } else {
+        &stack.entries[..]
+    };
+
     // Load optional PR template
     let pr_template = template::load_template(git_dir);
 
     // Sync progress
-    let pb = ProgressBar::new(stack.len() as u64);
+    let pb = ProgressBar::new(entries_to_sync.len() as u64);
     pb.set_style(
         ProgressStyle::default_bar()
             .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
@@ -219,12 +278,28 @@ pub fn run(draft: bool, force: bool, update_descriptions: bool, run_lint: bool) 
     );
 
     // Process each entry
-    for (i, entry) in stack.entries.iter().enumerate() {
+    // If a commit title starts with "WIP:" or "Draft:" (case-insensitive),
+    // that PR and all subsequent PRs should be drafts.
+    let mut force_draft = draft;
+
+    for (i, entry) in entries_to_sync.iter().enumerate() {
         let gg_id = entry.gg_id.as_ref().unwrap();
         let entry_branch = stack.entry_branch_name(entry).unwrap();
         let commit = repo.find_commit(entry.oid)?;
         let raw_title = strip_gg_id_from_message(&entry.title);
-        let title = clean_title(&raw_title);
+
+        if !force_draft && is_wip_or_draft_prefix(&raw_title) {
+            force_draft = true;
+        }
+        let entry_draft = force_draft;
+
+        let mut title = clean_title(&raw_title);
+        // GitLab draft-ness is encoded in the title prefix. If we're forcing draft
+        // due to an earlier WIP/Draft commit, ensure the title carries the prefix.
+        if entry_draft && matches!(provider, Provider::GitLab) && !is_wip_or_draft_prefix(&title) {
+            title = format!("Draft: {}", title);
+        }
+
         let (title, description) = build_pr_payload(
             &title,
             get_commit_description(&commit),
@@ -285,7 +360,10 @@ pub fn run(draft: bool, force: bool, update_descriptions: bool, run_lint: bool) 
                         pr_num
                     ));
                 } else {
-                    if update_descriptions {
+                    // If we're forcing draft on GitLab, we may need to update the title
+                    // even if --update-descriptions wasn't provided.
+                    if update_descriptions || (entry_draft && matches!(provider, Provider::GitLab))
+                    {
                         if let Err(e) = provider.update_pr_title(pr_num, &title) {
                             pb.println(format!(
                                 "{} Could not update {} {}{} title: {}",
@@ -296,15 +374,36 @@ pub fn run(draft: bool, force: bool, update_descriptions: bool, run_lint: bool) 
                                 e
                             ));
                         }
-                        if let Err(e) = provider.update_pr_description(pr_num, &description) {
-                            pb.println(format!(
-                                "{} Could not update {} {}{} description: {}",
-                                style("Warning:").yellow(),
-                                provider.pr_label(),
-                                provider.pr_number_prefix(),
-                                pr_num,
-                                e
-                            ));
+                        if update_descriptions {
+                            if let Err(e) = provider.update_pr_description(pr_num, &description) {
+                                pb.println(format!(
+                                    "{} Could not update {} {}{} description: {}",
+                                    style("Warning:").yellow(),
+                                    provider.pr_label(),
+                                    provider.pr_number_prefix(),
+                                    pr_num,
+                                    e
+                                ));
+                            }
+                        }
+                    }
+
+                    // Best-effort: if we want draft and the existing PR isn't a draft (GitHub only),
+                    // convert it to draft.
+                    if entry_draft && matches!(provider, Provider::GitHub) {
+                        if let Some(info) = pr_info.as_ref() {
+                            if !info.draft {
+                                if let Err(e) = crate::gh::convert_pr_to_draft(pr_num) {
+                                    pb.println(format!(
+                                        "{} Could not convert {} {}{} to draft: {}",
+                                        style("Warning:").yellow(),
+                                        provider.pr_label(),
+                                        provider.pr_number_prefix(),
+                                        pr_num,
+                                        e
+                                    ));
+                                }
+                            }
                         }
                     }
                     // Update PR/MR base if needed
@@ -330,11 +429,16 @@ pub fn run(draft: bool, force: bool, update_descriptions: bool, run_lint: bool) 
             }
             None => {
                 // Create new PR/MR
-                match provider.create_pr(&entry_branch, &target_branch, &title, &description, draft)
-                {
+                match provider.create_pr(
+                    &entry_branch,
+                    &target_branch,
+                    &title,
+                    &description,
+                    entry_draft,
+                ) {
                     Ok(result) => {
                         config.set_mr_for_entry(&stack.name, gg_id, result.number);
-                        let draft_label = if draft { " (draft)" } else { "" };
+                        let draft_label = if entry_draft { " (draft)" } else { "" };
                         pb.println(format!(
                             "{} Pushed {} -> {} {}{}{}",
                             style("OK").green().bold(),
@@ -374,10 +478,42 @@ pub fn run(draft: bool, force: bool, update_descriptions: bool, run_lint: bool) 
     println!(
         "{} Synced {} commits",
         style("OK").green().bold(),
-        stack.len()
+        entries_to_sync.len()
     );
 
     Ok(())
+}
+
+/// Resolve a target string (position, GG-ID, or SHA) to a position in the stack
+fn resolve_target(stack: &Stack, target: &str) -> Result<usize> {
+    // Try to parse target as position (1-indexed number)
+    if let Ok(pos) = target.parse::<usize>() {
+        if pos == 0 || pos > stack.len() {
+            return Err(GgError::Other(format!(
+                "Position {} is out of range (1-{})",
+                pos,
+                stack.len()
+            )));
+        }
+        return Ok(pos);
+    }
+
+    // Try to find by GG-ID
+    if let Some(entry) = stack.get_entry_by_gg_id(target) {
+        return Ok(entry.position);
+    }
+
+    // Try to find by SHA prefix
+    for entry in &stack.entries {
+        if entry.short_sha.starts_with(target) || entry.oid.to_string().starts_with(target) {
+            return Ok(entry.position);
+        }
+    }
+
+    Err(GgError::Other(format!(
+        "Could not find commit matching '{}' in stack",
+        target
+    )))
 }
 
 fn build_pr_payload(
@@ -405,6 +541,12 @@ fn build_pr_payload(
         }
     };
     (title.to_string(), body)
+}
+
+fn is_wip_or_draft_prefix(title: &str) -> bool {
+    let t = title.trim_start();
+    let lower = t.to_ascii_lowercase();
+    lower.starts_with("wip:") || lower.starts_with("draft:")
 }
 
 fn clean_title(title: &str) -> String {
@@ -500,7 +642,7 @@ fn add_gg_ids_to_commits(repo: &Repository, stack: &Stack) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_pr_payload, clean_title};
+    use super::{build_pr_payload, clean_title, is_wip_or_draft_prefix};
 
     #[test]
     fn test_build_pr_payload_prefers_description() {
@@ -527,6 +669,17 @@ mod tests {
         assert_eq!(clean_title("Add feature."), "Add feature");
         assert_eq!(clean_title("Add feature"), "Add feature");
         assert_eq!(clean_title(" Add feature. "), "Add feature");
+    }
+
+    #[test]
+    fn test_is_wip_or_draft_prefix_case_insensitive() {
+        assert!(is_wip_or_draft_prefix("WIP: something"));
+        assert!(is_wip_or_draft_prefix("wip: something"));
+        assert!(is_wip_or_draft_prefix("Draft: something"));
+        assert!(is_wip_or_draft_prefix("draft: something"));
+        assert!(is_wip_or_draft_prefix("   DRAFT: leading spaces"));
+        assert!(!is_wip_or_draft_prefix("Not wip: prefix"));
+        assert!(!is_wip_or_draft_prefix("WIP something"));
     }
 
     #[test]

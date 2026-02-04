@@ -1182,6 +1182,91 @@ fn test_lint_restores_branch_after_changes() {
 }
 
 #[test]
+fn test_lint_until_restores_branch_after_changes() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Create the lint script FIRST and commit it, so it exists in all subsequent commits
+    fs::write(
+        repo_path.join("lint.sh"),
+        "#!/bin/sh\nfor f in *.txt; do [ -f \"$f\" ] && echo \"linted\" >> \"$f\"; done\n",
+    )
+    .expect("Failed to write lint script");
+    Command::new("chmod")
+        .args(["+x", "lint.sh"])
+        .current_dir(&repo_path)
+        .output()
+        .expect("Failed to chmod lint script");
+    run_git(&repo_path, &["add", "lint.sh"]);
+    run_git(&repo_path, &["commit", "-m", "Add lint script"]);
+
+    // Set up config with a lint command that modifies files
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","lint":["./lint.sh"]}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with multiple commits
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "lint-until-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    // First commit
+    fs::write(repo_path.join("file1.txt"), "content1").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "First commit\n\nGG-ID: c-test001"],
+    );
+
+    // Second commit
+    fs::write(repo_path.join("file2.txt"), "content2").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Second commit\n\nGG-ID: c-test002"],
+    );
+
+    // Third commit
+    fs::write(repo_path.join("file3.txt"), "content3").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Third commit\n\nGG-ID: c-test003"],
+    );
+
+    // Remember the original branch
+    let (_, original_branch) = run_git(&repo_path, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    let original_branch = original_branch.trim();
+
+    // Run lint with --until 2 (only first two commits)
+    let (success, stdout, stderr) = run_gg(&repo_path, &["lint", "--until", "2"]);
+    assert!(success, "Lint should succeed: {} {}", stdout, stderr);
+
+    // Should be back on the branch, NOT in detached HEAD
+    let (_, current_ref) = run_git(&repo_path, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    assert_ne!(
+        current_ref.trim(),
+        "HEAD",
+        "Should NOT be in detached HEAD after lint --until"
+    );
+    assert_eq!(
+        current_ref.trim(),
+        original_branch,
+        "Should return to stack branch after lint --until changes"
+    );
+
+    // Verify the output mentions rebase for remaining commits
+    let combined = format!("{}{}", stdout, stderr);
+    assert!(
+        combined.contains("rebase") || combined.contains("remaining"),
+        "Should mention rebase for remaining commits when using --until: {}",
+        combined
+    );
+}
+
+#[test]
 fn test_lint_error_message_for_shell_alias() {
     let (_temp_dir, repo_path) = create_test_repo();
 

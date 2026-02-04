@@ -177,15 +177,23 @@ fn run_lint_on_commits(
     println!();
     if let Some(branch) = original_branch {
         if had_changes {
-            if end_pos == stack.len() {
-                git::move_branch_to_head(repo, &branch)?;
-                git::checkout_branch(repo, &branch)?;
-            }
+            // Move the stack branch to the current HEAD (last linted commit)
+            // and checkout the branch to avoid leaving user in detached HEAD
+            git::move_branch_to_head(repo, &branch)?;
+            git::checkout_branch(repo, &branch)?;
 
-            println!(
-                "{}",
-                style("Lint made changes. Review with `gg ls` and sync with `gg sync`.").dim()
-            );
+            if end_pos < stack.len() {
+                // Partial lint: remaining commits need rebasing
+                println!(
+                    "{}",
+                    style("Lint made changes. Run `gg rebase` to update remaining commits, then `gg sync`.").dim()
+                );
+            } else {
+                println!(
+                    "{}",
+                    style("Lint made changes. Review with `gg ls` and sync with `gg sync`.").dim()
+                );
+            }
         } else {
             git::checkout_branch(repo, &branch)?;
         }

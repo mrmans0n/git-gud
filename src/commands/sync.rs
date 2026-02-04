@@ -79,7 +79,7 @@ fn format_push_error(error: &GgError, branch_name: &str) {
 }
 
 /// Run the sync command
-pub fn run(draft: bool, force: bool, update_descriptions: bool) -> Result<()> {
+pub fn run(draft: bool, force: bool, update_descriptions: bool, run_lint: bool) -> Result<()> {
     let repo = git::open_repo()?;
 
     // Acquire operation lock to prevent concurrent operations
@@ -96,6 +96,14 @@ pub fn run(draft: bool, force: bool, update_descriptions: bool) -> Result<()> {
     // Fetch from remote to ensure we have up-to-date refs
     // This prevents "stale info" errors when remote branches were deleted (e.g., after merge)
     let _ = git::fetch_and_prune();
+
+    // Run lint if requested
+    if run_lint {
+        println!("{}", console::style("Running lint before sync...").dim());
+        // Run lint on all commits in the stack (None = lint all)
+        crate::commands::lint::run(None)?;
+        println!();
+    }
 
     // Load current stack
     // Use a loop to handle GG-ID addition + re-sync without recursive calls

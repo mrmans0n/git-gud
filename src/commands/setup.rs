@@ -67,7 +67,20 @@ fn prompt_defaults(
     )?;
     defaults.lint = prompt_lint_commands(repo, &existing.lint, theme)?;
 
+    // Ask about auto-lint only if lint commands are configured
+    if !defaults.lint.is_empty() {
+        defaults.sync_auto_lint = prompt_sync_auto_lint(existing.sync_auto_lint, theme)?;
+    }
+
     Ok(defaults)
+}
+
+fn prompt_sync_auto_lint(existing: bool, theme: &ColorfulTheme) -> Result<bool> {
+    Confirm::with_theme(theme)
+        .with_prompt("Run lint automatically before each sync?")
+        .default(existing)
+        .interact()
+        .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))
 }
 
 fn prompt_base_branch(

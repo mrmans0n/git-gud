@@ -290,14 +290,21 @@ pub fn run(
         // Create/update the remote branch for this commit
         create_entry_branch(&repo, &stack, entry, &entry_branch)?;
 
-        // Push the branch (always force-push with lease because rebases change commit SHAs)
-        // This is safe because each entry branch is owned by this stack
-        // If --force is passed, use hard force as an escape hatch
-        let push_result = git::push_branch(&entry_branch, true, force);
-        if let Err(e) = push_result {
-            pb.finish_and_clear();
-            format_push_error(&e, &entry_branch);
-            return Err(e);
+        // Check if remote branch exists and has the same OID as local
+        let remote_oid = git::get_remote_branch_oid(&repo, &entry_branch);
+        let needs_push = remote_oid != Some(entry.oid);
+
+        // Only push if the remote is different or doesn't exist
+        if needs_push {
+            // Push the branch (always force-push with lease because rebases change commit SHAs)
+            // This is safe because each entry branch is owned by this stack
+            // If --force is passed, use hard force as an escape hatch
+            let push_result = git::push_branch(&entry_branch, true, force);
+            if let Err(e) = push_result {
+                pb.finish_and_clear();
+                format_push_error(&e, &entry_branch);
+                return Err(e);
+            }
         }
 
         // Determine target branch for MR
@@ -394,9 +401,17 @@ pub fn run(
                             e
                         ));
                     }
+
+                    // Show appropriate message based on whether we pushed
+                    let status_msg = if needs_push {
+                        "Force-pushed"
+                    } else {
+                        "Up to date"
+                    };
                     pb.println(format!(
-                        "{} Force-pushed {} -> {} {}{}",
+                        "{} {} {} -> {} {}{}",
                         style("OK").green().bold(),
+                        status_msg,
                         style(&entry_branch).cyan(),
                         provider.pr_label(),
                         provider.pr_number_prefix(),
@@ -416,9 +431,11 @@ pub fn run(
                     Ok(result) => {
                         config.set_mr_for_entry(&stack.name, gg_id, result.number);
                         let draft_label = if entry_draft { " (draft)" } else { "" };
+                        let status_msg = if needs_push { "Pushed" } else { "Up to date" };
                         pb.println(format!(
-                            "{} Pushed {} -> {} {}{}{}",
+                            "{} {} {} -> {} {}{}{}",
                             style("OK").green().bold(),
+                            status_msg,
                             style(&entry_branch).cyan(),
                             provider.pr_label(),
                             provider.pr_number_prefix(),
@@ -588,6 +605,22 @@ fn add_gg_ids_to_commits(repo: &Repository, stack: &Stack) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{build_pr_payload, clean_title, is_wip_or_draft_prefix};
+    use crate::git;
+
+    #[test]
+    fn test_get_remote_branch_oid() {
+        // This is a simple unit test for the new function
+        // Integration tests for the full sync flow exist in tests/integration_tests.rs
+        use git2::Repository;
+
+        // Create a temporary test repo
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(temp_dir.path()).unwrap();
+
+        // Non-existent remote branch should return None
+        let result = git::get_remote_branch_oid(&repo, "non-existent-branch");
+        assert!(result.is_none());
+    }
 
     #[test]
     fn test_build_pr_payload_prefers_description() {

@@ -368,6 +368,13 @@ pub fn fetch_and_prune() -> Result<()> {
     Ok(())
 }
 
+/// Get the OID of a remote branch, if it exists
+/// Returns None if the remote branch doesn't exist
+pub fn get_remote_branch_oid(repo: &Repository, branch_name: &str) -> Option<Oid> {
+    let remote_ref = format!("refs/remotes/origin/{}", branch_name);
+    repo.revparse_single(&remote_ref).ok().map(|obj| obj.id())
+}
+
 /// Push a branch to origin
 ///
 /// - `force_with_lease`: Use --force-with-lease (safe force, recommended for stacked diffs)

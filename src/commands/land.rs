@@ -70,7 +70,7 @@ fn cleanup_after_merge(
 }
 
 /// Rebase remaining PR branches onto the base branch after a merge
-/// 
+///
 /// This is needed for stacked PRs: after squash-merging PR #1, PR #2's branch
 /// still contains the old commit (different SHA), causing merge conflicts.
 /// We need to rebase each remaining PR branch onto the updated base to reflect

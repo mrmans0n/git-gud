@@ -8,7 +8,7 @@ use git2::Oid;
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
-use crate::stack::Stack;
+use crate::stack::{Stack, StackEntry};
 
 /// Run the lint command
 pub fn run(until: Option<usize>) -> Result<()> {
@@ -71,7 +71,7 @@ pub fn run(until: Option<usize>) -> Result<()> {
     let original_head = repo.head()?.peel_to_commit()?.id();
 
     // Run lint with cleanup on error
-    let result = run_lint_on_commits(&repo, &stack, lint_commands, end_pos);
+    let result = run_lint_on_commits(&repo, stack, lint_commands, end_pos);
 
     // Always try to restore original position on error
     if result.is_err() {
@@ -84,17 +84,20 @@ pub fn run(until: Option<usize>) -> Result<()> {
 /// Run lint commands on commits, returning the result
 fn run_lint_on_commits(
     repo: &git2::Repository,
-    stack: &Stack,
+    stack: Stack,
     lint_commands: &[String],
     end_pos: usize,
 ) -> Result<()> {
     let original_branch = git::current_branch_name(repo);
     let original_head = repo.head()?.peel_to_commit()?.id();
     let mut had_changes = false;
+    let base_branch = stack.base.clone();
+    let mut entries = stack.entries.clone();
 
     // Process each commit from first to end_pos
-    for i in 0..end_pos {
-        let entry = &stack.entries[i];
+    let mut i = 0;
+    while i < end_pos {
+        let entry = entries[i].clone();
 
         println!();
         println!(
@@ -170,7 +173,23 @@ fn run_lint_on_commits(
 
             had_changes = true;
             println!("  {} Changes squashed", style("OK").green());
+
+            // Rebase remaining commits in the lint range onto the amended commit
+            if i + 1 < end_pos {
+                let new_commit_oid = repo.head()?.peel_to_commit()?.id();
+                let old_tip_oid = entries[end_pos - 1].oid;
+
+                let new_commit = new_commit_oid.to_string();
+                let old_commit = entry.oid.to_string();
+                let old_tip = old_tip_oid.to_string();
+
+                git::run_git_command(&["rebase", "--onto", &new_commit, &old_commit, &old_tip])?;
+
+                entries = refresh_stack_entries(repo, &base_branch, None)?;
+            }
         }
+
+        i += 1;
     }
 
     // Return to original position
@@ -208,6 +227,22 @@ fn run_lint_on_commits(
     println!("{} Linted {} commits", style("OK").green().bold(), end_pos);
 
     Ok(())
+}
+
+fn refresh_stack_entries(
+    repo: &git2::Repository,
+    base_branch: &str,
+    stack_branch: Option<&str>,
+) -> Result<Vec<StackEntry>> {
+    let oids = git::get_stack_commit_oids(repo, base_branch, stack_branch)?;
+
+    let mut entries = Vec::with_capacity(oids.len());
+    for (i, oid) in oids.iter().enumerate() {
+        let commit = repo.find_commit(*oid)?;
+        entries.push(StackEntry::from_commit(&commit, i + 1));
+    }
+
+    Ok(entries)
 }
 
 /// Restore the original branch/HEAD position

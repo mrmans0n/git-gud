@@ -6,6 +6,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use tempfile::TempDir;
 
 /// Helper to create a temporary git repo
@@ -3132,4 +3135,76 @@ fn test_sync_until_nonexistent_target() {
         "Should indicate commit not found. stderr: {}",
         stderr
     );
+}
+
+#[test]
+fn test_lint_rebases_commits_with_fixes() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Setup config with lint command
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","lint":["./lint-fix.py"]}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Write lint script to fix file2.txt
+    let lint_script = repo_path.join("lint-fix.py");
+    fs::write(
+        &lint_script,
+        r#"#!/usr/bin/env python3
+from pathlib import Path
+path = Path("file2.txt")
+text = path.read_text()
+path.write_text(text.replace("BAD", "GOOD"))
+"#,
+    )
+    .expect("Failed to write lint script");
+
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(&lint_script)
+            .expect("Failed to read lint script metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&lint_script, perms).expect("Failed to chmod lint script");
+    }
+
+    // Create stack branch
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", "lint-stack"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    // Commit 1
+    fs::write(repo_path.join("file1.txt"), "one").expect("Failed to write file1");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 1"]);
+
+    // Commit 2 (needs lint fix)
+    fs::write(repo_path.join("file2.txt"), "BAD").expect("Failed to write file2");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 2"]);
+
+    // Commit 3
+    fs::write(repo_path.join("file3.txt"), "three").expect("Failed to write file3");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 3"]);
+
+    let (_success, before) = run_git(&repo_path, &["rev-list", "--reverse", "-n", "3", "HEAD"]);
+    let before_commits: Vec<&str> = before.lines().collect();
+    assert_eq!(before_commits.len(), 3);
+
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["lint"]);
+    assert!(success, "gg lint failed: {}", stderr);
+
+    let (_success, after) = run_git(&repo_path, &["rev-list", "--reverse", "-n", "3", "HEAD"]);
+    let after_commits: Vec<&str> = after.lines().collect();
+    assert_eq!(after_commits.len(), 3);
+
+    assert_ne!(before_commits[1], after_commits[1]);
+    assert_ne!(before_commits[2], after_commits[2]);
+
+    let (_success, file2) = run_git(&repo_path, &["show", "HEAD:file2.txt"]);
+    assert!(file2.contains("GOOD"));
 }

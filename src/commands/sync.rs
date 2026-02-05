@@ -270,12 +270,7 @@ pub fn run(
         }
         let entry_draft = force_draft;
 
-        let mut title = clean_title(&raw_title);
-        // GitLab draft-ness is encoded in the title prefix. If we're forcing draft
-        // due to an earlier WIP/Draft commit, ensure the title carries the prefix.
-        if entry_draft && matches!(provider, Provider::GitLab) && !is_wip_or_draft_prefix(&title) {
-            title = format!("Draft: {}", title);
-        }
+        let title = clean_title(&raw_title);
 
         let (title, description) = build_pr_payload(
             &title,

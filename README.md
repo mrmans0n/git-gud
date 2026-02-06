@@ -463,10 +463,6 @@ Stacks must have linear history. Rebase your branch to remove merge commits:
 git rebase main
 ```
 
-## Contributing
-
-Contributions are welcome! Please see the [design document](docs/git-gud-design.md) for architecture details.
-
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.

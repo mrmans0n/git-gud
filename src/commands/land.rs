@@ -1818,4 +1818,129 @@ mod tests {
         // Recommendation: Add integration tests or refactor for trait-based mocking
         // This test passes to document the need for integration tests
     }
+
+    // ==========================================================================
+    // Tests for spinner UI helper functions (PR #112)
+    // ==========================================================================
+
+    #[test]
+    fn test_format_duration_seconds_only() {
+        use std::time::Duration;
+
+        // Test seconds only (less than 1 minute)
+        assert_eq!(format_duration(Duration::from_secs(0)), "0s");
+        assert_eq!(format_duration(Duration::from_secs(1)), "1s");
+        assert_eq!(format_duration(Duration::from_secs(30)), "30s");
+        assert_eq!(format_duration(Duration::from_secs(59)), "59s");
+    }
+
+    #[test]
+    fn test_format_duration_minutes_and_seconds() {
+        use std::time::Duration;
+
+        // Test minutes and seconds
+        assert_eq!(format_duration(Duration::from_secs(60)), "1m0s");
+        assert_eq!(format_duration(Duration::from_secs(61)), "1m1s");
+        assert_eq!(format_duration(Duration::from_secs(90)), "1m30s");
+        assert_eq!(format_duration(Duration::from_secs(120)), "2m0s");
+        assert_eq!(format_duration(Duration::from_secs(135)), "2m15s");
+        assert_eq!(format_duration(Duration::from_secs(600)), "10m0s");
+    }
+
+    #[test]
+    fn test_format_duration_large_values() {
+        use std::time::Duration;
+
+        // Test larger durations (30+ minutes, hours)
+        assert_eq!(format_duration(Duration::from_secs(1800)), "30m0s");
+        assert_eq!(format_duration(Duration::from_secs(1804)), "30m4s");
+        assert_eq!(format_duration(Duration::from_secs(3600)), "60m0s");
+        assert_eq!(format_duration(Duration::from_secs(3661)), "61m1s");
+    }
+
+    #[test]
+    fn test_format_duration_edge_cases() {
+        use std::time::Duration;
+
+        // Test edge cases
+        assert_eq!(format_duration(Duration::from_millis(500)), "0s"); // Rounds down
+        assert_eq!(format_duration(Duration::from_millis(1500)), "1s"); // 1.5s -> 1s
+        assert_eq!(format_duration(Duration::from_secs(59)), "59s"); // Just before 1 minute
+        assert_eq!(format_duration(Duration::from_secs(60)), "1m0s"); // Exactly 1 minute
+    }
+
+    #[test]
+    fn test_create_spinner_returns_progress_bar() {
+        // Test that create_spinner returns a ProgressBar
+        let spinner = create_spinner("Test message");
+
+        // Verify it's a ProgressBar (type check)
+        let _pb: ProgressBar = spinner;
+
+        // Test passes if no panic (ProgressBar creation successful)
+    }
+
+    #[test]
+    fn test_create_spinner_with_different_messages() {
+        // Test that create_spinner handles various message types
+        let _spinner1 = create_spinner("");
+        let _spinner2 = create_spinner("Short");
+        let _spinner3 = create_spinner("A much longer message with details about what's happening");
+        let _spinner4 = create_spinner("Message with special chars: ⏳ 🚂 ✓");
+
+        // Test passes if no panic
+    }
+
+    #[test]
+    fn test_finish_spinner_does_not_panic() {
+        use std::time::Instant;
+
+        // Test that finish_spinner completes without panic
+        let spinner = create_spinner("Testing");
+        let start = Instant::now();
+
+        // Wait a tiny bit to ensure non-zero elapsed time
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        finish_spinner(&spinner, "Test completed", start);
+
+        // Test passes if no panic
+    }
+
+    #[test]
+    fn test_finish_spinner_with_various_messages() {
+        use std::time::Instant;
+
+        // Test finish_spinner with different message types
+        let spinner = create_spinner("Initial");
+        finish_spinner(&spinner, "", Instant::now());
+
+        let spinner = create_spinner("Initial");
+        finish_spinner(&spinner, "Done", Instant::now());
+
+        let spinner = create_spinner("Initial");
+        finish_spinner(
+            &spinner,
+            "Very long completion message with details",
+            Instant::now(),
+        );
+
+        // Test passes if no panic
+    }
+
+    #[test]
+    fn test_spinner_workflow() {
+        use std::time::Instant;
+
+        // Test the full spinner workflow
+        let start = Instant::now();
+        let spinner = create_spinner("Working on task...");
+
+        // Simulate some work
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        finish_spinner(&spinner, "Task completed", start);
+
+        // Test passes if workflow completes without panic
+    }
 }

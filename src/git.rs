@@ -511,8 +511,22 @@ pub fn delete_remote_branch(branch_name: &str) -> Result<()> {
 
 /// Continue a rebase
 pub fn rebase_continue() -> Result<()> {
-    run_git_command(&["rebase", "--continue"])?;
-    Ok(())
+    // Set GIT_EDITOR=true to avoid "Terminal is dumb, but EDITOR unset" errors
+    // This allows rebase to continue without requiring an interactive editor
+    let output = Command::new("git")
+        .args(["rebase", "--continue"])
+        .env("GIT_EDITOR", "true")
+        .output()?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(GgError::Other(format!(
+            "git rebase --continue failed: {}",
+            stderr
+        )))
+    }
 }
 
 /// Abort a rebase

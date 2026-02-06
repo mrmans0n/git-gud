@@ -323,6 +323,19 @@ fn show_stack(stack: &Stack) -> Result<()> {
     );
     println!();
 
+    // Check for ongoing rebase and warn the user
+    let repo = git::open_repo()?;
+    if git::is_rebase_in_progress(&repo) {
+        println!(
+            "{} {}",
+            style("⚠️").yellow(),
+            style("Rebase in progress. Run `gg continue` or `gg abort`")
+                .yellow()
+                .bold()
+        );
+        println!();
+    }
+
     if stack.is_empty() {
         println!(
             "{}",

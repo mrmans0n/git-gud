@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use console::style;
 use dialoguer::Confirm;
+use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::config::Config;
 use crate::error::{GgError, Result};
@@ -13,6 +14,39 @@ use crate::git;
 use crate::glab::AutoMergeResult;
 use crate::provider::{CiStatus, PrState, Provider};
 use crate::stack::{resolve_target, Stack};
+
+/// Format elapsed duration as human-readable string (e.g., "2m15s", "45s")
+fn format_duration(elapsed: Duration) -> String {
+    let total_secs = elapsed.as_secs();
+    let minutes = total_secs / 60;
+    let seconds = total_secs % 60;
+
+    if minutes > 0 {
+        format!("{}m{}s", minutes, seconds)
+    } else {
+        format!("{}s", seconds)
+    }
+}
+
+/// Create a spinner progress bar with elapsed time
+fn create_spinner(message: &str) -> ProgressBar {
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
+            .template("{spinner} {elapsed_precise:.dim} - {msg}")
+            .unwrap(),
+    );
+    spinner.set_message(message.to_string());
+    spinner.enable_steady_tick(Duration::from_millis(100));
+    spinner
+}
+
+/// Finish a spinner with a success checkmark and elapsed time
+fn finish_spinner(spinner: &ProgressBar, message: &str, start_time: Instant) {
+    let elapsed = format_duration(start_time.elapsed());
+    spinner.finish_with_message(format!("{} {} - {}", style("✓").green(), elapsed, message));
+}
 
 /// Polling interval (10 seconds)
 const POLL_INTERVAL_SECS: u64 = 10;
@@ -878,24 +912,27 @@ fn wait_for_pr_ready(
     let merge_trains_enabled = provider.check_merge_trains_enabled().unwrap_or(false);
 
     println!(
-        "{} Waiting for {} {}{} to be ready...",
-        style("⏳").cyan(),
-        provider.pr_label(),
-        provider.pr_number_prefix(),
-        pr_num
-    );
-    println!(
         "{}",
         style(format!(
-            "  (Checking CI status and approvals every {}s, timeout after {}m)",
-            POLL_INTERVAL_SECS, timeout_minutes
+            "Waiting for {} {}{} to be ready (timeout: {}m)...",
+            provider.pr_label(),
+            provider.pr_number_prefix(),
+            pr_num,
+            timeout_minutes
         ))
         .dim()
     );
 
+    let mut current_spinner: Option<ProgressBar> = None;
+    let mut current_state: Option<String> = None;
+    let mut state_start_time = Instant::now();
+
     loop {
         // Check timeout
         if start_time.elapsed() > timeout {
+            if let Some(ref spinner) = current_spinner {
+                spinner.finish_and_clear();
+            }
             return Err(GgError::Other(format!(
                 "Timeout waiting for {} {}{} to be ready",
                 provider.pr_label(),
@@ -907,9 +944,15 @@ fn wait_for_pr_ready(
         // Check if interrupted
         if let Some(flag) = interrupted {
             if flag.load(Ordering::SeqCst) {
+                if let Some(ref spinner) = current_spinner {
+                    spinner.finish_and_clear();
+                }
                 return Err(GgError::Other("Interrupted by user".to_string()));
             }
         }
+
+        let mut new_state = String::new();
+        let mut ci_ready = false;
 
         // Check merge train status if enabled
         if merge_trains_enabled {
@@ -917,66 +960,64 @@ fn wait_for_pr_ready(
                 use crate::glab::MergeTrainStatus;
                 match train_info.status {
                     MergeTrainStatus::Merged => {
-                        println!(
-                            "{} {} {}{} has been merged via merge train!",
-                            style("✓").green(),
-                            provider.pr_label(),
-                            provider.pr_number_prefix(),
-                            pr_num
-                        );
+                        if let Some(ref spinner) = current_spinner {
+                            finish_spinner(
+                                spinner,
+                                &format!(
+                                    "{} {}{} merged via merge train",
+                                    provider.pr_label(),
+                                    provider.pr_number_prefix(),
+                                    pr_num
+                                ),
+                                state_start_time,
+                            );
+                        }
                         return Ok(());
                     }
                     MergeTrainStatus::Merging => {
-                        println!("  {} Merge train: merging now...", style("🚂").cyan());
+                        new_state = "Merge train: merging now...".to_string();
                     }
                     MergeTrainStatus::Fresh => {
                         if let Some(pos) = train_info.position {
-                            println!(
-                                "  {} Merge train: position {} (fresh, ready to merge)",
-                                style("🚂").cyan(),
-                                pos
-                            );
+                            new_state = format!("Merge train: position {} (fresh, ready)", pos);
                         }
                     }
                     MergeTrainStatus::Stale => {
-                        println!(
-                            "  {} Merge train: MR is stale (needs rebase)",
-                            style("⚠").yellow()
-                        );
+                        new_state = "Merge train: stale (needs rebase)".to_string();
                     }
                     _ => {
                         if let Some(pos) = train_info.position {
-                            println!("  {} Merge train: position {}", style("🚂").cyan(), pos);
+                            new_state = format!("Merge train: position {}", pos);
                         }
                     }
                 }
 
                 if train_info.pipeline_running {
-                    println!(
-                        "  {} Merge train pipeline is running...",
-                        style("⏳").cyan()
-                    );
+                    new_state = format!("{} (pipeline running)", new_state);
                 }
             }
         }
 
         // Check CI status
         let ci_status = provider.get_pr_ci_status(pr_num)?;
-        let ci_ready = match ci_status {
-            CiStatus::Success => true,
-            CiStatus::Pending | CiStatus::Running => {
-                println!(
-                    "  {} CI is {}...",
-                    style("⏳").cyan(),
-                    match ci_status {
-                        CiStatus::Pending => "pending",
-                        CiStatus::Running => "running",
-                        _ => unreachable!(),
-                    }
-                );
-                false
+        match ci_status {
+            CiStatus::Success => {
+                ci_ready = true;
+            }
+            CiStatus::Pending => {
+                if new_state.is_empty() {
+                    new_state = "Waiting for CI to start...".to_string();
+                }
+            }
+            CiStatus::Running => {
+                if new_state.is_empty() {
+                    new_state = "CI running...".to_string();
+                }
             }
             CiStatus::Failed => {
+                if let Some(ref spinner) = current_spinner {
+                    spinner.finish_and_clear();
+                }
                 return Err(GgError::Other(format!(
                     "{} {}{} CI failed",
                     provider.pr_label(),
@@ -985,6 +1026,9 @@ fn wait_for_pr_ready(
                 )));
             }
             CiStatus::Canceled => {
+                if let Some(ref spinner) = current_spinner {
+                    spinner.finish_and_clear();
+                }
                 return Err(GgError::Other(format!(
                     "{} {}{} CI was canceled",
                     provider.pr_label(),
@@ -993,11 +1037,9 @@ fn wait_for_pr_ready(
                 )));
             }
             CiStatus::Unknown => {
-                println!(
-                    "  {} CI status unknown, waiting for checks to start...",
-                    style("⏳").cyan()
-                );
-                false
+                if new_state.is_empty() {
+                    new_state = "CI status unknown, waiting...".to_string();
+                }
             }
         };
 
@@ -1006,22 +1048,39 @@ fn wait_for_pr_ready(
             true
         } else {
             let approved = provider.check_pr_approved(pr_num)?;
-            if !approved {
-                println!("  {} Waiting for approval...", style("⏳").cyan());
+            if !approved && ci_ready && new_state.is_empty() {
+                new_state = "Waiting for approval...".to_string();
             }
             approved
         };
 
         // If both CI and approval are ready, we're done
         if ci_ready && approval_ready {
-            println!(
-                "{} {} {}{} is ready to merge!",
-                style("✓").green(),
-                provider.pr_label(),
-                provider.pr_number_prefix(),
-                pr_num
-            );
+            if let Some(ref spinner) = current_spinner {
+                finish_spinner(
+                    spinner,
+                    &format!(
+                        "{} {}{} is ready to merge",
+                        provider.pr_label(),
+                        provider.pr_number_prefix(),
+                        pr_num
+                    ),
+                    state_start_time,
+                );
+            }
             return Ok(());
+        }
+
+        // Update spinner if state changed
+        if current_state.as_ref() != Some(&new_state) {
+            // Finish previous spinner if exists
+            if let Some(ref spinner) = current_spinner {
+                finish_spinner(spinner, current_state.as_ref().unwrap(), state_start_time);
+            }
+            // Create new spinner
+            current_spinner = Some(create_spinner(&new_state));
+            current_state = Some(new_state);
+            state_start_time = Instant::now();
         }
 
         // Wait before next poll
@@ -1043,24 +1102,27 @@ fn wait_for_merge_train_completion(
     let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
 
     println!(
-        "{} Waiting for {} {}{} to merge through merge train...",
-        style("⏳").cyan(),
-        provider.pr_label(),
-        provider.pr_number_prefix(),
-        pr_num
-    );
-    println!(
         "{}",
         style(format!(
-            "  (Checking merge train status every {}s, timeout after {}m)",
-            POLL_INTERVAL_SECS, timeout_minutes
+            "Waiting for {} {}{} to merge through merge train (timeout: {}m)...",
+            provider.pr_label(),
+            provider.pr_number_prefix(),
+            pr_num,
+            timeout_minutes
         ))
         .dim()
     );
 
+    let mut current_spinner: Option<ProgressBar> = None;
+    let mut current_state: Option<String> = None;
+    let mut state_start_time = Instant::now();
+
     loop {
         // Check timeout
         if start_time.elapsed() > timeout {
+            if let Some(ref spinner) = current_spinner {
+                spinner.finish_and_clear();
+            }
             return Err(GgError::Other(format!(
                 "Timeout waiting for {} {}{} to merge through train",
                 provider.pr_label(),
@@ -1072,6 +1134,9 @@ fn wait_for_merge_train_completion(
         // Check if interrupted
         if let Some(flag) = interrupted {
             if flag.load(Ordering::SeqCst) {
+                if let Some(ref spinner) = current_spinner {
+                    spinner.finish_and_clear();
+                }
                 return Err(GgError::Other("Interrupted by user".to_string()));
             }
         }
@@ -1079,18 +1144,26 @@ fn wait_for_merge_train_completion(
         // Check if MR is actually merged by checking its state first
         let pr_info = provider.get_pr_info(pr_num)?;
         if pr_info.state == PrState::Merged {
-            println!(
-                "{} {} {}{} has been merged!",
-                style("✓").green(),
-                provider.pr_label(),
-                provider.pr_number_prefix(),
-                pr_num
-            );
+            if let Some(ref spinner) = current_spinner {
+                finish_spinner(
+                    spinner,
+                    &format!(
+                        "{} {}{} merged",
+                        provider.pr_label(),
+                        provider.pr_number_prefix(),
+                        pr_num
+                    ),
+                    state_start_time,
+                );
+            }
             return Ok(());
         }
 
         // Check if MR was closed (removed from train or rejected)
         if pr_info.state == PrState::Closed {
+            if let Some(ref spinner) = current_spinner {
+                spinner.finish_and_clear();
+            }
             return Err(GgError::Other(format!(
                 "{} {}{} was closed (may have been removed from merge train)",
                 provider.pr_label(),
@@ -1099,39 +1172,42 @@ fn wait_for_merge_train_completion(
             )));
         }
 
+        let mut new_state = String::new();
+
         // Check merge train status
         if let Ok(Some(train_info)) = provider.get_merge_train_status(pr_num, target_branch) {
             use crate::glab::MergeTrainStatus;
             match train_info.status {
                 MergeTrainStatus::Merged => {
-                    println!(
-                        "{} {} {}{} has been merged via merge train!",
-                        style("✓").green(),
-                        provider.pr_label(),
-                        provider.pr_number_prefix(),
-                        pr_num
-                    );
+                    if let Some(ref spinner) = current_spinner {
+                        finish_spinner(
+                            spinner,
+                            &format!(
+                                "{} {}{} merged via merge train",
+                                provider.pr_label(),
+                                provider.pr_number_prefix(),
+                                pr_num
+                            ),
+                            state_start_time,
+                        );
+                    }
                     return Ok(());
                 }
                 MergeTrainStatus::Merging => {
-                    println!("  {} Merge train: merging now...", style("🚂").cyan());
+                    new_state = "Merge train: merging now...".to_string();
                 }
                 MergeTrainStatus::Fresh => {
                     if let Some(pos) = train_info.position {
-                        println!(
-                            "  {} Merge train: position {} (fresh, ready to merge)",
-                            style("🚂").cyan(),
-                            pos
-                        );
+                        new_state = format!("Merge train: position {} (fresh, ready)", pos);
                     }
                 }
                 MergeTrainStatus::Stale => {
-                    println!(
-                        "  {} Merge train: MR is stale (waiting for rebase/pipeline)",
-                        style("⚠").yellow()
-                    );
+                    new_state = "Merge train: stale (waiting for rebase/pipeline)".to_string();
                 }
                 MergeTrainStatus::SkipMerged => {
+                    if let Some(ref spinner) = current_spinner {
+                        spinner.finish_and_clear();
+                    }
                     return Err(GgError::Other(format!(
                         "{} {}{} was skipped from the merge train",
                         provider.pr_label(),
@@ -1140,6 +1216,9 @@ fn wait_for_merge_train_completion(
                     )));
                 }
                 MergeTrainStatus::Idle => {
+                    if let Some(ref spinner) = current_spinner {
+                        spinner.finish_and_clear();
+                    }
                     return Err(GgError::Other(format!(
                         "{} {}{} is no longer in the merge train",
                         provider.pr_label(),
@@ -1149,20 +1228,29 @@ fn wait_for_merge_train_completion(
                 }
                 _ => {
                     if let Some(pos) = train_info.position {
-                        println!("  {} Merge train: position {}", style("🚂").cyan(), pos);
+                        new_state = format!("Merge train: position {}", pos);
                     }
                 }
             }
 
             if train_info.pipeline_running {
-                println!(
-                    "  {} Merge train pipeline is running...",
-                    style("⏳").cyan()
-                );
+                new_state = format!("{} (pipeline running)", new_state);
             }
         } else {
             // If we can't get train status, check if it's been merged directly
-            println!("  {} Checking merge status...", style("⏳").cyan());
+            new_state = "Checking merge status...".to_string();
+        }
+
+        // Update spinner if state changed
+        if current_state.as_ref() != Some(&new_state) {
+            // Finish previous spinner if exists
+            if let Some(ref spinner) = current_spinner {
+                finish_spinner(spinner, current_state.as_ref().unwrap(), state_start_time);
+            }
+            // Create new spinner
+            current_spinner = Some(create_spinner(&new_state));
+            current_state = Some(new_state);
+            state_start_time = Instant::now();
         }
 
         // Wait before next poll

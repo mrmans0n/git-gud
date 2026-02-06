@@ -456,15 +456,84 @@ pub fn run(
                         provider.pr_number_prefix(),
                         pr_num
                     );
-                    println!(
-                        "{}",
-                        style("  Note: MR is queued but not yet merged. Run `gg land` again after it merges to clean up.")
-                            .dim()
-                    );
-                    // Note: We intentionally do NOT clean up config mappings or increment
-                    // landed_count here. The MR is only queued in the merge train, not
-                    // actually merged yet. Cleanup would be premature and could cause
-                    // data loss if the MR is later removed from the train.
+
+                    // If --wait is enabled, poll until the MR is actually merged
+                    if wait {
+                        let timeout_minutes = config.get_land_wait_timeout_minutes();
+                        if let Err(e) = wait_for_merge_train_completion(
+                            &provider,
+                            pr_num,
+                            timeout_minutes,
+                            interrupted.as_ref(),
+                            &stack.base,
+                        ) {
+                            println!(
+                                "{} {} {}{}: {}",
+                                style("Error:").red().bold(),
+                                provider.pr_label(),
+                                provider.pr_number_prefix(),
+                                pr_num,
+                                e
+                            );
+                            break;
+                        }
+
+                        // MR successfully merged! Clean up and continue
+                        landed_count += 1;
+                        cleanup_after_merge(
+                            &mut config,
+                            &stack,
+                            &provider,
+                            gg_id,
+                            pr_num,
+                            land_multiple,
+                        );
+
+                        // Rebase remaining branches to avoid conflicts
+                        if land_multiple {
+                            let current_index = stack
+                                .entries
+                                .iter()
+                                .position(|e| e.mr_number == Some(pr_num))
+                                .unwrap_or(0);
+
+                            if let Err(e) =
+                                rebase_remaining_branches(&repo, &stack, &provider, current_index)
+                            {
+                                println!(
+                                    "{} Failed to rebase remaining branches: {}",
+                                    style("Error:").red().bold(),
+                                    e
+                                );
+                                println!(
+                                    "{}",
+                                    style("  You may need to rebase the remaining PRs manually.")
+                                        .dim()
+                                );
+                                break;
+                            }
+                        }
+
+                        // Continue to next MR if landing multiple
+                        if !land_multiple {
+                            break;
+                        }
+
+                        // Wait a bit for GitLab to process
+                        std::thread::sleep(Duration::from_secs(2));
+                    } else {
+                        // Without --wait, stop after queuing
+                        println!(
+                            "{}",
+                            style("  Note: MR is queued but not yet merged. Run `gg land --wait` to wait for merge completion.")
+                                .dim()
+                        );
+                        // Note: We intentionally do NOT clean up config mappings or increment
+                        // landed_count here. The MR is only queued in the merge train, not
+                        // actually merged yet. Cleanup would be premature and could cause
+                        // data loss if the MR is later removed from the train.
+                        break;
+                    }
                 }
                 Ok(AutoMergeResult::AlreadyQueued) => {
                     println!(
@@ -474,12 +543,81 @@ pub fn run(
                         provider.pr_number_prefix(),
                         pr_num
                     );
-                    println!(
-                        "{}",
-                        style("  Note: MR is queued but not yet merged. Run `gg land` again after it merges to clean up.")
-                            .dim()
-                    );
-                    // Note: We intentionally do NOT clean up here - MR is not merged yet.
+
+                    // If --wait is enabled, poll until the MR is actually merged
+                    if wait {
+                        let timeout_minutes = config.get_land_wait_timeout_minutes();
+                        if let Err(e) = wait_for_merge_train_completion(
+                            &provider,
+                            pr_num,
+                            timeout_minutes,
+                            interrupted.as_ref(),
+                            &stack.base,
+                        ) {
+                            println!(
+                                "{} {} {}{}: {}",
+                                style("Error:").red().bold(),
+                                provider.pr_label(),
+                                provider.pr_number_prefix(),
+                                pr_num,
+                                e
+                            );
+                            break;
+                        }
+
+                        // MR successfully merged! Clean up and continue
+                        landed_count += 1;
+                        cleanup_after_merge(
+                            &mut config,
+                            &stack,
+                            &provider,
+                            gg_id,
+                            pr_num,
+                            land_multiple,
+                        );
+
+                        // Rebase remaining branches to avoid conflicts
+                        if land_multiple {
+                            let current_index = stack
+                                .entries
+                                .iter()
+                                .position(|e| e.mr_number == Some(pr_num))
+                                .unwrap_or(0);
+
+                            if let Err(e) =
+                                rebase_remaining_branches(&repo, &stack, &provider, current_index)
+                            {
+                                println!(
+                                    "{} Failed to rebase remaining branches: {}",
+                                    style("Error:").red().bold(),
+                                    e
+                                );
+                                println!(
+                                    "{}",
+                                    style("  You may need to rebase the remaining PRs manually.")
+                                        .dim()
+                                );
+                                break;
+                            }
+                        }
+
+                        // Continue to next MR if landing multiple
+                        if !land_multiple {
+                            break;
+                        }
+
+                        // Wait a bit for GitLab to process
+                        std::thread::sleep(Duration::from_secs(2));
+                    } else {
+                        // Without --wait, stop after noting it's queued
+                        println!(
+                            "{}",
+                            style("  Note: MR is queued but not yet merged. Run `gg land --wait` to wait for merge completion.")
+                                .dim()
+                        );
+                        // Note: We intentionally do NOT clean up here - MR is not merged yet.
+                        break;
+                    }
                 }
                 Err(e) => {
                     println!(
@@ -493,9 +631,6 @@ pub fn run(
                     break;
                 }
             }
-            // When using merge trains, we don't continue to the next MR because
-            // they need to merge sequentially through the train.
-            break;
         } else if auto_merge_on_land {
             println!(
                 "{} Requesting auto-merge for {} {}{} (merge when pipeline succeeds)...",
@@ -887,6 +1022,147 @@ fn wait_for_pr_ready(
                 pr_num
             );
             return Ok(());
+        }
+
+        // Wait before next poll
+        std::thread::sleep(poll_interval);
+    }
+}
+
+/// Wait for an MR to complete merging through the merge train
+/// Polls the merge train status until the MR is fully merged
+fn wait_for_merge_train_completion(
+    provider: &Provider,
+    pr_num: u64,
+    timeout_minutes: u64,
+    interrupted: Option<&Arc<AtomicBool>>,
+    target_branch: &str,
+) -> Result<()> {
+    let start_time = Instant::now();
+    let timeout = Duration::from_secs(timeout_minutes * 60);
+    let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
+
+    println!(
+        "{} Waiting for {} {}{} to merge through merge train...",
+        style("⏳").cyan(),
+        provider.pr_label(),
+        provider.pr_number_prefix(),
+        pr_num
+    );
+    println!(
+        "{}",
+        style(format!(
+            "  (Checking merge train status every {}s, timeout after {}m)",
+            POLL_INTERVAL_SECS, timeout_minutes
+        ))
+        .dim()
+    );
+
+    loop {
+        // Check timeout
+        if start_time.elapsed() > timeout {
+            return Err(GgError::Other(format!(
+                "Timeout waiting for {} {}{} to merge through train",
+                provider.pr_label(),
+                provider.pr_number_prefix(),
+                pr_num
+            )));
+        }
+
+        // Check if interrupted
+        if let Some(flag) = interrupted {
+            if flag.load(Ordering::SeqCst) {
+                return Err(GgError::Other("Interrupted by user".to_string()));
+            }
+        }
+
+        // Check if MR is actually merged by checking its state first
+        let pr_info = provider.get_pr_info(pr_num)?;
+        if pr_info.state == PrState::Merged {
+            println!(
+                "{} {} {}{} has been merged!",
+                style("✓").green(),
+                provider.pr_label(),
+                provider.pr_number_prefix(),
+                pr_num
+            );
+            return Ok(());
+        }
+
+        // Check if MR was closed (removed from train or rejected)
+        if pr_info.state == PrState::Closed {
+            return Err(GgError::Other(format!(
+                "{} {}{} was closed (may have been removed from merge train)",
+                provider.pr_label(),
+                provider.pr_number_prefix(),
+                pr_num
+            )));
+        }
+
+        // Check merge train status
+        if let Ok(Some(train_info)) = provider.get_merge_train_status(pr_num, target_branch) {
+            use crate::glab::MergeTrainStatus;
+            match train_info.status {
+                MergeTrainStatus::Merged => {
+                    println!(
+                        "{} {} {}{} has been merged via merge train!",
+                        style("✓").green(),
+                        provider.pr_label(),
+                        provider.pr_number_prefix(),
+                        pr_num
+                    );
+                    return Ok(());
+                }
+                MergeTrainStatus::Merging => {
+                    println!("  {} Merge train: merging now...", style("🚂").cyan());
+                }
+                MergeTrainStatus::Fresh => {
+                    if let Some(pos) = train_info.position {
+                        println!(
+                            "  {} Merge train: position {} (fresh, ready to merge)",
+                            style("🚂").cyan(),
+                            pos
+                        );
+                    }
+                }
+                MergeTrainStatus::Stale => {
+                    println!(
+                        "  {} Merge train: MR is stale (waiting for rebase/pipeline)",
+                        style("⚠").yellow()
+                    );
+                }
+                MergeTrainStatus::SkipMerged => {
+                    return Err(GgError::Other(format!(
+                        "{} {}{} was skipped from the merge train",
+                        provider.pr_label(),
+                        provider.pr_number_prefix(),
+                        pr_num
+                    )));
+                }
+                MergeTrainStatus::Idle => {
+                    return Err(GgError::Other(format!(
+                        "{} {}{} is no longer in the merge train",
+                        provider.pr_label(),
+                        provider.pr_number_prefix(),
+                        pr_num
+                    )));
+                }
+                _ => {
+                    if let Some(pos) = train_info.position {
+                        println!("  {} Merge train: position {}", style("🚂").cyan(), pos);
+                    }
+                }
+            }
+
+            if train_info.pipeline_running {
+                println!(
+                    "  {} Merge train pipeline is running...",
+                    style("⏳").cyan()
+                );
+            }
+        } else {
+            // If we can't get train status, check if it's been merged directly
+            println!("  {} Checking merge status...", style("⏳").cyan());
         }
 
         // Wait before next poll

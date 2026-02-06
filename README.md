@@ -10,6 +10,8 @@ Stacked diffs allow you to break large changes into small, reviewable commits th
 - **Parallel work** - Start the next feature while waiting for review
 - **Clean history** - Each commit is a logical unit of change
 
+You can read more [here](https://newsletter.pragmaticengineer.com/p/stacked-diffs) or [here](https://graphite.com/guides/stacked-diffs).
+
 ## Installation
 
 ### From source

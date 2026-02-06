@@ -228,11 +228,14 @@ pub fn continue_rebase() -> Result<()> {
                 Err(GgError::RebaseConflict)
             } else {
                 // Provide more helpful error message
-                eprintln!(
-                    "{} git rebase --continue failed",
-                    style("Error:").red().bold()
-                );
+                eprintln!("{} Failed to continue rebase", style("Error:").red().bold());
                 eprintln!("  {}", error_str);
+                eprintln!();
+                eprintln!("{}", style("You are still in rebase state.").yellow());
+                eprintln!("  • Resolve any remaining issues");
+                eprintln!("  • Run `git rebase --continue` manually to continue");
+                eprintln!("  • Or run `gg abort` to cancel the rebase");
+                eprintln!();
                 eprintln!("  Hint: Run `git status` to see the current state");
                 Err(e)
             }

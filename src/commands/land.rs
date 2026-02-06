@@ -1602,7 +1602,7 @@ mod tests {
         use crate::glab::MergeTrainStatus;
 
         // These variants should exist and be distinct
-        let statuses = vec![
+        let statuses = [
             MergeTrainStatus::Idle,
             MergeTrainStatus::Stale,
             MergeTrainStatus::Fresh,
@@ -1728,9 +1728,6 @@ mod tests {
         // ✗ Interrupt during polling
         //
         // Recommendation: Add integration tests or refactor for trait-based mocking
-        assert!(
-            true,
-            "This test serves as documentation for needed integration tests"
-        );
+        // This test passes to document the need for integration tests
     }
 }

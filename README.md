@@ -14,16 +14,22 @@ You can read more [here](https://newsletter.pragmaticengineer.com/p/stacked-diff
 
 ## Installation
 
-### From source
+### Homebrew (macOS/Linux)
 
 ```bash
-cargo install --path .
+brew install mrmans0n/tap/gg-stack
 ```
 
 ### From crates.io
 
 ```bash
 cargo install gg-stack
+```
+
+### From source
+
+```bash
+cargo install --path .
 ```
 
 ## Prerequisites

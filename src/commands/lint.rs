@@ -73,8 +73,9 @@ pub fn run(until: Option<usize>) -> Result<()> {
     // Run lint with cleanup on error
     let result = run_lint_on_commits(&repo, stack, lint_commands, end_pos);
 
-    // Always try to restore original position on error
-    if result.is_err() {
+    // Try to restore original position on error, but NOT if there's a rebase in progress
+    // (user needs to resolve conflicts in place)
+    if result.is_err() && !git::is_rebase_in_progress(&repo) {
         restore_original_position(&repo, original_branch.as_deref(), original_head);
     }
 
@@ -187,7 +188,7 @@ fn run_lint_on_commits(
                     git::run_git_command(&["rebase", "--onto", &new_commit, &old_commit, &old_tip])
                 {
                     // Check if this is a rebase conflict
-                    if is_rebase_in_progress() {
+                    if git::is_rebase_in_progress(repo) {
                         print_rebase_conflict_help();
                         return Err(GgError::Other(
                             "Rebase conflict occurred. Resolve conflicts and run `gg continue`."
@@ -282,12 +283,6 @@ fn restore_original_position(
             style("Warning:").yellow()
         );
     }
-}
-
-/// Check if a rebase is currently in progress
-fn is_rebase_in_progress() -> bool {
-    std::path::Path::new(".git/rebase-merge").exists()
-        || std::path::Path::new(".git/rebase-apply").exists()
 }
 
 /// Get list of files with conflicts

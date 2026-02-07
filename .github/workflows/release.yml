@@ -277,6 +277,10 @@ jobs:
           echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
 
           gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
+      - name: Fix release title
+        run: |
+          # Remove date from release title, keep just the version tag
+          gh release edit "${{ needs.plan.outputs.tag }}" --title "${{ needs.plan.outputs.tag }}"
 
   publish-homebrew-formula:
     needs:

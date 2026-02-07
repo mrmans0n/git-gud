@@ -93,6 +93,7 @@ fn run_lint_on_commits(
     let original_head = repo.head()?.peel_to_commit()?.id();
     let mut had_changes = false;
     let base_branch = stack.base.clone();
+    let stack_branch = stack.branch_name();
     let mut entries = stack.entries.clone();
 
     // Process each commit from first to end_pos
@@ -184,9 +185,21 @@ fn run_lint_on_commits(
                 let old_commit = entry.oid.to_string();
                 let old_tip = old_tip_oid.to_string();
 
-                if let Err(e) =
-                    git::run_git_command(&["rebase", "--onto", &new_commit, &old_commit, &old_tip])
-                {
+                let target_branch = original_branch.as_deref().unwrap_or(stack_branch.as_str());
+
+                // Ensure rebase is performed on the stack branch so it updates the branch
+                // and avoids leaving the user in detached HEAD after conflicts. We force the
+                // branch to the old tip so we only rebase the intended range.
+                git::run_git_command(&["branch", "-f", target_branch, &old_tip])?;
+                git::checkout_branch(repo, target_branch)?;
+
+                if let Err(e) = git::run_git_command(&[
+                    "rebase",
+                    "--onto",
+                    &new_commit,
+                    &old_commit,
+                    target_branch,
+                ]) {
                     // Check if this is a rebase conflict
                     if git::is_rebase_in_progress(repo) {
                         print_rebase_conflict_help();

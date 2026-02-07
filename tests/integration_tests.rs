@@ -3209,6 +3209,93 @@ path.write_text(text.replace("BAD", "GOOD"))
     assert!(file2.contains("GOOD"));
 }
 
+#[test]
+fn test_lint_conflict_continue_updates_branch() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Setup config with lint command
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","lint":["./lint.py"]}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Write lint script to add spaces around =
+    let lint_script = repo_path.join("lint.py");
+    fs::write(
+        &lint_script,
+        r#"#!/usr/bin/env python3
+from pathlib import Path
+path = Path("format_me.txt")
+if path.exists():
+    text = path.read_text()
+    path.write_text(text.replace("=", " = "))
+"#,
+    )
+    .expect("Failed to write lint script");
+
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(&lint_script)
+            .expect("Failed to read lint script metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&lint_script, perms).expect("Failed to chmod lint script");
+    }
+
+    // Create stack branch
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", "lint-conflict"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    // Commit 1 (needs lint fix)
+    fs::write(
+        repo_path.join("format_me.txt"),
+        "line1=one\nline2=two\nline3=three\n",
+    )
+    .expect("Failed to write format_me.txt");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 1"]);
+
+    // Commit 2 modifies the same line to cause conflict after lint
+    fs::write(
+        repo_path.join("format_me.txt"),
+        "line1=one\nline2=two\nline3=changed\n",
+    )
+    .expect("Failed to write format_me.txt");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 2"]);
+
+    // Run lint - should hit conflict
+    let (success, _stdout, _stderr) = run_gg(&repo_path, &["lint"]);
+    assert!(!success, "gg lint should report conflict");
+
+    // Resolve conflict and continue
+    fs::write(
+        repo_path.join("format_me.txt"),
+        "line1 = one\nline2 = two\nline3 = changed\n",
+    )
+    .expect("Failed to write resolved format_me.txt");
+    run_git(&repo_path, &["add", "format_me.txt"]);
+
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["continue"]);
+    assert!(success, "gg continue failed: {}", stderr);
+
+    // Ensure we're back on stack branch and it points to HEAD
+    let (_success, head_branch) = run_git(&repo_path, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    assert_eq!(head_branch.trim(), "testuser/lint-conflict");
+
+    let (_success, head_oid) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    let (_success, branch_oid) = run_git(&repo_path, &["rev-parse", "testuser/lint-conflict"]);
+    assert_eq!(head_oid.trim(), branch_oid.trim());
+
+    let content =
+        fs::read_to_string(repo_path.join("format_me.txt")).expect("Failed to read format_me.txt");
+    assert!(content.contains("line1 = one"));
+    assert!(content.contains("line3 = changed"));
+}
+
 // ============================================================
 // Tests for PR #106 - Rebase remaining branches after land
 // ============================================================

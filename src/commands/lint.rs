@@ -73,8 +73,9 @@ pub fn run(until: Option<usize>) -> Result<()> {
     // Run lint with cleanup on error
     let result = run_lint_on_commits(&repo, stack, lint_commands, end_pos);
 
-    // Always try to restore original position on error
-    if result.is_err() {
+    // Try to restore original position on error, but NOT if there's a rebase in progress
+    // (user needs to resolve conflicts in place)
+    if result.is_err() && !git::is_rebase_in_progress(&repo) {
         restore_original_position(&repo, original_branch.as_deref(), original_head);
     }
 
@@ -183,7 +184,19 @@ fn run_lint_on_commits(
                 let old_commit = entry.oid.to_string();
                 let old_tip = old_tip_oid.to_string();
 
-                git::run_git_command(&["rebase", "--onto", &new_commit, &old_commit, &old_tip])?;
+                if let Err(e) =
+                    git::run_git_command(&["rebase", "--onto", &new_commit, &old_commit, &old_tip])
+                {
+                    // Check if this is a rebase conflict
+                    if git::is_rebase_in_progress(repo) {
+                        print_rebase_conflict_help();
+                        return Err(GgError::Other(
+                            "Rebase conflict occurred. Resolve conflicts and run `gg continue`."
+                                .to_string(),
+                        ));
+                    }
+                    return Err(e);
+                }
 
                 entries = refresh_stack_entries(repo, &base_branch, None)?;
             }
@@ -270,4 +283,47 @@ fn restore_original_position(
             style("Warning:").yellow()
         );
     }
+}
+
+/// Get list of files with conflicts
+fn get_conflicted_files() -> Vec<String> {
+    let output = Command::new("git")
+        .args(["diff", "--name-only", "--diff-filter=U"])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Print helpful message when rebase conflict occurs during lint
+fn print_rebase_conflict_help() {
+    println!();
+    println!(
+        "{} Rebase conflict while rebasing after lint changes",
+        style("⚠️").yellow()
+    );
+    println!();
+
+    let conflicted_files = get_conflicted_files();
+    if !conflicted_files.is_empty() {
+        println!("The following files have conflicts:");
+        for file in &conflicted_files {
+            println!("  {} {}", style("-").dim(), file);
+        }
+        println!();
+    }
+
+    println!("To resolve:");
+    println!("  1. Edit the conflicting files to resolve conflicts");
+    println!("  2. {}", style("git add <resolved-files>").cyan());
+    println!("  3. {}", style("gg continue").cyan());
+    println!();
+    println!("To abort and undo lint changes:");
+    println!("  {}", style("gg abort").cyan());
 }

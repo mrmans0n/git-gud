@@ -183,7 +183,19 @@ fn run_lint_on_commits(
                 let old_commit = entry.oid.to_string();
                 let old_tip = old_tip_oid.to_string();
 
-                git::run_git_command(&["rebase", "--onto", &new_commit, &old_commit, &old_tip])?;
+                if let Err(e) =
+                    git::run_git_command(&["rebase", "--onto", &new_commit, &old_commit, &old_tip])
+                {
+                    // Check if this is a rebase conflict
+                    if is_rebase_in_progress() {
+                        print_rebase_conflict_help();
+                        return Err(GgError::Other(
+                            "Rebase conflict occurred. Resolve conflicts and run `gg continue`."
+                                .to_string(),
+                        ));
+                    }
+                    return Err(e);
+                }
 
                 entries = refresh_stack_entries(repo, &base_branch, None)?;
             }
@@ -270,4 +282,53 @@ fn restore_original_position(
             style("Warning:").yellow()
         );
     }
+}
+
+/// Check if a rebase is currently in progress
+fn is_rebase_in_progress() -> bool {
+    std::path::Path::new(".git/rebase-merge").exists()
+        || std::path::Path::new(".git/rebase-apply").exists()
+}
+
+/// Get list of files with conflicts
+fn get_conflicted_files() -> Vec<String> {
+    let output = Command::new("git")
+        .args(["diff", "--name-only", "--diff-filter=U"])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Print helpful message when rebase conflict occurs during lint
+fn print_rebase_conflict_help() {
+    println!();
+    println!(
+        "{} Rebase conflict while rebasing after lint changes",
+        style("⚠️").yellow()
+    );
+    println!();
+
+    let conflicted_files = get_conflicted_files();
+    if !conflicted_files.is_empty() {
+        println!("The following files have conflicts:");
+        for file in &conflicted_files {
+            println!("  {} {}", style("-").dim(), file);
+        }
+        println!();
+    }
+
+    println!("To resolve:");
+    println!("  1. Edit the conflicting files to resolve conflicts");
+    println!("  2. {}", style("git add <resolved-files>").cyan());
+    println!("  3. {}", style("gg continue").cyan());
+    println!();
+    println!("To abort and undo lint changes:");
+    println!("  {}", style("gg abort").cyan());
 }

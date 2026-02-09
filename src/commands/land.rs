@@ -338,6 +338,11 @@ pub fn run(
         None
     };
 
+    // Check for unsynced commits BEFORE merging and cleanup
+    // This prevents the bug where cleanup would be skipped incorrectly after
+    // removing MR mappings during the merge loop
+    let has_unsynced_commits_before_merge = stack.entries.iter().any(|e| !e.is_synced());
+
     // Find landable PRs (approved, open, from the start of the stack)
     let mut landed_count = 0;
 
@@ -863,43 +868,29 @@ pub fn run(
                     return Ok(());
                 }
 
-                // After rebase, reload the stack to check for any new unsynced commits
-                // that may have been added while waiting for MRs to merge
-                let updated_stack = match Stack::load(&repo, &config) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        println!(
-                            "{} Failed to reload stack after rebase: {}",
-                            style("Warning:").yellow(),
-                            e
-                        );
-                        println!(
-                            "{}",
-                            style("  You may need to run `gg clean` manually.").dim()
-                        );
-                        return Ok(());
-                    }
-                };
-
-                // Check if there are any commits without MRs (unsynced)
-                let unsynced_commits: Vec<&crate::stack::StackEntry> = updated_stack
-                    .entries
-                    .iter()
-                    .filter(|e| !e.is_synced())
-                    .collect();
-
-                if !unsynced_commits.is_empty() {
+                // Check if there were unsynced commits before the merge
+                // We check BEFORE the merge loop because cleanup_after_merge() removes
+                // MR mappings from config, which would make ALL commits appear unsynced
+                // if we checked after the fact
+                if has_unsynced_commits_before_merge {
                     println!(
-                        "{} Stack has {} unsynced commit(s) that were not part of the merged MRs:",
-                        style("Warning:").yellow(),
-                        unsynced_commits.len()
+                        "{} Stack had unsynced commit(s) before merging:",
+                        style("Warning:").yellow()
                     );
-                    for entry in &unsynced_commits {
-                        println!(
-                            "  {} {}",
-                            style(&entry.short_sha).cyan(),
-                            style(&entry.title).dim()
-                        );
+                    // Reload stack to show current state after rebase
+                    if let Ok(updated_stack) = Stack::load(&repo, &config) {
+                        let unsynced_commits: Vec<&crate::stack::StackEntry> = updated_stack
+                            .entries
+                            .iter()
+                            .filter(|e| !e.is_synced())
+                            .collect();
+                        for entry in &unsynced_commits {
+                            println!(
+                                "  {} {}",
+                                style(&entry.short_sha).cyan(),
+                                style(&entry.title).dim()
+                            );
+                        }
                     }
                     println!(
                         "{}",
@@ -2011,27 +2002,34 @@ mod tests {
         // 6. Commit D has no MR (is_synced() == false)
         // 7. Cleanup should be SKIPPED to preserve commit D
         //
+        // The bug (fixed):
+        // - During the merge loop, cleanup_after_merge() removes MR mappings
+        // - After all merges, the config has NO mappings left
+        // - When reloading the stack, ALL commits have mr_number = None
+        // - is_synced() returns false for ALL commits (even merged ones)
+        // - Cleanup was ALWAYS skipped, breaking normal behavior
+        //
         // The fix:
-        // - After rebase, reload the stack
-        // - Filter entries where !is_synced()
-        // - If any unsynced commits exist, skip cleanup and warn user
+        // - Check for unsynced commits BEFORE the merge loop starts
+        // - Save the result in has_unsynced_commits_before_merge flag
+        // - Use this flag after rebase to decide whether to skip cleanup
+        // - This way, the check happens before MR mappings are removed
         //
         // Why this matters:
         // - Without this check, the user loses work
-        // - They end up in detached HEAD with uncommitted changes
-        // - The stack branches are deleted before they can push commit D
+        // - With the buggy implementation, cleanup NEVER happened
+        // - With the fix, cleanup happens normally unless there are extra commits
         //
         // Testing approach:
         // This behavior requires integration testing with:
         // - A real git repo with commits
         // - Config with MR mappings
         // - Simulated merge scenario
-        // - Verification that cleanup is skipped
+        // - Verification that cleanup is skipped only when appropriate
         //
         // For now, we verify the logic path exists by checking:
         // - StackEntry has is_synced() method
-        // - Stack can be reloaded after rebase
-        // - Unsynced commits can be filtered
+        // - Unsynced commits can be filtered before merging
         use crate::stack::StackEntry;
 
         // Create a mock entry without MR (unsynced)

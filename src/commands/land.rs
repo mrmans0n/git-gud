@@ -863,7 +863,55 @@ pub fn run(
                     return Ok(());
                 }
 
-                // Then, clean the stack
+                // After rebase, reload the stack to check for any new unsynced commits
+                // that may have been added while waiting for MRs to merge
+                let updated_stack = match Stack::load(&repo, &config) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        println!(
+                            "{} Failed to reload stack after rebase: {}",
+                            style("Warning:").yellow(),
+                            e
+                        );
+                        println!(
+                            "{}",
+                            style("  You may need to run `gg clean` manually.").dim()
+                        );
+                        return Ok(());
+                    }
+                };
+
+                // Check if there are any commits without MRs (unsynced)
+                let unsynced_commits: Vec<&crate::stack::StackEntry> = updated_stack
+                    .entries
+                    .iter()
+                    .filter(|e| !e.is_synced())
+                    .collect();
+
+                if !unsynced_commits.is_empty() {
+                    println!(
+                        "{} Stack has {} unsynced commit(s) that were not part of the merged MRs:",
+                        style("Warning:").yellow(),
+                        unsynced_commits.len()
+                    );
+                    for entry in &unsynced_commits {
+                        println!(
+                            "  {} {}",
+                            style(&entry.short_sha).cyan(),
+                            style(&entry.title).dim()
+                        );
+                    }
+                    println!(
+                        "{}",
+                        style(
+                            "  Skipping stack cleanup to preserve these commits. Run `gg clean` manually when ready."
+                        )
+                        .dim()
+                    );
+                    return Ok(());
+                }
+
+                // Then, clean the stack (all commits were synced and merged)
                 let clean_result =
                     crate::commands::clean::run_for_stack_with_repo(&repo, &stack.name, true);
                 match clean_result {
@@ -1942,5 +1990,183 @@ mod tests {
         finish_spinner(&spinner, "Task completed", start);
 
         // Test passes if workflow completes without panic
+    }
+
+    // ==========================================================================
+    // Tests for unsynced commit detection during cleanup (bug fix)
+    // ==========================================================================
+
+    #[test]
+    fn test_cleanup_checks_for_unsynced_commits() {
+        // This test documents the fix for the bug where `gg land --all` would
+        // delete the entire stack including new commits that were added after
+        // the MRs were created but before the cleanup.
+        //
+        // Scenario:
+        // 1. User has stack with commits A, B, C → MRs !1, !2, !3
+        // 2. User runs `gg land --wait`
+        // 3. While waiting for MRs to merge, user adds commit D (no MR yet)
+        // 4. MRs !1, !2, !3 merge successfully
+        // 5. Cleanup starts: rebase, then check for unsynced commits
+        // 6. Commit D has no MR (is_synced() == false)
+        // 7. Cleanup should be SKIPPED to preserve commit D
+        //
+        // The fix:
+        // - After rebase, reload the stack
+        // - Filter entries where !is_synced()
+        // - If any unsynced commits exist, skip cleanup and warn user
+        //
+        // Why this matters:
+        // - Without this check, the user loses work
+        // - They end up in detached HEAD with uncommitted changes
+        // - The stack branches are deleted before they can push commit D
+        //
+        // Testing approach:
+        // This behavior requires integration testing with:
+        // - A real git repo with commits
+        // - Config with MR mappings
+        // - Simulated merge scenario
+        // - Verification that cleanup is skipped
+        //
+        // For now, we verify the logic path exists by checking:
+        // - StackEntry has is_synced() method
+        // - Stack can be reloaded after rebase
+        // - Unsynced commits can be filtered
+        use crate::stack::StackEntry;
+
+        // Create a mock entry without MR (unsynced)
+        let commit_oid = git2::Oid::zero();
+        let commit = StackEntry {
+            oid: commit_oid,
+            short_sha: "abc1234".to_string(),
+            title: "New commit without MR".to_string(),
+            gg_id: Some("c-abc1234".to_string()),
+            mr_number: None, // No MR = unsynced
+            mr_state: None,
+            approved: false,
+            ci_status: None,
+            position: 1,
+            in_merge_train: false,
+            merge_train_position: None,
+        };
+
+        // Verify it's detected as unsynced
+        assert!(!commit.is_synced(), "Commit without MR should be unsynced");
+
+        // Create a mock entry with MR (synced)
+        let synced_commit = StackEntry {
+            oid: commit_oid,
+            short_sha: "def5678".to_string(),
+            title: "Merged commit".to_string(),
+            gg_id: Some("c-def5678".to_string()),
+            mr_number: Some(123), // Has MR = synced
+            mr_state: Some(crate::provider::PrState::Merged),
+            approved: true,
+            ci_status: None,
+            position: 2,
+            in_merge_train: false,
+            merge_train_position: None,
+        };
+
+        // Verify it's detected as synced
+        assert!(synced_commit.is_synced(), "Commit with MR should be synced");
+
+        // Test filtering unsynced commits
+        let entries = [synced_commit.clone(), commit.clone()];
+        let unsynced: Vec<&StackEntry> = entries.iter().filter(|e| !e.is_synced()).collect();
+
+        assert_eq!(unsynced.len(), 1, "Should find exactly one unsynced commit");
+        assert_eq!(
+            unsynced[0].gg_id.as_deref(),
+            Some("c-abc1234"),
+            "Should identify the correct unsynced commit"
+        );
+    }
+
+    #[test]
+    fn test_unsynced_commit_detection_logic() {
+        // This test verifies the specific filter logic used in the cleanup code
+        use crate::stack::StackEntry;
+
+        // Create a mix of synced and unsynced entries
+        let entries = [
+            StackEntry {
+                oid: git2::Oid::zero(),
+                short_sha: "a1".to_string(),
+                title: "Merged".to_string(),
+                gg_id: Some("c-aaa".to_string()),
+                mr_number: Some(1),
+                mr_state: Some(crate::provider::PrState::Merged),
+                approved: true,
+                ci_status: None,
+                position: 1,
+                in_merge_train: false,
+                merge_train_position: None,
+            },
+            StackEntry {
+                oid: git2::Oid::zero(),
+                short_sha: "b2".to_string(),
+                title: "Also merged".to_string(),
+                gg_id: Some("c-bbb".to_string()),
+                mr_number: Some(2),
+                mr_state: Some(crate::provider::PrState::Merged),
+                approved: true,
+                ci_status: None,
+                position: 2,
+                in_merge_train: false,
+                merge_train_position: None,
+            },
+            StackEntry {
+                oid: git2::Oid::zero(),
+                short_sha: "c3".to_string(),
+                title: "New unsynced commit".to_string(),
+                gg_id: Some("c-ccc".to_string()),
+                mr_number: None, // No MR
+                mr_state: None,
+                approved: false,
+                ci_status: None,
+                position: 3,
+                in_merge_train: false,
+                merge_train_position: None,
+            },
+            StackEntry {
+                oid: git2::Oid::zero(),
+                short_sha: "d4".to_string(),
+                title: "Another new commit".to_string(),
+                gg_id: Some("c-ddd".to_string()),
+                mr_number: None, // No MR
+                mr_state: None,
+                approved: false,
+                ci_status: None,
+                position: 4,
+                in_merge_train: false,
+                merge_train_position: None,
+            },
+        ];
+
+        // Apply the same filter as the cleanup code
+        let unsynced_commits: Vec<&StackEntry> =
+            entries.iter().filter(|e| !e.is_synced()).collect();
+
+        // Should find both unsynced commits
+        assert_eq!(unsynced_commits.len(), 2, "Should find 2 unsynced commits");
+
+        // Verify they're the right ones
+        assert_eq!(
+            unsynced_commits[0].short_sha, "c3",
+            "First unsynced commit should be c3"
+        );
+        assert_eq!(
+            unsynced_commits[1].short_sha, "d4",
+            "Second unsynced commit should be d4"
+        );
+
+        // When unsynced commits exist, cleanup should be skipped
+        // This is the core invariant that prevents data loss
+        let should_skip_cleanup = !unsynced_commits.is_empty();
+        assert!(
+            should_skip_cleanup,
+            "Cleanup should be skipped when unsynced commits exist"
+        );
     }
 }

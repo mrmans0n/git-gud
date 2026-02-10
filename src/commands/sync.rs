@@ -8,7 +8,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git::{
-    self, generate_gg_id, get_commit_description, get_gg_id, set_gg_id_in_message,
+    self, generate_gg_id, get_commit_description, set_gg_id_in_message,
     strip_gg_id_from_message,
 };
 use crate::provider::Provider;
@@ -531,66 +531,62 @@ fn create_entry_branch(
     Ok(())
 }
 
-/// Add GG-IDs to commits that are missing them via interactive rebase
+/// Add GG-IDs to commits that are missing them by rewriting commit messages
+/// This preserves the exact tree (including any lint changes) while only updating messages
 fn add_gg_ids_to_commits(repo: &Repository, stack: &Stack) -> Result<()> {
-    println!("{}", style("Adding GG-IDs via rebase...").dim());
-
-    // We need to do a rebase to add GG-IDs to commits
-    // For simplicity, we'll use git command
+    println!("{}", style("Adding GG-IDs...").dim());
 
     let base_ref = repo
         .revparse_single(&stack.base)
         .or_else(|_| repo.revparse_single(&format!("origin/{}", stack.base)))?;
+    let base_commit = repo.find_commit(base_ref.id())?;
 
-    // Create a temporary script to add GG-IDs
-    // We'll use git filter-branch or git rebase with exec
+    let mut parent_oid = base_commit.id();
 
-    // First, let's use git rebase --exec approach
-    let mut script_commands = Vec::new();
-
+    // Walk through all entries in order, rewriting each commit
     for entry in &stack.entries {
-        if entry.gg_id.is_none() {
+        let original_commit = repo.find_commit(entry.oid)?;
+        let original_message = original_commit.message().unwrap_or("");
+
+        // Determine if we need a new GG-ID for this commit
+        let new_message = if entry.gg_id.is_none() {
             let new_id = generate_gg_id();
-            // We'll need to amend the commit message
-            script_commands.push(format!(
-                "if [ \"$(git rev-parse HEAD)\" != \"{}\" ]; then true; else git commit --amend -m \"$(git log -1 --format='%B')\\n\\nGG-ID: {}\"; fi",
-                entry.oid, new_id
-            ));
-        }
-    }
-
-    // Simple approach: use git rebase with environment variable for editor
-    // Actually, let's do this programmatically with git2
-
-    use git2::RebaseOptions;
-
-    let _head = repo.head()?.peel_to_commit()?;
-    let base_commit = repo.find_annotated_commit(base_ref.id())?;
-
-    let mut rebase_opts = RebaseOptions::new();
-    let mut rebase = repo.rebase(None, Some(&base_commit), None, Some(&mut rebase_opts))?;
-
-    let sig = git::get_signature(repo)?;
-
-    while let Some(op) = rebase.next() {
-        let op = op?;
-        let commit = repo.find_commit(op.id())?;
-
-        // Check if this commit needs a GG-ID
-        let needs_id = get_gg_id(&commit).is_none();
-
-        let message = commit.message().unwrap_or("");
-        let new_message = if needs_id {
-            let new_id = generate_gg_id();
-            set_gg_id_in_message(message, &new_id)
+            set_gg_id_in_message(original_message, &new_id)
         } else {
-            message.to_string()
+            // Even if this commit already has a GG-ID, we still need to rewrite it
+            // because the parent has changed (due to previous rewrites in the stack)
+            original_message.to_string()
         };
 
-        rebase.commit(None, &sig, Some(&new_message))?;
+        // Create a new commit with the same tree but updated parent and message
+        let new_oid = repo.commit(
+            None, // Don't update any reference yet
+            &original_commit.author(),
+            &original_commit.committer(),
+            &new_message,
+            &original_commit.tree()?,
+            &[&repo.find_commit(parent_oid)?],
+        )?;
+
+        // This new commit becomes the parent for the next one
+        parent_oid = new_oid;
     }
 
-    rebase.finish(None)?;
+    // Update the current branch to point to the last rewritten commit
+    let head = repo.head()?;
+    if let Some(branch_name) = head.shorthand() {
+        // Update the branch reference
+        repo.reference(
+            &format!("refs/heads/{}", branch_name),
+            parent_oid,
+            true,
+            "gg sync: added GG-IDs",
+        )?;
+    } else {
+        return Err(GgError::Other(
+            "Cannot add GG-IDs: HEAD is detached".to_string(),
+        ));
+    }
 
     println!("{} Added GG-IDs to commits", style("OK").green().bold());
 

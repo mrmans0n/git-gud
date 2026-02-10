@@ -8,8 +8,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git::{
-    self, generate_gg_id, get_commit_description, set_gg_id_in_message,
-    strip_gg_id_from_message,
+    self, generate_gg_id, get_commit_description, set_gg_id_in_message, strip_gg_id_from_message,
 };
 use crate::provider::Provider;
 use crate::stack::{resolve_target, Stack};

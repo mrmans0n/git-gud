@@ -678,7 +678,7 @@ pub fn get_merge_train_status(mr_number: u64, target_branch: &str) -> Result<Mer
     let output = Command::new("glab")
         .args([
             "api",
-            &format!("projects/:id/merge_trains/{}", target_branch),
+            &format!("projects/:id/merge_trains/{}?sort=asc", target_branch),
         ])
         .output()?;
 

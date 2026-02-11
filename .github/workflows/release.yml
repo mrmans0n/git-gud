@@ -318,6 +318,12 @@ jobs:
             name=$(echo "$filename" | sed "s/\.rb$//")
             version=$(echo "$release" | jq .app_version --raw-output)
 
+            # Remove redundant version line (brew audit complains if version is deducible from URL)
+            sed -i '/^  version "/d' "Formula/${filename}"
+            # Remove article from desc (brew style requires desc not to start with an article)
+            sed -i 's/^  desc "A /  desc "/' "Formula/${filename}"
+            sed -i 's/^  desc "An /  desc "/' "Formula/${filename}"
+
             export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
             brew update
             # We avoid reformatting user-provided data such as the app description and homepage.

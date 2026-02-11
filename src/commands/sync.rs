@@ -342,7 +342,11 @@ pub fn run(
                     // even if --update-descriptions wasn't provided.
                     if update_descriptions || (entry_draft && matches!(provider, Provider::GitLab))
                     {
-                        if let Err(e) = provider.update_pr_title(pr_num, &title) {
+                        // For GitLab with draft=true, ensure the title has "Draft: " prefix
+                        let final_title =
+                            ensure_draft_prefix_for_gitlab(&title, &provider, entry_draft);
+
+                        if let Err(e) = provider.update_pr_title(pr_num, &final_title) {
                             pb.println(format!(
                                 "{} Could not update {} {}{} title: {}",
                                 style("Warning:").yellow(),
@@ -510,6 +514,30 @@ fn clean_title(title: &str) -> String {
     trimmed.strip_suffix('.').unwrap_or(trimmed).to_string()
 }
 
+/// Ensure a title has the "Draft: " prefix for GitLab when draft is true.
+/// GitLab controls draft state via the title prefix, so when syncing with --draft,
+/// we need to ensure the title has the "Draft: " prefix.
+/// This function only adds the prefix if:
+/// - The provider is GitLab
+/// - is_draft is true
+/// - The title doesn't already have the prefix (case-insensitive check)
+fn ensure_draft_prefix_for_gitlab(title: &str, provider: &Provider, is_draft: bool) -> String {
+    // Only add prefix for GitLab when draft is true
+    if !is_draft || !matches!(provider, Provider::GitLab) {
+        return title.to_string();
+    }
+
+    let trimmed = title.trim_start();
+    let lower = trimmed.to_ascii_lowercase();
+
+    // Don't double-add if it already has the prefix
+    if lower.starts_with("draft:") {
+        title.to_string()
+    } else {
+        format!("Draft: {}", title)
+    }
+}
+
 /// Create a branch pointing to a specific entry's commit
 fn create_entry_branch(
     repo: &Repository,
@@ -594,7 +622,9 @@ fn add_gg_ids_to_commits(repo: &Repository, stack: &Stack) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_pr_payload, clean_title, is_wip_or_draft_prefix};
+    use super::{
+        build_pr_payload, clean_title, ensure_draft_prefix_for_gitlab, is_wip_or_draft_prefix,
+    };
     use crate::git;
 
     #[test]
@@ -707,5 +737,67 @@ mod tests {
         assert_eq!(description, "Custom: Test");
         // Should NOT contain the default fallback
         assert!(!description.contains("Part of stack"));
+    }
+
+    #[test]
+    fn test_ensure_draft_prefix_for_gitlab_adds_prefix() {
+        use crate::provider::Provider;
+        // GitLab + draft = should add prefix
+        assert_eq!(
+            ensure_draft_prefix_for_gitlab("Add feature", &Provider::GitLab, true),
+            "Draft: Add feature"
+        );
+    }
+
+    #[test]
+    fn test_ensure_draft_prefix_for_gitlab_no_double_add() {
+        use crate::provider::Provider;
+        // Should not double-add if already present
+        assert_eq!(
+            ensure_draft_prefix_for_gitlab("Draft: Add feature", &Provider::GitLab, true),
+            "Draft: Add feature"
+        );
+        assert_eq!(
+            ensure_draft_prefix_for_gitlab("draft: Add feature", &Provider::GitLab, true),
+            "draft: Add feature"
+        );
+        assert_eq!(
+            ensure_draft_prefix_for_gitlab("DRAFT: Add feature", &Provider::GitLab, true),
+            "DRAFT: Add feature"
+        );
+    }
+
+    #[test]
+    fn test_ensure_draft_prefix_for_gitlab_non_draft() {
+        use crate::provider::Provider;
+        // GitLab + not draft = no prefix
+        assert_eq!(
+            ensure_draft_prefix_for_gitlab("Add feature", &Provider::GitLab, false),
+            "Add feature"
+        );
+    }
+
+    #[test]
+    fn test_ensure_draft_prefix_for_github_unchanged() {
+        use crate::provider::Provider;
+        // GitHub doesn't use title prefix for draft, so should be unchanged
+        assert_eq!(
+            ensure_draft_prefix_for_gitlab("Add feature", &Provider::GitHub, true),
+            "Add feature"
+        );
+        assert_eq!(
+            ensure_draft_prefix_for_gitlab("Add feature", &Provider::GitHub, false),
+            "Add feature"
+        );
+    }
+
+    #[test]
+    fn test_ensure_draft_prefix_with_whitespace() {
+        use crate::provider::Provider;
+        // Should handle leading whitespace in draft prefix check
+        assert_eq!(
+            ensure_draft_prefix_for_gitlab("  Draft: Add feature", &Provider::GitLab, true),
+            "  Draft: Add feature"
+        );
     }
 }

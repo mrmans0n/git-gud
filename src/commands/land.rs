@@ -315,12 +315,6 @@ pub fn run(
         None
     };
 
-    let entries_to_land = if let Some(end_pos) = land_until {
-        &stack.entries[..end_pos]
-    } else {
-        &stack.entries[..]
-    };
-
     let land_multiple = land_all || land_until.is_some();
 
     // Set up Ctrl+C handler if waiting
@@ -346,12 +340,46 @@ pub fn run(
     // Find landable PRs (approved, open, from the start of the stack)
     let mut landed_count = 0;
 
-    for entry in entries_to_land {
+    // Use a while loop instead of for loop so we can reload the stack after rebasing
+    'landing_loop: loop {
+        // Reload entries_to_land from the current stack state
+        let entries_to_land = if let Some(end_pos) = land_until {
+            &stack.entries[..end_pos.min(stack.entries.len())]
+        } else {
+            &stack.entries[..]
+        };
+
+        // Find the next entry to land (skip already-landed ones)
+        let mut next_entry_idx = None;
+        for (idx, entry) in entries_to_land.iter().enumerate() {
+            if let Some(num) = entry.mr_number {
+                // Check if this MR is still open (not merged yet)
+                if let Ok(info) = provider.get_pr_info(num) {
+                    if info.state == PrState::Open || info.state == PrState::Draft {
+                        next_entry_idx = Some(idx);
+                        break;
+                    } else if info.state == PrState::Merged {
+                        // Already merged, continue to next
+                        continue;
+                    }
+                }
+            }
+        }
+
+        let entry_idx = match next_entry_idx {
+            Some(idx) => idx,
+            None => {
+                // No more entries to land
+                break 'landing_loop;
+            }
+        };
+
+        let entry = &entries_to_land[entry_idx];
         // Check if interrupted
         if let Some(ref flag) = interrupted {
             if flag.load(Ordering::SeqCst) {
                 println!("{}", style("Interrupted by user.").yellow());
-                break;
+                break 'landing_loop;
             }
         }
 
@@ -363,7 +391,7 @@ pub fn run(
                     style("Error:").red().bold(),
                     entry.short_sha
                 );
-                break;
+                break 'landing_loop;
             }
         };
 
@@ -376,7 +404,7 @@ pub fn run(
                     entry.short_sha,
                     provider.pr_label()
                 );
-                break;
+                break 'landing_loop;
             }
         };
 
@@ -393,7 +421,7 @@ pub fn run(
                     pr_num
                 );
                 landed_count += 1;
-                continue;
+                continue 'landing_loop;
             }
             PrState::Closed => {
                 println!(
@@ -403,7 +431,7 @@ pub fn run(
                     provider.pr_number_prefix(),
                     pr_num
                 );
-                break;
+                break 'landing_loop;
             }
             PrState::Draft => {
                 println!(
@@ -413,7 +441,7 @@ pub fn run(
                     provider.pr_number_prefix(),
                     pr_num
                 );
-                break;
+                break 'landing_loop;
             }
             PrState::Open => {
                 // If wait flag is set, wait for CI and approvals
@@ -435,7 +463,7 @@ pub fn run(
                             pr_num,
                             e
                         );
-                        break;
+                        break 'landing_loop;
                     }
                 } else {
                     // Check if approved (skip if --all is used)
@@ -449,7 +477,7 @@ pub fn run(
                                 provider.pr_number_prefix(),
                                 pr_num
                             );
-                            break;
+                            break 'landing_loop;
                         }
                     }
                 }
@@ -472,7 +500,7 @@ pub fn run(
 
             if !confirm {
                 println!("{}", style("Stopping.").dim());
-                break;
+                break 'landing_loop;
             }
         }
 
@@ -514,7 +542,7 @@ pub fn run(
                                 pr_num,
                                 e
                             );
-                            break;
+                            break 'landing_loop;
                         }
 
                         // MR successfully merged! Clean up and continue
@@ -549,17 +577,29 @@ pub fn run(
                                     style("  You may need to rebase the remaining PRs manually.")
                                         .dim()
                                 );
-                                break;
+                                break 'landing_loop;
+                            }
+
+                            // Reload the stack to reflect the new commit structure
+                            // The merged commit has been dropped and remaining commits have new OIDs
+                            println!("{}", style("  Reloading stack state...").dim());
+
+                            stack = Stack::load(&repo, &config)?;
+                            if !stack.is_empty() {
+                                stack.refresh_mr_info(&provider)?;
                             }
                         }
 
                         // Continue to next MR if landing multiple
                         if !land_multiple {
-                            break;
+                            break 'landing_loop;
                         }
 
                         // Wait a bit for GitLab to process
                         std::thread::sleep(Duration::from_secs(2));
+
+                        // Continue the landing loop with the refreshed stack
+                        continue 'landing_loop;
                     } else {
                         // Without --wait, stop after queuing
                         println!(
@@ -571,7 +611,7 @@ pub fn run(
                         // landed_count here. The MR is only queued in the merge train, not
                         // actually merged yet. Cleanup would be premature and could cause
                         // data loss if the MR is later removed from the train.
-                        break;
+                        break 'landing_loop;
                     }
                 }
                 Ok(AutoMergeResult::AlreadyQueued) => {
@@ -601,7 +641,7 @@ pub fn run(
                                 pr_num,
                                 e
                             );
-                            break;
+                            break 'landing_loop;
                         }
 
                         // MR successfully merged! Clean up and continue
@@ -636,17 +676,29 @@ pub fn run(
                                     style("  You may need to rebase the remaining PRs manually.")
                                         .dim()
                                 );
-                                break;
+                                break 'landing_loop;
+                            }
+
+                            // Reload the stack to reflect the new commit structure
+                            // The merged commit has been dropped and remaining commits have new OIDs
+                            println!("{}", style("  Reloading stack state...").dim());
+
+                            stack = Stack::load(&repo, &config)?;
+                            if !stack.is_empty() {
+                                stack.refresh_mr_info(&provider)?;
                             }
                         }
 
                         // Continue to next MR if landing multiple
                         if !land_multiple {
-                            break;
+                            break 'landing_loop;
                         }
 
                         // Wait a bit for GitLab to process
                         std::thread::sleep(Duration::from_secs(2));
+
+                        // Continue the landing loop with the refreshed stack
+                        continue 'landing_loop;
                     } else {
                         // Without --wait, stop after noting it's queued
                         println!(
@@ -655,7 +707,7 @@ pub fn run(
                                 .dim()
                         );
                         // Note: We intentionally do NOT clean up here - MR is not merged yet.
-                        break;
+                        break 'landing_loop;
                     }
                 }
                 Err(e) => {
@@ -667,7 +719,7 @@ pub fn run(
                         pr_num,
                         e
                     );
-                    break;
+                    break 'landing_loop;
                 }
             }
         } else if auto_merge_on_land {
@@ -722,12 +774,12 @@ pub fn run(
                         pr_num,
                         e
                     );
-                    break;
+                    break 'landing_loop;
                 }
             }
             // When using auto-merge, we don't continue to the next MR because
             // it needs to merge first before we can update bases of stacked MRs.
-            break;
+            break 'landing_loop;
         } else {
             println!(
                 "{} Merging {} {}{}...",
@@ -777,7 +829,16 @@ pub fn run(
                                 "{}",
                                 style("  You may need to rebase the remaining PRs manually.").dim()
                             );
-                            break;
+                            break 'landing_loop;
+                        }
+
+                        // Reload the stack to reflect the new commit structure
+                        // The merged commit has been dropped and remaining commits have new OIDs
+                        println!("{}", style("  Reloading stack state...").dim());
+
+                        stack = Stack::load(&repo, &config)?;
+                        if !stack.is_empty() {
+                            stack.refresh_mr_info(&provider)?;
                         }
                     }
                 }
@@ -790,7 +851,7 @@ pub fn run(
                         pr_num,
                         e
                     );
-                    break;
+                    break 'landing_loop;
                 }
             }
         }
@@ -798,11 +859,11 @@ pub fn run(
         // Auto-merge is queued asynchronously; landing the rest of a stack
         // requires the earlier MR(s) to actually merge and bases to update.
         if auto_merge_on_land {
-            break;
+            break 'landing_loop;
         }
 
         if !land_multiple {
-            break;
+            break 'landing_loop;
         }
 
         // Wait a bit for the provider to process

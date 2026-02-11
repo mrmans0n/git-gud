@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-02-11
+
+### Fixed
+- Reload stack state after rebase in merge train flow (#129)
+- Sort merge train results ascending to fix position calculation (#128)
+- Preserve draft state when syncing existing GitLab MRs (#125)
+
 ## [0.1.15] - 2026-02-10
 
 ### Fixed
@@ -93,7 +100,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.1.15...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.1.16...HEAD
+[0.1.16]: https://github.com/mrmans0n/git-gud/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/mrmans0n/git-gud/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/mrmans0n/git-gud/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/mrmans0n/git-gud/compare/v0.1.12...v0.1.13

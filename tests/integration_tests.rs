@@ -3511,26 +3511,76 @@ fn test_rebase_chain_after_multiple_squash_merges() {
 
 // ==================== Worktree Support Tests ====================
 
-/// Helper to create a git worktree from a repo
+/// Create a test repo inside a parent dir, so worktrees can be created as siblings.
+/// Uses --initial-branch=main for CI compatibility where git may default to 'master'.
+/// Returns (parent_temp_dir, repo_path) - the parent dir owns both repo and worktree dirs.
+fn create_test_repo_with_worktree_support() -> (TempDir, PathBuf) {
+    let parent_dir = TempDir::new().expect("Failed to create parent temp dir");
+    let repo_path = parent_dir.path().join("repo");
+    fs::create_dir(&repo_path).expect("Failed to create repo dir");
+
+    Command::new("git")
+        .args(["init", "--initial-branch=main"])
+        .current_dir(&repo_path)
+        .output()
+        .expect("Failed to init git repo");
+
+    Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(&repo_path)
+        .output()
+        .expect("Failed to configure git email");
+
+    Command::new("git")
+        .args(["config", "user.name", "Test User"])
+        .current_dir(&repo_path)
+        .output()
+        .expect("Failed to configure git name");
+
+    fs::write(repo_path.join("README.md"), "# Test Repo\n").expect("Failed to write README");
+
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(&repo_path)
+        .output()
+        .expect("Failed to add files");
+
+    Command::new("git")
+        .args(["commit", "-m", "Initial commit"])
+        .current_dir(&repo_path)
+        .output()
+        .expect("Failed to create initial commit");
+
+    (parent_dir, repo_path)
+}
+
+/// Helper to create a git worktree as a sibling of the repo inside the parent temp dir
 fn create_worktree(main_repo: &PathBuf, name: &str) -> PathBuf {
     let worktree_path = main_repo.parent().unwrap().join(name);
-    let (success, output) = run_git(
-        main_repo,
-        &[
+    let output = Command::new("git")
+        .args([
             "worktree",
             "add",
             worktree_path.to_str().unwrap(),
             "-b",
             name,
-        ],
+        ])
+        .current_dir(main_repo)
+        .output()
+        .expect("Failed to run git worktree add");
+    assert!(
+        output.status.success(),
+        "Failed to create worktree '{}': {}{}",
+        name,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
-    assert!(success, "Failed to create worktree '{}': {}", name, output);
     worktree_path
 }
 
 #[test]
 fn test_worktree_shares_config() {
-    let (_temp_dir, repo_path) = create_test_repo();
+    let (_parent_dir, repo_path) = create_test_repo_with_worktree_support();
 
     // Set up config in main repo
     let gg_dir = repo_path.join(".git/gg");
@@ -3565,7 +3615,7 @@ fn test_worktree_shares_config() {
 
 #[test]
 fn test_worktree_independent_nav_state() {
-    let (_temp_dir, repo_path) = create_test_repo();
+    let (_parent_dir, repo_path) = create_test_repo_with_worktree_support();
 
     // Set up config
     let gg_dir = repo_path.join(".git/gg");
@@ -3612,7 +3662,7 @@ fn test_worktree_independent_nav_state() {
 
 #[test]
 fn test_worktree_shared_lock() {
-    let (_temp_dir, repo_path) = create_test_repo();
+    let (_parent_dir, repo_path) = create_test_repo_with_worktree_support();
 
     // Set up config
     let gg_dir = repo_path.join(".git/gg");

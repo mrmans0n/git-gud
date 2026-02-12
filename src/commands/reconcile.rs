@@ -48,7 +48,7 @@ impl ReconcileActions {
 /// Run the reconcile command
 pub fn run(dry_run: bool) -> Result<()> {
     let repo = git::open_repo()?;
-    let git_dir = repo.path();
+    let git_dir = repo.commondir();
     let mut config = Config::load(git_dir)?;
 
     // Detect provider

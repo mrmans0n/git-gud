@@ -12,7 +12,7 @@ use crate::provider::Provider;
 /// Run the setup command
 pub fn run() -> Result<()> {
     let repo = git::open_repo()?;
-    let git_dir = repo.path();
+    let git_dir = repo.commondir();
     let config_path = Config::config_path(git_dir);
     let mut config = Config::load(git_dir)?;
     let theme = ColorfulTheme::default();

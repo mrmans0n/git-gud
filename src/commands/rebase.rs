@@ -20,7 +20,7 @@ pub fn run(target: Option<String>) -> Result<()> {
 
 /// Run rebase with an already-open repository (no lock acquisition)
 pub fn run_with_repo(repo: &Repository, target: Option<String>) -> Result<()> {
-    let config = Config::load(repo.path())?;
+    let config = Config::load(repo.commondir())?;
 
     // Auto-stash uncommitted changes if present
     let needs_stash = !git::is_working_directory_clean(repo)?;

@@ -90,7 +90,7 @@ pub fn run(
     // Acquire operation lock to prevent concurrent operations
     let _lock = git::acquire_operation_lock(&repo, "sync")?;
 
-    let git_dir = repo.path();
+    let git_dir = repo.commondir();
     let mut config = Config::load(git_dir)?;
 
     // Load stack early to validate --until

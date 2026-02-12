@@ -13,8 +13,7 @@ use crate::stack::{Stack, StackEntry};
 /// Run the lint command
 pub fn run(until: Option<usize>) -> Result<()> {
     let repo = git::open_repo()?;
-    let git_dir = repo.path();
-    let config = Config::load(git_dir)?;
+    let config = Config::load(repo.commondir())?;
 
     // Require clean working directory
     git::require_clean_working_directory(&repo)?;
@@ -24,7 +23,7 @@ pub fn run(until: Option<usize>) -> Result<()> {
     if lint_commands.is_empty() {
         println!(
             "{}",
-            style("No lint commands configured. Add them to .git/gg/config.json").dim()
+            style("No lint commands configured. Run 'gg setup' to configure lint commands.").dim()
         );
         println!();
         println!("Example configuration:");

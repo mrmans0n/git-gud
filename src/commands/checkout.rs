@@ -19,7 +19,7 @@ pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
     // Acquire operation lock to prevent concurrent operations
     let _lock = git::acquire_operation_lock(&repo, "checkout")?;
 
-    let git_dir = repo.path();
+    let git_dir = repo.commondir();
     let mut config = Config::load(git_dir)?;
 
     // Get username from config or provider
@@ -280,7 +280,7 @@ fn import_pr_mappings_for_remote_stack(
         return Ok(());
     }
 
-    let git_dir = repo.path();
+    let git_dir = repo.commondir();
     let mut imported_count = 0;
     let mut skipped_branches: HashSet<String> = HashSet::new();
 

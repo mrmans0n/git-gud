@@ -21,7 +21,7 @@ pub fn move_to(target: &str) -> Result<()> {
         ));
     }
 
-    let config = Config::load(repo.path())?;
+    let config = Config::load(repo.commondir())?;
     let stack = Stack::load(&repo, &config)?;
 
     if stack.is_empty() {
@@ -73,7 +73,7 @@ pub fn first() -> Result<()> {
         ));
     }
 
-    let config = Config::load(repo.path())?;
+    let config = Config::load(repo.commondir())?;
     let stack = Stack::load(&repo, &config)?;
 
     if let Some(entry) = stack.first() {
@@ -90,8 +90,7 @@ pub fn last() -> Result<()> {
     // Acquire operation lock to prevent concurrent operations
     let _lock = git::acquire_operation_lock(&repo, "nav")?;
 
-    let git_dir = repo.path();
-    let config = Config::load(git_dir)?;
+    let config = Config::load(repo.commondir())?;
     let stack = Stack::load(&repo, &config)?;
 
     // Check if a rebase is in progress
@@ -108,8 +107,8 @@ pub fn last() -> Result<()> {
 
         // For last, we should checkout the branch, not detach
         git::checkout_branch(&repo, &stack.branch_name())?;
-        // Clear the saved stack since we're back on the branch
-        stack::clear_current_stack(git_dir)?;
+        // Clear the saved stack since we're back on the branch (per-worktree state)
+        stack::clear_current_stack(repo.path())?;
 
         if needs_rebase {
             println!(
@@ -145,7 +144,7 @@ pub fn prev() -> Result<()> {
         ));
     }
 
-    let config = Config::load(repo.path())?;
+    let config = Config::load(repo.commondir())?;
     let stack = Stack::load(&repo, &config)?;
 
     if let Some(entry) = stack.prev() {
@@ -164,8 +163,7 @@ pub fn next() -> Result<()> {
     // Acquire operation lock to prevent concurrent operations
     let _lock = git::acquire_operation_lock(&repo, "nav")?;
 
-    let git_dir = repo.path();
-    let config = Config::load(git_dir)?;
+    let config = Config::load(repo.commondir())?;
     let stack = Stack::load(&repo, &config)?;
 
     // Check if a rebase is in progress
@@ -187,7 +185,7 @@ pub fn next() -> Result<()> {
     if current_pos >= stack.len().saturating_sub(1) {
         // At stack head, ensure we're on the branch
         git::checkout_branch(&repo, &stack.branch_name())?;
-        stack::clear_current_stack(git_dir)?;
+        stack::clear_current_stack(repo.path())?;
         if needs_rebase {
             println!(
                 "{} Already at stack head (rebased)",
@@ -210,7 +208,7 @@ pub fn next() -> Result<()> {
         // If next is the last entry, checkout branch instead of detaching
         if entry.position == stack.len() {
             git::checkout_branch(&repo, &stack.branch_name())?;
-            stack::clear_current_stack(git_dir)?;
+            stack::clear_current_stack(repo.path())?;
             println!(
                 "{} Moved to stack head: [{}] {} {}",
                 style("OK").green().bold(),
@@ -304,7 +302,7 @@ fn check_and_rebase_if_modified(repo: &git2::Repository, stack: &Stack) -> Resul
     if let Some(current_stack_pos) = stack.current_position {
         if current_stack_pos != saved_position {
             // We've moved to a different position - nav context is stale, clear it
-            stack::clear_current_stack(git_dir)?;
+            stack::clear_current_stack(repo.path())?;
             return Ok(false);
         }
     }

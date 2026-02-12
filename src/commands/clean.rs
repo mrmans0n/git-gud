@@ -67,7 +67,33 @@ pub fn run_for_stack_with_repo(repo: &Repository, stack_name: &str, force: bool)
             git::checkout_branch(repo, &base)?;
         }
 
-        branch.delete()?;
+        // Check if branch is HEAD of a worktree
+        if let Some(wt_name) = git::is_branch_checked_out_in_worktree(repo, &branch_name) {
+            // Try to prune if stale
+            if !git::try_prune_worktree(repo, &wt_name) {
+                // Worktree still exists - warn and try to remove it
+                println!(
+                    "{} Branch '{}' is checked out in worktree '{}'. Removing worktree.",
+                    style("Note:").cyan(),
+                    branch_name,
+                    wt_name
+                );
+                let _ = git::remove_worktree(&wt_name);
+            }
+        }
+
+        // Try to delete the branch, handle errors gracefully
+        if let Err(e) = branch.delete() {
+            println!(
+                "{} Could not delete local branch '{}': {}",
+                style("Warning:").yellow(),
+                branch_name,
+                e
+            );
+            println!(
+                "  You may need to manually remove the worktree first: git worktree remove <path>"
+            );
+        }
     }
 
     let allow_remote_delete = merge_status.verified;
@@ -180,7 +206,33 @@ pub fn run(clean_all: bool) -> Result<()> {
                     git::checkout_branch(&repo, &base)?;
                 }
 
-                branch.delete()?;
+                // Check if branch is HEAD of a worktree
+                if let Some(wt_name) = git::is_branch_checked_out_in_worktree(&repo, &branch_name) {
+                    // Try to prune if stale
+                    if !git::try_prune_worktree(&repo, &wt_name) {
+                        // Worktree still exists - warn and try to remove it
+                        println!(
+                            "{} Branch '{}' is checked out in worktree '{}'. Removing worktree.",
+                            style("Note:").cyan(),
+                            branch_name,
+                            wt_name
+                        );
+                        let _ = git::remove_worktree(&wt_name);
+                    }
+                }
+
+                // Try to delete the branch, handle errors gracefully
+                if let Err(e) = branch.delete() {
+                    println!(
+                        "{} Could not delete local branch '{}': {}",
+                        style("Warning:").yellow(),
+                        branch_name,
+                        e
+                    );
+                    println!(
+                        "  You may need to manually remove the worktree first: git worktree remove <path>"
+                    );
+                }
             }
 
             let allow_remote_delete = merge_status.verified;
@@ -393,6 +445,15 @@ fn delete_entry_branches(
             let entry_branch = git::format_entry_branch(username, stack_name, &entry_id);
             // Delete local entry branch
             if let Ok(mut branch) = repo.find_branch(&entry_branch, BranchType::Local) {
+                // Check if branch is HEAD of a worktree
+                if let Some(wt_name) = git::is_branch_checked_out_in_worktree(repo, &entry_branch) {
+                    // Try to prune if stale
+                    if !git::try_prune_worktree(repo, &wt_name) {
+                        // Worktree still exists - try to remove it silently
+                        let _ = git::remove_worktree(&wt_name);
+                    }
+                }
+                // Try to delete, ignore errors (best effort for entry branches)
                 let _ = branch.delete();
             }
             // Delete remote entry branch
@@ -425,6 +486,15 @@ fn delete_entry_branches(
 
     for branch_name in branches {
         if let Ok(mut branch) = repo.find_branch(&branch_name, BranchType::Local) {
+            // Check if branch is HEAD of a worktree
+            if let Some(wt_name) = git::is_branch_checked_out_in_worktree(repo, &branch_name) {
+                // Try to prune if stale
+                if !git::try_prune_worktree(repo, &wt_name) {
+                    // Worktree still exists - try to remove it silently
+                    let _ = git::remove_worktree(&wt_name);
+                }
+            }
+            // Try to delete, ignore errors (best effort for entry branches)
             let _ = branch.delete();
         }
         // Also try to delete from remote

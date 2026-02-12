@@ -180,6 +180,55 @@ pub fn find_entry_branch_for_stack(
     None
 }
 
+/// Check if a branch is the HEAD of any worktree
+/// Returns the worktree name if the branch is checked out, None otherwise
+pub fn is_branch_checked_out_in_worktree(repo: &Repository, branch_name: &str) -> Option<String> {
+    if let Ok(worktrees) = repo.worktrees() {
+        for name in worktrees.iter().flatten() {
+            if let Ok(wt) = repo.find_worktree(name) {
+                // Open repo from worktree to check its HEAD
+                if let Ok(wt_repo) = Repository::open_from_worktree(&wt) {
+                    if let Some(head_name) = current_branch_name(&wt_repo) {
+                        if head_name == branch_name {
+                            return Some(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Try to prune a worktree if it's stale (directory no longer exists)
+/// Returns true if the worktree was pruned successfully
+pub fn try_prune_worktree(repo: &Repository, wt_name: &str) -> bool {
+    if let Ok(wt) = repo.find_worktree(wt_name) {
+        if wt.validate().is_err() {
+            // Worktree is stale, try to prune it
+            if wt
+                .prune(Some(
+                    git2::WorktreePruneOptions::new()
+                        .working_tree(true)
+                        .valid(false)
+                        .locked(false),
+                ))
+                .is_ok()
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Remove a worktree using git CLI
+/// This handles both stale and valid worktrees
+pub fn remove_worktree(wt_name: &str) -> Result<()> {
+    run_git_command(&["worktree", "remove", wt_name, "--force"])?;
+    Ok(())
+}
+
 /// Check if the working directory is clean
 /// Only checks for actual changes (modified, staged, deleted, etc.)
 /// Ignores untracked files and submodules to match `git status` behavior

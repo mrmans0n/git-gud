@@ -38,8 +38,8 @@ impl Drop for OperationLock {
 /// Acquire an exclusive operation lock to prevent concurrent gg operations
 /// Returns a lock handle that will automatically release when dropped
 pub fn acquire_operation_lock(repo: &Repository, operation: &str) -> Result<OperationLock> {
-    let git_dir = repo.path();
-    let gg_dir = git_dir.join("gg");
+    let common_dir = repo.commondir();
+    let gg_dir = common_dir.join("gg");
 
     // Ensure gg directory exists
     fs::create_dir_all(&gg_dir)?;

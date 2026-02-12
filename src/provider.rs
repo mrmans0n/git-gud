@@ -65,8 +65,8 @@ impl Provider {
     /// 2. Auto-detect from remote URL (github.com, gitlab.com)
     pub fn detect(repo: &Repository) -> Result<Self> {
         // Try to load config and check for explicit provider setting
-        let git_dir = repo.path();
-        if let Ok(config) = Config::load(git_dir) {
+        let common_dir = repo.commondir();
+        if let Ok(config) = Config::load(common_dir) {
             if let Some(provider) = config.defaults.provider.as_deref() {
                 return Self::from_str(provider);
             }

@@ -261,7 +261,7 @@ fn main() {
                 false
             } else {
                 // No explicit flag, use config default
-                match git::open_repo().and_then(|repo| config::Config::load(repo.path())) {
+                match git::open_repo().and_then(|repo| config::Config::load(repo.commondir())) {
                     Ok(cfg) => cfg.get_sync_auto_lint(),
                     Err(_) => false, // If we can't load config, default to false
                 }
@@ -296,7 +296,7 @@ fn main() {
                 false
             } else {
                 // No explicit flag, use config default
-                match git::open_repo().and_then(|repo| config::Config::load(repo.path())) {
+                match git::open_repo().and_then(|repo| config::Config::load(repo.commondir())) {
                     Ok(cfg) => cfg.get_land_auto_clean(),
                     Err(_) => false, // If we can't load config, default to false
                 }

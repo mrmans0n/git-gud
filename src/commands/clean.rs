@@ -23,7 +23,7 @@ pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
 
 /// Run clean for a stack with an already-open repository (no lock acquisition)
 pub fn run_for_stack_with_repo(repo: &Repository, stack_name: &str, force: bool) -> Result<()> {
-    let git_dir = repo.path();
+    let git_dir = repo.commondir();
     let mut config = Config::load(git_dir)?;
 
     // Detect provider (best-effort)
@@ -104,7 +104,7 @@ pub fn run(clean_all: bool) -> Result<()> {
     // Acquire operation lock to prevent concurrent operations
     let _lock = git::acquire_operation_lock(&repo, "clean")?;
 
-    let git_dir = repo.path();
+    let git_dir = repo.commondir();
     let mut config = Config::load(git_dir)?;
 
     // Detect provider (best-effort).

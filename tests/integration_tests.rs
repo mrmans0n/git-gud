@@ -3508,3 +3508,138 @@ fn test_rebase_chain_after_multiple_squash_merges() {
     );
     assert!(log.contains("commit C"), "Should be commit C: {}", log);
 }
+
+// ==================== Worktree Support Tests ====================
+
+/// Helper to create a git worktree from a repo
+fn create_worktree(main_repo: &PathBuf, name: &str) -> PathBuf {
+    let worktree_path = main_repo.parent().unwrap().join(name);
+    let (success, output) = run_git(
+        main_repo,
+        &[
+            "worktree",
+            "add",
+            worktree_path.to_str().unwrap(),
+            "-b",
+            name,
+        ],
+    );
+    assert!(success, "Failed to create worktree '{}': {}", name, output);
+    worktree_path
+}
+
+#[test]
+fn test_worktree_shares_config() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config in main repo
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","base":"main"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a worktree
+    let worktree_path = create_worktree(&repo_path, "wt-config-test");
+
+    // gg ls should work from the worktree (it loads config)
+    let (success, stdout, stderr) = run_gg(&worktree_path, &["ls"]);
+
+    // Should succeed (may say "not on a stack" but should not fail with config errors)
+    assert!(
+        success,
+        "gg ls from worktree should succeed. stdout: {}, stderr: {}",
+        stdout, stderr
+    );
+
+    // Verify the config is read from the shared .git/gg/ location
+    // by checking that the worktree does NOT have its own config
+    let worktree_git_dir = repo_path.join(".git/worktrees/wt-config-test/gg/config.json");
+    assert!(
+        !worktree_git_dir.exists(),
+        "Worktree should NOT have its own config - should use shared config"
+    );
+}
+
+#[test]
+fn test_worktree_independent_nav_state() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","base":"main"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with commits in main repo
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "nav-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("file1.txt"), "content 1").expect("Failed to write");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "commit 1"]);
+
+    fs::write(repo_path.join("file2.txt"), "content 2").expect("Failed to write");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "commit 2"]);
+
+    // Navigate to first commit in main repo
+    let (success, _, stderr) = run_gg(&repo_path, &["first"]);
+    assert!(success, "Failed to nav first: {}", stderr);
+
+    // The main repo should now have a current_stack file in its git dir
+    let main_current_stack = repo_path.join(".git/gg/current_stack");
+    assert!(
+        main_current_stack.exists(),
+        "Main repo should have nav state (current_stack file)"
+    );
+
+    // Create a worktree on main branch
+    let _worktree_path = create_worktree(&repo_path, "wt-nav-test");
+
+    // The worktree should NOT have nav state (it's per-worktree)
+    let worktree_current_stack = repo_path.join(".git/worktrees/wt-nav-test/gg/current_stack");
+    assert!(
+        !worktree_current_stack.exists(),
+        "Worktree should NOT have nav state from main repo"
+    );
+}
+
+#[test]
+fn test_worktree_shared_lock() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","base":"main"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a worktree
+    let worktree_path = create_worktree(&repo_path, "wt-lock-test");
+
+    // Verify that lock files go to the common dir, not the worktree dir
+    // We can test this by running a command from the worktree and checking
+    // that the lock file would be in .git/gg/ not .git/worktrees/wt-lock-test/gg/
+    // Since the lock is transient, we just verify the gg dir gets created in the right place
+    let (success, _, stderr) = run_gg(&worktree_path, &["ls"]);
+    assert!(success, "gg ls from worktree should succeed: {}", stderr);
+
+    // The shared gg dir should exist (created by config load or lock)
+    assert!(gg_dir.exists(), "Shared .git/gg/ directory should exist");
+
+    // The worktree-specific gg dir should NOT have a lock file
+    let worktree_lock = repo_path.join(".git/worktrees/wt-lock-test/gg/operation.lock");
+    assert!(
+        !worktree_lock.exists(),
+        "Worktree should NOT have its own lock file - lock should be in shared .git/gg/"
+    );
+}

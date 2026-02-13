@@ -4,6 +4,8 @@
 //! staged changes should be absorbed into, then creates fixup commits
 //! and optionally rebases them.
 
+use std::ffi::OsString;
+
 use console::style;
 use slog::{o, Drain, Logger};
 
@@ -104,6 +106,7 @@ pub fn run(options: AbsorbOptions) -> Result<()> {
     };
 
     // Run git-absorb
+    let _env_guard = prepare_git_absorb_env(&repo);
     match git_absorb::run(&logger, &absorb_config) {
         Ok(()) => {
             if options.dry_run {
@@ -170,6 +173,42 @@ fn create_logger(verbose: bool) -> Logger {
         // Filter to only show warnings and errors
         let drain = slog::LevelFilter::new(drain, slog::Level::Warning).fuse();
         Logger::root(drain, o!())
+    }
+}
+
+/// Ensure git-absorb uses the same repository/worktree as gg.
+fn prepare_git_absorb_env(repo: &git2::Repository) -> GitEnvGuard {
+    let mut guard = GitEnvGuard::default();
+
+    guard.set("GIT_DIR", repo.path().as_os_str());
+
+    if let Some(workdir) = repo.workdir() {
+        guard.set("GIT_WORK_TREE", workdir.as_os_str());
+    }
+
+    guard
+}
+
+#[derive(Default)]
+struct GitEnvGuard {
+    previous: Vec<(&'static str, Option<OsString>)>,
+}
+
+impl GitEnvGuard {
+    fn set(&mut self, key: &'static str, value: &std::ffi::OsStr) {
+        self.previous.push((key, std::env::var_os(key)));
+        std::env::set_var(key, value);
+    }
+}
+
+impl Drop for GitEnvGuard {
+    fn drop(&mut self) {
+        for (key, value) in self.previous.drain(..).rev() {
+            match value {
+                Some(previous) => std::env::set_var(key, previous),
+                None => std::env::remove_var(key),
+            }
+        }
     }
 }
 

@@ -160,19 +160,20 @@ fn update_local_branch(branch: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Get current branch so we can return to it
-    let current = git::run_git_command(&["rev-parse", "--abbrev-ref", "HEAD"])?;
+    // Fast-forward local branch ref without checking it out.
+    // This is worktree-safe because it avoids `git checkout <branch>`.
+    if git::run_git_command(&["merge-base", "--is-ancestor", branch, &remote_ref]).is_err() {
+        return Err(GgError::Other(format!(
+            "Local {} has diverged from {}",
+            branch, remote_ref
+        )));
+    }
 
-    // Switch to the target branch, update it, then switch back
-    git::run_git_command(&["checkout", branch])?;
+    let remote_oid = git::run_git_command(&["rev-parse", &remote_ref])?;
+    let local_ref = format!("refs/heads/{}", branch);
+    git::run_git_command(&["update-ref", &local_ref, remote_oid.trim()])?;
 
-    // Try to fast-forward. If it fails (diverged), that's okay - we'll just use origin/
-    let ff_result = git::run_git_command(&["merge", "--ff-only", &remote_ref]);
-
-    // Switch back to original branch
-    let _ = git::run_git_command(&["checkout", &current]);
-
-    ff_result.map(|_| ())
+    Ok(())
 }
 
 /// Continue a paused rebase

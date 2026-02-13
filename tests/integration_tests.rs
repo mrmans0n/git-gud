@@ -83,6 +83,18 @@ fn run_git(repo_path: &PathBuf, args: &[&str]) -> (bool, String) {
     (output.status.success(), stdout)
 }
 
+fn run_git_full(repo_path: &PathBuf, args: &[&str]) -> (bool, String, String) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo_path)
+        .output()
+        .expect("Failed to run git");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    (output.status.success(), stdout, stderr)
+}
+
 #[test]
 fn test_gg_help() {
     let (_temp_dir, repo_path) = create_test_repo();
@@ -1433,6 +1445,140 @@ fn test_rebase_updates_local_main() {
     assert!(
         combined.contains("Updating main") || combined.contains("Updated local main") || success,
         "Should mention updating main: {}",
+        combined
+    );
+}
+
+#[test]
+fn test_rebase_updates_local_main_from_worktree() {
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack branch and commit
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "rebase-worktree-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("feature.txt"), "feature").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Add feature"]);
+
+    // Keep main checked out in the main worktree
+    run_git(&repo_path, &["checkout", "main"]);
+    let (_, initial_main_sha) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    let initial_main_sha = initial_main_sha.trim();
+
+    // Create linked worktree for the stack branch
+    let unique_suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("valid time")
+        .as_nanos();
+    let worktree_path = repo_path
+        .parent()
+        .unwrap()
+        .join(format!("stack-worktree-{}", unique_suffix));
+    let (success, _, stderr) = run_git_full(
+        &repo_path,
+        &[
+            "worktree",
+            "add",
+            worktree_path.to_str().expect("valid path"),
+            "testuser/rebase-worktree-test",
+        ],
+    );
+    assert!(success, "Failed to create worktree: {}", stderr);
+
+    // Advance origin/main and make local main behind
+    fs::write(repo_path.join("merged.txt"), "merged").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Merged PR"]);
+    run_git(&repo_path, &["push", "origin", "main"]);
+    run_git(&repo_path, &["reset", "--hard", initial_main_sha]);
+
+    // Run rebase from linked worktree
+    let worktree_path_buf = worktree_path.to_path_buf();
+    let (_success, stdout, stderr) = run_gg(&worktree_path_buf, &["rebase"]);
+    let combined = format!("{}{}", stdout, stderr);
+
+    assert!(
+        !combined.contains("already used by worktree"),
+        "rebase should not try checking out main in a linked worktree: {}",
+        combined
+    );
+
+    // Local main should be updated to origin/main via fast-forward fetch
+    let (_, local_main_sha) = run_git(&repo_path, &["rev-parse", "main"]);
+    let (_, remote_main_sha) = run_git(&repo_path, &["rev-parse", "origin/main"]);
+    assert_eq!(
+        local_main_sha.trim(),
+        remote_main_sha.trim(),
+        "Local main should fast-forward to origin/main"
+    );
+}
+
+#[test]
+fn test_absorb_runs_from_worktree() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create stack with --worktree so it lives in a linked worktree
+    let stack_name = "absorb-wt-test";
+    let (success, stdout, stderr) = run_gg(&repo_path, &["co", stack_name, "--worktree"]);
+    assert!(
+        success,
+        "Failed to create stack with worktree: stdout={}, stderr={}",
+        stdout, stderr
+    );
+
+    // Determine the worktree path from the default convention: ../<repo-dir>.<stack>/
+    let worktree_path = repo_path.parent().unwrap().join(format!(
+        "{}.{}",
+        repo_path.file_name().unwrap().to_string_lossy(),
+        stack_name
+    ));
+    assert!(
+        worktree_path.exists(),
+        "Worktree should exist at {}",
+        worktree_path.display()
+    );
+    let worktree_path_buf = worktree_path.to_path_buf();
+
+    // Create a commit in the worktree to have something to absorb into
+    fs::write(worktree_path.join("notes.txt"), "line one\n").expect("Failed to write file");
+    run_git(&worktree_path_buf, &["add", "."]);
+    run_git(&worktree_path_buf, &["commit", "-m", "Add notes"]);
+
+    // Stage a change that should be absorbed into the existing commit
+    fs::write(worktree_path.join("notes.txt"), "line one updated\n").expect("Failed to write file");
+    run_git(&worktree_path_buf, &["add", "notes.txt"]);
+
+    // This used to fail with: fatal: this operation must be run in a work tree
+    let (success, stdout, stderr) = run_gg(&worktree_path_buf, &["absorb"]);
+    let combined = format!("{}{}", stdout, stderr);
+
+    assert!(
+        success,
+        "gg absorb should succeed from linked worktree. stdout={}, stderr={}",
+        stdout, stderr
+    );
+    assert!(
+        !combined.contains("must be run in a work tree"),
+        "absorb should not fail with worktree detection error: {}",
         combined
     );
 }

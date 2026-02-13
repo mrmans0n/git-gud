@@ -1539,18 +1539,23 @@ fn test_absorb_runs_from_worktree() {
     // Create stack with --worktree so it lives in a linked worktree
     let stack_name = "absorb-wt-test";
     let (success, stdout, stderr) = run_gg(&repo_path, &["co", stack_name, "--worktree"]);
-    assert!(success, "Failed to create stack with worktree: stdout={}, stderr={}", stdout, stderr);
+    assert!(
+        success,
+        "Failed to create stack with worktree: stdout={}, stderr={}",
+        stdout, stderr
+    );
 
     // Determine the worktree path from the default convention: ../<repo-dir>.<stack>/
-    let worktree_path = repo_path
-        .parent()
-        .unwrap()
-        .join(format!(
-            "{}.{}",
-            repo_path.file_name().unwrap().to_string_lossy(),
-            stack_name
-        ));
-    assert!(worktree_path.exists(), "Worktree should exist at {}", worktree_path.display());
+    let worktree_path = repo_path.parent().unwrap().join(format!(
+        "{}.{}",
+        repo_path.file_name().unwrap().to_string_lossy(),
+        stack_name
+    ));
+    assert!(
+        worktree_path.exists(),
+        "Worktree should exist at {}",
+        worktree_path.display()
+    );
     let worktree_path_buf = worktree_path.to_path_buf();
 
     // Create a commit in the worktree to have something to absorb into

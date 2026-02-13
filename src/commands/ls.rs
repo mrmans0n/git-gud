@@ -84,6 +84,15 @@ fn list_all_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
     for stack_name in &stacks {
         let is_current = current_stack.as_deref() == Some(stack_name);
         let marker = if is_current { "→ " } else { "  " };
+        let wt_indicator = if config
+            .get_stack(stack_name)
+            .and_then(|s| s.worktree_path.as_ref())
+            .is_some()
+        {
+            " [wt]"
+        } else {
+            ""
+        };
 
         // Get commits for this stack
         let full_branch = git::format_stack_branch(&username, stack_name);
@@ -95,13 +104,20 @@ fn list_all_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
         println!();
         if is_current {
             println!(
-                "{}{}{}",
+                "{}{}{}{}",
                 style(marker).cyan().bold(),
                 style(stack_name).cyan().bold(),
+                style(wt_indicator).yellow(),
                 style(&commit_info).dim()
             );
         } else {
-            println!("{}{}{}", marker, stack_name, style(&commit_info).dim());
+            println!(
+                "{}{}{}{}",
+                marker,
+                stack_name,
+                style(wt_indicator).yellow(),
+                style(&commit_info).dim()
+            );
         }
 
         // Show commits in tree format

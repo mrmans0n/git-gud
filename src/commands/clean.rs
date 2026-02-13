@@ -3,6 +3,7 @@
 use console::style;
 use dialoguer::Confirm;
 use git2::{BranchType, Repository};
+use std::path::Path;
 
 use crate::config::Config;
 use crate::error::{GgError, Result};
@@ -51,6 +52,8 @@ pub fn run_for_stack_with_repo(repo: &Repository, stack_name: &str, force: bool)
             stack_name
         )));
     }
+
+    maybe_remove_configured_worktree(repo, &mut config, stack_name)?;
 
     // Delete local branch
     if let Ok(mut branch) = repo.find_branch(&branch_name, BranchType::Local) {
@@ -191,6 +194,8 @@ pub fn run(clean_all: bool) -> Result<()> {
                 }
             }
 
+            maybe_remove_configured_worktree(&repo, &mut config, stack_name)?;
+
             // Delete local branch
             if let Ok(mut branch) = repo.find_branch(&branch_name, BranchType::Local) {
                 // Make sure we're not on this branch
@@ -288,6 +293,73 @@ pub fn run(clean_all: bool) -> Result<()> {
     Ok(())
 }
 
+fn maybe_remove_configured_worktree(
+    repo: &Repository,
+    config: &mut Config,
+    stack_name: &str,
+) -> Result<()> {
+    let Some(stack_cfg) = config.get_stack(stack_name) else {
+        return Ok(());
+    };
+    let Some(worktree_path) = stack_cfg.worktree_path.clone() else {
+        return Ok(());
+    };
+
+    let prompt = format!(
+        "Stack '{}' has an associated worktree at '{}'. Remove it?",
+        stack_name, worktree_path
+    );
+    let confirm = Confirm::new()
+        .with_prompt(prompt)
+        .default(false)
+        .interact()
+        .unwrap_or(false);
+
+    if !confirm {
+        println!(
+            "{} Keeping worktree '{}'.",
+            style("Note:").cyan(),
+            worktree_path
+        );
+        return Ok(());
+    }
+
+    let repo_root = repo
+        .workdir()
+        .ok_or_else(|| GgError::Other("Repository has no working directory".to_string()))?;
+
+    let output = std::process::Command::new("git")
+        .arg("worktree")
+        .arg("remove")
+        .arg(&worktree_path)
+        .arg("--force")
+        .current_dir(repo_root)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::Other(format!(
+            "Failed to remove worktree '{}': {}",
+            worktree_path,
+            stderr.trim()
+        )));
+    }
+
+    if let Some(stack_cfg_mut) = config.stacks.get_mut(stack_name) {
+        stack_cfg_mut.worktree_path = None;
+    }
+
+    if !Path::new(&worktree_path).exists() {
+        println!(
+            "{} Removed worktree '{}'.",
+            style("OK").green().bold(),
+            worktree_path
+        );
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy)]
 struct MergeStatus {
     merged: bool,
@@ -303,51 +375,67 @@ fn check_stack_merged(
     username: &str,
     provider: Option<&Provider>,
 ) -> Result<MergeStatus> {
-    // Primary method: check if all MRs are merged
-    // This works correctly with squash and rebase merges
+    // Primary method: check if all MRs are merged.
+    // This works correctly with squash and rebase merges.
     if let Some(stack_config) = config.get_stack(stack_name) {
-        if stack_config.mrs.is_empty() {
-            // No MRs tracked, fall back to git merge check
-        } else if let Some(provider) = provider {
-            let mut all_merged = true;
-            let mut provider_verified = true;
-            for mr_num in stack_config.mrs.values() {
-                match provider.get_pr_info(*mr_num) {
-                    Ok(info) => {
-                        if info.state != PrState::Merged {
+        if !stack_config.mrs.is_empty() {
+            if let Some(provider) = provider {
+                let mut all_merged = true;
+                let mut provider_verified = true;
+                for mr_num in stack_config.mrs.values() {
+                    match provider.get_pr_info(*mr_num) {
+                        Ok(info) => {
+                            if info.state != PrState::Merged {
+                                all_merged = false;
+                            }
+                        }
+                        Err(_) => {
+                            // PR/MR might be deleted or inaccessible.
+                            provider_verified = false;
                             all_merged = false;
+                            break;
                         }
                     }
-                    Err(_) => {
-                        // PR/MR might be deleted or inaccessible
-                        // If we can't verify, assume it's not merged to be safe
-                        all_merged = false;
-                        provider_verified = false;
+                    if !all_merged {
                         break;
                     }
                 }
-                if !all_merged {
-                    break;
+
+                // Additional safety: verify commits are reachable from base branch.
+                if all_merged
+                    && verify_commits_reachable(repo, config, stack_name, username).is_err()
+                {
+                    all_merged = false;
+                    provider_verified = false;
+                }
+
+                if all_merged {
+                    return Ok(MergeStatus {
+                        merged: true,
+                        verified: provider_verified,
+                    });
                 }
             }
-
-            // Additional safety: verify commits are reachable from base branch
-            // This catches edge cases where PR is marked merged but commits aren't in base
-            if all_merged && verify_commits_reachable(repo, config, stack_name, username).is_err() {
-                // If we can't verify reachability, be conservative
-                all_merged = false;
-                provider_verified = false;
-            }
-
-            return Ok(MergeStatus {
-                merged: all_merged,
-                verified: provider_verified && all_merged,
-            });
         }
     }
 
-    // Fallback: check if stack branch is ancestor of base
-    // This works for merge commits but not for squash/rebase
+    // Fallback: check if stack branch is ancestor of base.
+    // This supports local/manual merge simulations even when provider checks are unavailable
+    // or cannot be trusted.
+    let merged = is_stack_branch_ancestor_of_base(repo, config, stack_name, username)?;
+
+    Ok(MergeStatus {
+        merged,
+        verified: false,
+    })
+}
+
+fn is_stack_branch_ancestor_of_base(
+    repo: &git2::Repository,
+    config: &Config,
+    stack_name: &str,
+    username: &str,
+) -> Result<bool> {
     let branch_name = git::format_stack_branch(username, stack_name);
 
     // Get base branch
@@ -366,13 +454,7 @@ fn check_stack_merged(
     let stack_oid = stack_ref.id();
     let base_oid = base_ref.id();
 
-    // If stack is ancestor of base, it's merged
-    let merged = repo.merge_base(stack_oid, base_oid)? == stack_oid;
-
-    Ok(MergeStatus {
-        merged,
-        verified: false,
-    })
+    Ok(repo.merge_base(stack_oid, base_oid)? == stack_oid)
 }
 
 /// Verify that all commits in the stack are reachable from the base branch

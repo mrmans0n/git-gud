@@ -41,6 +41,10 @@ enum Commands {
         /// Base branch to use (default: main/master/trunk)
         #[arg(short, long)]
         base: Option<String>,
+
+        /// Create or reuse a git worktree for this stack
+        #[arg(long = "worktree", short = 'w', alias = "wt")]
+        worktree: bool,
     },
 
     /// List current stack or all stacks
@@ -238,7 +242,11 @@ fn main() {
         // No command = show stacks (like `gg ls`)
         None => commands::ls::run(false, false, false),
 
-        Some(Commands::Checkout { stack_name, base }) => commands::checkout::run(stack_name, base),
+        Some(Commands::Checkout {
+            stack_name,
+            base,
+            worktree,
+        }) => commands::checkout::run(stack_name, base, worktree),
         Some(Commands::List {
             all,
             refresh,

@@ -9,6 +9,7 @@ use std::process::Command;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+use serde_json::Value;
 use tempfile::TempDir;
 
 /// Helper to create a temporary git repo
@@ -3691,5 +3692,134 @@ fn test_worktree_shared_lock() {
     assert!(
         !worktree_lock.exists(),
         "Worktree should NOT have its own lock file - lock should be in shared .git/gg/"
+    );
+}
+
+#[test]
+fn test_gg_checkout_with_worktree_creates_worktree_and_preserves_main_repo_head() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["co", "wt-stack", "--worktree"]);
+    assert!(
+        success,
+        "checkout --worktree should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+
+    // Main repo should remain on its original branch (no branch checkout in primary worktree)
+    let (_, current_branch) = run_git(&repo_path, &["branch", "--show-current"]);
+    let branch = current_branch.trim();
+    assert!(
+        branch == "main" || branch == "master",
+        "Expected main or master, got: {}",
+        branch
+    );
+
+    let config = fs::read_to_string(gg_dir.join("config.json")).expect("Failed to read config");
+    assert!(
+        config.contains("worktree_path"),
+        "Config should persist worktree path"
+    );
+
+    let expected_path = repo_path.parent().expect("repo parent").join(format!(
+        "{}.{}",
+        repo_path.file_name().unwrap().to_string_lossy(),
+        "wt-stack"
+    ));
+
+    assert!(
+        expected_path.exists(),
+        "Expected worktree path to exist: {}",
+        expected_path.display()
+    );
+}
+
+#[test]
+fn test_gg_ls_marks_stacks_with_worktree_indicator() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", "wt-list", "--worktree"]);
+    assert!(success, "checkout --worktree should succeed: {}", stderr);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["ls", "--all"]);
+    assert!(success, "ls should succeed: {}", stderr);
+    assert!(stdout.contains("wt-list"), "ls should show stack name");
+    assert!(stdout.contains("[wt]"), "ls should show worktree indicator");
+}
+
+#[test]
+fn test_clean_detects_locally_merged_worktree_stack_when_provider_check_fails() {
+    let (_parent_dir, repo_path) = create_test_repo_with_worktree_support();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","base":"main","provider":"github"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", "clean-wt", "--worktree"]);
+    assert!(success, "checkout --worktree should succeed: {}", stderr);
+
+    let worktree_path = repo_path.parent().expect("repo parent").join(format!(
+        "{}.{}",
+        repo_path.file_name().expect("repo name").to_string_lossy(),
+        "clean-wt"
+    ));
+    assert!(worktree_path.exists(), "Expected worktree to exist");
+
+    fs::write(worktree_path.join("feature.txt"), "hello").expect("Failed to write feature file");
+    run_git(&worktree_path, &["add", "."]);
+    let (success, _) = run_git(&worktree_path, &["commit", "-m", "feat: worktree change"]);
+    assert!(success, "Expected commit in worktree to succeed");
+
+    let (success, _) = run_git(&repo_path, &["merge", "--ff-only", "testuser/clean-wt"]);
+    assert!(success, "Expected fast-forward merge into main to succeed");
+
+    let config_path = gg_dir.join("config.json");
+    let mut config: Value =
+        serde_json::from_str(&fs::read_to_string(&config_path).expect("Failed to read config"))
+            .expect("Failed to parse config JSON");
+
+    config["stacks"]["clean-wt"]["mrs"] = serde_json::json!({ "c-deadbee": 999999 });
+
+    fs::write(
+        &config_path,
+        serde_json::to_string(&config).expect("Failed to serialize config"),
+    )
+    .expect("Failed to write config");
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["clean", "--all"]);
+    assert!(
+        success,
+        "clean --all should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+    assert!(
+        stdout.contains("Deleted stack 'clean-wt'"),
+        "Expected merged stack to be cleaned. stdout: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("No stacks to clean."),
+        "Should not report no stacks to clean. stdout: {}",
+        stdout
     );
 }

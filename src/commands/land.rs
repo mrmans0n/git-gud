@@ -1380,12 +1380,14 @@ mod tests {
         // Create a config with multiple MR mappings
         let mut config = Config {
             defaults: Defaults::default(),
+            worktree_base_path: None,
             stacks: HashMap::new(),
         };
 
         let mut stack_config = StackConfig {
             base: None,
             mrs: HashMap::new(),
+            worktree_path: None,
         };
         stack_config.mrs.insert("c-abc1234".to_string(), 123);
         stack_config.mrs.insert("c-def5678".to_string(), 456);
@@ -1408,12 +1410,14 @@ mod tests {
     fn test_config_remove_mr_for_entry_handles_nonexistent_entry() {
         let mut config = Config {
             defaults: Defaults::default(),
+            worktree_base_path: None,
             stacks: HashMap::new(),
         };
 
         let mut stack_config = StackConfig {
             base: None,
             mrs: HashMap::new(),
+            worktree_path: None,
         };
         stack_config.mrs.insert("c-abc1234".to_string(), 123);
         config.stacks.insert("test-stack".to_string(), stack_config);
@@ -1438,6 +1442,7 @@ mod tests {
     fn test_config_remove_mr_for_entry_handles_nonexistent_stack() {
         let mut config = Config {
             defaults: Defaults::default(),
+            worktree_base_path: None,
             stacks: HashMap::new(),
         };
 
@@ -1452,12 +1457,14 @@ mod tests {
     fn test_config_remove_mr_for_entry_removes_multiple_entries() {
         let mut config = Config {
             defaults: Defaults::default(),
+            worktree_base_path: None,
             stacks: HashMap::new(),
         };
 
         let mut stack_config = StackConfig {
             base: None,
             mrs: HashMap::new(),
+            worktree_path: None,
         };
         stack_config.mrs.insert("c-abc1234".to_string(), 123);
         stack_config.mrs.insert("c-def5678".to_string(), 456);

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-02-13
+
+### Fixed
+- `gg absorb` now works correctly in linked worktrees by setting `GIT_DIR`/`GIT_WORK_TREE` for the git-absorb library (#134)
+- `gg rebase` no longer fails when the base branch is checked out in another worktree — uses `git update-ref` instead of checkout (#134)
+
 ## [0.2.0] - 2026-02-13
 
 ### Added
@@ -114,7 +120,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/mrmans0n/git-gud/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/mrmans0n/git-gud/compare/v0.1.16...v0.2.0
 [0.1.16]: https://github.com/mrmans0n/git-gud/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/mrmans0n/git-gud/compare/v0.1.14...v0.1.15

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-02-13
+
+### Added
+- Managed worktree support: `gg co --wt`/`--worktree` creates a git worktree for the stack (#133)
+- Configurable worktree base path via `worktree_base_path` in config (#133)
+- `[wt]` indicator in `gg ls` for stacks with associated worktrees (#133)
+- `gg clean` detects and removes worktrees for merged stacks with confirmation (#133)
+
+### Fixed
+- Shared state across git worktrees using `commondir` (#131)
+- Handle branches checked out in worktrees during clean (#132)
+- Fall back to git-based merge detection when provider check fails (#133)
+- Strip redundant version and article from Homebrew formula
+
 ## [0.1.16] - 2026-02-11
 
 ### Fixed
@@ -100,7 +114,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.1.16...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/mrmans0n/git-gud/compare/v0.1.16...v0.2.0
 [0.1.16]: https://github.com/mrmans0n/git-gud/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/mrmans0n/git-gud/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/mrmans0n/git-gud/compare/v0.1.13...v0.1.14

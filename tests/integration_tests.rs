@@ -1536,8 +1536,13 @@ fn test_absorb_runs_from_worktree() {
     )
     .expect("Failed to write config");
 
-    // Create stack and a commit to absorb into
-    let (success, _, stderr) = run_gg(&repo_path, &["co", "absorb-worktree-test"]);
+    // Create stack and a commit to absorb into (use unique name to avoid collisions with parallel tests)
+    let unique_suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("valid time")
+        .as_nanos();
+    let stack_name = format!("absorb-wt-{}", unique_suffix);
+    let (success, _, stderr) = run_gg(&repo_path, &["co", &stack_name]);
     assert!(success, "Failed to create stack: {}", stderr);
 
     fs::write(repo_path.join("notes.txt"), "line one\n").expect("Failed to write file");
@@ -1546,21 +1551,18 @@ fn test_absorb_runs_from_worktree() {
 
     // Keep main checked out in primary worktree and use linked worktree for stack
     run_git(&repo_path, &["checkout", "main"]);
-    let unique_suffix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("valid time")
-        .as_nanos();
     let worktree_path = repo_path
         .parent()
         .unwrap()
         .join(format!("absorb-worktree-{}", unique_suffix));
+    let branch_name = format!("testuser/{}", stack_name);
     let (success, _, stderr) = run_git_full(
         &repo_path,
         &[
             "worktree",
             "add",
             worktree_path.to_str().expect("valid path"),
-            "testuser/absorb-worktree-test",
+            &branch_name,
         ],
     );
     assert!(success, "Failed to create worktree: {}", stderr);

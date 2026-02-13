@@ -3713,9 +3713,14 @@ fn test_gg_checkout_with_worktree_creates_worktree_and_preserves_main_repo_head(
         stdout, stderr
     );
 
-    // Main repo should remain on main (no branch checkout in primary worktree)
+    // Main repo should remain on its original branch (no branch checkout in primary worktree)
     let (_, current_branch) = run_git(&repo_path, &["branch", "--show-current"]);
-    assert_eq!(current_branch.trim(), "main");
+    let branch = current_branch.trim();
+    assert!(
+        branch == "main" || branch == "master",
+        "Expected main or master, got: {}",
+        branch
+    );
 
     let config = fs::read_to_string(gg_dir.join("config.json")).expect("Failed to read config");
     assert!(

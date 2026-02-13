@@ -1536,40 +1536,30 @@ fn test_absorb_runs_from_worktree() {
     )
     .expect("Failed to write config");
 
-    // Create stack and a commit to absorb into (use unique name to avoid collisions with parallel tests)
-    let unique_suffix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("valid time")
-        .as_nanos();
-    let stack_name = format!("absorb-wt-{}", unique_suffix);
-    let (success, _, stderr) = run_gg(&repo_path, &["co", &stack_name]);
-    assert!(success, "Failed to create stack: {}", stderr);
+    // Create stack with --worktree so it lives in a linked worktree
+    let stack_name = "absorb-wt-test";
+    let (success, stdout, stderr) = run_gg(&repo_path, &["co", stack_name, "--worktree"]);
+    assert!(success, "Failed to create stack with worktree: stdout={}, stderr={}", stdout, stderr);
 
-    fs::write(repo_path.join("notes.txt"), "line one\n").expect("Failed to write file");
-    run_git(&repo_path, &["add", "."]);
-    run_git(&repo_path, &["commit", "-m", "Add notes"]);
-
-    // Keep main checked out in primary worktree and use linked worktree for stack
-    run_git(&repo_path, &["checkout", "main"]);
+    // Determine the worktree path from the default convention: ../<repo-dir>.<stack>/
     let worktree_path = repo_path
         .parent()
         .unwrap()
-        .join(format!("absorb-worktree-{}", unique_suffix));
-    let branch_name = format!("testuser/{}", stack_name);
-    let (success, _, stderr) = run_git_full(
-        &repo_path,
-        &[
-            "worktree",
-            "add",
-            worktree_path.to_str().expect("valid path"),
-            &branch_name,
-        ],
-    );
-    assert!(success, "Failed to create worktree: {}", stderr);
+        .join(format!(
+            "{}.{}",
+            repo_path.file_name().unwrap().to_string_lossy(),
+            stack_name
+        ));
+    assert!(worktree_path.exists(), "Worktree should exist at {}", worktree_path.display());
+    let worktree_path_buf = worktree_path.to_path_buf();
+
+    // Create a commit in the worktree to have something to absorb into
+    fs::write(worktree_path.join("notes.txt"), "line one\n").expect("Failed to write file");
+    run_git(&worktree_path_buf, &["add", "."]);
+    run_git(&worktree_path_buf, &["commit", "-m", "Add notes"]);
 
     // Stage a change that should be absorbed into the existing commit
     fs::write(worktree_path.join("notes.txt"), "line one updated\n").expect("Failed to write file");
-    let worktree_path_buf = worktree_path.to_path_buf();
     run_git(&worktree_path_buf, &["add", "notes.txt"]);
 
     // This used to fail with: fatal: this operation must be run in a work tree

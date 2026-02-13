@@ -87,6 +87,66 @@ gg land --all
 gg clean
 ```
 
+## Worktree Support
+
+`gg co` supports managed Git worktrees so you can develop a stack in its own checkout while keeping your original repository working tree untouched.
+
+### Create a stack worktree
+
+```bash
+gg co my-feature --wt
+# or
+gg co my-feature --worktree
+```
+
+This creates (or reuses) a managed worktree for the stack and checks it out there.
+
+### Default worktree location
+
+By default, git-gud creates worktrees next to your repository using:
+
+`../<repo-name>.<stack-name>`
+
+For example, if your repo is at `/code/my-repo`, stack `user-auth` is created at:
+
+`/code/my-repo.user-auth`
+
+You can customize the base directory with `defaults.worktree_base_path` in `.git/gg/config.json`.
+
+```json
+{
+  "defaults": {
+    "worktree_base_path": "/tmp/gg-worktrees"
+  }
+}
+```
+
+### Stack visibility and cleanup
+
+- `gg ls` / `gg ls --all` shows `[wt]` for stacks that have an associated worktree.
+- `gg clean` detects associated stack worktrees and removes them as part of cleanup (with confirmation unless `--all` is used).
+
+### Typical worktree workflow
+
+```bash
+# 1) Create stack in a worktree
+gg co user-auth --wt
+
+# 2) Work inside the new worktree
+cd ../my-repo.user-auth
+git add . && git commit -m "Add user model"
+git add . && git commit -m "Add auth endpoints"
+
+# 3) Sync stacked branches / PRs/MRs
+gg sync
+
+# 4) Inspect stacks (worktree stacks are marked with [wt])
+gg ls --all
+
+# 5) After landing, clean stack + managed worktree
+gg clean
+```
+
 ## Commands
 
 ### Stack Management
@@ -202,6 +262,7 @@ All configuration options are in the `defaults` section (with provider-specific 
 | `auto_add_gg_ids` | `boolean` | Automatically add GG-IDs to commits without prompting | `true` |
 | `land_wait_timeout_minutes` | `number` | Timeout in minutes for `gg land --wait` | `30` |
 | `land_auto_clean` | `boolean` | Automatically clean up stack after landing all PRs/MRs | `false` |
+| `worktree_base_path` | `string` | Base directory used by `gg co --wt` / `--worktree` for managed stack worktrees | Parent directory of current repository |
 | `gitlab.auto_merge_on_land` | `boolean` | *(GitLab only)* Use "merge when pipeline succeeds" for `gg land` by default | `false` |
 
 Example configuration:
@@ -218,6 +279,7 @@ Example configuration:
     "auto_add_gg_ids": true,
     "land_wait_timeout_minutes": 60,
     "land_auto_clean": true,
+    "worktree_base_path": "/tmp/gg-worktrees",
     "gitlab": {
       "auto_merge_on_land": true
     }

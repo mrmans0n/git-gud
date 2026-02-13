@@ -3,6 +3,7 @@
 use console::style;
 use dialoguer::Confirm;
 use git2::{BranchType, Repository};
+use std::path::Path;
 
 use crate::config::Config;
 use crate::error::{GgError, Result};
@@ -51,6 +52,8 @@ pub fn run_for_stack_with_repo(repo: &Repository, stack_name: &str, force: bool)
             stack_name
         )));
     }
+
+    maybe_remove_configured_worktree(repo, &mut config, stack_name)?;
 
     // Delete local branch
     if let Ok(mut branch) = repo.find_branch(&branch_name, BranchType::Local) {
@@ -191,6 +194,8 @@ pub fn run(clean_all: bool) -> Result<()> {
                 }
             }
 
+            maybe_remove_configured_worktree(&repo, &mut config, stack_name)?;
+
             // Delete local branch
             if let Ok(mut branch) = repo.find_branch(&branch_name, BranchType::Local) {
                 // Make sure we're not on this branch
@@ -283,6 +288,73 @@ pub fn run(clean_all: bool) -> Result<()> {
         );
     } else {
         println!("{}", style("No stacks to clean.").dim());
+    }
+
+    Ok(())
+}
+
+fn maybe_remove_configured_worktree(
+    repo: &Repository,
+    config: &mut Config,
+    stack_name: &str,
+) -> Result<()> {
+    let Some(stack_cfg) = config.get_stack(stack_name) else {
+        return Ok(());
+    };
+    let Some(worktree_path) = stack_cfg.worktree_path.clone() else {
+        return Ok(());
+    };
+
+    let prompt = format!(
+        "Stack '{}' has an associated worktree at '{}'. Remove it?",
+        stack_name, worktree_path
+    );
+    let confirm = Confirm::new()
+        .with_prompt(prompt)
+        .default(false)
+        .interact()
+        .unwrap_or(false);
+
+    if !confirm {
+        println!(
+            "{} Keeping worktree '{}'.",
+            style("Note:").cyan(),
+            worktree_path
+        );
+        return Ok(());
+    }
+
+    let repo_root = repo
+        .workdir()
+        .ok_or_else(|| GgError::Other("Repository has no working directory".to_string()))?;
+
+    let output = std::process::Command::new("git")
+        .arg("worktree")
+        .arg("remove")
+        .arg(&worktree_path)
+        .arg("--force")
+        .current_dir(repo_root)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::Other(format!(
+            "Failed to remove worktree '{}': {}",
+            worktree_path,
+            stderr.trim()
+        )));
+    }
+
+    if let Some(stack_cfg_mut) = config.stacks.get_mut(stack_name) {
+        stack_cfg_mut.worktree_path = None;
+    }
+
+    if !Path::new(&worktree_path).exists() {
+        println!(
+            "{} Removed worktree '{}'.",
+            style("OK").green().bold(),
+            worktree_path
+        );
     }
 
     Ok(())

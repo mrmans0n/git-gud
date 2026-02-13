@@ -3693,3 +3693,66 @@ fn test_worktree_shared_lock() {
         "Worktree should NOT have its own lock file - lock should be in shared .git/gg/"
     );
 }
+
+#[test]
+fn test_gg_checkout_with_worktree_creates_worktree_and_preserves_main_repo_head() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["co", "wt-stack", "--worktree"]);
+    assert!(
+        success,
+        "checkout --worktree should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+
+    // Main repo should remain on main (no branch checkout in primary worktree)
+    let (_, current_branch) = run_git(&repo_path, &["branch", "--show-current"]);
+    assert_eq!(current_branch.trim(), "main");
+
+    let config = fs::read_to_string(gg_dir.join("config.json")).expect("Failed to read config");
+    assert!(
+        config.contains("worktree_path"),
+        "Config should persist worktree path"
+    );
+
+    let expected_path = repo_path.parent().expect("repo parent").join(format!(
+        "{}.{}",
+        repo_path.file_name().unwrap().to_string_lossy(),
+        "wt-stack"
+    ));
+
+    assert!(
+        expected_path.exists(),
+        "Expected worktree path to exist: {}",
+        expected_path.display()
+    );
+}
+
+#[test]
+fn test_gg_ls_marks_stacks_with_worktree_indicator() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", "wt-list", "--worktree"]);
+    assert!(success, "checkout --worktree should succeed: {}", stderr);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["ls", "--all"]);
+    assert!(success, "ls should succeed: {}", stderr);
+    assert!(stdout.contains("wt-list"), "ls should show stack name");
+    assert!(stdout.contains("[wt]"), "ls should show worktree indicator");
+}

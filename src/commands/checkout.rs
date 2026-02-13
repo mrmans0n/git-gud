@@ -11,9 +11,11 @@ use crate::provider::Provider;
 use crate::stack;
 
 use std::collections::HashSet;
+use std::path::Path;
+use std::process::Command;
 
 /// Run the checkout command
-pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
+pub fn run(stack_name: Option<String>, base: Option<String>, use_worktree: bool) -> Result<()> {
     let repo = git::open_repo()?;
 
     // Acquire operation lock to prevent concurrent operations
@@ -80,23 +82,45 @@ pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
     let branch_exists = repo.find_branch(&branch_name, BranchType::Local).is_ok();
 
     if branch_exists {
-        // Switch to existing main stack branch
-        git::checkout_branch(&repo, &branch_name)?;
-        println!(
-            "{} Switched to stack {}",
-            style("OK").green().bold(),
-            style(&stack_name).cyan()
-        );
+        if use_worktree {
+            let worktree_path =
+                ensure_stack_worktree(&repo, &mut config, &stack_name, &branch_name)?;
+            println!(
+                "{} Opened stack {} in worktree {}",
+                style("OK").green().bold(),
+                style(&stack_name).cyan(),
+                style(worktree_path.display()).yellow()
+            );
+        } else {
+            // Switch to existing main stack branch
+            git::checkout_branch(&repo, &branch_name)?;
+            println!(
+                "{} Switched to stack {}",
+                style("OK").green().bold(),
+                style(&stack_name).cyan()
+            );
+        }
     } else if let Some(entry_branch) =
         git::find_entry_branch_for_stack(&repo, &username, &stack_name)
     {
         // Main stack branch doesn't exist, but an entry branch does - use that
-        git::checkout_branch(&repo, &entry_branch)?;
-        println!(
-            "{} Switched to stack {}",
-            style("OK").green().bold(),
-            style(&stack_name).cyan()
-        );
+        if use_worktree {
+            let worktree_path =
+                ensure_stack_worktree(&repo, &mut config, &stack_name, &entry_branch)?;
+            println!(
+                "{} Opened stack {} in worktree {}",
+                style("OK").green().bold(),
+                style(&stack_name).cyan(),
+                style(worktree_path.display()).yellow()
+            );
+        } else {
+            git::checkout_branch(&repo, &entry_branch)?;
+            println!(
+                "{} Switched to stack {}",
+                style("OK").green().bold(),
+                style(&stack_name).cyan()
+            );
+        }
     } else {
         // Stack doesn't exist locally - check if it exists on remote
         // First fetch to ensure we have up-to-date remote refs
@@ -136,8 +160,12 @@ pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
             let local_branch = git::format_stack_branch(&username, &stack_name);
             repo.branch(&local_branch, &remote_commit, false)?;
 
-            // Checkout the branch
-            git::checkout_branch(&repo, &local_branch)?;
+            if use_worktree {
+                ensure_stack_worktree(&repo, &mut config, &stack_name, &local_branch)?;
+            } else {
+                // Checkout the branch
+                git::checkout_branch(&repo, &local_branch)?;
+            }
 
             // Import PR mappings from remote
             if let Err(e) =
@@ -155,11 +183,24 @@ pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
                 );
             }
 
-            println!(
-                "{} Checked out remote stack {}",
-                style("OK").green().bold(),
-                style(&stack_name).cyan()
-            );
+            if use_worktree {
+                let worktree_path = config
+                    .get_stack(&stack_name)
+                    .and_then(|stack| stack.worktree_path.as_deref())
+                    .unwrap_or("<unknown>");
+                println!(
+                    "{} Checked out remote stack {} in worktree {}",
+                    style("OK").green().bold(),
+                    style(&stack_name).cyan(),
+                    style(worktree_path).yellow()
+                );
+            } else {
+                println!(
+                    "{} Checked out remote stack {}",
+                    style("OK").green().bold(),
+                    style(&stack_name).cyan()
+                );
+            }
         } else {
             // Create new stack
             let base_branch = base
@@ -177,8 +218,10 @@ pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
             // Create the branch
             repo.branch(&branch_name, &base_commit, false)?;
 
-            // Checkout the new branch
-            git::checkout_branch(&repo, &branch_name)?;
+            // Checkout the new branch unless user requested a worktree
+            if !use_worktree {
+                git::checkout_branch(&repo, &branch_name)?;
+            }
 
             // Initialize stack config
             let default_base = config
@@ -199,16 +242,100 @@ pub fn run(stack_name: Option<String>, base: Option<String>) -> Result<()> {
 
             config.save(git_dir)?;
 
-            println!(
-                "{} Created stack {} based on {}",
-                style("OK").green().bold(),
-                style(&stack_name).cyan(),
-                style(&base_branch).yellow()
-            );
+            if use_worktree {
+                let worktree_path =
+                    ensure_stack_worktree(&repo, &mut config, &stack_name, &branch_name)?;
+                println!(
+                    "{} Created stack {} based on {} in worktree {}",
+                    style("OK").green().bold(),
+                    style(&stack_name).cyan(),
+                    style(&base_branch).yellow(),
+                    style(worktree_path.display()).yellow()
+                );
+            } else {
+                println!(
+                    "{} Created stack {} based on {}",
+                    style("OK").green().bold(),
+                    style(&stack_name).cyan(),
+                    style(&base_branch).yellow()
+                );
+            }
         }
     }
 
     Ok(())
+}
+
+fn ensure_stack_worktree(
+    repo: &git2::Repository,
+    config: &mut Config,
+    stack_name: &str,
+    branch_name: &str,
+) -> Result<std::path::PathBuf> {
+    let git_dir = repo.commondir();
+    let repo_root = repo
+        .workdir()
+        .ok_or_else(|| GgError::Other("Repository has no working directory".to_string()))?;
+
+    let maybe_existing = config
+        .get_stack(stack_name)
+        .and_then(|stack| stack.worktree_path.as_deref())
+        .map(std::path::PathBuf::from);
+
+    let target_path =
+        maybe_existing.unwrap_or_else(|| config.render_worktree_path(repo_root, stack_name));
+
+    if !is_worktree_registered(repo_root, &target_path) {
+        if let Some(parent) = target_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let output = Command::new("git")
+            .arg("worktree")
+            .arg("add")
+            .arg(&target_path)
+            .arg(branch_name)
+            .current_dir(repo_root)
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(GgError::Other(format!(
+                "Failed to create worktree at '{}': {}",
+                target_path.display(),
+                stderr.trim()
+            )));
+        }
+    }
+
+    let stack_cfg = config.get_or_create_stack(stack_name);
+    stack_cfg.worktree_path = Some(target_path.to_string_lossy().to_string());
+    config.save(git_dir)?;
+
+    Ok(target_path)
+}
+
+fn is_worktree_registered(repo_root: &Path, target_path: &Path) -> bool {
+    let output = Command::new("git")
+        .arg("worktree")
+        .arg("list")
+        .arg("--porcelain")
+        .current_dir(repo_root)
+        .output();
+
+    let Ok(output) = output else {
+        return false;
+    };
+
+    if !output.status.success() {
+        return false;
+    }
+
+    let target = target_path.to_string_lossy();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .any(|line| line == format!("worktree {}", target))
 }
 
 /// Find a remote entry branch for a stack (returns the first one found)

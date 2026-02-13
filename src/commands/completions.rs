@@ -24,6 +24,8 @@ enum Commands {
         stack_name: Option<String>,
         #[arg(short, long)]
         base: Option<String>,
+        #[arg(long = "worktree", short = 'w', alias = "wt")]
+        worktree: bool,
     },
     #[command(name = "ls", alias = "list")]
     List {

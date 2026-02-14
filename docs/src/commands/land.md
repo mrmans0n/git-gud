@@ -1,25 +1,33 @@
 # `gg land`
 
-Merge approved PRs/MRs starting from the first stack commit.
+Merge approved PRs/MRs from the bottom of your stack upward.
 
 ```bash
 gg land [OPTIONS]
 ```
 
-Options:
+## Options
 
-- `-a, --all`: land all approved PRs/MRs in order
-- `--auto-merge`: GitLab only; queue auto-merge
-- `--no-squash`: disable squash merge
-- `-w, --wait`: wait for CI/approvals before merge
-- `-u, --until <UNTIL>`: land up to target commit
-- `-c, --clean`: cleanup stack after landing all
-- `--no-clean`: disable post-land cleanup
+- `-a, --all`: Land all approved entries in sequence
+- `--auto-merge`: *(GitLab only)* Request auto-merge instead of immediate merge
+- `--no-squash`: Disable squash merge (squash is default)
+- `-w, --wait`: Wait for CI and approvals before merging
+- `-u, --until <UNTIL>`: Land up to a target entry (position, GG-ID, SHA)
+- `-c, --clean`: Clean stack automatically after landing all
+- `--no-clean`: Disable auto-clean for this run
 
-Examples:
+## Examples
 
 ```bash
+# Land one approved entry
 gg land
+
+# Land complete stack, waiting for readiness
 gg land --all --wait
-gg land --all --clean
+
+# Land part of stack
+gg land --until 2
+
+# GitLab auto-merge queue
+gg land --all --auto-merge
 ```

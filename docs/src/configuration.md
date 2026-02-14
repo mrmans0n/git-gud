@@ -1,14 +1,14 @@
 # Configuration
 
-Configuration is stored in `.git/gg/config.json` (per-repository).
+git-gud stores config per repository in `.git/gg/config.json`.
 
-Generate it interactively:
+Initialize or update it with:
 
 ```bash
 gg setup
 ```
 
-## Example
+## Example config
 
 ```json
 {
@@ -16,26 +16,42 @@ gg setup
     "provider": "gitlab",
     "base": "main",
     "branch_username": "your-username",
-    "lint": ["cargo fmt --check", "cargo clippy -- -D warnings"]
+    "lint": [
+      "cargo fmt --check",
+      "cargo clippy -- -D warnings"
+    ],
+    "auto_add_gg_ids": true,
+    "land_wait_timeout_minutes": 30,
+    "land_auto_clean": false,
+    "worktree_base_path": "/tmp/gg-worktrees",
+    "gitlab": {
+      "auto_merge_on_land": false
+    }
   }
 }
 ```
 
-## Common options (`defaults`)
+## `defaults` options
 
-- `provider`: `github` or `gitlab`
-- `base`: default base branch
-- `branch_username`: prefix for stack branches
-- `lint`: commands for `gg lint`
-- `auto_add_gg_ids`: auto-add GG-IDs to commits
-- `land_wait_timeout_minutes`: timeout for `gg land --wait`
-- `land_auto_clean`: auto cleanup after full landing
-- `worktree_base_path`: base path for managed worktrees
-- `gitlab.auto_merge_on_land`: default auto-merge behavior on GitLab
+| Option | Type | What it controls | Default |
+|---|---|---|---|
+| `provider` | `string` | Provider (`github`/`gitlab`) for self-hosted or explicit override | Auto-detected |
+| `base` | `string` | Default base branch for new stacks | Auto-detected |
+| `branch_username` | `string` | Username prefix in stack/entry branch names | Auto-detected |
+| `lint` | `string[]` | Commands used by `gg lint` / `gg sync --lint` | `[]` |
+| `auto_add_gg_ids` | `boolean` | Auto-add GG-ID trailers when missing | `true` |
+| `land_wait_timeout_minutes` | `number` | Timeout for `gg land --wait` polling | `30` |
+| `land_auto_clean` | `boolean` | Auto-run cleanup after full landing | `false` |
+| `worktree_base_path` | `string` | Base directory for managed worktrees | Parent of repo |
+| `gitlab.auto_merge_on_land` | `boolean` | Default GitLab auto-merge behavior for `gg land` | `false` |
 
-## PR/MR description template
+## Stack state
 
-If `.git/gg/pr_template.md` exists, `gg sync` uses it for newly created PR/MR descriptions.
+git-gud also stores stack-specific state in this file (for example PR/MR mappings by GG-ID). This is how it remembers which commit corresponds to which PR/MR over time.
+
+## PR/MR templates
+
+You can customize descriptions by creating `.git/gg/pr_template.md`.
 
 Supported placeholders:
 
@@ -43,3 +59,16 @@ Supported placeholders:
 - `{{description}}`
 - `{{stack_name}}`
 - `{{commit_sha}}`
+
+Example:
+
+```markdown
+## Summary
+
+{{description}}
+
+---
+
+**Stack:** `{{stack_name}}`
+**Commit:** `{{commit_sha}}`
+```

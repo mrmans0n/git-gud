@@ -1,14 +1,11 @@
-# Commands Reference
+# Command Reference
 
-This reference reflects `gg --help` and `gg <command> --help`.
+This section is a command-by-command reference based on `gg --help` and `gg <command> --help`.
 
-## Available commands
+Unlike the guides, this section is organized by command surface and flags. Each page still includes practical examples.
 
-- `co`, `ls`, `sync`
-- `mv`, `first`, `last`, `prev`, `next`
-- `sc`, `reorder`, `absorb`
-- `land`, `clean`, `rebase`
-- `lint`, `setup`, `continue`, `abort`
-- `completions`, `reconcile`
+## Command groups
 
-> Note: some older examples may mention names like `init`, `checkout`, `nav`, or `log`. Use the command set listed above for current versions.
+- Stack lifecycle: `co`, `ls`, `sync`, `land`, `clean`
+- Editing: `mv`, `first`, `last`, `prev`, `next`, `sc`, `absorb`, `reorder`, `rebase`
+- Utilities: `lint`, `setup`, `reconcile`, `continue`, `abort`, `completions`

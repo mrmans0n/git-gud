@@ -1,16 +1,26 @@
 # `gg reconcile`
 
-Reconcile stacks pushed without `gg sync`.
+Repair stack metadata when branches/PRs were manipulated outside `gg sync`.
 
 ```bash
 gg reconcile [OPTIONS]
 ```
 
-Options:
+## Options
 
-- `-n, --dry-run`: show what would change
+- `-n, --dry-run`: Preview only; make no changes
 
-What it can do:
+## What it does
 
-1. Add missing GG-IDs to commits
-2. Map existing PRs/MRs back into gg config
+- Adds missing GG-ID trailers to stack commits
+- Maps existing remote PRs/MRs back to local stack entries
+
+## Examples
+
+```bash
+# Safe preview
+gg reconcile --dry-run
+
+# Apply reconciliation
+gg reconcile
+```

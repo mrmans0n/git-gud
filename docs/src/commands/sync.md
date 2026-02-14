@@ -1,24 +1,32 @@
 # `gg sync`
 
-Push stack branches and create/update PRs/MRs.
+Push entry branches and create/update PRs/MRs for the current stack.
 
 ```bash
 gg sync [OPTIONS]
 ```
 
-Options:
+## Options
 
-- `-d, --draft`: create new PRs/MRs as draft
-- `-f, --force`: force push when remote is ahead
-- `--update-descriptions`: update titles/descriptions from commit messages
-- `-l, --lint`: run lint before sync
-- `--no-lint`: disable lint before sync
-- `-u, --until <UNTIL>`: sync only up to target commit
+- `-d, --draft`: Create new PRs/MRs as draft
+- `-f, --force`: Force push even if remote is ahead
+- `--update-descriptions`: Update PR/MR title/body from commit messages
+- `-l, --lint`: Run lint before sync
+- `--no-lint`: Disable lint before sync (overrides config default)
+- `-u, --until <UNTIL>`: Sync up to target commit (position, GG-ID, or SHA)
 
-Example:
+## Examples
 
 ```bash
+# First publish as drafts
 gg sync --draft
+
+# Sync only first two entries
 gg sync --until 2
+
+# Refresh PR/MR descriptions after commit message edits
 gg sync --update-descriptions
+
+# Run lint as part of sync
+gg sync --lint
 ```

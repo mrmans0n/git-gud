@@ -1,16 +1,16 @@
 # `gg clean`
 
-Clean merged stacks.
+Delete merged stacks (and associated managed worktrees).
 
 ```bash
 gg clean [OPTIONS]
 ```
 
-Options:
+## Options
 
-- `-a, --all`: clean all merged stacks without prompting
+- `-a, --all`: Clean all merged stacks without prompting
 
-Examples:
+## Examples
 
 ```bash
 gg clean

@@ -6,12 +6,14 @@ Rebase the current stack onto an updated branch.
 gg rebase [TARGET]
 ```
 
-- `TARGET` is optional.
-- If omitted, `gg` uses the stack base branch.
+- If `TARGET` is omitted, git-gud uses the stack base branch.
 
-Example:
+## Examples
 
 ```bash
+# Rebase onto configured base
 gg rebase
+
+# Rebase onto specific branch
 gg rebase main
 ```

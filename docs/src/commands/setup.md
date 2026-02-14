@@ -1,9 +1,13 @@
 # `gg setup`
 
-Interactive setup for repository config.
+Interactive setup for `.git/gg/config.json`.
 
 ```bash
 gg setup
 ```
 
-This creates or updates `.git/gg/config.json`.
+Use this when:
+
+- Starting git-gud in a new repository
+- Working with self-hosted GitHub/GitLab
+- Updating defaults (base branch, username, lint config)

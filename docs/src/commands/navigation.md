@@ -1,30 +1,26 @@
-# Navigation commands
+# Navigation (`mv`, `first`, `last`, `prev`, `next`)
 
-Current `gg` versions expose navigation as separate commands.
-
-## `gg first`
-Move to the first commit in the stack.
-
-## `gg last`
-Move to stack head.
-
-## `gg prev`
-Move to the previous commit.
-
-## `gg next`
-Move to the next commit.
+These commands move HEAD within your stack without manual rebase gymnastics.
 
 ## `gg mv <TARGET>`
-Move to a specific commit by position (1-indexed), GG-ID, or SHA.
 
-Examples:
+Move to a specific entry by:
+
+- Position (1-indexed)
+- GG-ID (`c-...`)
+- Commit SHA
 
 ```bash
-gg first
-gg next
-gg prev
-gg last
 gg mv 1
 gg mv c-abc1234
 gg mv a1b2c3d
+```
+
+## Relative navigation
+
+```bash
+gg first   # first entry
+gg last    # stack head
+gg prev    # previous entry
+gg next    # next entry
 ```

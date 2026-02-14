@@ -1,18 +1,21 @@
 # `gg lint`
 
-Run configured lint commands on each commit in the stack.
+Run configured lint commands on stack commits.
 
 ```bash
 gg lint [OPTIONS]
 ```
 
-Options:
+## Options
 
-- `-u, --until <UNTIL>`: stop at the given commit position
+- `-u, --until <UNTIL>`: Stop at target entry (position, GG-ID, SHA)
 
-Examples:
+## Examples
 
 ```bash
+# Lint from bottom to current
 gg lint
+
+# Lint only a subset
 gg lint --until 2
 ```

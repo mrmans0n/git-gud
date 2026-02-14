@@ -2,6 +2,8 @@
 
 A stacked-diffs CLI tool for GitHub and GitLab, inspired by Gerrit, Phabricator/Arcanist, and Graphite.
 
+📚 Full documentation lives in the mdBook under [`docs/`](./docs/) and is published via GitHub Pages.
+
 ## What are Stacked Diffs?
 
 Stacked diffs allow you to break large changes into small, reviewable commits that build on each other. Each commit becomes its own Pull Request (GitHub) or Merge Request (GitLab), with proper dependency chains. This enables:

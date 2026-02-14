@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-f40aad6e.js";
+            window.path_to_searchindex_js = "../searchindex-14610364.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-0702afd7.js"></script>
+        <script src="../toc-43ebf4f0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -175,23 +175,31 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="gg-land"><a class="header" href="#gg-land"><code>gg land</code></a></h1>
-<p>Merge approved PRs/MRs starting from the first stack commit.</p>
+<p>Merge approved PRs/MRs from the bottom of your stack upward.</p>
 <pre><code class="language-bash">gg land [OPTIONS]
 </code></pre>
-<p>Options:</p>
+<h2 id="options"><a class="header" href="#options">Options</a></h2>
 <ul>
-<li><code>-a, --all</code>: land all approved PRs/MRs in order</li>
-<li><code>--auto-merge</code>: GitLab only; queue auto-merge</li>
-<li><code>--no-squash</code>: disable squash merge</li>
-<li><code>-w, --wait</code>: wait for CI/approvals before merge</li>
-<li><code>-u, --until &lt;UNTIL&gt;</code>: land up to target commit</li>
-<li><code>-c, --clean</code>: cleanup stack after landing all</li>
-<li><code>--no-clean</code>: disable post-land cleanup</li>
+<li><code>-a, --all</code>: Land all approved entries in sequence</li>
+<li><code>--auto-merge</code>: <em>(GitLab only)</em> Request auto-merge instead of immediate merge</li>
+<li><code>--no-squash</code>: Disable squash merge (squash is default)</li>
+<li><code>-w, --wait</code>: Wait for CI and approvals before merging</li>
+<li><code>-u, --until &lt;UNTIL&gt;</code>: Land up to a target entry (position, GG-ID, SHA)</li>
+<li><code>-c, --clean</code>: Clean stack automatically after landing all</li>
+<li><code>--no-clean</code>: Disable auto-clean for this run</li>
 </ul>
-<p>Examples:</p>
-<pre><code class="language-bash">gg land
+<h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
+<pre><code class="language-bash"># Land one approved entry
+gg land
+
+# Land complete stack, waiting for readiness
 gg land --all --wait
-gg land --all --clean
+
+# Land part of stack
+gg land --until 2
+
+# GitLab auto-merge queue
+gg land --all --auto-merge
 </code></pre>
 
                     </main>

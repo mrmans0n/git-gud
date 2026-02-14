@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>completions - git-gud</title>
+        <title>Your First Stack - git-gud</title>
 
 
         <!-- Custom HTML head -->
@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-f40aad6e.js";
+            window.path_to_searchindex_js = "../searchindex-14610364.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-0702afd7.js"></script>
+        <script src="../toc-43ebf4f0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -174,28 +174,55 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="gg-completions"><a class="header" href="#gg-completions"><code>gg completions</code></a></h1>
-<p>Generate shell completions.</p>
-<pre><code class="language-bash">gg completions &lt;SHELL&gt;
+                        <h1 id="your-first-stack"><a class="header" href="#your-first-stack">Your First Stack</a></h1>
+<p>This walkthrough covers the full lifecycle: create → commit → sync → edit → land → clean.</p>
+<h2 id="1-create-a-stack"><a class="header" href="#1-create-a-stack">1) Create a stack</a></h2>
+<pre><code class="language-bash">gg co user-auth
 </code></pre>
-<p>Supported shells:</p>
-<ul>
-<li><code>bash</code></li>
-<li><code>elvish</code></li>
-<li><code>fish</code></li>
-<li><code>powershell</code></li>
-<li><code>zsh</code></li>
-</ul>
+<p>This creates/switches to stack branch <code>your-user/user-auth</code>.</p>
+<h2 id="2-build-the-feature-in-reviewable-commits"><a class="header" href="#2-build-the-feature-in-reviewable-commits">2) Build the feature in reviewable commits</a></h2>
+<pre><code class="language-bash">git add . &amp;&amp; git commit -m "Add user model"
+git add . &amp;&amp; git commit -m "Add auth endpoints"
+git add . &amp;&amp; git commit -m "Add login UI"
+</code></pre>
+<p>Keep each commit small and self-contained.</p>
+<h2 id="3-inspect-stack-structure"><a class="header" href="#3-inspect-stack-structure">3) Inspect stack structure</a></h2>
+<pre><code class="language-bash">gg ls
+</code></pre>
+<p>You should see ordered entries, each with a GG-ID.</p>
+<h2 id="4-publish-review-chain"><a class="header" href="#4-publish-review-chain">4) Publish review chain</a></h2>
+<pre><code class="language-bash">gg sync --draft
+</code></pre>
+<p>This pushes one branch per entry and creates one PR/MR per commit, chained by dependencies.</p>
+<h2 id="5-address-feedback-in-an-older-commit"><a class="header" href="#5-address-feedback-in-an-older-commit">5) Address feedback in an older commit</a></h2>
+<pre><code class="language-bash">gg mv 1
+# edit files
+git add .
+gg sc
+</code></pre>
+<p><code>gg sc</code> amends the current entry and rebases subsequent entries automatically.</p>
+<h2 id="6-update-remote-prsmrs"><a class="header" href="#6-update-remote-prsmrs">6) Update remote PRs/MRs</a></h2>
+<pre><code class="language-bash">gg sync
+</code></pre>
+<h2 id="7-land-approved-entries"><a class="header" href="#7-land-approved-entries">7) Land approved entries</a></h2>
+<pre><code class="language-bash">gg land --all
+</code></pre>
+<p>Use <code>--wait</code> if you want git-gud to wait for CI/approvals:</p>
+<pre><code class="language-bash">gg land --all --wait
+</code></pre>
+<h2 id="8-cleanup"><a class="header" href="#8-cleanup">8) Cleanup</a></h2>
+<pre><code class="language-bash">gg clean
+</code></pre>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../commands/continue-abort.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../guides/index.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="../commands/reconcile.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../guides/editing-commits.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -205,11 +232,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../commands/continue-abort.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../guides/index.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="../commands/reconcile.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../guides/editing-commits.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-f40aad6e.js";
+            window.path_to_searchindex_js = "searchindex-14610364.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-0702afd7.js"></script>
+        <script src="toc-43ebf4f0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -186,38 +186,51 @@
 <pre><code class="language-bash">cargo install --path .
 </code></pre>
 <h2 id="prerequisites"><a class="header" href="#prerequisites">Prerequisites</a></h2>
+<p>Before using git-gud, make sure you have:</p>
 <ul>
 <li>Git 2.x+</li>
-<li>GitHub repositories: <a href="https://cli.github.com/"><code>gh</code></a></li>
-<li>GitLab repositories: <a href="https://gitlab.com/gitlab-org/cli"><code>glab</code></a></li>
+<li><a href="https://cli.github.com/">GitHub CLI (<code>gh</code>)</a> for GitHub repositories</li>
+<li><a href="https://gitlab.com/gitlab-org/cli">GitLab CLI (<code>glab</code>)</a> for GitLab repositories</li>
 </ul>
-<p>Authenticate first:</p>
+<h2 id="authentication"><a class="header" href="#authentication">Authentication</a></h2>
+<p>Authenticate with your provider CLI first:</p>
 <pre><code class="language-bash"># GitHub
 gh auth login
 
 # GitLab
 glab auth login
 </code></pre>
-<h2 id="quick-start"><a class="header" href="#quick-start">Quick start</a></h2>
-<pre><code class="language-bash"># Create or switch to a stack
+<p>If authentication is missing, <code>gg sync</code> and <code>gg land</code> cannot create or merge PRs/MRs.</p>
+<h2 id="quick-start-first-stack-in-2-minutes"><a class="header" href="#quick-start-first-stack-in-2-minutes">Quick start: first stack in 2 minutes</a></h2>
+<pre><code class="language-bash"># 1) Create a stack
 gg co my-feature
 
-# Make commits with normal git
+# 2) Commit in small slices
 git add . &amp;&amp; git commit -m "Add data model"
 git add . &amp;&amp; git commit -m "Add API endpoint"
+git add . &amp;&amp; git commit -m "Add UI"
 
-# Inspect stack
+# 3) Inspect current stack
 gg ls
 
-# Push branches + create/update PRs/MRs
+# 4) Push branches and create PRs/MRs
 gg sync --draft
 
-# Land approved changes
+# 5) Navigate to edit an earlier commit
+gg mv 1
+# ...make changes...
+gg sc
+
+# 6) Re-sync after changes
+gg sync
+
+# 7) Land approved changes
 gg land --all
 
-# Cleanup merged stack
+# 8) Clean merged stack
 gg clean
 </code></pre>
+<p>For a full walkthrough with expected outputs and decision points, see <a href="./guides/your-first-stack.html">Your First Stack</a>.</p>
 
                     </main>
 

@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-f40aad6e.js";
+            window.path_to_searchindex_js = "searchindex-14610364.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-0702afd7.js"></script>
+        <script src="toc-43ebf4f0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -176,20 +176,31 @@
                     <main>
                         <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
 <p><code>git-gud</code> (<code>gg</code>) is a stacked-diffs CLI for GitHub and GitLab.</p>
-<p>It helps you split large changes into small, reviewable commits. Each commit maps to its own PR/MR, with dependencies automatically chained in order.</p>
-<h2 id="why-use-stacked-diffs"><a class="header" href="#why-use-stacked-diffs">Why use stacked diffs?</a></h2>
+<p>It helps you split large changes into a sequence of small commits that reviewers can understand quickly. In git-gud, each commit in your stack maps to its own PR/MR, and dependencies are wired automatically.</p>
+<h2 id="why-this-workflow-exists"><a class="header" href="#why-this-workflow-exists">Why this workflow exists</a></h2>
+<p>Stacked diffs solve a common problem: features are often too large for a single review, but splitting work manually into many dependent branches is painful.</p>
+<p>With git-gud, you can:</p>
 <ul>
-<li>Faster reviews through smaller changes</li>
-<li>Easier parallel development while waiting for feedback</li>
-<li>Cleaner, more logical commit history</li>
+<li>Keep reviews small and focused</li>
+<li>Keep moving while earlier changes are in review</li>
+<li>Preserve clean, logical commit history</li>
+<li>Land big projects incrementally without long-lived feature branches</li>
 </ul>
+<h2 id="learn-more-about-stacked-diffs"><a class="header" href="#learn-more-about-stacked-diffs">Learn more about stacked diffs</a></h2>
+<ul>
+<li><a href="https://newsletter.pragmaticengineer.com/p/stacked-diffs">Pragmatic Engineer: Stacked Diffs</a></li>
+<li><a href="https://graphite.com/guides/stacked-diffs">Graphite Guide: What are stacked diffs?</a></li>
+</ul>
+<blockquote>
+<p>Note: Nacho’s original post URL (<code>https://nlopez.io/posts/stacking-up/</code>) currently returns 404, so it’s not linked here.</p>
+</blockquote>
 <h2 id="provider-support"><a class="header" href="#provider-support">Provider support</a></h2>
-<p><code>gg</code> supports:</p>
+<p>git-gud supports:</p>
 <ul>
-<li>GitHub (via <code>gh</code>)</li>
-<li>GitLab (via <code>glab</code>)</li>
+<li><strong>GitHub</strong> through <code>gh</code></li>
+<li><strong>GitLab</strong> through <code>glab</code></li>
 </ul>
-<p>Provider selection is auto-detected from your remote URL (<code>github.com</code> / <code>gitlab.com</code>). For self-hosted instances, run <code>gg setup</code> and choose the provider explicitly.</p>
+<p>Provider selection is auto-detected from your remote URL (<code>github.com</code> / <code>gitlab.com</code>). For self-hosted instances, run <code>gg setup</code> and select the provider explicitly.</p>
 
                     </main>
 

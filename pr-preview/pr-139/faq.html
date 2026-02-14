@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>FAQ / Troubleshooting - git-gud</title>
+        <title>Troubleshooting / FAQ - git-gud</title>
 
 
         <!-- Custom HTML head -->
@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-f40aad6e.js";
+            window.path_to_searchindex_js = "searchindex-14610364.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-0702afd7.js"></script>
+        <script src="toc-43ebf4f0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -174,30 +174,43 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="faq--troubleshooting"><a class="header" href="#faq--troubleshooting">FAQ / Troubleshooting</a></h1>
-<h2 id="gh--glab-is-not-installed"><a class="header" href="#gh--glab-is-not-installed"><code>gh</code> / <code>glab</code> is not installed</a></h2>
+                        <h1 id="troubleshooting--faq"><a class="header" href="#troubleshooting--faq">Troubleshooting / FAQ</a></h1>
+<h2 id="gh-or-glab-is-missing"><a class="header" href="#gh-or-glab-is-missing"><code>gh</code> or <code>glab</code> is missing</a></h2>
 <p>Install the provider CLI:</p>
 <ul>
-<li>GitHub: https://cli.github.com/</li>
-<li>GitLab: https://gitlab.com/gitlab-org/cli</li>
+<li>GitHub: <a href="https://cli.github.com/">https://cli.github.com/</a></li>
+<li>GitLab: <a href="https://gitlab.com/gitlab-org/cli">https://gitlab.com/gitlab-org/cli</a></li>
 </ul>
 <h2 id="not-authenticated-with-provider"><a class="header" href="#not-authenticated-with-provider">Not authenticated with provider</a></h2>
-<pre><code class="language-bash">gh auth login    # GitHub
-glab auth login  # GitLab
+<pre><code class="language-bash">gh auth login
+glab auth login
 </code></pre>
 <h2 id="not-on-a-stack-branch"><a class="header" href="#not-on-a-stack-branch">“Not on a stack branch”</a></h2>
-<p>Switch to or create a stack branch:</p>
+<p>You’re on a branch that doesn’t match the stack naming scheme.</p>
 <pre><code class="language-bash">gg co &lt;stack-name&gt;
 </code></pre>
-<h2 id="merge-commits-are-not-supported"><a class="header" href="#merge-commits-are-not-supported">Merge commits are not supported</a></h2>
-<p>Use linear history for stack branches:</p>
-<pre><code class="language-bash">git rebase main
-</code></pre>
-<h2 id="i-pushed-with-git-push-and-mappings-are-missing"><a class="header" href="#i-pushed-with-git-push-and-mappings-are-missing">I pushed with <code>git push</code> and mappings are missing</a></h2>
-<p>Run reconciliation:</p>
+<h2 id="i-pushed-with-git-push-and-now-mappings-are-wrong"><a class="header" href="#i-pushed-with-git-push-and-now-mappings-are-wrong">I pushed with <code>git push</code> and now mappings are wrong</a></h2>
+<p>Run reconcile:</p>
 <pre><code class="language-bash">gg reconcile --dry-run
 gg reconcile
 </code></pre>
+<h2 id="merge-commits-are-not-supported"><a class="header" href="#merge-commits-are-not-supported">Merge commits are not supported</a></h2>
+<p>Stacks require linear history. Rebase your branch:</p>
+<pre><code class="language-bash">git rebase main
+</code></pre>
+<h2 id="gg-land---wait-times-out"><a class="header" href="#gg-land---wait-times-out"><code>gg land --wait</code> times out</a></h2>
+<p>Increase timeout in config:</p>
+<pre><code class="language-json">{
+  "defaults": {
+    "land_wait_timeout_minutes": 60
+  }
+}
+</code></pre>
+<h2 id="when-should-i-use-gg-absorb-vs-gg-sc"><a class="header" href="#when-should-i-use-gg-absorb-vs-gg-sc">When should I use <code>gg absorb</code> vs <code>gg sc</code>?</a></h2>
+<ul>
+<li>Use <code>gg sc</code> when you’re on the exact commit you want to modify.</li>
+<li>Use <code>gg absorb</code> when staged edits belong to multiple commits and you want git-gud to distribute them.</li>
+</ul>
 
                     </main>
 

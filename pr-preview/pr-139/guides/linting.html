@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Command Reference - git-gud</title>
+        <title>Linting Your Stack - git-gud</title>
 
 
         <!-- Custom HTML head -->
@@ -174,25 +174,41 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="command-reference"><a class="header" href="#command-reference">Command Reference</a></h1>
-<p>This section is a command-by-command reference based on <code>gg --help</code> and <code>gg &lt;command&gt; --help</code>.</p>
-<p>Unlike the guides, this section is organized by command surface and flags. Each page still includes practical examples.</p>
-<h2 id="command-groups"><a class="header" href="#command-groups">Command groups</a></h2>
-<ul>
-<li>Stack lifecycle: <code>co</code>, <code>ls</code>, <code>sync</code>, <code>land</code>, <code>clean</code></li>
-<li>Editing: <code>mv</code>, <code>first</code>, <code>last</code>, <code>prev</code>, <code>next</code>, <code>sc</code>, <code>absorb</code>, <code>reorder</code>, <code>rebase</code></li>
-<li>Utilities: <code>lint</code>, <code>setup</code>, <code>reconcile</code>, <code>continue</code>, <code>abort</code>, <code>completions</code></li>
-</ul>
+                        <h1 id="linting-your-stack"><a class="header" href="#linting-your-stack">Linting Your Stack</a></h1>
+<p><code>gg lint</code> runs your configured lint commands commit-by-commit across the stack.</p>
+<h2 id="configure-lint-commands"><a class="header" href="#configure-lint-commands">Configure lint commands</a></h2>
+<p>In <code>.git/gg/config.json</code>:</p>
+<pre><code class="language-json">{
+  "defaults": {
+    "lint": [
+      "cargo fmt --check",
+      "cargo clippy -- -D warnings"
+    ]
+  }
+}
+</code></pre>
+<h2 id="run-lint-manually"><a class="header" href="#run-lint-manually">Run lint manually</a></h2>
+<pre><code class="language-bash">gg lint
+</code></pre>
+<p>Run only up to a specific entry:</p>
+<pre><code class="language-bash">gg lint --until 2
+</code></pre>
+<h2 id="run-lint-during-sync"><a class="header" href="#run-lint-during-sync">Run lint during sync</a></h2>
+<pre><code class="language-bash">gg sync --lint
+</code></pre>
+<p>Skip lint for one sync (even if enabled by default):</p>
+<pre><code class="language-bash">gg sync --no-lint
+</code></pre>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../guides/reconciling.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../guides/landing-and-cleanup.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="../commands/co.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../guides/reconciling.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -202,11 +218,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../guides/reconciling.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../guides/landing-and-cleanup.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="../commands/co.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../guides/reconciling.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Command Reference - git-gud</title>
+        <title>Working with Remote Stacks - git-gud</title>
 
 
         <!-- Custom HTML head -->
@@ -174,25 +174,36 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="command-reference"><a class="header" href="#command-reference">Command Reference</a></h1>
-<p>This section is a command-by-command reference based on <code>gg --help</code> and <code>gg &lt;command&gt; --help</code>.</p>
-<p>Unlike the guides, this section is organized by command surface and flags. Each page still includes practical examples.</p>
-<h2 id="command-groups"><a class="header" href="#command-groups">Command groups</a></h2>
+                        <h1 id="working-with-remote-stacks"><a class="header" href="#working-with-remote-stacks">Working with Remote Stacks</a></h1>
+<p>Use this when a stack exists on origin but not in your local checkout (new machine, pairing, takeover).</p>
+<h2 id="discover-remote-only-stacks"><a class="header" href="#discover-remote-only-stacks">Discover remote-only stacks</a></h2>
+<pre><code class="language-bash">gg ls --remote
+</code></pre>
+<h2 id="check-out-a-remote-stack"><a class="header" href="#check-out-a-remote-stack">Check out a remote stack</a></h2>
+<pre><code class="language-bash">gg co user-auth
+</code></pre>
+<p>If a local stack doesn’t exist, git-gud can reconstruct it from remote entry branches and mappings.</p>
+<h2 id="typical-collaboration-loop"><a class="header" href="#typical-collaboration-loop">Typical collaboration loop</a></h2>
+<pre><code class="language-bash">gg co teammate-feature
+gg ls
+# make changes
+gg sync
+</code></pre>
+<p>Tips:</p>
 <ul>
-<li>Stack lifecycle: <code>co</code>, <code>ls</code>, <code>sync</code>, <code>land</code>, <code>clean</code></li>
-<li>Editing: <code>mv</code>, <code>first</code>, <code>last</code>, <code>prev</code>, <code>next</code>, <code>sc</code>, <code>absorb</code>, <code>reorder</code>, <code>rebase</code></li>
-<li>Utilities: <code>lint</code>, <code>setup</code>, <code>reconcile</code>, <code>continue</code>, <code>abort</code>, <code>completions</code></li>
+<li>Prefer <code>gg sync</code> over manual <code>git push</code> to keep mappings healthy</li>
+<li>If mappings drift, use <a href="./reconciling.html">Reconciling Out-of-Sync Stacks</a></li>
 </ul>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../guides/reconciling.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../guides/editing-commits.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="../commands/co.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../guides/worktrees.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -202,11 +213,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../guides/reconciling.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../guides/editing-commits.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="../commands/co.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../guides/worktrees.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-f40aad6e.js";
+            window.path_to_searchindex_js = "searchindex-14610364.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-0702afd7.js"></script>
+        <script src="toc-43ebf4f0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -175,37 +175,47 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="core-concepts"><a class="header" href="#core-concepts">Core Concepts</a></h1>
-<h2 id="stack-model"><a class="header" href="#stack-model">Stack model</a></h2>
-<p>A stack is an ordered list of commits on top of a base branch.</p>
+<h2 id="stacked-diffs-in-one-sentence"><a class="header" href="#stacked-diffs-in-one-sentence">Stacked diffs in one sentence</a></h2>
+<p>A stack is a series of commits where each commit is reviewed as its own PR/MR, and each PR/MR depends on the previous one.</p>
+<h2 id="the-git-gud-model-one-commit--one-prmr"><a class="header" href="#the-git-gud-model-one-commit--one-prmr">The git-gud model: one commit = one PR/MR</a></h2>
+<p>In git-gud, each commit is an “entry” in the stack:</p>
 <ul>
-<li>First commit targets the base branch (<code>main</code>, <code>master</code>, etc.)</li>
-<li>Each later commit targets the previous commit branch</li>
+<li>Entry 1 targets your base branch (for example, <code>main</code>)</li>
+<li>Entry 2 targets entry 1’s branch</li>
+<li>Entry 3 targets entry 2’s branch</li>
+<li>…and so on</li>
 </ul>
-<p>This produces a dependency chain of PRs/MRs.</p>
-<h2 id="branch-naming"><a class="header" href="#branch-naming">Branch naming</a></h2>
+<p>That gives reviewers small units, while preserving execution order.</p>
+<h2 id="gg-ids"><a class="header" href="#gg-ids">GG-IDs</a></h2>
+<p>Each stack commit carries a stable trailer, for example:</p>
+<pre><code class="language-text">GG-ID: c-abc1234
+</code></pre>
+<p>Why GG-IDs matter:</p>
 <ul>
-<li>Stack branch: <code>&lt;username&gt;/&lt;stack-name&gt;</code></li>
-<li>Per-commit branch: <code>&lt;username&gt;/&lt;stack-name&gt;--&lt;entry-id&gt;</code></li>
+<li>They keep commit-to-PR/MR mappings stable across rebases</li>
+<li>They let git-gud identify entries by a durable ID (not just SHA)</li>
+<li>They make reconcile and navigation safer after history edits</li>
+</ul>
+<h2 id="branch-naming-convention"><a class="header" href="#branch-naming-convention">Branch naming convention</a></h2>
+<p>git-gud uses predictable branch names:</p>
+<ul>
+<li><strong>Stack branch</strong>: <code>&lt;username&gt;/&lt;stack-name&gt;</code></li>
+<li><strong>Entry branch</strong>: <code>&lt;username&gt;/&lt;stack-name&gt;--&lt;gg-id&gt;</code></li>
 </ul>
 <p>Example:</p>
 <ul>
 <li><code>nacho/user-auth</code></li>
 <li><code>nacho/user-auth--c-abc1234</code></li>
 </ul>
-<h2 id="gg-id-trailers"><a class="header" href="#gg-id-trailers">GG-ID trailers</a></h2>
-<p>Each commit carries a stable trailer:</p>
-<pre><code class="language-text">GG-ID: c-abc1234
-</code></pre>
-<p>GG-IDs are used to map commits to PR/MR records even after rebases and reordering.</p>
-<h2 id="navigation"><a class="header" href="#navigation">Navigation</a></h2>
-<p>Use stack navigation commands to move through commit positions:</p>
+<p>This convention is what makes remote discovery (<code>gg ls --remote</code>) and reconciliation possible.</p>
+<h2 id="prmr-dependency-chains"><a class="header" href="#prmr-dependency-chains">PR/MR dependency chains</a></h2>
+<p>Dependency chaining is automatic during <code>gg sync</code>:</p>
 <ul>
-<li><code>gg first</code></li>
-<li><code>gg last</code></li>
-<li><code>gg prev</code></li>
-<li><code>gg next</code></li>
-<li><code>gg mv &lt;target&gt;</code></li>
+<li>First PR/MR targets <code>main</code> (or your configured base)</li>
+<li>Next PR/MR targets previous entry branch</li>
+<li>This continues until stack head</li>
 </ul>
+<p>Result: reviewers can review from bottom to top, and <code>gg land</code> can merge safely in order.</p>
 
                     </main>
 
@@ -215,7 +225,7 @@
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="commands/index.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="guides/index.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -229,7 +239,7 @@
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="commands/index.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="guides/index.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

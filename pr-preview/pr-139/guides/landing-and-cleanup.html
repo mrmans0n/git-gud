@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Command Reference - git-gud</title>
+        <title>Landing and Cleanup - git-gud</title>
 
 
         <!-- Custom HTML head -->
@@ -174,25 +174,45 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="command-reference"><a class="header" href="#command-reference">Command Reference</a></h1>
-<p>This section is a command-by-command reference based on <code>gg --help</code> and <code>gg &lt;command&gt; --help</code>.</p>
-<p>Unlike the guides, this section is organized by command surface and flags. Each page still includes practical examples.</p>
-<h2 id="command-groups"><a class="header" href="#command-groups">Command groups</a></h2>
-<ul>
-<li>Stack lifecycle: <code>co</code>, <code>ls</code>, <code>sync</code>, <code>land</code>, <code>clean</code></li>
-<li>Editing: <code>mv</code>, <code>first</code>, <code>last</code>, <code>prev</code>, <code>next</code>, <code>sc</code>, <code>absorb</code>, <code>reorder</code>, <code>rebase</code></li>
-<li>Utilities: <code>lint</code>, <code>setup</code>, <code>reconcile</code>, <code>continue</code>, <code>abort</code>, <code>completions</code></li>
-</ul>
+                        <h1 id="landing-and-cleanup"><a class="header" href="#landing-and-cleanup">Landing and Cleanup</a></h1>
+<p>Use <code>gg land</code> to merge entries in order, from the bottom of the stack upward.</p>
+<h2 id="land-one-approved-entry"><a class="header" href="#land-one-approved-entry">Land one approved entry</a></h2>
+<pre><code class="language-bash">gg land
+</code></pre>
+<h2 id="land-the-whole-stack"><a class="header" href="#land-the-whole-stack">Land the whole stack</a></h2>
+<pre><code class="language-bash">gg land --all
+</code></pre>
+<h2 id="wait-for-ci-and-approvals"><a class="header" href="#wait-for-ci-and-approvals">Wait for CI and approvals</a></h2>
+<pre><code class="language-bash">gg land --all --wait
+</code></pre>
+<h2 id="land-only-part-of-a-stack"><a class="header" href="#land-only-part-of-a-stack">Land only part of a stack</a></h2>
+<pre><code class="language-bash">gg land --until 2
+# or by GG-ID / SHA
+</code></pre>
+<h2 id="merge-strategy-and-provider-specific-behavior"><a class="header" href="#merge-strategy-and-provider-specific-behavior">Merge strategy and provider-specific behavior</a></h2>
+<pre><code class="language-bash">gg land --no-squash
+</code></pre>
+<p>GitLab auto-merge queue:</p>
+<pre><code class="language-bash">gg land --auto-merge
+</code></pre>
+<h2 id="auto-clean-after-landing"><a class="header" href="#auto-clean-after-landing">Auto-clean after landing</a></h2>
+<p>One-off:</p>
+<pre><code class="language-bash">gg land --all --clean
+</code></pre>
+<p>Or make it default with <code>land_auto_clean</code> in config.</p>
+<p>Manual cleanup remains available:</p>
+<pre><code class="language-bash">gg clean
+</code></pre>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../guides/reconciling.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../guides/worktrees.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="../commands/co.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../guides/linting.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -202,11 +222,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../guides/reconciling.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../guides/worktrees.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="../commands/co.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../guides/linting.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

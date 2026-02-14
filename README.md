@@ -2,7 +2,7 @@
 
 A stacked-diffs CLI tool for GitHub and GitLab, inspired by Gerrit, Phabricator/Arcanist, and Graphite.
 
-📚 Full documentation lives in the mdBook under [`docs/`](./docs/) and is published via GitHub Pages.
+📚 **[Full documentation](https://mrmans0n.github.io/git-gud/)** — guides, command reference, configuration, and more.
 
 ## What are Stacked Diffs?
 

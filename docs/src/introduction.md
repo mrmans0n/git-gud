@@ -20,7 +20,7 @@ With git-gud, you can:
 - [Pragmatic Engineer: Stacked Diffs](https://newsletter.pragmaticengineer.com/p/stacked-diffs)
 - [Graphite Guide: What are stacked diffs?](https://graphite.com/guides/stacked-diffs)
 
-> Note: Nacho's original post URL (`https://nlopez.io/posts/stacking-up/`) currently returns 404, so it's not linked here.
+- [Introducing git-gud](https://nlopez.io/introducing-git-gud-a-stacked-diffs-cli-for-github-and-gitlab/) — the story behind this tool, by its author
 
 ## Provider support
 

@@ -1547,6 +1547,20 @@ fn setup_absorb_stack(repo_path: &std::path::Path, stack: &str) {
     run_git(repo_path, &["commit", "-m", "Add line2"]);
 }
 
+fn setup_large_absorb_stack(repo_path: &std::path::Path, stack: &str, commit_count: usize) {
+    setup_test_config(repo_path);
+    let (success, _stdout, stderr) = run_gg(repo_path, &["co", stack]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    for i in 1..=commit_count {
+        let file_name = format!("file-{i:02}.txt");
+        let content = format!("commit-{i:02}\n");
+        fs::write(repo_path.join(&file_name), content).expect("Failed to write file");
+        run_git(repo_path, &["add", &file_name]);
+        run_git(repo_path, &["commit", "-m", &format!("Add commit {i:02}")]);
+    }
+}
+
 #[test]
 fn test_absorb_basic_creates_fixup_commit() {
     let (_temp_dir, repo_path) = create_test_repo();
@@ -1651,6 +1665,90 @@ fn test_absorb_one_fixup_per_commit_mode() {
         success,
         "absorb --one-fixup-per-commit failed: {} {}",
         stdout, stderr
+    );
+}
+
+#[test]
+fn test_absorb_no_limit_on_large_stack() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    setup_large_absorb_stack(&repo_path, "absorb-no-limit", 12);
+
+    fs::write(repo_path.join("file-01.txt"), "commit-01 updated\n").expect("Failed to write file");
+    run_git(&repo_path, &["add", "file-01.txt"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["absorb", "--no-limit"]);
+    assert!(success, "absorb --no-limit failed: {} {}", stdout, stderr);
+
+    let (_, log) = run_git(&repo_path, &["log", "--oneline", "-20"]);
+    assert!(
+        log.contains("fixup! Add commit 01") || log.contains("fixup!"),
+        "Expected fixup commit targeting old commit with --no-limit. log={}",
+        log
+    );
+}
+
+#[test]
+fn test_absorb_squash_applies_without_fixup_commit() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    setup_absorb_stack(&repo_path, "absorb-squash");
+
+    fs::write(repo_path.join("stack.txt"), "line1 updated\nline2\n").expect("Failed to write file");
+    run_git(&repo_path, &["add", "stack.txt"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["absorb", "--squash"]);
+    assert!(success, "absorb --squash failed: {} {}", stdout, stderr);
+
+    let (_, log) = run_git(&repo_path, &["log", "--oneline", "-5"]);
+    assert!(
+        !log.contains("fixup!"),
+        "--squash should not leave fixup commits in history. log={}",
+        log
+    );
+}
+
+#[test]
+fn test_absorb_squash_and_rebase_combination() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    setup_absorb_stack(&repo_path, "absorb-squash-rebase");
+
+    fs::write(repo_path.join("stack.txt"), "line1 updated\nline2\n").expect("Failed to write file");
+    run_git(&repo_path, &["add", "stack.txt"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["absorb", "--squash", "--and-rebase"]);
+    assert!(
+        success,
+        "absorb --squash --and-rebase failed: {} {}",
+        stdout, stderr
+    );
+
+    let (_, log) = run_git(&repo_path, &["log", "--oneline", "-5"]);
+    assert!(
+        !log.contains("fixup!"),
+        "--squash --and-rebase should not create fixup commits. log={}",
+        log
+    );
+}
+
+#[test]
+fn test_absorb_no_limit_and_squash_combination() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    setup_large_absorb_stack(&repo_path, "absorb-no-limit-squash", 12);
+
+    fs::write(repo_path.join("file-01.txt"), "commit-01 updated\n").expect("Failed to write file");
+    run_git(&repo_path, &["add", "file-01.txt"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["absorb", "--no-limit", "--squash"]);
+    assert!(
+        success,
+        "absorb --no-limit --squash failed: {} {}",
+        stdout, stderr
+    );
+
+    let (_, log) = run_git(&repo_path, &["log", "--oneline", "-20"]);
+    assert!(
+        !log.contains("fixup!"),
+        "--no-limit --squash should not leave fixup commits. log={}",
+        log
     );
 }
 
@@ -1855,6 +1953,82 @@ fn test_absorb_and_rebase_runs_from_worktree() {
         success,
         "absorb --and-rebase should work in worktree: {} {}",
         stdout, stderr
+    );
+}
+
+#[test]
+fn test_absorb_no_limit_runs_from_worktree() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    setup_test_config(&repo_path);
+
+    let stack_name = "absorb-wt-no-limit";
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", stack_name, "--worktree"]);
+    assert!(success, "Failed to create worktree stack: {}", stderr);
+
+    let worktree_path = repo_path.parent().unwrap().join(format!(
+        "{}.{}",
+        repo_path.file_name().unwrap().to_string_lossy(),
+        stack_name
+    ));
+    let wt = worktree_path.to_path_buf();
+
+    for i in 1..=12 {
+        let file_name = format!("notes-{i:02}.txt");
+        fs::write(worktree_path.join(&file_name), format!("v{i:02}\n")).expect("Failed write");
+        run_git(&wt, &["add", &file_name]);
+        run_git(&wt, &["commit", "-m", &format!("Add notes {i:02}")]);
+    }
+
+    fs::write(worktree_path.join("notes-01.txt"), "v01 updated\n").expect("Failed write");
+    run_git(&wt, &["add", "notes-01.txt"]);
+
+    let (success, stdout, stderr) = run_gg(&wt, &["absorb", "--no-limit"]);
+    assert!(
+        success,
+        "absorb --no-limit should work in worktree: {} {}",
+        stdout, stderr
+    );
+}
+
+#[test]
+fn test_absorb_squash_runs_from_worktree() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    setup_test_config(&repo_path);
+
+    let stack_name = "absorb-wt-squash";
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", stack_name, "--worktree"]);
+    assert!(success, "Failed to create worktree stack: {}", stderr);
+
+    let worktree_path = repo_path.parent().unwrap().join(format!(
+        "{}.{}",
+        repo_path.file_name().unwrap().to_string_lossy(),
+        stack_name
+    ));
+    let wt = worktree_path.to_path_buf();
+
+    fs::write(worktree_path.join("notes.txt"), "a\n").expect("Failed write");
+    run_git(&wt, &["add", "notes.txt"]);
+    run_git(&wt, &["commit", "-m", "Add notes a"]);
+
+    fs::write(worktree_path.join("notes.txt"), "a\nb\n").expect("Failed write");
+    run_git(&wt, &["add", "notes.txt"]);
+    run_git(&wt, &["commit", "-m", "Add notes b"]);
+
+    fs::write(worktree_path.join("notes.txt"), "a updated\nb\n").expect("Failed write");
+    run_git(&wt, &["add", "notes.txt"]);
+
+    let (success, stdout, stderr) = run_gg(&wt, &["absorb", "--squash"]);
+    assert!(
+        success,
+        "absorb --squash should work in worktree: {} {}",
+        stdout, stderr
+    );
+
+    let (_, log) = run_git(&wt, &["log", "--oneline", "-5"]);
+    assert!(
+        !log.contains("fixup!"),
+        "worktree --squash should not leave fixup commits. log={}",
+        log
     );
 }
 

@@ -25,6 +25,10 @@ pub struct AbsorbOptions {
     pub whole_file: bool,
     /// Create at most one fixup per commit
     pub one_fixup_per_commit: bool,
+    /// Do not limit search depth to the default window
+    pub no_limit: bool,
+    /// Squash absorbed changes directly instead of creating fixup commits
+    pub squash: bool,
 }
 
 /// Run the absorb command
@@ -102,8 +106,8 @@ pub fn run(options: AbsorbOptions) -> Result<()> {
         rebase_options: &rebase_options,
         whole_file: options.whole_file,
         one_fixup_per_commit: options.one_fixup_per_commit,
-        no_limit: false,
-        squash: false,
+        no_limit: options.no_limit,
+        squash: options.squash,
         message: None,
     };
 
@@ -225,5 +229,7 @@ mod tests {
         assert!(!opts.and_rebase);
         assert!(!opts.whole_file);
         assert!(!opts.one_fixup_per_commit);
+        assert!(!opts.no_limit);
+        assert!(!opts.squash);
     }
 }

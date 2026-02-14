@@ -202,7 +202,7 @@ enum Commands {
     #[command(name = "absorb")]
     Absorb {
         /// Show what would be done without making changes
-        #[arg(short = 'n', long)]
+        #[arg(long)]
         dry_run: bool,
 
         /// Automatically rebase after creating fixup commits
@@ -216,6 +216,14 @@ enum Commands {
         /// Create at most one fixup per commit
         #[arg(long)]
         one_fixup_per_commit: bool,
+
+        /// Do not limit the search to 10 commits back. Searches all commits in the stack.
+        #[arg(short = 'n', long = "no-limit")]
+        no_limit: bool,
+
+        /// Squash fixup commits directly instead of creating fixup! commits for later rebase.
+        #[arg(short = 's', long)]
+        squash: bool,
     },
 
     /// Generate shell completions
@@ -323,11 +331,15 @@ fn main() {
             and_rebase,
             whole_file,
             one_fixup_per_commit,
+            no_limit,
+            squash,
         }) => commands::absorb::run(commands::absorb::AbsorbOptions {
             dry_run,
             and_rebase,
             whole_file,
             one_fixup_per_commit,
+            no_limit,
+            squash,
         }),
         Some(Commands::Completions { shell }) => commands::completions::run(shell),
         Some(Commands::Reconcile { dry_run }) => commands::reconcile::run(dry_run),

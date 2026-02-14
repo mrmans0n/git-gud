@@ -42,6 +42,20 @@ glab auth login
 
 If authentication is missing, `gg sync` and `gg land` cannot create or merge PRs/MRs.
 
+## Initial setup
+
+After installing, run the setup wizard in any git repository to configure git-gud:
+
+```bash
+gg setup
+```
+
+This interactively sets your base branch, username for branch naming, provider (auto-detected for github.com/gitlab.com), and optional lint commands. Configuration is stored per-repo in `.git/gg/config.json`.
+
+> **Tip:** `gg setup` is optional — git-gud auto-detects sensible defaults. But it's useful for setting lint commands, customizing your username prefix, or configuring self-hosted GitHub Enterprise / GitLab instances.
+
+See [Configuration](./configuration.md) for all available options.
+
 ## Quick start: first stack in 2 minutes
 
 ```bash

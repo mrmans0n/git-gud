@@ -28,5 +28,4 @@
   - [reconcile](./commands/reconcile.md)
 - [Configuration](./configuration.md)
 - [Shell Completions](./shell-completions.md)
-- [CI/CD Integration](./cicd-integration.md)
 - [Troubleshooting / FAQ](./faq.md)

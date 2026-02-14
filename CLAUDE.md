@@ -142,6 +142,18 @@ Use the `GgError` enum in `src/error.rs` for domain-specific errors. All errors 
 
 This applies to all PRs, including those created by subagents.
 
+## Documentation
+
+**All user-facing changes MUST update documentation:**
+
+- New features, commands, or flags → update the relevant mdBook page in `docs/src/`
+- Changed behavior or defaults → update both the command reference and any guides that mention it
+- Removed features → remove from docs and add migration note if needed
+
+Documentation lives in `docs/` (mdBook). Build locally with `mdbook build docs` or `mdbook serve docs`.
+
+The docs should read as a guide, not a parameter dump. Explain *what you can do* and *why*, with real-world examples. The command reference pages can be more exhaustive, but even those should have practical examples.
+
 ## Code Style
 
 - Follow standard Rust conventions

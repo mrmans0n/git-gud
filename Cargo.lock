@@ -666,9 +666,9 @@ dependencies = [
 
 [[package]]
 name = "git-absorb"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d1f3af8e8072014ad172abc9775bdd6c793378005eb2c6fe3e4ef939da1aea8"
+checksum = "79240767bdb4a478471988f1deb64d2202c94fa627928891a652af44246d0f85"
 dependencies = [
  "anyhow",
  "clap",

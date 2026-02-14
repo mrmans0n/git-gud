@@ -102,6 +102,8 @@ pub fn run(options: AbsorbOptions) -> Result<()> {
         rebase_options: &rebase_options,
         whole_file: options.whole_file,
         one_fixup_per_commit: options.one_fixup_per_commit,
+        no_limit: false,
+        squash: false,
         message: None,
     };
 

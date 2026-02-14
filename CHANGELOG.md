@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-02-14
+
+### Added
+- `--no-limit` / `-n` flag for `gg absorb`: search all commits in the stack instead of the default 10 (#138)
+- `--squash` / `-s` flag for `gg absorb`: squash fixup commits directly instead of creating fixup! commits (#138)
+
+### Changed
+- Upgraded git-absorb dependency to 0.9 (#137)
+
+### Improved
+- Comprehensive integration tests for absorb (basic, worktree, edge cases) (#137, #138)
+
+### Dependencies
+- Updated uuid to 1.21.0 (#135)
+- Fixed Homebrew formula capitalization and lint
+
 ## [0.2.1] - 2026-02-13
 
 ### Fixed
@@ -120,7 +136,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/mrmans0n/git-gud/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/mrmans0n/git-gud/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/mrmans0n/git-gud/compare/v0.1.16...v0.2.0
 [0.1.16]: https://github.com/mrmans0n/git-gud/compare/v0.1.15...v0.1.16

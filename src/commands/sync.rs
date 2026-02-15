@@ -245,13 +245,18 @@ pub fn run(
     let pr_template = template::load_template(git_dir);
 
     // Sync progress
-    let pb = ProgressBar::new(entries_to_sync.len() as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-            .unwrap()
-            .progress_chars("=>-"),
-    );
+    let pb = if atty::is(atty::Stream::Stderr) {
+        let pb = ProgressBar::new(entries_to_sync.len() as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+                .unwrap()
+                .progress_chars("=>-"),
+        );
+        pb
+    } else {
+        ProgressBar::hidden()
+    };
 
     // Process each entry
     // If a commit title starts with "WIP:" or "Draft:" (case-insensitive),

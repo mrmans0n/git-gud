@@ -7,12 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-02-17
+
 ### Added
-- `gg sync` now detects when stack base is behind `origin/<base>`, warns, and suggests rebasing first
-- `gg sync --no-rebase-check` to bypass behind-base check for a single sync
-- `sync_auto_rebase` (`sync.auto_rebase`) config to auto-run rebase during sync when threshold is met
-- `sync_behind_threshold` (`sync.behind_threshold`) config to tune/disable behind-base checks (`0` disables)
-- `gg ls` shows a `↓N` indicator when stack base is behind `origin/<base>`
+- `gg sync` now detects when stack base is behind `origin/<base>`, warns, and suggests rebasing first (#143)
+- `gg sync --no-rebase-check` to bypass behind-base check for a single sync (#143)
+- `sync_auto_rebase` (`sync.auto_rebase`) config to auto-run rebase during sync when threshold is met (#143)
+- `sync_behind_threshold` (`sync.behind_threshold`) config to tune/disable behind-base checks (`0` disables) (#143)
+- `gg ls` shows a `↓N` indicator when stack base is behind `origin/<base>` (#143)
+- mdBook documentation with GitHub Pages deploy and PR previews (#139)
+
+### Fixed
+- Use hidden progress bar when stderr is not a TTY (#141)
+
+### Dependencies
+- Updated clap to 4.5.59 (#142)
+- Updated indicatif to 0.18.4 (#140)
 
 ## [0.3.0] - 2026-02-14
 
@@ -143,7 +153,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/mrmans0n/git-gud/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/mrmans0n/git-gud/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/mrmans0n/git-gud/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/mrmans0n/git-gud/compare/v0.1.16...v0.2.0

@@ -424,6 +424,20 @@ pub fn get_remote_branch_oid(repo: &Repository, branch_name: &str) -> Option<Oid
     repo.revparse_single(&remote_ref).ok().map(|obj| obj.id())
 }
 
+/// Count how many commits `local_ref` is behind `upstream_ref`.
+///
+/// Returns an error if either ref cannot be resolved.
+pub fn count_commits_behind(
+    repo: &Repository,
+    local_ref: &str,
+    upstream_ref: &str,
+) -> Result<usize> {
+    let local_oid = repo.revparse_single(local_ref)?.id();
+    let upstream_oid = repo.revparse_single(upstream_ref)?.id();
+    let (_ahead, behind) = repo.graph_ahead_behind(local_oid, upstream_oid)?;
+    Ok(behind)
+}
+
 /// Push a branch to origin
 ///
 /// - `force_with_lease`: Use --force-with-lease (safe force, recommended for stacked diffs)
@@ -947,6 +961,88 @@ mod tests {
         assert!(!desc.contains("GG-ID"));
         assert!(desc.contains("First paragraph"));
         assert!(desc.contains("Bullet point"));
+    }
+
+    #[test]
+    fn test_count_commits_behind() {
+        use std::process::Command;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_path = temp_dir.path();
+
+        Command::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        std::fs::write(repo_path.join("file.txt"), "v1").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Create a synthetic origin/main ref 2 commits ahead of main.
+        std::fs::write(repo_path.join("file.txt"), "v2").unwrap();
+        Command::new("git")
+            .args(["commit", "-am", "second"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        std::fs::write(repo_path.join("file.txt"), "v3").unwrap();
+        Command::new("git")
+            .args(["commit", "-am", "third"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        let head = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        let head_oid = String::from_utf8_lossy(&head.stdout).trim().to_string();
+
+        // Move local main back by two commits and keep origin/main at HEAD.
+        Command::new("git")
+            .args(["reset", "--hard", "HEAD~2"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["update-ref", "refs/remotes/origin/main", &head_oid])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        let repo = Repository::open(repo_path).unwrap();
+        let behind = count_commits_behind(&repo, "main", "origin/main").unwrap();
+        assert_eq!(behind, 2);
+    }
+
+    #[test]
+    fn test_count_commits_behind_missing_ref() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(temp_dir.path()).unwrap();
+
+        let err = count_commits_behind(&repo, "main", "origin/main");
+        assert!(err.is_err());
     }
 
     #[test]

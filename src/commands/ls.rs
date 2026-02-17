@@ -11,7 +11,8 @@ use crate::stack::{self, Stack};
 /// Run the list command
 pub fn run(all: bool, refresh: bool, remote: bool) -> Result<()> {
     let repo = git::open_repo()?;
-    let config = Config::load(repo.commondir())?;
+    let git_dir = repo.path();
+    let config = Config::load(git_dir)?;
 
     // Handle --remote flag
     if remote {
@@ -84,15 +85,6 @@ fn list_all_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
     for stack_name in &stacks {
         let is_current = current_stack.as_deref() == Some(stack_name);
         let marker = if is_current { "→ " } else { "  " };
-        let wt_indicator = if config
-            .get_stack(stack_name)
-            .and_then(|s| s.worktree_path.as_ref())
-            .is_some()
-        {
-            " [wt]"
-        } else {
-            ""
-        };
 
         // Get commits for this stack
         let full_branch = git::format_stack_branch(&username, stack_name);
@@ -100,6 +92,12 @@ fn list_all_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
 
         let commit_count = commits.as_ref().map(|c| c.len()).unwrap_or(0);
         let commit_info = format!(" ({} commits)", commit_count);
+        let stack_base = config
+            .get_base_for_stack(stack_name)
+            .unwrap_or(base_branch.as_str());
+        let behind_indicator = behind_indicator(repo, stack_base)
+            .map(|s| format!(" {}", style(s).yellow()))
+            .unwrap_or_default();
 
         println!();
         if is_current {
@@ -107,16 +105,16 @@ fn list_all_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
                 "{}{}{}{}",
                 style(marker).cyan().bold(),
                 style(stack_name).cyan().bold(),
-                style(wt_indicator).yellow(),
-                style(&commit_info).dim()
+                style(&commit_info).dim(),
+                behind_indicator
             );
         } else {
             println!(
                 "{}{}{}{}",
                 marker,
                 stack_name,
-                style(wt_indicator).yellow(),
-                style(&commit_info).dim()
+                style(&commit_info).dim(),
+                behind_indicator
             );
         }
 
@@ -325,21 +323,36 @@ fn count_stack_commits(repo: &git2::Repository, branch: &str, base: &str) -> Res
     Ok(revwalk.count())
 }
 
+fn behind_indicator(repo: &git2::Repository, base_branch: &str) -> Option<String> {
+    let behind =
+        git::count_commits_behind(repo, base_branch, &format!("origin/{}", base_branch)).ok()?;
+    if behind > 0 {
+        Some(format!("↓{}", behind))
+    } else {
+        None
+    }
+}
+
 /// Show detailed stack view
 fn show_stack(stack: &Stack) -> Result<()> {
     let synced = stack.synced_count();
     let total = stack.len();
 
+    let repo = git::open_repo()?;
+    let behind = behind_indicator(&repo, &stack.base)
+        .map(|s| format!(" {}", style(s).yellow()))
+        .unwrap_or_default();
+
     println!(
-        "{} ({} commits, {} synced)",
+        "{} ({} commits, {} synced){}",
         style(&stack.name).cyan().bold(),
         total,
-        synced
+        synced,
+        behind
     );
     println!();
 
     // Check for ongoing rebase and warn the user
-    let repo = git::open_repo()?;
     if git::is_rebase_in_progress(&repo) {
         println!(
             "{} {}",
@@ -360,7 +373,6 @@ fn show_stack(stack: &Stack) -> Result<()> {
     }
 
     // Try to detect provider for proper PR/MR prefix
-    let repo = git::open_repo()?;
     let provider = Provider::detect(&repo).ok();
     let pr_prefix = provider
         .as_ref()

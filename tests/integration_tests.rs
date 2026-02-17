@@ -114,6 +114,7 @@ fn test_gg_sync_help_has_update_descriptions() {
 
     assert!(success);
     assert!(stdout.contains("--update-descriptions"));
+    assert!(stdout.contains("--no-rebase-check"));
 }
 
 #[test]
@@ -244,6 +245,48 @@ fn test_gg_ls_shows_commits() {
     assert!(stdout.contains("2 commits"));
     assert!(stdout.contains("Add file1") || stdout.contains("file1"));
     assert!(stdout.contains("Add file2") || stdout.contains("file2"));
+}
+
+#[test]
+fn test_gg_ls_shows_behind_indicator_when_base_is_behind_origin() {
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create stack so `gg ls` has something to show.
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", "behind-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("feature.txt"), "feature").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Feature commit"]);
+
+    // Move main ahead on origin, then make local main behind.
+    run_git(&repo_path, &["checkout", "main"]);
+    let (_, old_main_sha) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    let old_main_sha = old_main_sha.trim().to_string();
+
+    fs::write(repo_path.join("main.txt"), "remote ahead").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Main moved"]);
+    run_git(&repo_path, &["push", "origin", "main"]);
+    run_git(&repo_path, &["reset", "--hard", &old_main_sha]);
+
+    // Back to stack and list all stacks.
+    run_git(&repo_path, &["checkout", "testuser/behind-test"]);
+    let (success, stdout, stderr) = run_gg(&repo_path, &["ls", "--all"]);
+    assert!(success, "ls --all failed: {}", stderr);
+    assert!(
+        stdout.contains("↓1"),
+        "Expected behind indicator in output: {}",
+        stdout
+    );
 }
 
 #[test]

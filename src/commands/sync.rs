@@ -15,6 +15,52 @@ use crate::stack::{resolve_target, Stack};
 use crate::template::{self, TemplateContext};
 
 /// Format and display a push error with helpful context
+fn maybe_rebase_if_base_is_behind(
+    repo: &Repository,
+    config: &Config,
+    base_branch: &str,
+) -> Result<()> {
+    let threshold = config.get_sync_behind_threshold();
+    if threshold == 0 {
+        return Ok(());
+    }
+
+    let behind =
+        match git::count_commits_behind(repo, base_branch, &format!("origin/{}", base_branch)) {
+            Ok(count) => count,
+            Err(_) => return Ok(()),
+        };
+
+    if behind < threshold {
+        return Ok(());
+    }
+
+    println!(
+        "{} Your stack is {} commits behind origin/{}. PRs may show unrelated changes. Run 'gg rebase' first to update.",
+        style("⚠").yellow().bold(),
+        behind,
+        base_branch
+    );
+
+    if config.get_sync_auto_rebase() {
+        crate::commands::rebase::run_with_repo(repo, None)?;
+        return Ok(());
+    }
+
+    let should_rebase = Confirm::new()
+        .with_prompt("Rebase before syncing?")
+        .default(true)
+        .interact()
+        .unwrap_or(true);
+
+    if should_rebase {
+        crate::commands::rebase::run_with_repo(repo, None)?;
+    }
+
+    Ok(())
+}
+
+/// Format and display a push error with helpful context
 fn format_push_error(error: &GgError, branch_name: &str) {
     match error {
         GgError::PushFailed {
@@ -80,6 +126,7 @@ fn format_push_error(error: &GgError, branch_name: &str) {
 /// Run the sync command
 pub fn run(
     draft: bool,
+    no_rebase_check: bool,
     force: bool,
     update_descriptions: bool,
     run_lint: bool,
@@ -114,6 +161,10 @@ pub fn run(
 
     // Fetch from remote to ensure we have up-to-date refs
     let _ = git::fetch_and_prune();
+
+    if !no_rebase_check {
+        maybe_rebase_if_base_is_behind(&repo, &config, initial_stack.base.as_str())?;
+    }
 
     // Run lint ONCE if requested (before GG-ID addition loop)
     if run_lint {

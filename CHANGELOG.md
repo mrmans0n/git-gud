@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `gg sync` now detects when stack base is behind `origin/<base>`, warns, and suggests rebasing first
+- `gg sync --no-rebase-check` to bypass behind-base check for a single sync
+- `sync_auto_rebase` (`sync.auto_rebase`) config to auto-run rebase during sync when threshold is met
+- `sync_behind_threshold` (`sync.behind_threshold`) config to tune/disable behind-base checks (`0` disables)
+- `gg ls` shows a `↓N` indicator when stack base is behind `origin/<base>`
+
 ## [0.3.0] - 2026-02-14
 
 ### Added

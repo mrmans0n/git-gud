@@ -23,6 +23,9 @@ gg setup
     "auto_add_gg_ids": true,
     "land_wait_timeout_minutes": 30,
     "land_auto_clean": false,
+    "sync_auto_lint": false,
+    "sync_auto_rebase": false,
+    "sync_behind_threshold": 1,
     "worktree_base_path": "/tmp/gg-worktrees",
     "gitlab": {
       "auto_merge_on_land": false
@@ -42,6 +45,9 @@ gg setup
 | `auto_add_gg_ids` | `boolean` | Auto-add GG-ID trailers when missing | `true` |
 | `land_wait_timeout_minutes` | `number` | Timeout for `gg land --wait` polling | `30` |
 | `land_auto_clean` | `boolean` | Auto-run cleanup after full landing | `false` |
+| `sync_auto_lint` | `boolean` | Automatically run `gg lint` before `gg sync` | `false` |
+| `sync_auto_rebase` (`sync.auto_rebase`) | `boolean` | Automatically run `gg rebase` before `gg sync` when behind threshold is reached | `false` |
+| `sync_behind_threshold` (`sync.behind_threshold`) | `number` | Warn/rebase in `gg sync` when base is at least this many commits behind `origin/<base>` (`0` disables check) | `1` |
 | `worktree_base_path` | `string` | Base directory for managed worktrees | Parent of repo |
 | `gitlab.auto_merge_on_land` | `boolean` | Default GitLab auto-merge behavior for `gg land` | `false` |
 

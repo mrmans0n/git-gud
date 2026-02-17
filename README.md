@@ -156,7 +156,7 @@ gg clean
 | Command | Description |
 |---------|-------------|
 | `gg co <name>` | Create a new stack, switch to existing, or checkout from remote |
-| `gg ls` | List current stack commits with PR/MR status |
+| `gg ls` | List current stack commits with PR/MR status (shows `↓N` when base is behind `origin/<base>`) |
 | `gg ls --all` | List all stacks in the repository |
 | `gg ls --remote` | List remote stacks not checked out locally |
 | `gg clean` | Remove merged stacks and their remote branches |
@@ -170,8 +170,11 @@ gg clean
 | `gg sync --force` | Force push even if remote diverged |
 | `gg sync --update-descriptions` | Update PR/MR titles and descriptions to match commit messages |
 | `gg sync --until <target>` | Sync only up to a specific commit (by position, GG-ID, or SHA) |
+| `gg sync --no-rebase-check` | Skip checking whether the stack base is behind `origin/<base>` |
 
 **Draft propagation:** If a commit title starts with `WIP:` or `Draft:` (case-insensitive), that PR/MR and all subsequent ones in the stack are created/kept as drafts automatically (even without `--draft`).
+
+**Base-behind detection in sync:** Before pushing, `gg sync` checks whether your stack base is behind `origin/<base>`. If behind and above threshold, gg warns that PRs/MRs may include unrelated changes and offers to run `gg rebase` first. This check can be disabled per command with `--no-rebase-check`, disabled globally with `sync_behind_threshold: 0` (`sync.behind_threshold`), or automated with `sync_auto_rebase: true` (`sync.auto_rebase`).
 
 ### Navigation
 
@@ -264,6 +267,9 @@ All configuration options are in the `defaults` section (with provider-specific 
 | `auto_add_gg_ids` | `boolean` | Automatically add GG-IDs to commits without prompting | `true` |
 | `land_wait_timeout_minutes` | `number` | Timeout in minutes for `gg land --wait` | `30` |
 | `land_auto_clean` | `boolean` | Automatically clean up stack after landing all PRs/MRs | `false` |
+| `sync_auto_lint` | `boolean` | Automatically run `gg lint` before `gg sync` | `false` |
+| `sync_auto_rebase` (`sync.auto_rebase`) | `boolean` | Automatically run `gg rebase` before `gg sync` when base is behind threshold | `false` |
+| `sync_behind_threshold` (`sync.behind_threshold`) | `number` | Warn/rebase in `gg sync` when base is at least this many commits behind `origin/<base>` (`0` disables check) | `1` |
 | `worktree_base_path` | `string` | Base directory used by `gg co --wt` / `--worktree` for managed stack worktrees | Parent directory of current repository |
 | `gitlab.auto_merge_on_land` | `boolean` | *(GitLab only)* Use "merge when pipeline succeeds" for `gg land` by default | `false` |
 
@@ -281,6 +287,9 @@ Example configuration:
     "auto_add_gg_ids": true,
     "land_wait_timeout_minutes": 60,
     "land_auto_clean": true,
+    "sync_auto_lint": true,
+    "sync_auto_rebase": false,
+    "sync_behind_threshold": 1,
     "worktree_base_path": "/tmp/gg-worktrees",
     "gitlab": {
       "auto_merge_on_land": true
@@ -367,7 +376,7 @@ $ git add . && git commit -m "Add login UI"
 
 # 3. Check your stack
 $ gg ls
-user-auth (3 commits, 0 synced)
+user-auth (3 commits, 0 synced) ↓2
   [1] abc1234 Add user model      (id: c-f9a1e2b) (not pushed)
   [2] def5678 Add auth endpoints  (id: c-7c1b9d0) (not pushed)
   [3] ghi9012 Add login UI        (id: c-98ab321) (not pushed) <- HEAD
@@ -392,6 +401,9 @@ OK Rebased 2 commits on top
 
 # 6. Re-sync
 $ gg sync
+⚠ Your stack is 2 commits behind origin/main. PRs may show unrelated changes. Run 'gg rebase' first to update.
+? Rebase before syncing? [Y/n]
+OK Rebased stack onto main
 OK Force-pushed nacho/user-auth--c-f9a1e2b
 OK Force-pushed nacho/user-auth--c-7c1b9d0
 OK Force-pushed nacho/user-auth--c-98ab321

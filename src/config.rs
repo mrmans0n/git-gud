@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{GgError, Result};
 
 /// Default configuration values
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Defaults {
     /// Git hosting provider ("github" or "gitlab")
     /// Used for self-hosted instances where URL detection fails
@@ -53,6 +53,25 @@ pub struct Defaults {
     /// Automatically run lint before sync (default: false)
     #[serde(default, skip_serializing_if = "is_false")]
     pub sync_auto_lint: bool,
+
+    /// Automatically rebase before sync when stack base is behind origin/<base> (default: false)
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub sync_auto_rebase: bool,
+
+    /// Warn/rebase threshold for sync when base is behind origin/<base> (default: 1)
+    #[serde(
+        default = "default_sync_behind_threshold",
+        skip_serializing_if = "is_default_sync_behind_threshold"
+    )]
+    pub sync_behind_threshold: usize,
+}
+
+fn default_sync_behind_threshold() -> usize {
+    1
+}
+
+fn is_default_sync_behind_threshold(value: &usize) -> bool {
+    *value == default_sync_behind_threshold()
 }
 
 fn default_true() -> bool {
@@ -65,6 +84,24 @@ fn is_true(b: &bool) -> bool {
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+impl Default for Defaults {
+    fn default() -> Self {
+        Self {
+            provider: None,
+            gitlab: GitLabDefaults::default(),
+            base: None,
+            branch_username: None,
+            lint: Vec::new(),
+            auto_add_gg_ids: true,
+            land_wait_timeout_minutes: None,
+            land_auto_clean: false,
+            sync_auto_lint: false,
+            sync_auto_rebase: false,
+            sync_behind_threshold: default_sync_behind_threshold(),
+        }
+    }
 }
 
 /// GitLab-specific default settings
@@ -280,6 +317,16 @@ impl Config {
     /// Get whether to auto-lint before sync (default: false)
     pub fn get_sync_auto_lint(&self) -> bool {
         self.defaults.sync_auto_lint
+    }
+
+    /// Get whether to auto-rebase before sync when behind (default: false)
+    pub fn get_sync_auto_rebase(&self) -> bool {
+        self.defaults.sync_auto_rebase
+    }
+
+    /// Get behind threshold for sync checks (default: 1)
+    pub fn get_sync_behind_threshold(&self) -> usize {
+        self.defaults.sync_behind_threshold
     }
 
     /// Render the target worktree path for a stack.
@@ -502,6 +549,39 @@ mod tests {
 
         let loaded = Config::load(git_dir).unwrap();
         assert!(loaded.get_sync_auto_lint());
+    }
+
+    #[test]
+    fn test_sync_auto_rebase_default() {
+        let config = Config::default();
+        assert!(!config.get_sync_auto_rebase());
+    }
+
+    #[test]
+    fn test_sync_auto_rebase_enabled() {
+        let mut config = Config::default();
+        config.defaults.sync_auto_rebase = true;
+        assert!(config.get_sync_auto_rebase());
+    }
+
+    #[test]
+    fn test_sync_behind_threshold_default() {
+        let config = Config::default();
+        assert_eq!(config.get_sync_behind_threshold(), 1);
+    }
+
+    #[test]
+    fn test_sync_behind_threshold_roundtrip() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_dir = temp_dir.path();
+
+        let mut config = Config::default();
+        config.defaults.sync_behind_threshold = 3;
+
+        config.save(git_dir).unwrap();
+
+        let loaded = Config::load(git_dir).unwrap();
+        assert_eq!(loaded.get_sync_behind_threshold(), 3);
     }
 
     #[test]

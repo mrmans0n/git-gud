@@ -2,6 +2,8 @@
 
 List the current stack, all local stacks, or remote-only stacks.
 
+When the stack base is behind `origin/<base>`, output includes a `↓N` indicator (`N` = commits behind).
+
 ```bash
 gg ls [OPTIONS]
 ```

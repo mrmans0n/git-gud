@@ -70,6 +70,10 @@ enum Commands {
         #[arg(short, long)]
         draft: bool,
 
+        /// Skip checking whether base is behind origin/<base>
+        #[arg(long)]
+        no_rebase_check: bool,
+
         /// Force push even if remote is ahead
         #[arg(short, long)]
         force: bool,
@@ -262,6 +266,7 @@ fn main() {
         }) => commands::ls::run(all, refresh, remote),
         Some(Commands::Sync {
             draft,
+            no_rebase_check,
             force,
             update_descriptions,
             lint,
@@ -283,7 +288,14 @@ fn main() {
                 }
             };
 
-            commands::sync::run(draft, force, update_descriptions, run_lint, until)
+            commands::sync::run(
+                draft,
+                no_rebase_check,
+                force,
+                update_descriptions,
+                run_lint,
+                until,
+            )
         }
         Some(Commands::Move { target }) => commands::nav::move_to(&target),
         Some(Commands::First) => commands::nav::first(),

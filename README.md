@@ -174,7 +174,7 @@ gg clean
 
 **Draft propagation:** If a commit title starts with `WIP:` or `Draft:` (case-insensitive), that PR/MR and all subsequent ones in the stack are created/kept as drafts automatically (even without `--draft`).
 
-**Base-behind detection in sync:** Before pushing, `gg sync` checks whether your stack base is behind `origin/<base>`. If behind and above threshold, gg warns that PRs/MRs may include unrelated changes and offers to run `gg rebase` first. This check can be disabled per command with `--no-rebase-check`, disabled globally with `sync_behind_threshold: 0`, or automated with `sync_auto_rebase: true`.
+**Base-behind detection in sync:** Before pushing, `gg sync` checks whether your stack base is behind `origin/<base>`. If behind and above threshold, gg warns that PRs/MRs may include unrelated changes and offers to run `gg rebase` first. This check can be disabled per command with `--no-rebase-check`, disabled globally with `sync_behind_threshold: 0` (`sync.behind_threshold`), or automated with `sync_auto_rebase: true` (`sync.auto_rebase`).
 
 ### Navigation
 

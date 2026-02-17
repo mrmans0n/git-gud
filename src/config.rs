@@ -129,6 +129,10 @@ pub struct StackConfig {
     /// Mapping from entry-id to MR number
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub mrs: HashMap<String, u64>,
+
+    /// Absolute path to a linked worktree for this stack
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
 }
 
 /// Root configuration structure
@@ -137,6 +141,11 @@ pub struct Config {
     /// Default settings
     #[serde(default)]
     pub defaults: Defaults,
+
+    /// Template for stack worktree path.
+    /// Variables: {repo} and {stack}
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_base_path: Option<String>,
 
     /// Per-stack configurations
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -318,6 +327,32 @@ impl Config {
     /// Get behind threshold for sync checks (default: 1)
     pub fn get_sync_behind_threshold(&self) -> usize {
         self.defaults.sync_behind_threshold
+    }
+
+    /// Render the target worktree path for a stack.
+    ///
+    /// Default template: ../{repo}.{stack}
+    pub fn render_worktree_path(&self, repo_root: &Path, stack_name: &str) -> PathBuf {
+        let repo_name = repo_root
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("repo");
+
+        let template = self
+            .worktree_base_path
+            .as_deref()
+            .unwrap_or("../{repo}.{stack}");
+
+        let rendered = template
+            .replace("{repo}", repo_name)
+            .replace("{stack}", stack_name);
+
+        let path = PathBuf::from(rendered);
+        if path.is_absolute() {
+            path
+        } else {
+            repo_root.join(path)
+        }
     }
 }
 
@@ -547,5 +582,24 @@ mod tests {
 
         let loaded = Config::load(git_dir).unwrap();
         assert_eq!(loaded.get_sync_behind_threshold(), 3);
+    }
+
+    #[test]
+    fn test_render_worktree_path_default() {
+        let config = Config::default();
+        let repo_root = Path::new("/tmp/my-repo");
+        let path = config.render_worktree_path(repo_root, "feature-a");
+        assert_eq!(path, Path::new("/tmp/my-repo/../my-repo.feature-a"));
+    }
+
+    #[test]
+    fn test_render_worktree_path_custom_template() {
+        let config = Config {
+            worktree_base_path: Some("/tmp/wt/{repo}-{stack}".to_string()),
+            ..Config::default()
+        };
+        let repo_root = Path::new("/workspace/my-repo");
+        let path = config.render_worktree_path(repo_root, "feature-a");
+        assert_eq!(path, Path::new("/tmp/wt/my-repo-feature-a"));
     }
 }

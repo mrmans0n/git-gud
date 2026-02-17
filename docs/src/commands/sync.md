@@ -13,7 +13,15 @@ gg sync [OPTIONS]
 - `--update-descriptions`: Update PR/MR title/body from commit messages
 - `-l, --lint`: Run lint before sync
 - `--no-lint`: Disable lint before sync (overrides config default)
+- `--no-rebase-check`: Skip checking whether your stack base is behind `origin/<base>`
 - `-u, --until <UNTIL>`: Sync up to target commit (position, GG-ID, or SHA)
+
+Before pushing, `gg sync` checks whether your stack base is behind `origin/<base>`. If it is behind by at least the configured threshold, git-gud warns and suggests rebasing first (`gg rebase`).
+
+You can control this behavior with config:
+
+- `defaults.sync_auto_rebase` (`sync.auto_rebase`): automatically run `gg rebase` before sync when behind threshold is reached
+- `defaults.sync_behind_threshold` (`sync.behind_threshold`): minimum number of commits behind before warning/rebase logic applies (`0` disables the check)
 
 ## Examples
 
@@ -29,4 +37,7 @@ gg sync --update-descriptions
 
 # Run lint as part of sync
 gg sync --lint
+
+# Skip behind-base check once
+gg sync --no-rebase-check
 ```

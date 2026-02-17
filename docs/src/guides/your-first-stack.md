@@ -53,6 +53,9 @@ gg sc
 gg sync
 ```
 
+If your stack base is behind `origin/<base>`, `gg sync` warns and suggests running `gg rebase` first.
+Use `--no-rebase-check` to skip this check once.
+
 ## 7) Land approved entries
 
 ```bash

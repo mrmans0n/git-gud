@@ -21,6 +21,7 @@ gg setup
       "cargo clippy -- -D warnings"
     ],
     "auto_add_gg_ids": true,
+    "unstaged_action": "ask",
     "land_wait_timeout_minutes": 30,
     "land_auto_clean": false,
     "sync_auto_lint": false,
@@ -43,6 +44,7 @@ gg setup
 | `branch_username` | `string` | Username prefix in stack/entry branch names | Auto-detected |
 | `lint` | `string[]` | Commands used by `gg lint` / `gg sync --lint` | `[]` |
 | `auto_add_gg_ids` | `boolean` | Auto-add GG-ID trailers when missing | `true` |
+| `unstaged_action` | `string` | Default behavior for `gg sc`/`gg amend` when unstaged changes exist: `ask`, `stash`, `continue`, or `abort` | `ask` |
 | `land_wait_timeout_minutes` | `number` | Timeout for `gg land --wait` polling | `30` |
 | `land_auto_clean` | `boolean` | Auto-run cleanup after full landing | `false` |
 | `sync_auto_lint` | `boolean` | Automatically run `gg lint` before `gg sync` | `false` |

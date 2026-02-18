@@ -240,7 +240,8 @@ Configuration is stored in `.git/gg/config.json`. Run `gg setup` to generate it 
     "lint": [
       "cargo fmt --check",
       "cargo clippy -- -D warnings"
-    ]
+    ],
+    "unstaged_action": "ask"
   },
   "stacks": {
     "my-feature": {
@@ -265,6 +266,7 @@ All configuration options are in the `defaults` section (with provider-specific 
 | `branch_username` | `string` | Username prefix for branch naming | Auto-detect via `gh whoami`/`glab whoami` |
 | `lint` | `array` | Lint commands to run on each commit with `gg lint` | `[]` |
 | `auto_add_gg_ids` | `boolean` | Automatically add GG-IDs to commits without prompting | `true` |
+| `unstaged_action` | `string` | Default behavior for `gg sc`/`gg amend` when unstaged changes exist: `"ask"` (prompt), `"stash"` (auto-stash), `"continue"` (ignore unstaged), `"abort"` (fail) | `"ask"` |
 | `land_wait_timeout_minutes` | `number` | Timeout in minutes for `gg land --wait` | `30` |
 | `land_auto_clean` | `boolean` | Automatically clean up stack after landing all PRs/MRs | `false` |
 | `sync_auto_lint` | `boolean` | Automatically run `gg lint` before `gg sync` | `false` |
@@ -285,6 +287,7 @@ Example configuration:
       "cargo clippy -- -D warnings"
     ],
     "auto_add_gg_ids": true,
+    "unstaged_action": "ask",
     "land_wait_timeout_minutes": 60,
     "land_auto_clean": true,
     "sync_auto_lint": true,

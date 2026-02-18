@@ -10,6 +10,13 @@ gg sc [OPTIONS]
 
 - `-a, --all`: Include staged and unstaged changes
 
+When unstaged changes are present, behavior is controlled by `defaults.unstaged_action` in `.git/gg/config.json`:
+
+- `ask` (default): prompt to stash, continue, or abort
+- `stash`: auto-stash and continue
+- `continue`: continue without including unstaged changes
+- `abort`: fail immediately
+
 ## Examples
 
 ```bash

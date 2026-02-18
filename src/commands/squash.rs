@@ -5,7 +5,7 @@ use std::process::Command;
 use console::{style, Term};
 use dialoguer::Select;
 
-use crate::config::Config;
+use crate::config::{Config, UnstagedAction};
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::stack;
@@ -76,27 +76,48 @@ pub fn run(all: bool) -> Result<()> {
     let mut auto_stashed = false;
 
     if !all && has_unstaged && !needs_rebase {
-        println!(
-            "{}",
-            style("⚠ You have unstaged changes that won't be included in the amend.")
-                .yellow()
-                .bold()
-        );
-        println!();
+        match config.get_unstaged_action() {
+            UnstagedAction::Ask => {
+                println!(
+                    "{}",
+                    style("⚠ You have unstaged changes that won't be included in the amend.")
+                        .yellow()
+                        .bold()
+                );
+                println!();
 
-        let options = ["Stash and continue", "Continue anyway", "Abort"];
-        let selection = if Term::stderr().is_term() {
-            Select::new()
-                .items(options)
-                .default(0)
-                .interact()
-                .map_err(|e| GgError::Other(format!("Failed to read selection: {}", e)))?
-        } else {
-            1
-        };
+                let options = ["Stash and continue", "Continue anyway", "Abort"];
+                let selection = if Term::stderr().is_term() {
+                    Select::new()
+                        .items(options)
+                        .default(0)
+                        .interact()
+                        .map_err(|e| GgError::Other(format!("Failed to read selection: {}", e)))?
+                } else {
+                    1
+                };
 
-        match selection {
-            0 => {
+                match selection {
+                    0 => {
+                        let stash_output = Command::new("git")
+                            .args(["stash", "push", "-m", "gg amend: auto-stash"])
+                            .output()?;
+
+                        if !stash_output.status.success() {
+                            let stderr = String::from_utf8_lossy(&stash_output.stderr);
+                            return Err(GgError::Other(format!(
+                                "Failed to stash changes: {}",
+                                stderr
+                            )));
+                        }
+
+                        auto_stashed = true;
+                    }
+                    1 => {}
+                    _ => return Ok(()),
+                }
+            }
+            UnstagedAction::Stash => {
                 let stash_output = Command::new("git")
                     .args(["stash", "push", "-m", "gg amend: auto-stash"])
                     .output()?;
@@ -111,8 +132,13 @@ pub fn run(all: bool) -> Result<()> {
 
                 auto_stashed = true;
             }
-            1 => {}
-            _ => return Ok(()),
+            UnstagedAction::Continue => {}
+            UnstagedAction::Abort => {
+                return Err(GgError::Other(
+                    "Unstaged changes detected and defaults.unstaged_action is set to \"abort\"."
+                        .to_string(),
+                ));
+            }
         }
     }
 

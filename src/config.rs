@@ -64,6 +64,10 @@ pub struct Defaults {
         skip_serializing_if = "is_default_sync_behind_threshold"
     )]
     pub sync_behind_threshold: usize,
+
+    /// Default action for `gg amend` when unstaged changes are present (default: ask)
+    #[serde(default)]
+    pub unstaged_action: UnstagedAction,
 }
 
 fn default_sync_behind_threshold() -> usize {
@@ -86,6 +90,21 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+/// Behavior for `gg amend` when unstaged changes are detected.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum UnstagedAction {
+    /// Prompt the user to choose what to do.
+    #[default]
+    Ask,
+    /// Stash unstaged changes and continue automatically.
+    Stash,
+    /// Continue without including unstaged changes.
+    Continue,
+    /// Abort the operation when unstaged changes are present.
+    Abort,
+}
+
 impl Default for Defaults {
     fn default() -> Self {
         Self {
@@ -100,6 +119,7 @@ impl Default for Defaults {
             sync_auto_lint: false,
             sync_auto_rebase: false,
             sync_behind_threshold: default_sync_behind_threshold(),
+            unstaged_action: UnstagedAction::Ask,
         }
     }
 }
@@ -327,6 +347,11 @@ impl Config {
     /// Get behind threshold for sync checks (default: 1)
     pub fn get_sync_behind_threshold(&self) -> usize {
         self.defaults.sync_behind_threshold
+    }
+
+    /// Get the default action for `gg amend` when unstaged changes are present.
+    pub fn get_unstaged_action(&self) -> UnstagedAction {
+        self.defaults.unstaged_action
     }
 
     /// Render the target worktree path for a stack.
@@ -601,5 +626,18 @@ mod tests {
         let repo_root = Path::new("/workspace/my-repo");
         let path = config.render_worktree_path(repo_root, "feature-a");
         assert_eq!(path, Path::new("/tmp/wt/my-repo-feature-a"));
+    }
+
+    #[test]
+    fn test_unstaged_action_deserializes_to_default_when_missing() {
+        let config: Config = serde_json::from_str(r#"{"defaults":{"base":"main"}}"#).unwrap();
+        assert_eq!(config.get_unstaged_action(), UnstagedAction::Ask);
+    }
+
+    #[test]
+    fn test_unstaged_action_deserializes_when_present() {
+        let config: Config =
+            serde_json::from_str(r#"{"defaults":{"unstaged_action":"stash"}}"#).unwrap();
+        assert_eq!(config.get_unstaged_action(), UnstagedAction::Stash);
     }
 }

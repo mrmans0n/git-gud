@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-02-18
+
+### Added
+- `gg amend` warns about unstaged changes and offers to auto-stash them (#144)
+- `unstaged_action` config option (`ask`, `stash`, `continue`, `abort`) to set default behavior for unstaged changes during amend (#145)
+- `gg setup` now writes `unstaged_action` explicitly in config
+
 ## [0.3.1] - 2026-02-17
 
 ### Added
@@ -153,7 +160,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/mrmans0n/git-gud/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/mrmans0n/git-gud/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/mrmans0n/git-gud/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/mrmans0n/git-gud/compare/v0.2.0...v0.2.1

@@ -97,6 +97,8 @@ pub enum UnstagedAction {
     /// Prompt the user to choose what to do.
     #[default]
     Ask,
+    /// Stage all changes (including untracked files) and continue automatically.
+    Add,
     /// Stash unstaged changes and continue automatically.
     Stash,
     /// Continue without including unstaged changes.
@@ -639,5 +641,12 @@ mod tests {
         let config: Config =
             serde_json::from_str(r#"{"defaults":{"unstaged_action":"stash"}}"#).unwrap();
         assert_eq!(config.get_unstaged_action(), UnstagedAction::Stash);
+    }
+
+    #[test]
+    fn test_unstaged_action_deserializes_add_when_present() {
+        let config: Config =
+            serde_json::from_str(r#"{"defaults":{"unstaged_action":"add"}}"#).unwrap();
+        assert_eq!(config.get_unstaged_action(), UnstagedAction::Add);
     }
 }

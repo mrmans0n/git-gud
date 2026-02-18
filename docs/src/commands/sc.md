@@ -12,7 +12,8 @@ gg sc [OPTIONS]
 
 When unstaged changes are present, behavior is controlled by `defaults.unstaged_action` in `.git/gg/config.json`:
 
-- `ask` (default): prompt to stash, continue, or abort
+- `ask` (default): prompt to stage all, stash, continue, or abort
+- `add`: auto-stage all changes (`git add -A`) and continue
 - `stash`: auto-stash and continue
 - `continue`: continue without including unstaged changes
 - `abort`: fail immediately

@@ -33,6 +33,20 @@ fn restore_auto_stash() {
     }
 }
 
+fn add_all_changes() -> Result<()> {
+    let add_output = Command::new("git").args(["add", "-A"]).output()?;
+
+    if !add_output.status.success() {
+        let stderr = String::from_utf8_lossy(&add_output.stderr);
+        return Err(GgError::Other(format!(
+            "Failed to stage changes: {}",
+            stderr
+        )));
+    }
+
+    Ok(())
+}
+
 /// Run the squash command
 pub fn run(all: bool) -> Result<()> {
     let repo = git::open_repo()?;
@@ -86,7 +100,12 @@ pub fn run(all: bool) -> Result<()> {
                 );
                 println!();
 
-                let options = ["Stash and continue", "Continue anyway", "Abort"];
+                let options = [
+                    "Stage all and continue",
+                    "Stash and continue",
+                    "Continue anyway",
+                    "Abort",
+                ];
                 let selection = if Term::stderr().is_term() {
                     Select::new()
                         .items(options)
@@ -94,11 +113,14 @@ pub fn run(all: bool) -> Result<()> {
                         .interact()
                         .map_err(|e| GgError::Other(format!("Failed to read selection: {}", e)))?
                 } else {
-                    1
+                    2
                 };
 
                 match selection {
                     0 => {
+                        add_all_changes()?;
+                    }
+                    1 => {
                         let stash_output = Command::new("git")
                             .args(["stash", "push", "-m", "gg amend: auto-stash"])
                             .output()?;
@@ -113,9 +135,12 @@ pub fn run(all: bool) -> Result<()> {
 
                         auto_stashed = true;
                     }
-                    1 => {}
+                    2 => {}
                     _ => return Ok(()),
                 }
+            }
+            UnstagedAction::Add => {
+                add_all_changes()?;
             }
             UnstagedAction::Stash => {
                 let stash_output = Command::new("git")

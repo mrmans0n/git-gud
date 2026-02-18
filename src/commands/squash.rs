@@ -2,13 +2,36 @@
 
 use std::process::Command;
 
-use console::style;
+use console::{style, Term};
+use dialoguer::Select;
 
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::stack;
 use crate::stack::Stack;
+
+fn restore_auto_stash() {
+    match Command::new("git").args(["stash", "pop"]).output() {
+        Ok(output) if !output.status.success() => {
+            eprintln!(
+                "{}",
+                style("⚠ Could not restore stashed changes automatically. Run 'git stash pop' manually.")
+                    .yellow()
+                    .bold()
+            );
+        }
+        Err(_) => {
+            eprintln!(
+                "{}",
+                style("⚠ Could not restore stashed changes automatically. Run 'git stash pop' manually.")
+                    .yellow()
+                    .bold()
+            );
+        }
+        Ok(_) => {}
+    }
+}
 
 /// Run the squash command
 pub fn run(all: bool) -> Result<()> {
@@ -39,6 +62,59 @@ pub fn run(all: bool) -> Result<()> {
         .current_position
         .map(|p| p < stack.len() - 1)
         .unwrap_or(false);
+
+    let statuses = repo.statuses(None)?;
+    let has_unstaged = statuses.iter().any(|s| {
+        let flags = s.status();
+        flags.is_wt_modified()
+            || flags.is_wt_deleted()
+            || flags.is_wt_renamed()
+            || flags.is_wt_typechange()
+            || flags.is_wt_new()
+    });
+
+    let mut auto_stashed = false;
+
+    if !all && has_unstaged && !needs_rebase {
+        println!(
+            "{}",
+            style("⚠ You have unstaged changes that won't be included in the amend.")
+                .yellow()
+                .bold()
+        );
+        println!();
+
+        let options = ["Stash and continue", "Continue anyway", "Abort"];
+        let selection = if Term::stderr().is_term() {
+            Select::new()
+                .items(options)
+                .default(0)
+                .interact()
+                .map_err(|e| GgError::Other(format!("Failed to read selection: {}", e)))?
+        } else {
+            1
+        };
+
+        match selection {
+            0 => {
+                let stash_output = Command::new("git")
+                    .args(["stash", "push", "-m", "gg amend: auto-stash"])
+                    .output()?;
+
+                if !stash_output.status.success() {
+                    let stderr = String::from_utf8_lossy(&stash_output.stderr);
+                    return Err(GgError::Other(format!(
+                        "Failed to stash changes: {}",
+                        stderr
+                    )));
+                }
+
+                auto_stashed = true;
+            }
+            1 => {}
+            _ => return Ok(()),
+        }
+    }
 
     // If we need to rebase after amend, ensure there are no UNSTAGED changes
     // Staged changes are fine (they'll be committed), but unstaged changes
@@ -71,6 +147,10 @@ pub fn run(all: bool) -> Result<()> {
     let output = Command::new("git").args(&args).output()?;
 
     if !output.status.success() {
+        if auto_stashed {
+            restore_auto_stash();
+        }
+
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(GgError::Other(format!(
             "Failed to amend commit: {}",
@@ -132,6 +212,9 @@ pub fn run(all: bool) -> Result<()> {
                     "  Resolve conflicts, stage the changes with `git add`, then run `gg continue`"
                 );
                 eprintln!("  Or run `gg abort` to cancel the rebase");
+                if auto_stashed {
+                    restore_auto_stash();
+                }
                 return Err(GgError::RebaseConflict);
             }
 
@@ -142,6 +225,9 @@ pub fn run(all: bool) -> Result<()> {
             } else {
                 "Unknown error (no output from git)".to_string()
             };
+            if auto_stashed {
+                restore_auto_stash();
+            }
             return Err(GgError::Other(format!("Rebase failed: {}", error_msg)));
         }
 
@@ -164,6 +250,10 @@ pub fn run(all: bool) -> Result<()> {
             let git_dir = repo.path();
             stack::save_nav_context(git_dir, &branch_name, entry.position - 1, entry.oid)?;
         }
+    }
+
+    if auto_stashed {
+        restore_auto_stash();
     }
 
     Ok(())

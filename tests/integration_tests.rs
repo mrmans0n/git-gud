@@ -454,6 +454,49 @@ fn test_gg_squash_with_staged_changes() {
 }
 
 #[test]
+fn test_gg_squash_warns_about_unstaged_at_stack_head() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with one commit (stack head)
+    run_gg(&repo_path, &["co", "squash-unstaged-head-test"]);
+
+    fs::write(repo_path.join("file1.txt"), "original content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Initial file"]);
+
+    // Stage one change to squash
+    fs::write(repo_path.join("file1.txt"), "staged content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "file1.txt"]);
+
+    // Keep an unstaged change in another file
+    fs::write(repo_path.join("file2.txt"), "unstaged content").expect("Failed to write file");
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["sc"]);
+
+    assert!(
+        success,
+        "gg sc should succeed at stack head with unstaged warning. stdout={}, stderr={}",
+        stdout, stderr
+    );
+    assert!(
+        stdout.contains("You have unstaged changes")
+            || stderr.contains("You have unstaged changes"),
+        "Expected unstaged warning. stdout={}, stderr={}",
+        stdout,
+        stderr
+    );
+}
+
+#[test]
 fn test_gg_squash_rejects_unstaged_when_needs_rebase() {
     let (_temp_dir, repo_path) = create_test_repo();
 

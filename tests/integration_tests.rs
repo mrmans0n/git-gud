@@ -497,6 +497,53 @@ fn test_gg_squash_warns_about_unstaged_at_stack_head() {
 }
 
 #[test]
+fn test_gg_squash_adds_unstaged_changes_when_configured() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config with unstaged_action=add
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","unstaged_action":"add"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with one commit
+    run_gg(&repo_path, &["co", "squash-unstaged-add-test"]);
+
+    fs::write(repo_path.join("file1.txt"), "original content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Initial file"]);
+
+    // Make an unstaged change to a tracked file
+    fs::write(repo_path.join("file1.txt"), "updated but unstaged").expect("Failed to write file");
+
+    // Squash should auto-add unstaged changes and amend the current commit
+    let (success, stdout, stderr) = run_gg(&repo_path, &["sc"]);
+    assert!(
+        success,
+        "gg sc should succeed with unstaged_action=add. stdout={}, stderr={}",
+        stdout, stderr
+    );
+
+    // Verify the amended commit now contains the previously unstaged change
+    let (_success, amended_content) = run_git(&repo_path, &["show", "HEAD:file1.txt"]);
+    assert_eq!(
+        amended_content.trim(),
+        "updated but unstaged",
+        "Expected unstaged change to be included in amended commit"
+    );
+
+    // Working directory should be clean after amend
+    let (_success, status_output) = run_git(&repo_path, &["status", "--porcelain"]);
+    assert!(
+        status_output.trim().is_empty(),
+        "Expected clean working directory after squash with unstaged_action=add"
+    );
+}
+
+#[test]
 fn test_gg_squash_rejects_unstaged_when_needs_rebase() {
     let (_temp_dir, repo_path) = create_test_repo();
 

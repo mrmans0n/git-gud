@@ -205,7 +205,7 @@ pub fn run(
         if !json {
             println!("{}", console::style("Running lint before sync...").dim());
         }
-        crate::commands::lint::run(Some(end_pos), json)?;
+        crate::commands::lint::run(Some(end_pos), json, false)?;
         if !json {
             println!();
         }

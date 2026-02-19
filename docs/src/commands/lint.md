@@ -9,6 +9,7 @@ gg lint [OPTIONS]
 ## Options
 
 - `-u, --until <UNTIL>`: Stop at target entry (position, GG-ID, SHA)
+- `--json`: Emit structured JSON output
 
 ## Examples
 

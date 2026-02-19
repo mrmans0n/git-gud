@@ -127,7 +127,7 @@ pub fn run_for_stack_with_repo(repo: &Repository, stack_name: &str, force: bool)
 }
 
 /// Run the clean command
-pub fn run(clean_all: bool) -> Result<()> {
+pub fn run(clean_all: bool, _json: bool) -> Result<()> {
     let repo = git::open_repo()?;
 
     // Acquire operation lock to prevent concurrent operations

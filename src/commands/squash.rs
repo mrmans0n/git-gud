@@ -295,18 +295,23 @@ pub fn run(all: bool) -> Result<()> {
             remaining
         );
 
+        // Rebase updates the stack branch tip. Check out the branch first so we don't
+        // lose branch context while navigating back to our position.
+        git::checkout_branch(&repo, &branch_name)?;
+
         // Stay at the same position (now pointing to amended commit)
         // Find our position in the new stack
         let new_stack = Stack::load(&repo, &config)?;
         let our_pos = stack.current_position.unwrap();
 
         if let Some(entry) = new_stack.get_entry_by_position(our_pos + 1) {
-            let commit = repo.find_commit(entry.oid)?;
-            git::checkout_commit(&repo, &commit)?;
-            // Update nav context to reflect our new position after rebase
-            // entry.position is 1-indexed, so we need to subtract 1 for 0-indexed storage
+            // Save nav context so detached navigation remains associated with this stack branch.
+            // entry.position is 1-indexed, so we need to subtract 1 for 0-indexed storage.
             let git_dir = repo.path();
             stack::save_nav_context(git_dir, &branch_name, entry.position - 1, entry.oid)?;
+
+            let commit = repo.find_commit(entry.oid)?;
+            git::checkout_commit(&repo, &commit)?;
         }
     }
 

@@ -168,6 +168,7 @@ pub fn run(
                     stack: initial_stack.name.clone(),
                     base: initial_stack.base.clone(),
                     rebased_before_sync: false,
+                    warnings: vec![],
                     entries: vec![],
                 },
             });
@@ -204,11 +205,13 @@ pub fn run(
         if !json {
             println!("{}", console::style("Running lint before sync...").dim());
         }
-        crate::commands::lint::run(Some(end_pos))?;
+        crate::commands::lint::run(Some(end_pos), json)?;
         if !json {
             println!();
         }
     }
+
+    let mut warnings: Vec<String> = Vec::new();
 
     // Now handle GG-ID addition in a loop (lint may have changed commits)
     // This loop ensures the operation lock is held for the entire operation
@@ -223,6 +226,7 @@ pub fn run(
                         stack: stack.name.clone(),
                         base: stack.base.clone(),
                         rebased_before_sync,
+                        warnings: warnings.clone(),
                         entries: vec![],
                     },
                 });
@@ -320,13 +324,14 @@ pub fn run(
                     }
                 }
                 Err(e) => {
-                    if !json {
-                        println!(
-                            "{} Could not restore stashed changes: {}",
-                            style("Warning:").yellow(),
-                            e
-                        );
-                        println!("  Your changes are in the stash. Run 'git stash pop' manually.");
+                    let warning = format!(
+                        "Could not restore stashed changes: {}. Your changes are in the stash. Run 'git stash pop' manually.",
+                        e
+                    );
+                    if json {
+                        warnings.push(warning);
+                    } else {
+                        println!("{} {}", style("Warning:").yellow(), warning);
                     }
                 }
             }
@@ -626,6 +631,7 @@ pub fn run(
                         }
                     }
                     Err(e) => {
+                        action = "error".to_string();
                         entry_error = Some(e.to_string());
                         if !json {
                             pb.println(format!(
@@ -674,6 +680,7 @@ pub fn run(
                 stack: stack.name,
                 base: stack.base,
                 rebased_before_sync,
+                warnings,
                 entries: json_entries,
             },
         });

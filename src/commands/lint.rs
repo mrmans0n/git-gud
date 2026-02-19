@@ -11,7 +11,7 @@ use crate::git;
 use crate::stack::{Stack, StackEntry};
 
 /// Run the lint command
-pub fn run(until: Option<usize>) -> Result<()> {
+pub fn run(until: Option<usize>, json: bool) -> Result<()> {
     let repo = git::open_repo()?;
     let config = Config::load(repo.commondir())?;
 
@@ -21,17 +21,20 @@ pub fn run(until: Option<usize>) -> Result<()> {
     // Get lint commands from config
     let lint_commands = &config.defaults.lint;
     if lint_commands.is_empty() {
-        println!(
-            "{}",
-            style("No lint commands configured. Run 'gg setup' to configure lint commands.").dim()
-        );
-        println!();
-        println!("Example configuration:");
-        println!("  {{");
-        println!("    \"defaults\": {{");
-        println!("      \"lint\": [\"cargo fmt\", \"cargo clippy -- -D warnings\"]");
-        println!("    }}");
-        println!("  }}");
+        if !json {
+            println!(
+                "{}",
+                style("No lint commands configured. Run 'gg setup' to configure lint commands.")
+                    .dim()
+            );
+            println!();
+            println!("Example configuration:");
+            println!("  {{");
+            println!("    \"defaults\": {{");
+            println!("      \"lint\": [\"cargo fmt\", \"cargo clippy -- -D warnings\"]");
+            println!("    }}");
+            println!("  }}");
+        }
         return Ok(());
     }
 
@@ -39,7 +42,9 @@ pub fn run(until: Option<usize>) -> Result<()> {
     let stack = Stack::load(&repo, &config)?;
 
     if stack.is_empty() {
-        println!("{}", style("Stack is empty. Nothing to lint.").dim());
+        if !json {
+            println!("{}", style("Stack is empty. Nothing to lint.").dim());
+        }
         return Ok(());
     }
 
@@ -55,27 +60,29 @@ pub fn run(until: Option<usize>) -> Result<()> {
         )));
     }
 
-    println!(
-        "{}",
-        style(format!(
-            "Running lint on commits 1-{} ({} lint commands)",
-            end_pos,
-            lint_commands.len()
-        ))
-        .dim()
-    );
+    if !json {
+        println!(
+            "{}",
+            style(format!(
+                "Running lint on commits 1-{} ({} lint commands)",
+                end_pos,
+                lint_commands.len()
+            ))
+            .dim()
+        );
+    }
 
     // Remember current branch/HEAD
     let original_branch = git::current_branch_name(&repo);
     let original_head = repo.head()?.peel_to_commit()?.id();
 
     // Run lint with cleanup on error
-    let result = run_lint_on_commits(&repo, stack, lint_commands, end_pos);
+    let result = run_lint_on_commits(&repo, stack, lint_commands, end_pos, json);
 
     // Try to restore original position on error, but NOT if there's a rebase in progress
     // (user needs to resolve conflicts in place)
     if result.is_err() && !git::is_rebase_in_progress(&repo) {
-        restore_original_position(&repo, original_branch.as_deref(), original_head);
+        restore_original_position(&repo, original_branch.as_deref(), original_head, json);
     }
 
     result
@@ -87,6 +94,7 @@ fn run_lint_on_commits(
     stack: Stack,
     lint_commands: &[String],
     end_pos: usize,
+    json: bool,
 ) -> Result<()> {
     let original_branch = git::current_branch_name(repo);
     let original_head = repo.head()?.peel_to_commit()?.id();
@@ -100,14 +108,16 @@ fn run_lint_on_commits(
     while i < end_pos {
         let entry = entries[i].clone();
 
-        println!();
-        println!(
-            "{} Linting [{}] {} {}",
-            style("→").cyan(),
-            entry.position,
-            style(&entry.short_sha).yellow(),
-            entry.title
-        );
+        if !json {
+            println!();
+            println!(
+                "{} Linting [{}] {} {}",
+                style("→").cyan(),
+                entry.position,
+                style(&entry.short_sha).yellow(),
+                entry.title
+            );
+        }
 
         // Checkout this commit
         let commit = repo.find_commit(entry.oid)?;
@@ -115,7 +125,9 @@ fn run_lint_on_commits(
 
         // Run lint commands
         for cmd in lint_commands {
-            print!("  Running: {} ... ", style(cmd).dim());
+            if !json {
+                print!("  Running: {} ... ", style(cmd).dim());
+            }
 
             let parts: Vec<&str> = cmd.split_whitespace().collect();
             if parts.is_empty() {
@@ -125,7 +137,9 @@ fn run_lint_on_commits(
             let output = match Command::new(parts[0]).args(&parts[1..]).output() {
                 Ok(output) => output,
                 Err(e) => {
-                    println!("{}", style("ERROR").red().bold());
+                    if !json {
+                        println!("{}", style("ERROR").red().bold());
+                    }
                     let error_msg = if e.kind() == std::io::ErrorKind::NotFound {
                         format!(
                             "Command '{}' not found. Make sure it's installed and in your PATH.\n\
@@ -140,8 +154,10 @@ fn run_lint_on_commits(
             };
 
             if output.status.success() {
-                println!("{}", style("OK").green());
-            } else {
+                if !json {
+                    println!("{}", style("OK").green());
+                }
+            } else if !json {
                 println!("{}", style("FAILED").red());
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 if !stderr.is_empty() {
@@ -154,7 +170,9 @@ fn run_lint_on_commits(
 
         // Check if lint made changes
         if !git::is_working_directory_clean(repo)? {
-            println!("  {} Lint made changes, squashing...", style("!").yellow());
+            if !json {
+                println!("  {} Lint made changes, squashing...", style("!").yellow());
+            }
 
             // Stage all changes
             let status = Command::new("git").args(["add", "-A"]).status()?;
@@ -173,7 +191,9 @@ fn run_lint_on_commits(
             }
 
             had_changes = true;
-            println!("  {} Changes squashed", style("OK").green());
+            if !json {
+                println!("  {} Changes squashed", style("OK").green());
+            }
 
             // Rebase remaining commits in the lint range onto the amended commit
             if i + 1 < end_pos {
@@ -201,7 +221,7 @@ fn run_lint_on_commits(
                 ]) {
                     // Check if this is a rebase conflict
                     if git::is_rebase_in_progress(repo) {
-                        print_rebase_conflict_help();
+                        print_rebase_conflict_help(json);
                         return Err(GgError::Other(
                             "Rebase conflict occurred. Resolve conflicts and run `gg continue`."
                                 .to_string(),
@@ -218,7 +238,9 @@ fn run_lint_on_commits(
     }
 
     // Return to original position
-    println!();
+    if !json {
+        println!();
+    }
     if let Some(branch) = original_branch {
         if had_changes {
             // Move the stack branch to the current HEAD (last linted commit)
@@ -226,17 +248,20 @@ fn run_lint_on_commits(
             git::move_branch_to_head(repo, &branch)?;
             git::checkout_branch(repo, &branch)?;
 
-            if end_pos < stack.len() {
-                // Partial lint: remaining commits need rebasing
-                println!(
-                    "{}",
-                    style("Lint made changes. Run `gg rebase` to update remaining commits, then `gg sync`.").dim()
-                );
-            } else {
-                println!(
-                    "{}",
-                    style("Lint made changes. Review with `gg ls` and sync with `gg sync`.").dim()
-                );
+            if !json {
+                if end_pos < stack.len() {
+                    // Partial lint: remaining commits need rebasing
+                    println!(
+                        "{}",
+                        style("Lint made changes. Run `gg rebase` to update remaining commits, then `gg sync`.").dim()
+                    );
+                } else {
+                    println!(
+                        "{}",
+                        style("Lint made changes. Review with `gg ls` and sync with `gg sync`.")
+                            .dim()
+                    );
+                }
             }
         } else {
             git::checkout_branch(repo, &branch)?;
@@ -249,7 +274,9 @@ fn run_lint_on_commits(
         }
     }
 
-    println!("{} Linted {} commits", style("OK").green().bold(), end_pos);
+    if !json {
+        println!("{} Linted {} commits", style("OK").green().bold(), end_pos);
+    }
 
     Ok(())
 }
@@ -275,9 +302,12 @@ fn restore_original_position(
     repo: &git2::Repository,
     original_branch: Option<&str>,
     original_head: Oid,
+    json: bool,
 ) {
-    println!();
-    println!("{} Restoring original position...", style("→").cyan());
+    if !json {
+        println!();
+        println!("{} Restoring original position...", style("→").cyan());
+    }
 
     let restored = if let Some(branch) = original_branch {
         git::checkout_branch(repo, branch).is_ok()
@@ -287,13 +317,15 @@ fn restore_original_position(
         false
     };
 
-    if restored {
-        println!("{} Restored to original position", style("OK").green());
-    } else {
-        println!(
-            "{} Could not restore original position. You may be in detached HEAD.",
-            style("Warning:").yellow()
-        );
+    if !json {
+        if restored {
+            println!("{} Restored to original position", style("OK").green());
+        } else {
+            println!(
+                "{} Could not restore original position. You may be in detached HEAD.",
+                style("Warning:").yellow()
+            );
+        }
     }
 }
 
@@ -314,7 +346,11 @@ fn get_conflicted_files() -> Vec<String> {
 }
 
 /// Print helpful message when rebase conflict occurs during lint
-fn print_rebase_conflict_help() {
+fn print_rebase_conflict_help(json: bool) {
+    if json {
+        return;
+    }
+
     println!();
     println!(
         "{} Rebase conflict while rebasing after lint changes",

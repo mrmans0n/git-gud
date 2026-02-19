@@ -105,6 +105,7 @@ pub struct SyncResultJson {
     pub stack: String,
     pub base: String,
     pub rebased_before_sync: bool,
+    pub warnings: Vec<String>,
     pub entries: Vec<SyncEntryResultJson>,
 }
 

@@ -13,7 +13,7 @@ gg ls [OPTIONS]
 - `-a, --all`: Show all local stacks
 - `-r, --refresh`: Refresh PR/MR status from remote
 - `--remote`: List remote stacks not checked out locally
-- `--json`: Print structured JSON output (for scripts and automation)
+- `--json`: Print structured JSON output (for scripts and automation). Automatically performs a best-effort refresh of PR/MR state from the provider API, so `pr_state` and `ci_status` fields are populated without needing `--refresh`.
 
 ## Examples
 

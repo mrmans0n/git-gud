@@ -31,14 +31,18 @@ pub fn run(all: bool, refresh: bool, remote: bool, json: bool) -> Result<()> {
             list_all_stacks(&repo, &config, json)?;
         }
         Some(mut stack) if !all => {
-            if refresh {
-                let provider = Provider::detect(&repo)?;
-                if !json {
-                    print!("Refreshing {} status... ", provider.pr_label());
-                }
-                stack.refresh_mr_info(&provider)?;
-                if !json {
-                    println!("{}", style("done").green());
+            if should_refresh_mr_info(refresh, json) {
+                if refresh {
+                    let provider = Provider::detect(&repo)?;
+                    if !json {
+                        print!("Refreshing {} status... ", provider.pr_label());
+                    }
+                    stack.refresh_mr_info(&provider)?;
+                    if !json {
+                        println!("{}", style("done").green());
+                    }
+                } else if let Ok(provider) = Provider::detect(&repo) {
+                    stack.refresh_mr_info(&provider)?;
                 }
             }
 
@@ -607,5 +611,29 @@ fn ci_status_to_json(status: &CiStatus) -> String {
         CiStatus::Failed => "failed".to_string(),
         CiStatus::Canceled => "canceled".to_string(),
         CiStatus::Unknown => "unknown".to_string(),
+    }
+}
+
+fn should_refresh_mr_info(refresh: bool, json: bool) -> bool {
+    refresh || json
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_refresh_mr_info;
+
+    #[test]
+    fn json_output_auto_refreshes_mr_info() {
+        assert!(should_refresh_mr_info(false, true));
+    }
+
+    #[test]
+    fn explicit_refresh_still_refreshes() {
+        assert!(should_refresh_mr_info(true, false));
+    }
+
+    #[test]
+    fn no_refresh_for_human_output_without_flag() {
+        assert!(!should_refresh_mr_info(false, false));
     }
 }

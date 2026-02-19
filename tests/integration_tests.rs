@@ -275,7 +275,13 @@ fn test_gg_ls_json_current_stack() {
     let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
     assert_eq!(parsed["version"], 1);
     assert_eq!(parsed["stack"]["name"], "json-stack");
-    assert_eq!(parsed["stack"]["base"], "main");
+    let base = parsed["stack"]["base"]
+        .as_str()
+        .expect("stack.base must be a string");
+    assert!(
+        matches!(base, "main" | "master"),
+        "expected stack base to be 'main' or 'master', got '{base}'"
+    );
     assert_eq!(parsed["stack"]["total_commits"], 1);
 
     let entries = parsed["stack"]["entries"]

@@ -220,6 +220,7 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
                     "{} (worktree not removed: confirmation defaults to false in --json mode)",
                     stack_name
                 ));
+                continue;
             }
 
             // Delete local branch

@@ -254,6 +254,74 @@ fn test_gg_lint_json_help() {
 }
 
 #[test]
+fn test_gg_lint_json_no_lint_commands() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", "lint-json-no-commands"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("test.txt"), "content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Test commit"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["lint", "--json"]);
+    assert!(success, "gg lint --json failed: {}", stderr);
+    assert!(
+        stderr.trim().is_empty(),
+        "stderr should be empty in JSON mode"
+    );
+
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(parsed["version"], 1);
+    assert_eq!(parsed["lint"]["all_passed"], true);
+
+    let results = parsed["lint"]["results"]
+        .as_array()
+        .expect("lint.results must be an array");
+    assert!(results.is_empty(), "lint.results should be empty");
+}
+
+#[test]
+fn test_gg_lint_json_empty_stack() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","lint":["git --version"]}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", "lint-json-empty-stack"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["lint", "--json"]);
+    assert!(success, "gg lint --json failed: {}", stderr);
+    assert!(
+        stderr.trim().is_empty(),
+        "stderr should be empty in JSON mode"
+    );
+
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(parsed["version"], 1);
+    assert_eq!(parsed["lint"]["all_passed"], true);
+
+    let results = parsed["lint"]["results"]
+        .as_array()
+        .expect("lint.results must be an array");
+    assert!(results.is_empty(), "lint.results should be empty");
+}
+
+#[test]
 fn test_gg_land_json_error_without_provider() {
     let (_temp_dir, repo_path) = create_test_repo();
 

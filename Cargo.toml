@@ -1,6 +1,6 @@
 [package]
 name = "gg-stack"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "Stacked-diffs CLI tool (gg) for GitHub and GitLab"
 authors = ["Nacho Lopez"]

@@ -1867,6 +1867,54 @@ fn test_lint_error_message_for_shell_alias() {
 }
 
 #[test]
+fn test_lint_runs_from_subdirectory_using_repo_root() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","lint":["./lint.sh"]}}"#,
+    )
+    .expect("Failed to write config");
+
+    fs::write(
+        repo_path.join("lint.sh"),
+        "#!/bin/sh\necho ok >> lint-output.txt\n",
+    )
+    .expect("Failed to write lint script");
+    Command::new("chmod")
+        .args(["+x", "lint.sh"])
+        .current_dir(&repo_path)
+        .output()
+        .expect("Failed to chmod lint script");
+
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", "lint-subdir-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("test.txt"), "content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Test commit"]);
+
+    let subdir = repo_path.join("nested/subdir");
+    fs::create_dir_all(&subdir).expect("Failed to create nested subdir");
+
+    let (success, stdout, stderr) = run_gg(&subdir, &["lint"]);
+    assert!(
+        success,
+        "gg lint should succeed from subdirectory. stdout={}, stderr={}",
+        stdout, stderr
+    );
+
+    let lint_output =
+        fs::read_to_string(repo_path.join("lint-output.txt")).expect("Failed to read lint output");
+    assert!(
+        lint_output.contains("ok"),
+        "lint command should run from repo root and write output"
+    );
+}
+
+#[test]
 fn test_land_help_shows_no_squash_option() {
     let (_temp_dir, repo_path) = create_test_repo();
 

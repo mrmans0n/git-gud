@@ -1,5 +1,6 @@
 //! `gg lint` - Run lint commands on each commit in the stack
 
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use console::style;
@@ -119,6 +120,9 @@ fn run_lint_on_commits(
 ) -> Result<bool> {
     let original_branch = git::current_branch_name(repo);
     let original_head = repo.head()?.peel_to_commit()?.id();
+    let repo_root = repo
+        .workdir()
+        .ok_or_else(|| GgError::Other("Repository has no working directory".to_string()))?;
     let mut had_changes = false;
     let base_branch = stack.base.clone();
     let stack_branch = stack.branch_name();
@@ -160,7 +164,11 @@ fn run_lint_on_commits(
                 continue;
             }
 
-            let output = match Command::new(parts[0]).args(&parts[1..]).output() {
+            let output = match Command::new(parts[0])
+                .args(&parts[1..])
+                .current_dir(repo_root)
+                .output()
+            {
                 Ok(output) => output,
                 Err(e) => {
                     if !json {
@@ -233,7 +241,10 @@ fn run_lint_on_commits(
             }
 
             // Stage all changes
-            let add_output = Command::new("git").args(["add", "-A"]).output()?;
+            let add_output = Command::new("git")
+                .args(["add", "-A"])
+                .current_dir(repo_root)
+                .output()?;
 
             if !add_output.status.success() {
                 return Err(GgError::Other(format!(
@@ -245,6 +256,7 @@ fn run_lint_on_commits(
             // Amend the commit
             let amend_output = Command::new("git")
                 .args(["commit", "--amend", "--no-edit"])
+                .current_dir(repo_root)
                 .stdin(Stdio::null())
                 .output()?;
 
@@ -287,7 +299,7 @@ fn run_lint_on_commits(
                 ]) {
                     // Check if this is a rebase conflict
                     if git::is_rebase_in_progress(repo) {
-                        print_rebase_conflict_help(json);
+                        print_rebase_conflict_help(repo_root, json);
                         return Err(GgError::Other(
                             "Rebase conflict occurred. Resolve conflicts and run `gg continue`."
                                 .to_string(),
@@ -421,9 +433,10 @@ fn restore_original_position(
 }
 
 /// Get list of files with conflicts
-fn get_conflicted_files() -> Vec<String> {
+fn get_conflicted_files(repo_root: &Path) -> Vec<String> {
     let output = Command::new("git")
         .args(["diff", "--name-only", "--diff-filter=U"])
+        .current_dir(repo_root)
         .output();
 
     match output {
@@ -437,7 +450,7 @@ fn get_conflicted_files() -> Vec<String> {
 }
 
 /// Print helpful message when rebase conflict occurs during lint
-fn print_rebase_conflict_help(json: bool) {
+fn print_rebase_conflict_help(repo_root: &Path, json: bool) {
     if json {
         return;
     }
@@ -449,7 +462,7 @@ fn print_rebase_conflict_help(json: bool) {
     );
     println!();
 
-    let conflicted_files = get_conflicted_files();
+    let conflicted_files = get_conflicted_files(repo_root);
     if !conflicted_files.is_empty() {
         println!("The following files have conflicts:");
         for file in &conflicted_files {

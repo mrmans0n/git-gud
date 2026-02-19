@@ -5,18 +5,22 @@ use console::style;
 use crate::config::Config;
 use crate::error::Result;
 use crate::git;
+use crate::output::{
+    print_json, AllStacksResponse, RemoteStackJson, RemoteStacksResponse, SingleStackResponse,
+    StackCommitJson, StackEntryJson, StackJson, StackSummaryJson, OUTPUT_VERSION,
+};
 use crate::provider::{CiStatus, PrState, Provider};
 use crate::stack::{self, Stack};
 
 /// Run the list command
-pub fn run(all: bool, refresh: bool, remote: bool) -> Result<()> {
+pub fn run(all: bool, refresh: bool, remote: bool, json: bool) -> Result<()> {
     let repo = git::open_repo()?;
     let git_dir = repo.path();
     let config = Config::load(git_dir)?;
 
     // Handle --remote flag
     if remote {
-        return list_remote_stacks(&repo, &config);
+        return list_remote_stacks(&repo, &config, json);
     }
 
     // Try to load current stack
@@ -24,24 +28,24 @@ pub fn run(all: bool, refresh: bool, remote: bool) -> Result<()> {
 
     match current_stack {
         None => {
-            // List all stacks
-            list_all_stacks(&repo, &config)?;
+            list_all_stacks(&repo, &config, json)?;
         }
         Some(mut stack) if !all => {
-            // Show current stack details
             if refresh {
-                // Detect provider for refresh
                 let provider = Provider::detect(&repo)?;
-                print!("Refreshing MR status... ");
+                if !json {
+                    print!("Refreshing MR status... ");
+                }
                 stack.refresh_mr_info(&provider)?;
-                println!("{}", style("done").green());
+                if !json {
+                    println!("{}", style("done").green());
+                }
             }
 
-            show_stack(&stack)?;
+            show_stack(&stack, json)?;
         }
         Some(_) => {
-            // List all stacks (--all flag)
-            list_all_stacks(&repo, &config)?;
+            list_all_stacks(&repo, &config, json)?;
         }
     }
 
@@ -49,8 +53,7 @@ pub fn run(all: bool, refresh: bool, remote: bool) -> Result<()> {
 }
 
 /// List all available stacks with their commits in a tree view
-fn list_all_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
-    // Get username - try provider if in a repo
+fn list_all_stacks(repo: &git2::Repository, config: &Config, json: bool) -> Result<()> {
     let username = config
         .defaults
         .branch_username
@@ -62,14 +65,6 @@ fn list_all_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
 
     let stacks = stack::list_all_stacks(repo, config, &username)?;
 
-    if stacks.is_empty() {
-        println!(
-            "{}",
-            style("No stacks found. Use `gg co <name>` to create one.").dim()
-        );
-        return Ok(());
-    }
-
     // Get current branch to highlight active stack
     let current_branch = git::current_branch_name(repo);
     let current_stack = current_branch
@@ -79,6 +74,63 @@ fn list_all_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
 
     // Get base branch for commit listing
     let base_branch = git::find_base_branch(repo).unwrap_or_else(|_| "main".to_string());
+
+    if json {
+        let summaries = stacks
+            .iter()
+            .map(|stack_name| {
+                let is_current = current_stack.as_deref() == Some(stack_name);
+                let has_worktree = config
+                    .get_stack(stack_name)
+                    .and_then(|s| s.worktree_path.as_ref())
+                    .is_some();
+
+                let full_branch = git::format_stack_branch(&username, stack_name);
+                let commits =
+                    get_stack_commits_info(repo, &full_branch, &base_branch).unwrap_or_default();
+                let commit_count = commits.len();
+                let commits = commits
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (sha, title))| StackCommitJson {
+                        position: i + 1,
+                        sha,
+                        title,
+                    })
+                    .collect();
+
+                let stack_base = config
+                    .get_base_for_stack(stack_name)
+                    .unwrap_or(base_branch.as_str())
+                    .to_string();
+
+                StackSummaryJson {
+                    name: stack_name.clone(),
+                    base: stack_base.clone(),
+                    commit_count,
+                    is_current,
+                    has_worktree,
+                    behind_base: behind_count(repo, &stack_base),
+                    commits,
+                }
+            })
+            .collect();
+
+        print_json(&AllStacksResponse {
+            version: OUTPUT_VERSION,
+            current_stack,
+            stacks: summaries,
+        });
+        return Ok(());
+    }
+
+    if stacks.is_empty() {
+        println!(
+            "{}",
+            style("No stacks found. Use `gg co <name>` to create one.").dim()
+        );
+        return Ok(());
+    }
 
     println!("{}", style("Stacks:").bold());
 
@@ -95,7 +147,6 @@ fn list_all_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
             ""
         };
 
-        // Get commits for this stack
         let full_branch = git::format_stack_branch(&username, stack_name);
         let commits = get_stack_commits_info(repo, &full_branch, &base_branch);
 
@@ -129,7 +180,6 @@ fn list_all_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
             );
         }
 
-        // Show commits in tree format
         if let Ok(ref commits) = commits {
             let total = commits.len();
             for (i, (sha, title)) in commits.iter().enumerate() {
@@ -168,7 +218,6 @@ fn list_all_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// Get commit info (sha, title) for a stack branch
 fn get_stack_commits_info(
     repo: &git2::Repository,
     branch: &str,
@@ -199,8 +248,7 @@ fn get_stack_commits_info(
 }
 
 /// List remote stacks that aren't checked out locally
-fn list_remote_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
-    // Get username
+fn list_remote_stacks(repo: &git2::Repository, config: &Config, json: bool) -> Result<()> {
     let username = config
         .defaults
         .branch_username
@@ -210,25 +258,22 @@ fn list_remote_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
 
     git::validate_branch_username(&username)?;
 
-    // Fetch latest from origin first
-    println!("{}", style("Fetching from origin...").dim());
+    if !json {
+        println!("{}", style("Fetching from origin...").dim());
+    }
     let _ = std::process::Command::new("git")
         .args(["fetch", "origin", "--prune"])
         .output();
 
-    // Get local stacks for comparison
     let local_stacks = stack::list_all_stacks(repo, config, &username)?;
 
-    // Scan remote branches (both stack branches and entry branches)
     let mut remote_stacks: Vec<String> = Vec::new();
     let branches = repo.branches(Some(git2::BranchType::Remote))?;
 
     for branch_result in branches {
         let (branch, _) = branch_result?;
         if let Some(name) = branch.name()? {
-            // Remote branches are prefixed with "origin/"
             if let Some(branch_name) = name.strip_prefix("origin/") {
-                // Check if it's a stack branch (username/stack-name)
                 if let Some((branch_user, stack_name)) = git::parse_stack_branch(branch_name) {
                     if branch_user == username
                         && !local_stacks.contains(&stack_name)
@@ -236,9 +281,7 @@ fn list_remote_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
                     {
                         remote_stacks.push(stack_name);
                     }
-                }
-                // Also check entry branches (username/stack-name--entry-id)
-                else if let Some((branch_user, stack_name, _entry_id)) =
+                } else if let Some((branch_user, stack_name, _entry_id)) =
                     git::parse_entry_branch(branch_name)
                 {
                     if branch_user == username
@@ -252,6 +295,39 @@ fn list_remote_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
         }
     }
 
+    remote_stacks.sort();
+
+    if json {
+        let base_branch = git::find_base_branch(repo).unwrap_or_else(|_| "main".to_string());
+        let stacks = remote_stacks
+            .iter()
+            .map(|stack_name| {
+                let remote_branch = format!("origin/{}/{}", username, stack_name);
+                let commit_count =
+                    count_stack_commits(repo, &remote_branch, &base_branch).unwrap_or(0);
+
+                let mut pr_numbers = config
+                    .get_stack(stack_name)
+                    .map(|stack_config| stack_config.mrs.values().copied().collect::<Vec<u64>>())
+                    .unwrap_or_default();
+                pr_numbers.sort_unstable();
+                pr_numbers.dedup();
+
+                RemoteStackJson {
+                    name: stack_name.clone(),
+                    commit_count,
+                    pr_numbers,
+                }
+            })
+            .collect();
+
+        print_json(&RemoteStacksResponse {
+            version: OUTPUT_VERSION,
+            stacks,
+        });
+        return Ok(());
+    }
+
     if remote_stacks.is_empty() {
         println!(
             "{}",
@@ -260,9 +336,6 @@ fn list_remote_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
         return Ok(());
     }
 
-    remote_stacks.sort();
-
-    // Try to get provider for MR info
     let provider = Provider::detect(repo).ok();
 
     println!("{}", style("Remote stacks:").bold());
@@ -271,7 +344,6 @@ fn list_remote_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
     for stack_name in &remote_stacks {
         let remote_branch = format!("origin/{}/{}", username, stack_name);
 
-        // Count commits
         let commit_info = if let Ok(base) = git::find_base_branch(repo) {
             if let Ok(count) = count_stack_commits(repo, &remote_branch, &base) {
                 format!(" ({} commits)", count)
@@ -282,7 +354,6 @@ fn list_remote_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
             String::new()
         };
 
-        // Try to get MR info if we have a provider and config
         let mr_info = if provider.is_some() {
             if let Some(stack_config) = config.get_stack(stack_name) {
                 let mrs: Vec<String> = stack_config
@@ -320,7 +391,6 @@ fn list_remote_stacks(repo: &git2::Repository, config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// Count commits in a stack branch
 fn count_stack_commits(repo: &git2::Repository, branch: &str, base: &str) -> Result<usize> {
     let head = repo.revparse_single(branch)?;
     let base_ref = repo
@@ -334,22 +404,71 @@ fn count_stack_commits(repo: &git2::Repository, branch: &str, base: &str) -> Res
     Ok(revwalk.count())
 }
 
-fn behind_indicator(repo: &git2::Repository, base_branch: &str) -> Option<String> {
+fn behind_count(repo: &git2::Repository, base_branch: &str) -> Option<usize> {
     let behind =
         git::count_commits_behind(repo, base_branch, &format!("origin/{}", base_branch)).ok()?;
     if behind > 0 {
-        Some(format!("↓{}", behind))
+        Some(behind)
     } else {
         None
     }
 }
 
+fn behind_indicator(repo: &git2::Repository, base_branch: &str) -> Option<String> {
+    behind_count(repo, base_branch).map(|behind| format!("↓{}", behind))
+}
+
 /// Show detailed stack view
-fn show_stack(stack: &Stack) -> Result<()> {
+fn show_stack(stack: &Stack, json: bool) -> Result<()> {
     let synced = stack.synced_count();
     let total = stack.len();
 
     let repo = git::open_repo()?;
+
+    if json {
+        let current_pos = stack
+            .current_position
+            .unwrap_or(stack.len().saturating_sub(1));
+
+        let entries = stack
+            .entries
+            .iter()
+            .map(|entry| {
+                let is_current = entry.position == current_pos + 1
+                    || (stack.current_position.is_none() && entry.position == stack.len());
+
+                StackEntryJson {
+                    position: entry.position,
+                    sha: entry.short_sha.clone(),
+                    title: entry.title.clone(),
+                    gg_id: entry.gg_id.clone(),
+                    pr_number: entry.mr_number,
+                    pr_state: entry.mr_state.as_ref().map(pr_state_to_json),
+                    approved: entry.approved,
+                    ci_status: entry.ci_status.as_ref().map(ci_status_to_json),
+                    is_current,
+                    in_merge_train: entry.in_merge_train,
+                    merge_train_position: entry.merge_train_position,
+                }
+            })
+            .collect();
+
+        print_json(&SingleStackResponse {
+            version: OUTPUT_VERSION,
+            stack: StackJson {
+                name: stack.name.clone(),
+                base: stack.base.clone(),
+                total_commits: total,
+                synced_commits: synced,
+                current_position: stack.current_position.map(|p| p + 1),
+                behind_base: behind_count(&repo, &stack.base),
+                entries,
+            },
+        });
+
+        return Ok(());
+    }
+
     let behind = behind_indicator(&repo, &stack.base)
         .map(|s| format!(" {}", style(s).yellow()))
         .unwrap_or_default();
@@ -363,7 +482,6 @@ fn show_stack(stack: &Stack) -> Result<()> {
     );
     println!();
 
-    // Check for ongoing rebase and warn the user
     if git::is_rebase_in_progress(&repo) {
         println!(
             "{} {}",
@@ -383,14 +501,12 @@ fn show_stack(stack: &Stack) -> Result<()> {
         return Ok(());
     }
 
-    // Try to detect provider for proper PR/MR prefix
     let provider = Provider::detect(&repo).ok();
     let pr_prefix = provider
         .as_ref()
         .map(|p| p.pr_number_prefix())
         .unwrap_or("!");
 
-    // Determine the current position
     let current_pos = stack
         .current_position
         .unwrap_or(stack.len().saturating_sub(1));
@@ -399,12 +515,10 @@ fn show_stack(stack: &Stack) -> Result<()> {
         let is_current = entry.position == current_pos + 1
             || (stack.current_position.is_none() && entry.position == stack.len());
 
-        // Build the line
         let position = format!("[{}]", entry.position);
         let sha = &entry.short_sha;
         let title = &entry.title;
 
-        // Status indicator
         let status = entry.status_display();
         let status_styled = match &entry.mr_state {
             Some(PrState::Merged) => style(&status).green(),
@@ -415,7 +529,6 @@ fn show_stack(stack: &Stack) -> Result<()> {
             None => style(&status).dim(),
         };
 
-        // CI indicator
         let ci = match &entry.ci_status {
             Some(CiStatus::Success) => style("✓").green().to_string(),
             Some(CiStatus::Failed) => style("✗").red().to_string(),
@@ -424,19 +537,12 @@ fn show_stack(stack: &Stack) -> Result<()> {
             _ => String::new(),
         };
 
-        // Merge train indicator
         let train = if entry.in_merge_train { " 🚂" } else { "" };
-
-        // GG-ID display
         let gg_id = entry.gg_id.as_deref().unwrap_or("-");
-
-        // MR number
         let mr_display = entry
             .mr_number
             .map(|n| format!("{}{}", pr_prefix, n))
             .unwrap_or_default();
-
-        // HEAD marker
         let head_marker = if is_current { " <- HEAD" } else { "" };
 
         if is_current {
@@ -464,11 +570,9 @@ fn show_stack(stack: &Stack) -> Result<()> {
             );
         }
 
-        // Show MR link and merge train info if available
         if !mr_display.is_empty() {
             let mut mr_line = mr_display.clone();
 
-            // Add merge train indicator if in train
             if entry.in_merge_train {
                 if let Some(pos) = entry.merge_train_position {
                     mr_line.push_str(&format!(" [train pos {}]", pos));
@@ -484,4 +588,24 @@ fn show_stack(stack: &Stack) -> Result<()> {
     println!();
 
     Ok(())
+}
+
+fn pr_state_to_json(state: &PrState) -> String {
+    match state {
+        PrState::Open => "open".to_string(),
+        PrState::Merged => "merged".to_string(),
+        PrState::Closed => "closed".to_string(),
+        PrState::Draft => "draft".to_string(),
+    }
+}
+
+fn ci_status_to_json(status: &CiStatus) -> String {
+    match status {
+        CiStatus::Pending => "pending".to_string(),
+        CiStatus::Running => "running".to_string(),
+        CiStatus::Success => "success".to_string(),
+        CiStatus::Failed => "failed".to_string(),
+        CiStatus::Canceled => "canceled".to_string(),
+        CiStatus::Unknown => "unknown".to_string(),
+    }
 }

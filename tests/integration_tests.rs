@@ -248,6 +248,93 @@ fn test_gg_ls_shows_commits() {
 }
 
 #[test]
+fn test_gg_ls_json_current_stack() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", "json-stack"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("file1.txt"), "content1").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Add file1\n\nGG-ID: c-abc1234"],
+    );
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["ls", "--json"]);
+    assert!(success, "gg ls --json failed: {}", stderr);
+
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(parsed["version"], 1);
+    assert_eq!(parsed["stack"]["name"], "json-stack");
+    assert_eq!(parsed["stack"]["base"], "main");
+    assert_eq!(parsed["stack"]["total_commits"], 1);
+
+    let entries = parsed["stack"]["entries"]
+        .as_array()
+        .expect("entries must be an array");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["position"], 1);
+    assert_eq!(entries[0]["title"], "Add file1");
+}
+
+#[test]
+fn test_gg_ls_all_json() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", "json-a"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("a.txt"), "a").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Add A"]);
+
+    run_git(&repo_path, &["checkout", "main"]);
+
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", "json-b"]);
+    assert!(success, "Failed to create second stack: {}", stderr);
+
+    fs::write(repo_path.join("b.txt"), "b").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Add B"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["ls", "--all", "--json"]);
+    assert!(success, "gg ls -a --json failed: {}", stderr);
+
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(parsed["version"], 1);
+    assert_eq!(parsed["current_stack"], "json-b");
+
+    let stacks = parsed["stacks"]
+        .as_array()
+        .expect("stacks must be an array");
+    assert!(
+        stacks.iter().any(|s| s["name"] == "json-a"),
+        "json-a stack should be present"
+    );
+    assert!(
+        stacks.iter().any(|s| s["name"] == "json-b"),
+        "json-b stack should be present"
+    );
+}
+
+#[test]
 fn test_gg_ls_shows_behind_indicator_when_base_is_behind_origin() {
     let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
 

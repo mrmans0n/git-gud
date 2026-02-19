@@ -1178,6 +1178,65 @@ fn test_gg_ls_remote_with_stacks() {
 }
 
 #[test]
+fn test_gg_ls_remote_json() {
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    run_gg(&repo_path, &["co", "test-remote-json"]);
+
+    fs::write(repo_path.join("test-json.txt"), "test json").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Test remote json commit"]);
+
+    run_git(
+        &repo_path,
+        &["push", "-u", "origin", "testuser/test-remote-json"],
+    );
+
+    run_git(&repo_path, &["checkout", "main"]);
+    run_git(&repo_path, &["branch", "-D", "testuser/test-remote-json"]);
+
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to reset config");
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["ls", "--remote", "--json"]);
+    assert!(success, "gg ls --remote --json failed: {}", stderr);
+
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(parsed["version"], 1);
+
+    let stacks = parsed["stacks"]
+        .as_array()
+        .expect("stacks must be an array");
+    assert!(!stacks.is_empty(), "expected at least one remote stack");
+
+    let stack = stacks
+        .iter()
+        .find(|s| s["name"] == "test-remote-json")
+        .expect("test-remote-json stack should be present");
+
+    assert!(stack["name"].is_string(), "name must be a string");
+    assert!(
+        stack["commit_count"].as_u64().is_some(),
+        "commit_count must be a number"
+    );
+    assert!(
+        stack["pr_numbers"].is_array(),
+        "pr_numbers must be an array"
+    );
+}
+
+#[test]
 fn test_gg_checkout_remote_stack() {
     let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
 

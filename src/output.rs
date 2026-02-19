@@ -123,3 +123,31 @@ pub struct SyncEntryResultJson {
     pub pushed: bool,
     pub error: Option<String>,
 }
+
+#[derive(Serialize)]
+pub struct LandResponse {
+    pub version: u32,
+    pub land: LandResultJson,
+}
+
+#[derive(Serialize)]
+pub struct LandResultJson {
+    pub stack: String,
+    pub base: String,
+    pub landed: Vec<LandedEntryJson>,
+    pub remaining: usize,
+    pub cleaned: bool,
+    pub warnings: Vec<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct LandedEntryJson {
+    pub position: usize,
+    pub sha: String,
+    pub title: String,
+    pub gg_id: String,
+    pub pr_number: u64,
+    pub action: String,
+    pub error: Option<String>,
+}

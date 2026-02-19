@@ -35,11 +35,17 @@ fn maybe_rebase_if_base_is_behind(
         return Ok(());
     }
 
+    let prs_label = Provider::detect(repo)
+        .ok()
+        .map(|provider| format!("{}s", provider.pr_label()))
+        .unwrap_or_else(|| "PRs/MRs".to_string());
+
     println!(
-        "{} Your stack is {} commits behind origin/{}. PRs may show unrelated changes. Run 'gg rebase' first to update.",
+        "{} Your stack is {} commits behind origin/{}. {} may show unrelated changes. Run 'gg rebase' first to update.",
         style("⚠").yellow().bold(),
         behind,
-        base_branch
+        base_branch,
+        prs_label
     );
 
     if config.get_sync_auto_rebase() {

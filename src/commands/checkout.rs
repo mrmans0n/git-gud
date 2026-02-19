@@ -172,14 +172,21 @@ pub fn run(stack_name: Option<String>, base: Option<String>, use_worktree: bool)
                 import_pr_mappings_for_remote_stack(&repo, &mut config, &username, &stack_name)
             {
                 println!(
-                    "{} Could not import PR mappings: {}",
+                    "{} Could not import PR/MR mappings: {}",
                     style("Warning:").yellow(),
                     e
                 );
+                let prs_label = Provider::detect(&repo)
+                    .ok()
+                    .map(|provider| format!("{}s", provider.pr_label()))
+                    .unwrap_or_else(|| "PRs/MRs".to_string());
                 println!(
                     "{}",
-                    style("Continuing without PR mappings. Run `gg sync` to create/update PRs.")
-                        .dim()
+                    style(format!(
+                        "Continuing without PR/MR mappings. Run `gg sync` to create/update {}.",
+                        prs_label
+                    ))
+                    .dim()
                 );
             }
 
@@ -477,9 +484,10 @@ fn import_pr_mappings_for_remote_stack(
         // Save config with new mappings
         config.save(git_dir)?;
         println!(
-            "{} Imported {} PR mapping(s) for stack {}",
+            "{} Imported {} {} mapping(s) for stack {}",
             style("→").cyan(),
             imported_count,
+            provider.pr_label(),
             style(stack_name).cyan()
         );
     }

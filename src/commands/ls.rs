@@ -34,7 +34,7 @@ pub fn run(all: bool, refresh: bool, remote: bool, json: bool) -> Result<()> {
             if refresh {
                 let provider = Provider::detect(&repo)?;
                 if !json {
-                    print!("Refreshing MR status... ");
+                    print!("Refreshing {} status... ", provider.pr_label());
                 }
                 stack.refresh_mr_info(&provider)?;
                 if !json {

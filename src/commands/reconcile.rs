@@ -96,7 +96,7 @@ pub fn run(dry_run: bool) -> Result<()> {
         } else {
             println!(
                 "{}",
-                style("  (Skipping PR discovery - provider not authenticated)").dim()
+                style("  (Skipping PR/MR discovery - provider not authenticated)").dim()
             );
             Vec::new()
         }
@@ -201,8 +201,9 @@ fn find_unmapped_prs(
             Err(e) => {
                 // Log warning but continue
                 eprintln!(
-                    "{} Could not search PRs for {}: {}",
+                    "{} Could not search {}s for {}: {}",
                     style("Warning:").yellow(),
+                    provider.pr_label(),
                     entry_branch,
                     e
                 );

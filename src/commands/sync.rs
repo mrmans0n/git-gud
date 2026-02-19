@@ -10,6 +10,9 @@ use crate::error::{GgError, Result};
 use crate::git::{
     self, generate_gg_id, get_commit_description, set_gg_id_in_message, strip_gg_id_from_message,
 };
+use crate::output::{
+    print_json, SyncEntryResultJson, SyncResponse, SyncResultJson, OUTPUT_VERSION,
+};
 use crate::provider::Provider;
 use crate::stack::{resolve_target, Stack};
 use crate::template::{self, TemplateContext};
@@ -19,20 +22,21 @@ fn maybe_rebase_if_base_is_behind(
     repo: &Repository,
     config: &Config,
     base_branch: &str,
-) -> Result<()> {
+    json: bool,
+) -> Result<bool> {
     let threshold = config.get_sync_behind_threshold();
     if threshold == 0 {
-        return Ok(());
+        return Ok(false);
     }
 
     let behind =
         match git::count_commits_behind(repo, base_branch, &format!("origin/{}", base_branch)) {
             Ok(count) => count,
-            Err(_) => return Ok(()),
+            Err(_) => return Ok(false),
         };
 
     if behind < threshold {
-        return Ok(());
+        return Ok(false);
     }
 
     let prs_label = Provider::detect(repo)
@@ -40,17 +44,23 @@ fn maybe_rebase_if_base_is_behind(
         .map(|provider| format!("{}s", provider.pr_label()))
         .unwrap_or_else(|| "PRs/MRs".to_string());
 
-    println!(
-        "{} Your stack is {} commits behind origin/{}. {} may show unrelated changes. Run 'gg rebase' first to update.",
-        style("⚠").yellow().bold(),
-        behind,
-        base_branch,
-        prs_label
-    );
+    if !json {
+        println!(
+            "{} Your stack is {} commits behind origin/{}. {} may show unrelated changes. Run 'gg rebase' first to update.",
+            style("⚠").yellow().bold(),
+            behind,
+            base_branch,
+            prs_label
+        );
+    }
 
     if config.get_sync_auto_rebase() {
         crate::commands::rebase::run_with_repo(repo, None)?;
-        return Ok(());
+        return Ok(true);
+    }
+
+    if json {
+        return Ok(false);
     }
 
     let should_rebase = Confirm::new()
@@ -61,9 +71,10 @@ fn maybe_rebase_if_base_is_behind(
 
     if should_rebase {
         crate::commands::rebase::run_with_repo(repo, None)?;
+        return Ok(true);
     }
 
-    Ok(())
+    Ok(false)
 }
 
 /// Format and display a push error with helpful context
@@ -132,6 +143,7 @@ fn format_push_error(error: &GgError, branch_name: &str) {
 /// Run the sync command
 pub fn run(
     draft: bool,
+    json: bool,
     no_rebase_check: bool,
     force: bool,
     update_descriptions: bool,
@@ -149,7 +161,19 @@ pub fn run(
     // Load stack early to validate --until
     let initial_stack = Stack::load(&repo, &config)?;
     if initial_stack.is_empty() {
-        println!("{}", style("Stack is empty. Nothing to sync.").dim());
+        if json {
+            print_json(&SyncResponse {
+                version: OUTPUT_VERSION,
+                sync: SyncResultJson {
+                    stack: initial_stack.name.clone(),
+                    base: initial_stack.base.clone(),
+                    rebased_before_sync: false,
+                    entries: vec![],
+                },
+            });
+        } else {
+            println!("{}", style("Stack is empty. Nothing to sync.").dim());
+        }
         return Ok(());
     }
 
@@ -168,16 +192,22 @@ pub fn run(
     // Fetch from remote to ensure we have up-to-date refs
     let _ = git::fetch_and_prune();
 
+    let mut rebased_before_sync = false;
     if !no_rebase_check {
-        maybe_rebase_if_base_is_behind(&repo, &config, initial_stack.base.as_str())?;
+        rebased_before_sync =
+            maybe_rebase_if_base_is_behind(&repo, &config, initial_stack.base.as_str(), json)?;
     }
 
     // Run lint ONCE if requested (before GG-ID addition loop)
     if run_lint {
         let end_pos = lint_end_pos.unwrap_or(initial_stack.len());
-        println!("{}", console::style("Running lint before sync...").dim());
+        if !json {
+            println!("{}", console::style("Running lint before sync...").dim());
+        }
         crate::commands::lint::run(Some(end_pos))?;
-        println!();
+        if !json {
+            println!();
+        }
     }
 
     // Now handle GG-ID addition in a loop (lint may have changed commits)
@@ -186,7 +216,19 @@ pub fn run(
         let stack = Stack::load(&repo, &config)?;
 
         if stack.is_empty() {
-            println!("{}", style("Stack is empty. Nothing to sync.").dim());
+            if json {
+                print_json(&SyncResponse {
+                    version: OUTPUT_VERSION,
+                    sync: SyncResultJson {
+                        stack: stack.name.clone(),
+                        base: stack.base.clone(),
+                        rebased_before_sync,
+                        entries: vec![],
+                    },
+                });
+            } else {
+                println!("{}", style("Stack is empty. Nothing to sync.").dim());
+            }
             return Ok(());
         }
 
@@ -202,17 +244,19 @@ pub fn run(
             break stack;
         }
 
-        println!(
-            "{} {} commits are missing GG-IDs:",
-            style("→").cyan(),
-            missing_ids.len()
-        );
-        for entry in &missing_ids {
-            println!("  [{}] {} {}", entry.position, entry.short_sha, entry.title);
+        if !json {
+            println!(
+                "{} {} commits are missing GG-IDs:",
+                style("→").cyan(),
+                missing_ids.len()
+            );
+            for entry in &missing_ids {
+                println!("  [{}] {} {}", entry.position, entry.short_sha, entry.title);
+            }
         }
 
         // Check config for auto_add_gg_ids (default: true)
-        let should_add = if config.defaults.auto_add_gg_ids {
+        let should_add = if config.defaults.auto_add_gg_ids || json {
             true
         } else {
             Confirm::new()
@@ -230,16 +274,20 @@ pub fn run(
 
         let needs_stash = !git::is_working_directory_clean(&repo)?;
         if needs_stash {
-            println!("{}", style("Auto-stashing uncommitted changes...").dim());
+            if !json {
+                println!("{}", style("Auto-stashing uncommitted changes...").dim());
+            }
             git::run_git_command(&["stash", "push", "-m", "gg-sync-autostash"])?;
         }
 
-        if let Err(err) = add_gg_ids_to_commits(&repo, &stack) {
+        if let Err(err) = add_gg_ids_to_commits(&repo, &stack, json) {
             if needs_stash && !git::is_rebase_in_progress(&repo) {
-                println!(
-                    "{}",
-                    style("Attempting to restore stashed changes...").dim()
-                );
+                if !json {
+                    println!(
+                        "{}",
+                        style("Attempting to restore stashed changes...").dim()
+                    );
+                }
                 let _ = git::run_git_command(&["stash", "pop"]);
             }
             return Err(err);
@@ -262,24 +310,34 @@ pub fn run(
         }
 
         if needs_stash {
-            println!("{}", style("Restoring stashed changes...").dim());
+            if !json {
+                println!("{}", style("Restoring stashed changes...").dim());
+            }
             match git::run_git_command(&["stash", "pop"]) {
-                Ok(_) => println!("{}", style("Changes restored").cyan()),
+                Ok(_) => {
+                    if !json {
+                        println!("{}", style("Changes restored").cyan());
+                    }
+                }
                 Err(e) => {
-                    println!(
-                        "{} Could not restore stashed changes: {}",
-                        style("Warning:").yellow(),
-                        e
-                    );
-                    println!("  Your changes are in the stash. Run 'git stash pop' manually.");
+                    if !json {
+                        println!(
+                            "{} Could not restore stashed changes: {}",
+                            style("Warning:").yellow(),
+                            e
+                        );
+                        println!("  Your changes are in the stash. Run 'git stash pop' manually.");
+                    }
                 }
             }
         }
 
-        println!(
-            "{}",
-            console::style("GG-IDs added successfully. Re-syncing...").dim()
-        );
+        if !json {
+            println!(
+                "{}",
+                console::style("GG-IDs added successfully. Re-syncing...").dim()
+            );
+        }
 
         // Loop continues: reload stack and check for any remaining missing GG-IDs
         // (or proceed to sync if all commits now have GG-IDs)
@@ -302,7 +360,9 @@ pub fn run(
     let pr_template = template::load_template(git_dir);
 
     // Sync progress
-    let pb = if atty::is(atty::Stream::Stderr) {
+    let pb = if json {
+        ProgressBar::hidden()
+    } else if atty::is(atty::Stream::Stderr) {
         let pb = ProgressBar::new(entries_to_sync.len() as u64);
         pb.set_style(
             ProgressStyle::default_bar()
@@ -319,6 +379,7 @@ pub fn run(
     // If a commit title starts with "WIP:" or "Draft:" (case-insensitive),
     // that PR and all subsequent PRs should be drafts.
     let mut force_draft = draft;
+    let mut json_entries: Vec<SyncEntryResultJson> = Vec::new();
 
     for (i, entry) in entries_to_sync.iter().enumerate() {
         let gg_id = entry.gg_id.as_ref().unwrap();
@@ -332,6 +393,12 @@ pub fn run(
         let entry_draft = force_draft;
 
         let title = clean_title(&raw_title);
+
+        let mut action = "up_to_date".to_string();
+        let mut pr_number: Option<u64> = None;
+        let mut pr_url: Option<String> = None;
+        let mut pushed = false;
+        let mut entry_error: Option<String> = None;
 
         let (title, description) = build_pr_payload(
             &title,
@@ -352,13 +419,16 @@ pub fn run(
 
         // Only push if the remote is different or doesn't exist
         if needs_push {
+            pushed = true;
             // Push the branch (always force-push with lease because rebases change commit SHAs)
             // This is safe because each entry branch is owned by this stack
             // If --force is passed, use hard force as an escape hatch
             let push_result = git::push_branch(&entry_branch, true, force);
             if let Err(e) = push_result {
                 pb.finish_and_clear();
-                format_push_error(&e, &entry_branch);
+                if !json {
+                    format_push_error(&e, &entry_branch);
+                }
                 return Err(e);
             }
         }
@@ -378,8 +448,10 @@ pub fn run(
 
         match existing_pr {
             Some(pr_num) => {
+                pr_number = Some(pr_num);
                 // Check if PR is still open before updating
                 let pr_info = provider.get_pr_info(pr_num).ok();
+                pr_url = pr_info.as_ref().map(|info| info.url.clone());
                 let is_closed = pr_info
                     .as_ref()
                     .map(|info| {
@@ -391,14 +463,17 @@ pub fn run(
                     .unwrap_or(false);
 
                 if is_closed {
+                    action = "skipped_closed".to_string();
                     // Skip updating closed/merged PRs
-                    pb.println(format!(
-                        "{} {} {}{} already closed/merged, skipping",
-                        style("○").dim(),
-                        provider.pr_label(),
-                        provider.pr_number_prefix(),
-                        pr_num
-                    ));
+                    if !json {
+                        pb.println(format!(
+                            "{} {} {}{} already closed/merged, skipping",
+                            style("○").dim(),
+                            provider.pr_label(),
+                            provider.pr_number_prefix(),
+                            pr_num
+                        ));
+                    }
                 } else {
                     // If we're forcing draft on GitLab, we may need to update the title
                     // even if --update-descriptions wasn't provided.
@@ -409,25 +484,36 @@ pub fn run(
                             ensure_draft_prefix_for_gitlab(&title, &provider, entry_draft);
 
                         if let Err(e) = provider.update_pr_title(pr_num, &final_title) {
-                            pb.println(format!(
-                                "{} Could not update {} {}{} title: {}",
-                                style("Warning:").yellow(),
-                                provider.pr_label(),
-                                provider.pr_number_prefix(),
-                                pr_num,
-                                e
-                            ));
-                        }
-                        if update_descriptions {
-                            if let Err(e) = provider.update_pr_description(pr_num, &description) {
+                            if !json {
                                 pb.println(format!(
-                                    "{} Could not update {} {}{} description: {}",
+                                    "{} Could not update {} {}{} title: {}",
                                     style("Warning:").yellow(),
                                     provider.pr_label(),
                                     provider.pr_number_prefix(),
                                     pr_num,
                                     e
                                 ));
+                            }
+                            if entry_error.is_none() {
+                                entry_error = Some(format!("Could not update title: {e}"));
+                            }
+                        }
+                        if update_descriptions {
+                            if let Err(e) = provider.update_pr_description(pr_num, &description) {
+                                if !json {
+                                    pb.println(format!(
+                                        "{} Could not update {} {}{} description: {}",
+                                        style("Warning:").yellow(),
+                                        provider.pr_label(),
+                                        provider.pr_number_prefix(),
+                                        pr_num,
+                                        e
+                                    ));
+                                }
+                                if entry_error.is_none() {
+                                    entry_error =
+                                        Some(format!("Could not update description: {e}"));
+                                }
                             }
                         }
                     }
@@ -438,28 +524,39 @@ pub fn run(
                         if let Some(info) = pr_info.as_ref() {
                             if !info.draft {
                                 if let Err(e) = crate::gh::convert_pr_to_draft(pr_num) {
-                                    pb.println(format!(
-                                        "{} Could not convert {} {}{} to draft: {}",
-                                        style("Warning:").yellow(),
-                                        provider.pr_label(),
-                                        provider.pr_number_prefix(),
-                                        pr_num,
-                                        e
-                                    ));
+                                    if !json {
+                                        pb.println(format!(
+                                            "{} Could not convert {} {}{} to draft: {}",
+                                            style("Warning:").yellow(),
+                                            provider.pr_label(),
+                                            provider.pr_number_prefix(),
+                                            pr_num,
+                                            e
+                                        ));
+                                    }
+                                    if entry_error.is_none() {
+                                        entry_error =
+                                            Some(format!("Could not convert to draft: {e}"));
+                                    }
                                 }
                             }
                         }
                     }
                     // Update PR/MR base if needed
                     if let Err(e) = provider.update_pr_base(pr_num, &target_branch) {
-                        pb.println(format!(
-                            "{} Could not update {} {}{}: {}",
-                            style("Warning:").yellow(),
-                            provider.pr_label(),
-                            provider.pr_number_prefix(),
-                            pr_num,
-                            e
-                        ));
+                        if !json {
+                            pb.println(format!(
+                                "{} Could not update {} {}{}: {}",
+                                style("Warning:").yellow(),
+                                provider.pr_label(),
+                                provider.pr_number_prefix(),
+                                pr_num,
+                                e
+                            ));
+                        }
+                        if entry_error.is_none() {
+                            entry_error = Some(format!("Could not update base: {e}"));
+                        }
                     }
 
                     // Show appropriate message based on whether we pushed
@@ -468,15 +565,23 @@ pub fn run(
                     } else {
                         "Up to date"
                     };
-                    pb.println(format!(
-                        "{} {} {} -> {} {}{}",
-                        style("OK").green().bold(),
-                        status_msg,
-                        style(&entry_branch).cyan(),
-                        provider.pr_label(),
-                        provider.pr_number_prefix(),
-                        pr_num
-                    ));
+                    if !json {
+                        pb.println(format!(
+                            "{} {} {} -> {} {}{}",
+                            style("OK").green().bold(),
+                            status_msg,
+                            style(&entry_branch).cyan(),
+                            provider.pr_label(),
+                            provider.pr_number_prefix(),
+                            pr_num
+                        ));
+                    }
+                    if needs_push
+                        || update_descriptions
+                        || (entry_draft && matches!(provider, Provider::GitLab))
+                    {
+                        action = "updated".to_string();
+                    }
                 }
             }
             None => {
@@ -490,50 +595,96 @@ pub fn run(
                 ) {
                     Ok(result) => {
                         config.set_mr_for_entry(&stack.name, gg_id, result.number);
-                        let draft_label = if entry_draft { " (draft)" } else { "" };
-                        let status_msg = if needs_push { "Pushed" } else { "Up to date" };
-                        pb.println(format!(
-                            "{} {} {} -> {} {}{}{}",
-                            style("OK").green().bold(),
-                            status_msg,
-                            style(&entry_branch).cyan(),
-                            provider.pr_label(),
-                            provider.pr_number_prefix(),
-                            result.number,
-                            draft_label
-                        ));
-                        // Show clickable URL for new PRs/MRs
-                        if !result.url.is_empty() {
-                            pb.println(format!("   {}", style(&result.url).underlined().blue()));
+                        pr_number = Some(result.number);
+                        pr_url = if result.url.is_empty() {
+                            None
+                        } else {
+                            Some(result.url.clone())
+                        };
+                        action = "created".to_string();
+
+                        if !json {
+                            let draft_label = if entry_draft { " (draft)" } else { "" };
+                            let status_msg = if needs_push { "Pushed" } else { "Up to date" };
+                            pb.println(format!(
+                                "{} {} {} -> {} {}{}{}",
+                                style("OK").green().bold(),
+                                status_msg,
+                                style(&entry_branch).cyan(),
+                                provider.pr_label(),
+                                provider.pr_number_prefix(),
+                                result.number,
+                                draft_label
+                            ));
+                            // Show clickable URL for new PRs/MRs
+                            if !result.url.is_empty() {
+                                pb.println(format!(
+                                    "   {}",
+                                    style(&result.url).underlined().blue()
+                                ));
+                            }
                         }
                     }
                     Err(e) => {
-                        pb.println(format!(
-                            "{} Failed to create {} for {}: {}",
-                            style("Error:").red().bold(),
-                            provider.pr_label(),
-                            entry_branch,
-                            e
-                        ));
+                        entry_error = Some(e.to_string());
+                        if !json {
+                            pb.println(format!(
+                                "{} Failed to create {} for {}: {}",
+                                style("Error:").red().bold(),
+                                provider.pr_label(),
+                                entry_branch,
+                                e
+                            ));
+                        }
                     }
                 }
             }
         }
 
+        if json {
+            json_entries.push(SyncEntryResultJson {
+                position: entry.position,
+                sha: entry.short_sha.clone(),
+                title: entry.title.clone(),
+                gg_id: gg_id.clone(),
+                branch: entry_branch,
+                action,
+                pr_number,
+                pr_url,
+                draft: entry_draft,
+                pushed,
+                error: entry_error,
+            });
+        }
+
         pb.inc(1);
     }
 
-    pb.finish_with_message("Done!");
+    if !json {
+        pb.finish_with_message("Done!");
+    }
 
     // Save updated config
     config.save(git_dir)?;
 
-    println!();
-    println!(
-        "{} Synced {} commits",
-        style("OK").green().bold(),
-        entries_to_sync.len()
-    );
+    if json {
+        print_json(&SyncResponse {
+            version: OUTPUT_VERSION,
+            sync: SyncResultJson {
+                stack: stack.name,
+                base: stack.base,
+                rebased_before_sync,
+                entries: json_entries,
+            },
+        });
+    } else {
+        println!();
+        println!(
+            "{} Synced {} commits",
+            style("OK").green().bold(),
+            entries_to_sync.len()
+        );
+    }
 
     Ok(())
 }
@@ -622,8 +773,10 @@ fn create_entry_branch(
 
 /// Add GG-IDs to commits that are missing them by rewriting commit messages
 /// This preserves the exact tree (including any lint changes) while only updating messages
-fn add_gg_ids_to_commits(repo: &Repository, stack: &Stack) -> Result<()> {
-    println!("{}", style("Adding GG-IDs...").dim());
+fn add_gg_ids_to_commits(repo: &Repository, stack: &Stack, json: bool) -> Result<()> {
+    if !json {
+        println!("{}", style("Adding GG-IDs...").dim());
+    }
 
     let base_ref = repo
         .revparse_single(&stack.base)
@@ -677,7 +830,9 @@ fn add_gg_ids_to_commits(repo: &Repository, stack: &Stack) -> Result<()> {
         ));
     }
 
-    println!("{} Added GG-IDs to commits", style("OK").green().bold());
+    if !json {
+        println!("{} Added GG-IDs to commits", style("OK").green().bold());
+    }
 
     Ok(())
 }

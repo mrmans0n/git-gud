@@ -118,6 +118,46 @@ fn test_gg_sync_help_has_update_descriptions() {
 }
 
 #[test]
+fn test_gg_sync_json_help() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    let (success, stdout, _stderr) = run_gg(&repo_path, &["sync", "--help"]);
+
+    assert!(success);
+    assert!(stdout.contains("--json"));
+}
+
+#[test]
+fn test_gg_sync_json_error_output_without_provider() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", "json-sync-error"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("file.txt"), "content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Test commit"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["sync", "--json"]);
+    assert!(!success, "sync --json should fail without provider");
+    assert!(
+        stderr.trim().is_empty(),
+        "stderr should be empty in JSON mode"
+    );
+
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(parsed["version"], 1);
+    assert!(parsed["error"].is_string(), "error field must be string");
+}
+
+#[test]
 fn test_gg_land_help_has_until() {
     let (_temp_dir, repo_path) = create_test_repo();
     let (success, stdout, _stderr) = run_gg(&repo_path, &["land", "--help"]);

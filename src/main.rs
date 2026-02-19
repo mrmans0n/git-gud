@@ -368,7 +368,9 @@ fn main() {
         Some(Commands::Rebase { target }) => (commands::rebase::run(target), false),
         Some(Commands::Continue) => (commands::rebase::continue_rebase(), false),
         Some(Commands::Abort) => (commands::rebase::abort_rebase(), false),
-        Some(Commands::Lint { until, json }) => (commands::lint::run(until, json, json), json),
+        Some(Commands::Lint { until, json }) => {
+            (commands::lint::run(until, json, json).map(|_| ()), json)
+        }
         Some(Commands::Setup) => (commands::setup::run(), false),
         Some(Commands::Absorb {
             dry_run,

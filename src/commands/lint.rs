@@ -14,7 +14,10 @@ use crate::output::{
 use crate::stack::{Stack, StackEntry};
 
 /// Run the lint command
-pub fn run(until: Option<usize>, json: bool, emit_json_output: bool) -> Result<()> {
+///
+/// Returns `Ok(true)` when all lint commands passed for all linted commits,
+/// `Ok(false)` when one or more commits had lint failures.
+pub fn run(until: Option<usize>, json: bool, emit_json_output: bool) -> Result<bool> {
     let repo = git::open_repo()?;
     let config = Config::load(repo.commondir())?;
 
@@ -40,7 +43,7 @@ pub fn run(until: Option<usize>, json: bool, emit_json_output: bool) -> Result<(
             println!("    }}");
             println!("  }}");
         }
-        return Ok(());
+        return Ok(true);
     }
 
     // Load stack
@@ -52,7 +55,7 @@ pub fn run(until: Option<usize>, json: bool, emit_json_output: bool) -> Result<(
         } else if !json {
             println!("{}", style("Stack is empty. Nothing to lint.").dim());
         }
-        return Ok(());
+        return Ok(true);
     }
 
     // Determine the end position
@@ -113,7 +116,7 @@ fn run_lint_on_commits(
     end_pos: usize,
     json: bool,
     emit_json_output: bool,
-) -> Result<()> {
+) -> Result<bool> {
     let original_branch = git::current_branch_name(repo);
     let original_head = repo.head()?.peel_to_commit()?.id();
     let mut had_changes = false;
@@ -352,8 +355,9 @@ fn run_lint_on_commits(
         }
     }
 
+    let all_passed = lint_results.iter().all(|result| result.passed);
+
     if json && emit_json_output {
-        let all_passed = lint_results.iter().all(|result| result.passed);
         output::print_json(&LintResponse {
             version: OUTPUT_VERSION,
             lint: LintResultJson {
@@ -365,7 +369,7 @@ fn run_lint_on_commits(
         println!("{} Linted {} commits", style("OK").green().bold(), end_pos);
     }
 
-    Ok(())
+    Ok(all_passed)
 }
 
 fn refresh_stack_entries(

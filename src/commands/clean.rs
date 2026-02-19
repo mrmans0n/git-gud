@@ -54,7 +54,7 @@ pub fn run_for_stack_with_repo(repo: &Repository, stack_name: &str, force: bool)
         )));
     }
 
-    maybe_remove_configured_worktree(repo, &mut config, stack_name, false)?;
+    let _ = maybe_remove_configured_worktree(repo, &mut config, stack_name, false)?;
 
     // Delete local branch
     if let Ok(mut branch) = repo.find_branch(&branch_name, BranchType::Local) {
@@ -135,6 +135,13 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
     // Acquire operation lock to prevent concurrent operations
     let _lock = git::acquire_operation_lock(&repo, "clean")?;
 
+    if json && !clean_all {
+        crate::output::print_json_error(
+            "--json requires --all (cannot show interactive prompts in JSON mode)",
+        );
+        std::process::exit(1);
+    }
+
     let git_dir = repo.commondir();
     let mut config = Config::load(git_dir)?;
 
@@ -206,7 +213,14 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
                 }
             }
 
-            maybe_remove_configured_worktree(&repo, &mut config, stack_name, json)?;
+            let removed_or_not_configured =
+                maybe_remove_configured_worktree(&repo, &mut config, stack_name, json)?;
+            if json && !removed_or_not_configured {
+                skipped.push(format!(
+                    "{} (worktree not removed: confirmation defaults to false in --json mode)",
+                    stack_name
+                ));
+            }
 
             // Delete local branch
             if let Ok(mut branch) = repo.find_branch(&branch_name, BranchType::Local) {
@@ -325,16 +339,16 @@ fn maybe_remove_configured_worktree(
     config: &mut Config,
     stack_name: &str,
     silent: bool,
-) -> Result<()> {
+) -> Result<bool> {
     let Some(stack_cfg) = config.get_stack(stack_name) else {
-        return Ok(());
+        return Ok(true);
     };
     let Some(worktree_path) = stack_cfg.worktree_path.clone() else {
-        return Ok(());
+        return Ok(true);
     };
 
     let confirm = if silent {
-        true
+        false
     } else {
         let prompt = format!(
             "Stack '{}' has an associated worktree at '{}'. Remove it?",
@@ -355,7 +369,7 @@ fn maybe_remove_configured_worktree(
                 worktree_path
             );
         }
-        return Ok(());
+        return Ok(false);
     }
 
     let repo_root = repo
@@ -391,7 +405,7 @@ fn maybe_remove_configured_worktree(
         );
     }
 
-    Ok(())
+    Ok(true)
 }
 
 #[derive(Debug, Clone, Copy)]

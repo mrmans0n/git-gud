@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-02-19
+
+### Added
+- `--json` flag for `gg ls` — structured JSON output for single stack, all stacks, and remote stacks (#150)
+- `--json` flag for `gg sync` — per-entry results with action/error fields and warnings (#152)
+- `--json` flag for `gg land` — partial results, merge train support, error tracking (#154)
+- `--json` flag for `gg clean` — requires `--all` in JSON mode for safety (#155)
+- `--json` flag for `gg lint` — per-commit, per-command pass/fail results (#155)
+- `gg ls --json` automatically refreshes PR/MR state from provider API (best-effort) (#156)
+
+### Fixed
+- Dynamic PR/MR labels in all user-facing messages — uses provider detection instead of hardcoded strings (#153)
+- `gg lint` now runs commands from repo root directory, fixing relative path issues (#157)
+- Lint failures are now surfaced as warnings in `gg sync --json` output (#155)
+- Push failures in JSON mode no longer discard accumulated entry results (#152)
+- Rebase output no longer contaminates JSON stdout (#152)
+
 ## [0.3.3] - 2026-02-18
 
 ### Added
@@ -166,7 +183,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/mrmans0n/git-gud/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/mrmans0n/git-gud/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/mrmans0n/git-gud/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/mrmans0n/git-gud/compare/v0.3.0...v0.3.1

@@ -1,5 +1,6 @@
 //! `gg land` - Merge approved PRs/MRs starting from the first commit
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -361,6 +362,8 @@ pub fn run(
     let has_unsynced_commits_before_merge = stack.entries.iter().any(|e| !e.is_synced());
     let mut landed_count = 0usize;
     let mut landed_entries: Vec<LandedEntryJson> = vec![];
+    let mut seen_already_merged: HashSet<String> = HashSet::new();
+    let mut seen_closed: HashSet<String> = HashSet::new();
     let mut warnings: Vec<String> = vec![];
     let mut land_error: Option<String> = None;
 
@@ -375,25 +378,39 @@ pub fn run(
         for (idx, entry) in entries_to_land.iter().enumerate() {
             if let Some(num) = entry.mr_number {
                 if let Ok(info) = provider.get_pr_info(num) {
-                    if info.state == PrState::Open
-                        || info.state == PrState::Draft
-                        || info.state == PrState::Closed
-                    {
+                    if info.state == PrState::Open || info.state == PrState::Draft {
                         next_entry_idx = Some(idx);
                         break;
                     } else if info.state == PrState::Merged {
                         if let Some(gg_id) = &entry.gg_id {
-                            landed_entries.push(LandedEntryJson {
-                                position: entry.position,
-                                sha: entry.short_sha.clone(),
-                                title: entry.title.clone(),
-                                gg_id: gg_id.clone(),
-                                pr_number: num,
-                                action: "already_merged".to_string(),
-                                error: None,
-                            });
+                            if seen_already_merged.insert(gg_id.clone()) {
+                                landed_entries.push(LandedEntryJson {
+                                    position: entry.position,
+                                    sha: entry.short_sha.clone(),
+                                    title: entry.title.clone(),
+                                    gg_id: gg_id.clone(),
+                                    pr_number: num,
+                                    action: "already_merged".to_string(),
+                                    error: None,
+                                });
+                                landed_count += 1;
+                            }
                         }
-                        landed_count += 1;
+                        continue;
+                    } else if info.state == PrState::Closed {
+                        if let Some(gg_id) = &entry.gg_id {
+                            if seen_closed.insert(gg_id.clone()) {
+                                landed_entries.push(LandedEntryJson {
+                                    position: entry.position,
+                                    sha: entry.short_sha.clone(),
+                                    title: entry.title.clone(),
+                                    gg_id: gg_id.clone(),
+                                    pr_number: num,
+                                    action: "skipped_closed".to_string(),
+                                    error: None,
+                                });
+                            }
+                        }
                         continue;
                     }
                 }
@@ -439,35 +456,33 @@ pub fn run(
         let pr_info = provider.get_pr_info(pr_num)?;
         match pr_info.state {
             PrState::Merged => {
-                landed_entries.push(LandedEntryJson {
-                    position: entry.position,
-                    sha: entry.short_sha.clone(),
-                    title: entry.title.clone(),
-                    gg_id: gg_id.clone(),
-                    pr_number: pr_num,
-                    action: "already_merged".to_string(),
-                    error: None,
-                });
-                landed_count += 1;
+                if seen_already_merged.insert(gg_id.clone()) {
+                    landed_entries.push(LandedEntryJson {
+                        position: entry.position,
+                        sha: entry.short_sha.clone(),
+                        title: entry.title.clone(),
+                        gg_id: gg_id.clone(),
+                        pr_number: pr_num,
+                        action: "already_merged".to_string(),
+                        error: None,
+                    });
+                    landed_count += 1;
+                }
                 continue 'landing_loop;
             }
             PrState::Closed => {
-                landed_entries.push(LandedEntryJson {
-                    position: entry.position,
-                    sha: entry.short_sha.clone(),
-                    title: entry.title.clone(),
-                    gg_id: gg_id.clone(),
-                    pr_number: pr_num,
-                    action: "skipped_closed".to_string(),
-                    error: None,
-                });
-                land_error = Some(format!(
-                    "{} {}{} is closed",
-                    provider.pr_label(),
-                    provider.pr_number_prefix(),
-                    pr_num
-                ));
-                break 'landing_loop;
+                if seen_closed.insert(gg_id.clone()) {
+                    landed_entries.push(LandedEntryJson {
+                        position: entry.position,
+                        sha: entry.short_sha.clone(),
+                        title: entry.title.clone(),
+                        gg_id: gg_id.clone(),
+                        pr_number: pr_num,
+                        action: "skipped_closed".to_string(),
+                        error: None,
+                    });
+                }
+                continue 'landing_loop;
             }
             PrState::Draft => {
                 landed_entries.push(LandedEntryJson {
@@ -582,6 +597,29 @@ pub fn run(
                             land_multiple,
                             json,
                         );
+                        if land_multiple {
+                            let current_index = stack
+                                .entries
+                                .iter()
+                                .position(|e| e.mr_number == Some(pr_num))
+                                .unwrap_or(0);
+                            if let Err(e) = rebase_remaining_branches(
+                                &repo,
+                                &stack,
+                                &provider,
+                                current_index,
+                                json,
+                            ) {
+                                warnings
+                                    .push(format!("Failed to rebase remaining branches: {}", e));
+                                land_error = Some(e.to_string());
+                                break 'landing_loop;
+                            }
+                            stack = Stack::load(&repo, &config)?;
+                            if !stack.is_empty() {
+                                stack.refresh_mr_info(&provider)?;
+                            }
+                        }
                     } else {
                         break 'landing_loop;
                     }

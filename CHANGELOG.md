@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-02-19
+
+### Fixed
+- `gg amend` no longer falsely reports "Unstaged changes detected" in git worktrees — replaced libgit2 status checks with `git diff` subprocess (#158)
+- `gg amend` no longer leaves detached HEAD after amending a non-tip commit in a stack (#159)
+
 ## [0.4.0] - 2026-02-19
 
 ### Added
@@ -184,6 +190,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release with core stacked diffs functionality
 
 [Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.4.0...HEAD
+[0.4.1]: https://github.com/mrmans0n/git-gud/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/mrmans0n/git-gud/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/mrmans0n/git-gud/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/mrmans0n/git-gud/compare/v0.3.1...v0.3.2

@@ -8,6 +8,7 @@ mod error;
 mod gh;
 mod git;
 mod glab;
+mod output;
 mod provider;
 mod stack;
 mod template;
@@ -61,6 +62,10 @@ enum Commands {
         /// List remote stacks (branches on origin not yet checked out locally)
         #[arg(long)]
         remote: bool,
+
+        /// Output structured JSON
+        #[arg(long)]
+        json: bool,
     },
 
     /// Sync stack with remote (push branches and create/update PRs/MRs)
@@ -250,20 +255,21 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
 
-    let result = match cli.command {
+    let (result, list_json_mode) = match cli.command {
         // No command = show stacks (like `gg ls`)
-        None => commands::ls::run(false, false, false),
+        None => (commands::ls::run(false, false, false, false), false),
 
         Some(Commands::Checkout {
             stack_name,
             base,
             worktree,
-        }) => commands::checkout::run(stack_name, base, worktree),
+        }) => (commands::checkout::run(stack_name, base, worktree), false),
         Some(Commands::List {
             all,
             refresh,
             remote,
-        }) => commands::ls::run(all, refresh, remote),
+            json,
+        }) => (commands::ls::run(all, refresh, remote, json), json),
         Some(Commands::Sync {
             draft,
             no_rebase_check,
@@ -288,24 +294,28 @@ fn main() {
                 }
             };
 
-            commands::sync::run(
-                draft,
-                no_rebase_check,
-                force,
-                update_descriptions,
-                run_lint,
-                until,
+            (
+                commands::sync::run(
+                    draft,
+                    no_rebase_check,
+                    force,
+                    update_descriptions,
+                    run_lint,
+                    until,
+                ),
+                false,
             )
         }
-        Some(Commands::Move { target }) => commands::nav::move_to(&target),
-        Some(Commands::First) => commands::nav::first(),
-        Some(Commands::Last) => commands::nav::last(),
-        Some(Commands::Prev) => commands::nav::prev(),
-        Some(Commands::Next) => commands::nav::next(),
-        Some(Commands::Squash { all }) => commands::squash::run(all),
-        Some(Commands::Reorder { order }) => {
-            commands::reorder::run(commands::reorder::ReorderOptions { order })
-        }
+        Some(Commands::Move { target }) => (commands::nav::move_to(&target), false),
+        Some(Commands::First) => (commands::nav::first(), false),
+        Some(Commands::Last) => (commands::nav::last(), false),
+        Some(Commands::Prev) => (commands::nav::prev(), false),
+        Some(Commands::Next) => (commands::nav::next(), false),
+        Some(Commands::Squash { all }) => (commands::squash::run(all), false),
+        Some(Commands::Reorder { order }) => (
+            commands::reorder::run(commands::reorder::ReorderOptions { order }),
+            false,
+        ),
         Some(Commands::Land {
             all,
             auto_merge,
@@ -330,14 +340,17 @@ fn main() {
                 }
             };
 
-            commands::land::run(all, !no_squash, wait, auto_clean, auto_merge, until)
+            (
+                commands::land::run(all, !no_squash, wait, auto_clean, auto_merge, until),
+                false,
+            )
         }
-        Some(Commands::Clean { all }) => commands::clean::run(all),
-        Some(Commands::Rebase { target }) => commands::rebase::run(target),
-        Some(Commands::Continue) => commands::rebase::continue_rebase(),
-        Some(Commands::Abort) => commands::rebase::abort_rebase(),
-        Some(Commands::Lint { until }) => commands::lint::run(until),
-        Some(Commands::Setup) => commands::setup::run(),
+        Some(Commands::Clean { all }) => (commands::clean::run(all), false),
+        Some(Commands::Rebase { target }) => (commands::rebase::run(target), false),
+        Some(Commands::Continue) => (commands::rebase::continue_rebase(), false),
+        Some(Commands::Abort) => (commands::rebase::abort_rebase(), false),
+        Some(Commands::Lint { until }) => (commands::lint::run(until), false),
+        Some(Commands::Setup) => (commands::setup::run(), false),
         Some(Commands::Absorb {
             dry_run,
             and_rebase,
@@ -345,20 +358,27 @@ fn main() {
             one_fixup_per_commit,
             no_limit,
             squash,
-        }) => commands::absorb::run(commands::absorb::AbsorbOptions {
-            dry_run,
-            and_rebase,
-            whole_file,
-            one_fixup_per_commit,
-            no_limit,
-            squash,
-        }),
-        Some(Commands::Completions { shell }) => commands::completions::run(shell),
-        Some(Commands::Reconcile { dry_run }) => commands::reconcile::run(dry_run),
+        }) => (
+            commands::absorb::run(commands::absorb::AbsorbOptions {
+                dry_run,
+                and_rebase,
+                whole_file,
+                one_fixup_per_commit,
+                no_limit,
+                squash,
+            }),
+            false,
+        ),
+        Some(Commands::Completions { shell }) => (commands::completions::run(shell), false),
+        Some(Commands::Reconcile { dry_run }) => (commands::reconcile::run(dry_run), false),
     };
 
     if let Err(e) = result {
-        eprintln!("{} {}", style("error:").red().bold(), e);
+        if list_json_mode {
+            output::print_json_error(&e.to_string());
+        } else {
+            eprintln!("{} {}", style("error:").red().bold(), e);
+        }
         exit(1);
     }
 }

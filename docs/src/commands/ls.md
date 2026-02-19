@@ -13,6 +13,7 @@ gg ls [OPTIONS]
 - `-a, --all`: Show all local stacks
 - `-r, --refresh`: Refresh PR/MR status from remote
 - `--remote`: List remote stacks not checked out locally
+- `--json`: Print structured JSON output (for scripts and automation)
 
 ## Examples
 
@@ -28,4 +29,9 @@ gg ls --remote
 
 # Refresh status badges from provider
 gg ls --refresh
+
+# Structured JSON for automation
+gg ls --json
+gg ls --all --json
+gg ls --remote --json
 ```

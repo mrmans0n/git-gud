@@ -12,6 +12,7 @@ use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::glab::AutoMergeResult;
+use crate::output::{print_json, LandResponse, LandResultJson, LandedEntryJson, OUTPUT_VERSION};
 use crate::provider::{CiStatus, PrState, Provider};
 use crate::stack::{resolve_target, Stack};
 
@@ -61,6 +62,7 @@ fn cleanup_after_merge(
     gg_id: &str,
     pr_num: u64,
     land_all: bool,
+    json: bool,
 ) {
     // Remove PR/MR mapping from config
     config.remove_mr_for_entry(&stack.name, gg_id);
@@ -77,26 +79,30 @@ fn cleanup_after_merge(
 
         for remaining_entry in stack.entries.iter().skip(current_index + 1) {
             if let Some(remaining_pr) = remaining_entry.mr_number {
-                println!(
-                    "{}",
-                    style(format!(
-                        "  Updating {} {}{} base to {}...",
-                        provider.pr_label(),
-                        provider.pr_number_prefix(),
-                        remaining_pr,
-                        stack.base
-                    ))
-                    .dim()
-                );
-                if let Err(e) = provider.update_pr_base(remaining_pr, &stack.base) {
+                if !json {
                     println!(
-                        "{} Warning: Failed to update {} {}{} base: {}",
-                        style("⚠").yellow(),
-                        provider.pr_label(),
-                        provider.pr_number_prefix(),
-                        remaining_pr,
-                        e
+                        "{}",
+                        style(format!(
+                            "  Updating {} {}{} base to {}...",
+                            provider.pr_label(),
+                            provider.pr_number_prefix(),
+                            remaining_pr,
+                            stack.base
+                        ))
+                        .dim()
                     );
+                }
+                if let Err(e) = provider.update_pr_base(remaining_pr, &stack.base) {
+                    if !json {
+                        println!(
+                            "{} Warning: Failed to update {} {}{} base: {}",
+                            style("⚠").yellow(),
+                            provider.pr_label(),
+                            provider.pr_number_prefix(),
+                            remaining_pr,
+                            e
+                        );
+                    }
                 }
             }
         }
@@ -114,12 +120,15 @@ fn rebase_remaining_branches(
     stack: &Stack,
     provider: &Provider,
     start_index: usize,
+    json: bool,
 ) -> Result<()> {
     // Fetch the latest base branch
-    println!(
-        "{}",
-        style(format!("  Fetching origin/{}...", stack.base)).dim()
-    );
+    if !json {
+        println!(
+            "{}",
+            style(format!("  Fetching origin/{}...", stack.base)).dim()
+        );
+    }
 
     let fetch_result = std::process::Command::new("git")
         .arg("fetch")
@@ -163,17 +172,19 @@ fn rebase_remaining_branches(
             None => continue,
         };
 
-        println!(
-            "{}",
-            style(format!(
-                "  Rebasing branch {} ({}{}{})...",
-                branch_name,
-                provider.pr_label(),
-                provider.pr_number_prefix(),
-                pr_num
-            ))
-            .dim()
-        );
+        if !json {
+            println!(
+                "{}",
+                style(format!(
+                    "  Rebasing branch {} ({}{}{})...",
+                    branch_name,
+                    provider.pr_label(),
+                    provider.pr_number_prefix(),
+                    pr_num
+                ))
+                .dim()
+            );
+        }
 
         // Checkout the branch
         let checkout_result = std::process::Command::new("git")
@@ -216,10 +227,12 @@ fn rebase_remaining_branches(
         }
 
         // Force push with lease
-        println!(
-            "{}",
-            style(format!("  Force-pushing {}...", branch_name)).dim()
-        );
+        if !json {
+            println!(
+                "{}",
+                style(format!("  Force-pushing {}...", branch_name)).dim()
+            );
+        }
 
         let branch_name_clone = branch_name.clone();
         let push_result = std::process::Command::new("git")
@@ -233,12 +246,14 @@ fn rebase_remaining_branches(
 
         if !push_result.status.success() {
             let stderr = String::from_utf8_lossy(&push_result.stderr);
-            println!(
-                "{} Warning: Failed to push {}: {}",
-                style("⚠").yellow(),
-                branch_name,
-                stderr
-            );
+            if !json {
+                println!(
+                    "{} Warning: Failed to push {}: {}",
+                    style("⚠").yellow(),
+                    branch_name,
+                    stderr
+                );
+            }
             // Continue with other branches even if one push fails
         }
     }
@@ -258,6 +273,7 @@ fn rebase_remaining_branches(
 /// Run the land command
 pub fn run(
     land_all: bool,
+    json: bool,
     squash: bool,
     wait: bool,
     auto_clean: bool,
@@ -265,26 +281,20 @@ pub fn run(
     until: Option<String>,
 ) -> Result<()> {
     let repo = git::open_repo()?;
-
-    // Acquire operation lock to prevent concurrent operations
     let _lock = git::acquire_operation_lock(&repo, "land")?;
 
     let git_dir = repo.commondir();
     let mut config = Config::load(git_dir)?;
 
-    // Detect and check provider
     let provider = Provider::detect(&repo)?;
     provider.check_installed()?;
     provider.check_auth()?;
 
-    // Determine whether to use GitLab auto-merge-on-land.
-    // CLI flag overrides config.
     let auto_merge_on_land =
         provider == Provider::GitLab && (auto_merge_flag || config.get_gitlab_auto_merge_on_land());
 
-    // Check if merge trains are enabled (GitLab only)
     let merge_trains_enabled = provider.check_merge_trains_enabled().unwrap_or(false);
-    if merge_trains_enabled {
+    if merge_trains_enabled && !json {
         println!(
             "{}",
             style(format!(
@@ -295,22 +305,33 @@ pub fn run(
         );
     }
 
-    // Note: We don't require a clean working directory here because land
-    // only performs remote operations (merging PRs via the API). It doesn't
-    // modify local files.
-
-    // Load stack and refresh PR info
     let mut stack = Stack::load(&repo, &config)?;
-
     if stack.is_empty() {
-        println!("{}", style("Stack is empty. Nothing to land.").dim());
+        if json {
+            print_json(&LandResponse {
+                version: OUTPUT_VERSION,
+                land: LandResultJson {
+                    stack: stack.name,
+                    base: stack.base,
+                    landed: vec![],
+                    remaining: 0,
+                    cleaned: false,
+                    warnings: vec![],
+                    error: None,
+                },
+            });
+        } else {
+            println!("{}", style("Stack is empty. Nothing to land.").dim());
+        }
         return Ok(());
     }
 
-    println!(
-        "{}",
-        style(format!("Checking {} status...", provider.pr_label())).dim()
-    );
+    if !json {
+        println!(
+            "{}",
+            style(format!("Checking {} status...", provider.pr_label())).dim()
+        );
+    }
     stack.refresh_mr_info(&provider)?;
 
     let land_until = if let Some(ref target) = until {
@@ -318,17 +339,18 @@ pub fn run(
     } else {
         None
     };
-
     let land_multiple = land_all || land_until.is_some();
 
-    // Set up Ctrl+C handler if waiting
     let interrupted = if wait {
         let flag = Arc::new(AtomicBool::new(false));
         let flag_clone = Arc::clone(&flag);
+        let json_mode = json;
         ctrlc::set_handler(move || {
             flag_clone.store(true, Ordering::SeqCst);
-            println!();
-            println!("{}", style("Interrupted. Stopping...").yellow());
+            if !json_mode {
+                println!();
+                println!("{}", style("Interrupted. Stopping...").yellow());
+            }
         })
         .map_err(|e| GgError::Other(format!("Failed to set Ctrl+C handler: {}", e)))?;
         Some(flag)
@@ -336,34 +358,42 @@ pub fn run(
         None
     };
 
-    // Check for unsynced commits BEFORE merging and cleanup
-    // This prevents the bug where cleanup would be skipped incorrectly after
-    // removing MR mappings during the merge loop
     let has_unsynced_commits_before_merge = stack.entries.iter().any(|e| !e.is_synced());
+    let mut landed_count = 0usize;
+    let mut landed_entries: Vec<LandedEntryJson> = vec![];
+    let mut warnings: Vec<String> = vec![];
+    let mut land_error: Option<String> = None;
 
-    // Find landable PRs (approved, open, from the start of the stack)
-    let mut landed_count = 0;
-
-    // Use a while loop instead of for loop so we can reload the stack after rebasing
     'landing_loop: loop {
-        // Reload entries_to_land from the current stack state
         let entries_to_land = if let Some(end_pos) = land_until {
             &stack.entries[..end_pos.min(stack.entries.len())]
         } else {
             &stack.entries[..]
         };
 
-        // Find the next entry to land (skip already-landed ones)
         let mut next_entry_idx = None;
         for (idx, entry) in entries_to_land.iter().enumerate() {
             if let Some(num) = entry.mr_number {
-                // Check if this MR is still open (not merged yet)
                 if let Ok(info) = provider.get_pr_info(num) {
-                    if info.state == PrState::Open || info.state == PrState::Draft {
+                    if info.state == PrState::Open
+                        || info.state == PrState::Draft
+                        || info.state == PrState::Closed
+                    {
                         next_entry_idx = Some(idx);
                         break;
                     } else if info.state == PrState::Merged {
-                        // Already merged, continue to next
+                        if let Some(gg_id) = &entry.gg_id {
+                            landed_entries.push(LandedEntryJson {
+                                position: entry.position,
+                                sha: entry.short_sha.clone(),
+                                title: entry.title.clone(),
+                                gg_id: gg_id.clone(),
+                                pr_number: num,
+                                action: "already_merged".to_string(),
+                                error: None,
+                            });
+                        }
+                        landed_count += 1;
                         continue;
                     }
                 }
@@ -372,17 +402,13 @@ pub fn run(
 
         let entry_idx = match next_entry_idx {
             Some(idx) => idx,
-            None => {
-                // No more entries to land
-                break 'landing_loop;
-            }
+            None => break 'landing_loop,
         };
 
         let entry = &entries_to_land[entry_idx];
-        // Check if interrupted
         if let Some(ref flag) = interrupted {
             if flag.load(Ordering::SeqCst) {
-                println!("{}", style("Interrupted by user.").yellow());
+                land_error = Some("Interrupted by user".to_string());
                 break 'landing_loop;
             }
         }
@@ -390,11 +416,10 @@ pub fn run(
         let gg_id = match &entry.gg_id {
             Some(id) => id,
             None => {
-                println!(
-                    "{} Commit {} is missing GG-ID. Run `gg sync` first.",
-                    style("Error:").red().bold(),
+                land_error = Some(format!(
+                    "Commit {} is missing GG-ID. Run `gg sync` first.",
                     entry.short_sha
-                );
+                ));
                 break 'landing_loop;
             }
         };
@@ -402,53 +427,67 @@ pub fn run(
         let pr_num = match entry.mr_number {
             Some(num) => num,
             None => {
-                println!(
-                    "{} Commit {} has no {}. Run `gg sync` first.",
-                    style("Error:").red().bold(),
+                land_error = Some(format!(
+                    "Commit {} has no {}. Run `gg sync` first.",
                     entry.short_sha,
                     provider.pr_label()
-                );
+                ));
                 break 'landing_loop;
             }
         };
 
-        // Check PR/MR state
         let pr_info = provider.get_pr_info(pr_num)?;
-
         match pr_info.state {
             PrState::Merged => {
-                println!(
-                    "{} {} {}{} already merged",
-                    style("✓").green(),
-                    provider.pr_label(),
-                    provider.pr_number_prefix(),
-                    pr_num
-                );
+                landed_entries.push(LandedEntryJson {
+                    position: entry.position,
+                    sha: entry.short_sha.clone(),
+                    title: entry.title.clone(),
+                    gg_id: gg_id.clone(),
+                    pr_number: pr_num,
+                    action: "already_merged".to_string(),
+                    error: None,
+                });
                 landed_count += 1;
                 continue 'landing_loop;
             }
             PrState::Closed => {
-                println!(
-                    "{} {} {}{} is closed. Stopping.",
-                    style("✗").red(),
+                landed_entries.push(LandedEntryJson {
+                    position: entry.position,
+                    sha: entry.short_sha.clone(),
+                    title: entry.title.clone(),
+                    gg_id: gg_id.clone(),
+                    pr_number: pr_num,
+                    action: "skipped_closed".to_string(),
+                    error: None,
+                });
+                land_error = Some(format!(
+                    "{} {}{} is closed",
                     provider.pr_label(),
                     provider.pr_number_prefix(),
                     pr_num
-                );
+                ));
                 break 'landing_loop;
             }
             PrState::Draft => {
-                println!(
-                    "{} {} {}{} is a draft. Mark as ready before landing.",
-                    style("○").yellow(),
+                landed_entries.push(LandedEntryJson {
+                    position: entry.position,
+                    sha: entry.short_sha.clone(),
+                    title: entry.title.clone(),
+                    gg_id: gg_id.clone(),
+                    pr_number: pr_num,
+                    action: "skipped_draft".to_string(),
+                    error: None,
+                });
+                land_error = Some(format!(
+                    "{} {}{} is a draft",
                     provider.pr_label(),
                     provider.pr_number_prefix(),
                     pr_num
-                );
+                ));
                 break 'landing_loop;
             }
             PrState::Open => {
-                // If wait flag is set, wait for CI and approvals
                 if wait {
                     let timeout_minutes = config.get_land_wait_timeout_minutes();
                     if let Err(e) = wait_for_pr_ready(
@@ -458,38 +497,36 @@ pub fn run(
                         timeout_minutes,
                         interrupted.as_ref(),
                         &stack.base,
+                        json,
                     ) {
-                        println!(
-                            "{} {} {}{}: {}",
-                            style("Error:").red().bold(),
-                            provider.pr_label(),
-                            provider.pr_number_prefix(),
-                            pr_num,
-                            e
-                        );
+                        landed_entries.push(LandedEntryJson {
+                            position: entry.position,
+                            sha: entry.short_sha.clone(),
+                            title: entry.title.clone(),
+                            gg_id: gg_id.clone(),
+                            pr_number: pr_num,
+                            action: "error".to_string(),
+                            error: Some(e.to_string()),
+                        });
+                        land_error = Some(e.to_string());
                         break 'landing_loop;
                     }
-                } else {
-                    // Check if approved (skip if --all is used)
-                    if !land_all {
-                        let approved = provider.check_pr_approved(pr_num)?;
-                        if !approved {
-                            println!(
-                                "{} {} {}{} is not approved. Stopping.",
-                                style("○").yellow(),
-                                provider.pr_label(),
-                                provider.pr_number_prefix(),
-                                pr_num
-                            );
-                            break 'landing_loop;
-                        }
+                } else if !land_all {
+                    let approved = provider.check_pr_approved(pr_num)?;
+                    if !approved {
+                        land_error = Some(format!(
+                            "{} {}{} is not approved",
+                            provider.pr_label(),
+                            provider.pr_number_prefix(),
+                            pr_num
+                        ));
+                        break 'landing_loop;
                     }
                 }
             }
         }
 
-        // PR/MR is approved and open - land it
-        if !land_multiple && !wait {
+        if !land_multiple && !wait && !json {
             let confirm = Confirm::new()
                 .with_prompt(format!(
                     "Merge {} {}{} ({})? ",
@@ -501,34 +538,27 @@ pub fn run(
                 .default(true)
                 .interact()
                 .unwrap_or(false);
-
             if !confirm {
-                println!("{}", style("Stopping.").dim());
                 break 'landing_loop;
             }
         }
 
-        // Use merge trains if enabled (GitLab only)
         if merge_trains_enabled {
-            println!(
-                "{} Adding {} {}{} to merge train...",
-                style("→").cyan(),
-                provider.pr_label(),
-                provider.pr_number_prefix(),
-                pr_num
-            );
-
             match provider.add_to_merge_train(pr_num) {
-                Ok(AutoMergeResult::Queued) => {
-                    println!(
-                        "{} Added {} {}{} to merge train",
-                        style("OK").green().bold(),
-                        provider.pr_label(),
-                        provider.pr_number_prefix(),
-                        pr_num
-                    );
-
-                    // If --wait is enabled, poll until the MR is actually merged
+                Ok(result) => {
+                    let action = match result {
+                        AutoMergeResult::Queued => "queued",
+                        AutoMergeResult::AlreadyQueued => "already_queued",
+                    };
+                    landed_entries.push(LandedEntryJson {
+                        position: entry.position,
+                        sha: entry.short_sha.clone(),
+                        title: entry.title.clone(),
+                        gg_id: gg_id.clone(),
+                        pr_number: pr_num,
+                        action: action.to_string(),
+                        error: None,
+                    });
                     if wait {
                         let timeout_minutes = config.get_land_wait_timeout_minutes();
                         if let Err(e) = wait_for_merge_train_completion(
@@ -537,19 +567,11 @@ pub fn run(
                             timeout_minutes,
                             interrupted.as_ref(),
                             &stack.base,
+                            json,
                         ) {
-                            println!(
-                                "{} {} {}{}: {}",
-                                style("Error:").red().bold(),
-                                provider.pr_label(),
-                                provider.pr_number_prefix(),
-                                pr_num,
-                                e
-                            );
+                            land_error = Some(e.to_string());
                             break 'landing_loop;
                         }
-
-                        // MR successfully merged! Clean up and continue
                         landed_count += 1;
                         cleanup_after_merge(
                             &mut config,
@@ -558,269 +580,72 @@ pub fn run(
                             gg_id,
                             pr_num,
                             land_multiple,
+                            json,
                         );
-
-                        // Rebase remaining branches to avoid conflicts
-                        if land_multiple {
-                            let current_index = stack
-                                .entries
-                                .iter()
-                                .position(|e| e.mr_number == Some(pr_num))
-                                .unwrap_or(0);
-
-                            if let Err(e) =
-                                rebase_remaining_branches(&repo, &stack, &provider, current_index)
-                            {
-                                println!(
-                                    "{} Failed to rebase remaining branches: {}",
-                                    style("Error:").red().bold(),
-                                    e
-                                );
-                                println!(
-                                    "{}",
-                                    style(format!(
-                                        "  You may need to rebase the remaining {}s manually.",
-                                        provider.pr_label()
-                                    ))
-                                    .dim()
-                                );
-                                break 'landing_loop;
-                            }
-
-                            // Reload the stack to reflect the new commit structure
-                            // The merged commit has been dropped and remaining commits have new OIDs
-                            println!("{}", style("  Reloading stack state...").dim());
-
-                            stack = Stack::load(&repo, &config)?;
-                            if !stack.is_empty() {
-                                stack.refresh_mr_info(&provider)?;
-                            }
-                        }
-
-                        // Continue to next MR if landing multiple
-                        if !land_multiple {
-                            break 'landing_loop;
-                        }
-
-                        // Wait a bit for GitLab to process
-                        std::thread::sleep(Duration::from_secs(2));
-
-                        // Continue the landing loop with the refreshed stack
-                        continue 'landing_loop;
                     } else {
-                        // Without --wait, stop after queuing
-                        println!(
-                            "{}",
-                            style(format!(
-                                "  Note: {} is queued but not yet merged. Run `gg land --wait` to wait for merge completion.",
-                                provider.pr_label()
-                            ))
-                                .dim()
-                        );
-                        // Note: We intentionally do NOT clean up config mappings or increment
-                        // landed_count here. The MR is only queued in the merge train, not
-                        // actually merged yet. Cleanup would be premature and could cause
-                        // data loss if the MR is later removed from the train.
-                        break 'landing_loop;
-                    }
-                }
-                Ok(AutoMergeResult::AlreadyQueued) => {
-                    println!(
-                        "{} {} {}{} is already in the merge train",
-                        style("✓").green(),
-                        provider.pr_label(),
-                        provider.pr_number_prefix(),
-                        pr_num
-                    );
-
-                    // If --wait is enabled, poll until the MR is actually merged
-                    if wait {
-                        let timeout_minutes = config.get_land_wait_timeout_minutes();
-                        if let Err(e) = wait_for_merge_train_completion(
-                            &provider,
-                            pr_num,
-                            timeout_minutes,
-                            interrupted.as_ref(),
-                            &stack.base,
-                        ) {
-                            println!(
-                                "{} {} {}{}: {}",
-                                style("Error:").red().bold(),
-                                provider.pr_label(),
-                                provider.pr_number_prefix(),
-                                pr_num,
-                                e
-                            );
-                            break 'landing_loop;
-                        }
-
-                        // MR successfully merged! Clean up and continue
-                        landed_count += 1;
-                        cleanup_after_merge(
-                            &mut config,
-                            &stack,
-                            &provider,
-                            gg_id,
-                            pr_num,
-                            land_multiple,
-                        );
-
-                        // Rebase remaining branches to avoid conflicts
-                        if land_multiple {
-                            let current_index = stack
-                                .entries
-                                .iter()
-                                .position(|e| e.mr_number == Some(pr_num))
-                                .unwrap_or(0);
-
-                            if let Err(e) =
-                                rebase_remaining_branches(&repo, &stack, &provider, current_index)
-                            {
-                                println!(
-                                    "{} Failed to rebase remaining branches: {}",
-                                    style("Error:").red().bold(),
-                                    e
-                                );
-                                println!(
-                                    "{}",
-                                    style(format!(
-                                        "  You may need to rebase the remaining {}s manually.",
-                                        provider.pr_label()
-                                    ))
-                                    .dim()
-                                );
-                                break 'landing_loop;
-                            }
-
-                            // Reload the stack to reflect the new commit structure
-                            // The merged commit has been dropped and remaining commits have new OIDs
-                            println!("{}", style("  Reloading stack state...").dim());
-
-                            stack = Stack::load(&repo, &config)?;
-                            if !stack.is_empty() {
-                                stack.refresh_mr_info(&provider)?;
-                            }
-                        }
-
-                        // Continue to next MR if landing multiple
-                        if !land_multiple {
-                            break 'landing_loop;
-                        }
-
-                        // Wait a bit for GitLab to process
-                        std::thread::sleep(Duration::from_secs(2));
-
-                        // Continue the landing loop with the refreshed stack
-                        continue 'landing_loop;
-                    } else {
-                        // Without --wait, stop after noting it's queued
-                        println!(
-                            "{}",
-                            style(format!(
-                                "  Note: {} is queued but not yet merged. Run `gg land --wait` to wait for merge completion.",
-                                provider.pr_label()
-                            ))
-                                .dim()
-                        );
-                        // Note: We intentionally do NOT clean up here - MR is not merged yet.
                         break 'landing_loop;
                     }
                 }
                 Err(e) => {
-                    println!(
-                        "{} Failed to add {} {}{} to merge train: {}",
-                        style("Error:").red().bold(),
-                        provider.pr_label(),
-                        provider.pr_number_prefix(),
-                        pr_num,
-                        e
-                    );
+                    landed_entries.push(LandedEntryJson {
+                        position: entry.position,
+                        sha: entry.short_sha.clone(),
+                        title: entry.title.clone(),
+                        gg_id: gg_id.clone(),
+                        pr_number: pr_num,
+                        action: "error".to_string(),
+                        error: Some(e.to_string()),
+                    });
+                    land_error = Some(e.to_string());
                     break 'landing_loop;
                 }
             }
         } else if auto_merge_on_land {
-            println!(
-                "{} Requesting auto-merge for {} {}{} (merge when pipeline succeeds)...",
-                style("→").cyan(),
-                provider.pr_label(),
-                provider.pr_number_prefix(),
-                pr_num
-            );
-
             match provider.auto_merge_pr_when_pipeline_succeeds(pr_num, squash, false) {
-                Ok(AutoMergeResult::Queued) => {
-                    println!(
-                        "{} Queued auto-merge for {} {}{} into {}",
-                        style("OK").green().bold(),
-                        provider.pr_label(),
-                        provider.pr_number_prefix(),
-                        pr_num,
-                        stack.base
-                    );
-                    println!(
-                        "{}",
-                        style(format!(
-                            "  Note: {} is queued but not yet merged. Run `gg land` again after it merges to clean up.",
-                            provider.pr_label()
-                        ))
-                            .dim()
-                    );
-                    // Note: We intentionally do NOT increment landed_count or clean up
-                    // config mappings here. The MR is only queued for auto-merge, not
-                    // actually merged yet. Cleanup would be premature.
-                }
-                Ok(AutoMergeResult::AlreadyQueued) => {
-                    println!(
-                        "{} {} {}{} is already set to auto-merge",
-                        style("✓").green(),
-                        provider.pr_label(),
-                        provider.pr_number_prefix(),
-                        pr_num
-                    );
-                    println!(
-                        "{}",
-                        style(format!(
-                            "  Note: {} is queued but not yet merged. Run `gg land` again after it merges to clean up.",
-                            provider.pr_label()
-                        ))
-                            .dim()
-                    );
-                    // Note: We intentionally do NOT increment landed_count or clean up here.
-                }
+                Ok(AutoMergeResult::Queued) => landed_entries.push(LandedEntryJson {
+                    position: entry.position,
+                    sha: entry.short_sha.clone(),
+                    title: entry.title.clone(),
+                    gg_id: gg_id.clone(),
+                    pr_number: pr_num,
+                    action: "queued".to_string(),
+                    error: None,
+                }),
+                Ok(AutoMergeResult::AlreadyQueued) => landed_entries.push(LandedEntryJson {
+                    position: entry.position,
+                    sha: entry.short_sha.clone(),
+                    title: entry.title.clone(),
+                    gg_id: gg_id.clone(),
+                    pr_number: pr_num,
+                    action: "already_queued".to_string(),
+                    error: None,
+                }),
                 Err(e) => {
-                    println!(
-                        "{} Failed to request auto-merge for {} {}{}: {}",
-                        style("Error:").red().bold(),
-                        provider.pr_label(),
-                        provider.pr_number_prefix(),
-                        pr_num,
-                        e
-                    );
-                    break 'landing_loop;
+                    landed_entries.push(LandedEntryJson {
+                        position: entry.position,
+                        sha: entry.short_sha.clone(),
+                        title: entry.title.clone(),
+                        gg_id: gg_id.clone(),
+                        pr_number: pr_num,
+                        action: "error".to_string(),
+                        error: Some(e.to_string()),
+                    });
+                    land_error = Some(e.to_string());
                 }
             }
-            // When using auto-merge, we don't continue to the next MR because
-            // it needs to merge first before we can update bases of stacked MRs.
             break 'landing_loop;
         } else {
-            println!(
-                "{} Merging {} {}{}...",
-                style("→").cyan(),
-                provider.pr_label(),
-                provider.pr_number_prefix(),
-                pr_num
-            );
-
             match provider.merge_pr(pr_num, squash, false) {
                 Ok(()) => {
-                    println!(
-                        "{} Merged {} {}{} into {}",
-                        style("OK").green().bold(),
-                        provider.pr_label(),
-                        provider.pr_number_prefix(),
-                        pr_num,
-                        stack.base
-                    );
+                    landed_entries.push(LandedEntryJson {
+                        position: entry.position,
+                        sha: entry.short_sha.clone(),
+                        title: entry.title.clone(),
+                        gg_id: gg_id.clone(),
+                        pr_number: pr_num,
+                        action: "merged".to_string(),
+                        error: None,
+                    });
                     landed_count += 1;
                     cleanup_after_merge(
                         &mut config,
@@ -829,39 +654,21 @@ pub fn run(
                         gg_id,
                         pr_num,
                         land_multiple,
+                        json,
                     );
-
-                    // Rebase remaining branches to avoid conflicts from squash merge
                     if land_multiple {
                         let current_index = stack
                             .entries
                             .iter()
                             .position(|e| e.mr_number == Some(pr_num))
                             .unwrap_or(0);
-
                         if let Err(e) =
-                            rebase_remaining_branches(&repo, &stack, &provider, current_index)
+                            rebase_remaining_branches(&repo, &stack, &provider, current_index, json)
                         {
-                            println!(
-                                "{} Failed to rebase remaining branches: {}",
-                                style("Error:").red().bold(),
-                                e
-                            );
-                            println!(
-                                "{}",
-                                style(format!(
-                                    "  You may need to rebase the remaining {}s manually.",
-                                    provider.pr_label()
-                                ))
-                                .dim()
-                            );
+                            warnings.push(format!("Failed to rebase remaining branches: {}", e));
+                            land_error = Some(e.to_string());
                             break 'landing_loop;
                         }
-
-                        // Reload the stack to reflect the new commit structure
-                        // The merged commit has been dropped and remaining commits have new OIDs
-                        println!("{}", style("  Reloading stack state...").dim());
-
                         stack = Stack::load(&repo, &config)?;
                         if !stack.is_empty() {
                             stack.refresh_mr_info(&provider)?;
@@ -869,37 +676,81 @@ pub fn run(
                     }
                 }
                 Err(e) => {
-                    println!(
-                        "{} Failed to merge {} {}{}: {}",
-                        style("Error:").red().bold(),
-                        provider.pr_label(),
-                        provider.pr_number_prefix(),
-                        pr_num,
-                        e
-                    );
+                    landed_entries.push(LandedEntryJson {
+                        position: entry.position,
+                        sha: entry.short_sha.clone(),
+                        title: entry.title.clone(),
+                        gg_id: gg_id.clone(),
+                        pr_number: pr_num,
+                        action: "error".to_string(),
+                        error: Some(e.to_string()),
+                    });
+                    land_error = Some(e.to_string());
                     break 'landing_loop;
                 }
             }
         }
 
-        // Auto-merge is queued asynchronously; landing the rest of a stack
-        // requires the earlier MR(s) to actually merge and bases to update.
-        if auto_merge_on_land {
-            break 'landing_loop;
-        }
-
         if !land_multiple {
             break 'landing_loop;
         }
-
-        // Wait a bit for the provider to process
         std::thread::sleep(Duration::from_secs(2));
     }
 
-    // Save updated config
     config.save(git_dir)?;
 
-    if landed_count > 0 {
+    let mut cleaned = false;
+    if landed_count > 0 && landed_count >= stack.len() {
+        let should_clean = if json {
+            auto_clean
+        } else if auto_clean {
+            true
+        } else if atty::is(atty::Stream::Stdout) {
+            Confirm::new()
+                .with_prompt(format!(
+                    "All {}s merged successfully. Clean up this stack?",
+                    provider.pr_label()
+                ))
+                .default(false)
+                .interact()
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
+        if should_clean && !has_unsynced_commits_before_merge {
+            let _ = crate::commands::rebase::run_with_repo(&repo, Some(stack.base.clone()), json);
+            if crate::commands::clean::run_for_stack_with_repo(&repo, &stack.name, true).is_ok() {
+                cleaned = true;
+            }
+        }
+    }
+
+    if json {
+        let target_len = if let Some(end_pos) = land_until {
+            end_pos.min(stack.entries.len())
+        } else {
+            stack.entries.len()
+        };
+        let remaining = target_len.saturating_sub(
+            landed_entries
+                .iter()
+                .filter(|e| matches!(e.action.as_str(), "merged" | "already_merged"))
+                .count(),
+        );
+        print_json(&LandResponse {
+            version: OUTPUT_VERSION,
+            land: LandResultJson {
+                stack: stack.name,
+                base: stack.base,
+                landed: landed_entries,
+                remaining,
+                cleaned,
+                warnings,
+                error: land_error,
+            },
+        });
+    } else if landed_count > 0 {
         println!();
         println!(
             "{} Landed {} {}(s)",
@@ -907,117 +758,6 @@ pub fn run(
             landed_count,
             provider.pr_label()
         );
-
-        // Suggest rebasing if there are remaining commits
-        if landed_count < stack.len() {
-            println!(
-                "{}",
-                style("  Run `gg rebase` to update remaining commits onto the new base.").dim()
-            );
-        } else {
-            // All PRs/MRs landed successfully - offer to clean up
-            let should_clean = if auto_clean {
-                true
-            } else if atty::is(atty::Stream::Stdout) {
-                // Interactive prompt (only if stdout is a TTY)
-                println!();
-                Confirm::new()
-                    .with_prompt(format!(
-                        "All {}s merged successfully. Clean up this stack?",
-                        provider.pr_label()
-                    ))
-                    .default(false)
-                    .interact()
-                    .unwrap_or(false)
-            } else {
-                // Non-interactive, don't clean
-                println!(
-                    "{}",
-                    style(format!(
-                        "  All {}s landed! Run `gg clean` to remove the stack.",
-                        provider.pr_label()
-                    ))
-                    .dim()
-                );
-                false
-            };
-
-            if should_clean {
-                println!();
-                println!("{}", style("Cleaning up stack...").dim());
-
-                // First, rebase to update main and detect merged commits
-                let rebase_result =
-                    crate::commands::rebase::run_with_repo(&repo, Some(stack.base.clone()), false);
-                if let Err(e) = rebase_result {
-                    println!("{} Failed to rebase: {}", style("Warning:").yellow(), e);
-                    println!(
-                        "{}",
-                        style("  You may need to run `gg rebase` and `gg clean` manually.").dim()
-                    );
-                    return Ok(());
-                }
-
-                // Check if there were unsynced commits before the merge
-                // We check BEFORE the merge loop because cleanup_after_merge() removes
-                // MR mappings from config, which would make ALL commits appear unsynced
-                // if we checked after the fact
-                if has_unsynced_commits_before_merge {
-                    println!(
-                        "{} Stack had unsynced commit(s) before merging:",
-                        style("Warning:").yellow()
-                    );
-                    // Reload stack to show current state after rebase
-                    if let Ok(updated_stack) = Stack::load(&repo, &config) {
-                        let unsynced_commits: Vec<&crate::stack::StackEntry> = updated_stack
-                            .entries
-                            .iter()
-                            .filter(|e| !e.is_synced())
-                            .collect();
-                        for entry in &unsynced_commits {
-                            println!(
-                                "  {} {}",
-                                style(&entry.short_sha).cyan(),
-                                style(&entry.title).dim()
-                            );
-                        }
-                    }
-                    println!(
-                        "{}",
-                        style(
-                            "  Skipping stack cleanup to preserve these commits. Run `gg clean` manually when ready."
-                        )
-                        .dim()
-                    );
-                    return Ok(());
-                }
-
-                // Then, clean the stack (all commits were synced and merged)
-                let clean_result =
-                    crate::commands::clean::run_for_stack_with_repo(&repo, &stack.name, true);
-                match clean_result {
-                    Ok(()) => {
-                        println!("{} Stack cleaned successfully", style("OK").green().bold());
-                    }
-                    Err(e) => {
-                        println!(
-                            "{} Failed to clean stack: {}",
-                            style("Warning:").yellow(),
-                            e
-                        );
-                        println!(
-                            "{}",
-                            style("  You may need to run `gg clean` manually.").dim()
-                        );
-                    }
-                }
-            } else if !auto_clean && atty::is(atty::Stream::Stdout) {
-                println!(
-                    "{}",
-                    style("  Run `gg clean` to remove the stack when ready.").dim()
-                );
-            }
-        }
     }
 
     Ok(())
@@ -1032,6 +772,7 @@ fn wait_for_pr_ready(
     timeout_minutes: u64,
     interrupted: Option<&Arc<AtomicBool>>,
     target_branch: &str,
+    json: bool,
 ) -> Result<()> {
     let start_time = Instant::now();
     let timeout = Duration::from_secs(timeout_minutes * 60);
@@ -1040,17 +781,19 @@ fn wait_for_pr_ready(
     // Check if merge trains are enabled
     let merge_trains_enabled = provider.check_merge_trains_enabled().unwrap_or(false);
 
-    println!(
-        "{}",
-        style(format!(
-            "Waiting for {} {}{} to be ready (timeout: {}m)...",
-            provider.pr_label(),
-            provider.pr_number_prefix(),
-            pr_num,
-            timeout_minutes
-        ))
-        .dim()
-    );
+    if !json {
+        println!(
+            "{}",
+            style(format!(
+                "Waiting for {} {}{} to be ready (timeout: {}m)...",
+                provider.pr_label(),
+                provider.pr_number_prefix(),
+                pr_num,
+                timeout_minutes
+            ))
+            .dim()
+        );
+    }
 
     let mut current_spinner: Option<ProgressBar> = None;
     let mut current_state: Option<String> = None;
@@ -1207,7 +950,13 @@ fn wait_for_pr_ready(
                 finish_spinner(spinner, current_state.as_ref().unwrap(), state_start_time);
             }
             // Create new spinner
-            current_spinner = Some(create_spinner(&new_state));
+            current_spinner = Some(if json {
+                let spinner = ProgressBar::hidden();
+                spinner.set_message(new_state.clone());
+                spinner
+            } else {
+                create_spinner(&new_state)
+            });
             current_state = Some(new_state);
             state_start_time = Instant::now();
         }
@@ -1225,22 +974,25 @@ fn wait_for_merge_train_completion(
     timeout_minutes: u64,
     interrupted: Option<&Arc<AtomicBool>>,
     target_branch: &str,
+    json: bool,
 ) -> Result<()> {
     let start_time = Instant::now();
     let timeout = Duration::from_secs(timeout_minutes * 60);
     let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
 
-    println!(
-        "{}",
-        style(format!(
-            "Waiting for {} {}{} to merge through merge train (timeout: {}m)...",
-            provider.pr_label(),
-            provider.pr_number_prefix(),
-            pr_num,
-            timeout_minutes
-        ))
-        .dim()
-    );
+    if !json {
+        println!(
+            "{}",
+            style(format!(
+                "Waiting for {} {}{} to merge through merge train (timeout: {}m)...",
+                provider.pr_label(),
+                provider.pr_number_prefix(),
+                pr_num,
+                timeout_minutes
+            ))
+            .dim()
+        );
+    }
 
     let mut current_spinner: Option<ProgressBar> = None;
     let mut current_state: Option<String> = None;
@@ -1377,7 +1129,13 @@ fn wait_for_merge_train_completion(
                 finish_spinner(spinner, current_state.as_ref().unwrap(), state_start_time);
             }
             // Create new spinner
-            current_spinner = Some(create_spinner(&new_state));
+            current_spinner = Some(if json {
+                let spinner = ProgressBar::hidden();
+                spinner.set_message(new_state.clone());
+                spinner
+            } else {
+                create_spinner(&new_state)
+            });
             current_state = Some(new_state);
             state_start_time = Instant::now();
         }
@@ -1533,7 +1291,8 @@ mod tests {
         // - land_all: bool (whether to update remaining PR bases)
 
         // Type-level assertion that cleanup_after_merge exists with the correct signature
-        let _fn_ptr: fn(&mut Config, &Stack, &Provider, &str, u64, bool) = cleanup_after_merge;
+        let _fn_ptr: fn(&mut Config, &Stack, &Provider, &str, u64, bool, bool) =
+            cleanup_after_merge;
     }
 
     #[test]
@@ -1547,7 +1306,7 @@ mod tests {
         // - start_index: usize (current merge position in stack)
 
         // Type-level assertion that rebase_remaining_branches exists with the correct signature
-        let _fn_ptr: fn(&git2::Repository, &Stack, &Provider, usize) -> Result<()> =
+        let _fn_ptr: fn(&git2::Repository, &Stack, &Provider, usize, bool) -> Result<()> =
             rebase_remaining_branches;
     }
 
@@ -1652,8 +1411,15 @@ mod tests {
         use std::sync::Arc;
 
         // Type assertion that the function signature includes target_branch: &str
-        let _fn_ptr: fn(&Provider, u64, bool, u64, Option<&Arc<AtomicBool>>, &str) -> Result<()> =
-            wait_for_pr_ready;
+        let _fn_ptr: fn(
+            &Provider,
+            u64,
+            bool,
+            u64,
+            Option<&Arc<AtomicBool>>,
+            &str,
+            bool,
+        ) -> Result<()> = wait_for_pr_ready;
     }
 
     // ==========================================================================
@@ -2263,5 +2029,40 @@ mod tests {
             should_skip_cleanup,
             "Cleanup should be skipped when unsynced commits exist"
         );
+    }
+    #[test]
+    fn test_land_response_json_structure() {
+        use serde_json::Value;
+
+        let response = LandResponse {
+            version: OUTPUT_VERSION,
+            land: LandResultJson {
+                stack: "feat-stack".to_string(),
+                base: "main".to_string(),
+                landed: vec![LandedEntryJson {
+                    position: 1,
+                    sha: "abc1234".to_string(),
+                    title: "First".to_string(),
+                    gg_id: "c-abc1234".to_string(),
+                    pr_number: 42,
+                    action: "merged".to_string(),
+                    error: None,
+                }],
+                remaining: 2,
+                cleaned: false,
+                warnings: vec!["warn".to_string()],
+                error: Some("stopped".to_string()),
+            },
+        };
+
+        let value: Value = serde_json::to_value(&response).expect("serialize");
+        assert_eq!(value["version"], OUTPUT_VERSION);
+        assert_eq!(value["land"]["stack"], "feat-stack");
+        assert_eq!(value["land"]["base"], "main");
+        assert_eq!(value["land"]["remaining"], 2);
+        assert_eq!(value["land"]["cleaned"], false);
+        assert_eq!(value["land"]["landed"][0]["action"], "merged");
+        assert_eq!(value["land"]["landed"][0]["pr_number"], 42);
+        assert_eq!(value["land"]["error"], "stopped");
     }
 }

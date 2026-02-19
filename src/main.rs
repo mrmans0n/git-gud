@@ -151,6 +151,10 @@ enum Commands {
         #[arg(short, long)]
         all: bool,
 
+        /// Output structured JSON
+        #[arg(long)]
+        json: bool,
+
         /// (GitLab only) Request auto-merge ("merge when pipeline succeeds") instead of merging immediately
         #[arg(long)]
         auto_merge: bool,
@@ -324,6 +328,7 @@ fn main() {
         ),
         Some(Commands::Land {
             all,
+            json,
             auto_merge,
             no_squash,
             wait,
@@ -347,8 +352,8 @@ fn main() {
             };
 
             (
-                commands::land::run(all, !no_squash, wait, auto_clean, auto_merge, until),
-                false,
+                commands::land::run(all, json, !no_squash, wait, auto_clean, auto_merge, until),
+                json,
             )
         }
         Some(Commands::Clean { all }) => (commands::clean::run(all), false),

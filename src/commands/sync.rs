@@ -199,19 +199,22 @@ pub fn run(
             maybe_rebase_if_base_is_behind(&repo, &config, initial_stack.base.as_str(), json)?;
     }
 
+    let mut warnings: Vec<String> = Vec::new();
+
     // Run lint ONCE if requested (before GG-ID addition loop)
     if run_lint {
         let end_pos = lint_end_pos.unwrap_or(initial_stack.len());
         if !json {
             println!("{}", console::style("Running lint before sync...").dim());
         }
-        crate::commands::lint::run(Some(end_pos), json)?;
+        let lint_passed = crate::commands::lint::run(Some(end_pos), json, false)?;
+        if json && !lint_passed {
+            warnings.push("Lint failed for one or more commits".to_string());
+        }
         if !json {
             println!();
         }
     }
-
-    let mut warnings: Vec<String> = Vec::new();
 
     // Now handle GG-ID addition in a loop (lint may have changed commits)
     // This loop ensures the operation lock is held for the entire operation

@@ -8,6 +8,7 @@ use std::path::Path;
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
+use crate::output::{print_json, CleanResponse, CleanResultJson, OUTPUT_VERSION};
 use crate::provider::{PrState, Provider};
 use crate::stack;
 
@@ -53,7 +54,7 @@ pub fn run_for_stack_with_repo(repo: &Repository, stack_name: &str, force: bool)
         )));
     }
 
-    maybe_remove_configured_worktree(repo, &mut config, stack_name)?;
+    let _ = maybe_remove_configured_worktree(repo, &mut config, stack_name, false)?;
 
     // Delete local branch
     if let Ok(mut branch) = repo.find_branch(&branch_name, BranchType::Local) {
@@ -115,6 +116,7 @@ pub fn run_for_stack_with_repo(repo: &Repository, stack_name: &str, force: bool)
         stack_name,
         &username,
         /*delete_remote=*/ allow_remote_delete,
+        /*silent=*/ false,
     );
 
     // Remove from config
@@ -127,11 +129,18 @@ pub fn run_for_stack_with_repo(repo: &Repository, stack_name: &str, force: bool)
 }
 
 /// Run the clean command
-pub fn run(clean_all: bool) -> Result<()> {
+pub fn run(clean_all: bool, json: bool) -> Result<()> {
     let repo = git::open_repo()?;
 
     // Acquire operation lock to prevent concurrent operations
     let _lock = git::acquire_operation_lock(&repo, "clean")?;
+
+    if json && !clean_all {
+        crate::output::print_json_error(
+            "--json requires --all (cannot show interactive prompts in JSON mode)",
+        );
+        std::process::exit(1);
+    }
 
     let git_dir = repo.commondir();
     let mut config = Config::load(git_dir)?;
@@ -153,12 +162,20 @@ pub fn run(clean_all: bool) -> Result<()> {
     // Get all stacks
     let stacks = stack::list_all_stacks(&repo, &config, &username)?;
 
+    let mut cleaned: Vec<String> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+
     if stacks.is_empty() {
-        println!("{}", style("No stacks to clean.").dim());
+        if json {
+            print_json(&CleanResponse {
+                version: OUTPUT_VERSION,
+                clean: CleanResultJson { cleaned, skipped },
+            });
+        } else {
+            println!("{}", style("No stacks to clean.").dim());
+        }
         return Ok(());
     }
-
-    let mut cleaned_count = 0;
 
     for stack_name in &stacks {
         // Try to determine if stack is fully merged
@@ -171,9 +188,10 @@ pub fn run(clean_all: bool) -> Result<()> {
             // reliably verify merge status without the main stack branch.
             delete_entry_branches(
                 &repo, &config, stack_name, &username, /*delete_remote=*/ false,
+                /*silent=*/ json,
             );
             config.remove_stack(stack_name);
-            cleaned_count += 1;
+            cleaned.push(stack_name.clone());
             continue;
         }
 
@@ -182,7 +200,7 @@ pub fn run(clean_all: bool) -> Result<()> {
             check_stack_merged(&repo, &config, stack_name, &username, provider.as_ref())?;
 
         if merge_status.merged {
-            if !clean_all {
+            if !clean_all && !json {
                 let confirm = Confirm::new()
                     .with_prompt(format!("Delete merged stack '{}'? ", stack_name))
                     .default(true)
@@ -190,11 +208,20 @@ pub fn run(clean_all: bool) -> Result<()> {
                     .unwrap_or(false);
 
                 if !confirm {
+                    skipped.push(stack_name.clone());
                     continue;
                 }
             }
 
-            maybe_remove_configured_worktree(&repo, &mut config, stack_name)?;
+            let removed_or_not_configured =
+                maybe_remove_configured_worktree(&repo, &mut config, stack_name, json)?;
+            if json && !removed_or_not_configured {
+                skipped.push(format!(
+                    "{} (worktree not removed: confirmation defaults to false in --json mode)",
+                    stack_name
+                ));
+                continue;
+            }
 
             // Delete local branch
             if let Ok(mut branch) = repo.find_branch(&branch_name, BranchType::Local) {
@@ -216,32 +243,36 @@ pub fn run(clean_all: bool) -> Result<()> {
                     // Try to prune if stale
                     if !git::try_prune_worktree(&repo, &wt_name) {
                         // Worktree still exists - warn and try to remove it
-                        println!(
-                            "{} Branch '{}' is checked out in worktree '{}'. Removing worktree.",
-                            style("Note:").cyan(),
-                            branch_name,
-                            wt_name
-                        );
+                        if !json {
+                            println!(
+                                "{} Branch '{}' is checked out in worktree '{}'. Removing worktree.",
+                                style("Note:").cyan(),
+                                branch_name,
+                                wt_name
+                            );
+                        }
                         let _ = git::remove_worktree(&wt_name);
                     }
                 }
 
                 // Try to delete the branch, handle errors gracefully
                 if let Err(e) = branch.delete() {
-                    println!(
-                        "{} Could not delete local branch '{}': {}",
-                        style("Warning:").yellow(),
-                        branch_name,
-                        e
-                    );
-                    println!(
-                        "  You may need to manually remove the worktree first: git worktree remove <path>"
-                    );
+                    if !json {
+                        println!(
+                            "{} Could not delete local branch '{}': {}",
+                            style("Warning:").yellow(),
+                            branch_name,
+                            e
+                        );
+                        println!(
+                            "  You may need to manually remove the worktree first: git worktree remove <path>"
+                        );
+                    }
                 }
             }
 
             let allow_remote_delete = merge_status.verified;
-            if !allow_remote_delete {
+            if !allow_remote_delete && !json {
                 println!(
                     "{} Skipping remote branch deletion for '{}' because merge verification is unavailable.",
                     style("Warning:").yellow(),
@@ -256,35 +287,46 @@ pub fn run(clean_all: bool) -> Result<()> {
                 stack_name,
                 &username,
                 /*delete_remote=*/ allow_remote_delete,
+                /*silent=*/ json,
             );
 
             // Remove from config
             config.remove_stack(stack_name);
 
-            println!(
-                "{} Deleted stack '{}'",
-                style("OK").green().bold(),
-                stack_name
-            );
-            cleaned_count += 1;
+            if !json {
+                println!(
+                    "{} Deleted stack '{}'",
+                    style("OK").green().bold(),
+                    stack_name
+                );
+            }
+            cleaned.push(stack_name.clone());
         } else {
-            println!(
-                "{} Stack '{}' has unmerged commits, skipping",
-                style("○").yellow(),
-                stack_name
-            );
+            if !json {
+                println!(
+                    "{} Stack '{}' has unmerged commits, skipping",
+                    style("○").yellow(),
+                    stack_name
+                );
+            }
+            skipped.push(stack_name.clone());
         }
     }
 
     // Save updated config
     config.save(git_dir)?;
 
-    if cleaned_count > 0 {
+    if json {
+        print_json(&CleanResponse {
+            version: OUTPUT_VERSION,
+            clean: CleanResultJson { cleaned, skipped },
+        });
+    } else if !cleaned.is_empty() {
         println!();
         println!(
             "{} Cleaned {} stack(s)",
             style("OK").green().bold(),
-            cleaned_count
+            cleaned.len()
         );
     } else {
         println!("{}", style("No stacks to clean.").dim());
@@ -297,31 +339,38 @@ fn maybe_remove_configured_worktree(
     repo: &Repository,
     config: &mut Config,
     stack_name: &str,
-) -> Result<()> {
+    silent: bool,
+) -> Result<bool> {
     let Some(stack_cfg) = config.get_stack(stack_name) else {
-        return Ok(());
+        return Ok(true);
     };
     let Some(worktree_path) = stack_cfg.worktree_path.clone() else {
-        return Ok(());
+        return Ok(true);
     };
 
-    let prompt = format!(
-        "Stack '{}' has an associated worktree at '{}'. Remove it?",
-        stack_name, worktree_path
-    );
-    let confirm = Confirm::new()
-        .with_prompt(prompt)
-        .default(false)
-        .interact()
-        .unwrap_or(false);
+    let confirm = if silent {
+        false
+    } else {
+        let prompt = format!(
+            "Stack '{}' has an associated worktree at '{}'. Remove it?",
+            stack_name, worktree_path
+        );
+        Confirm::new()
+            .with_prompt(prompt)
+            .default(false)
+            .interact()
+            .unwrap_or(false)
+    };
 
     if !confirm {
-        println!(
-            "{} Keeping worktree '{}'.",
-            style("Note:").cyan(),
-            worktree_path
-        );
-        return Ok(());
+        if !silent {
+            println!(
+                "{} Keeping worktree '{}'.",
+                style("Note:").cyan(),
+                worktree_path
+            );
+        }
+        return Ok(false);
     }
 
     let repo_root = repo
@@ -349,7 +398,7 @@ fn maybe_remove_configured_worktree(
         stack_cfg_mut.worktree_path = None;
     }
 
-    if !Path::new(&worktree_path).exists() {
+    if !silent && !Path::new(&worktree_path).exists() {
         println!(
             "{} Removed worktree '{}'.",
             style("OK").green().bold(),
@@ -357,7 +406,7 @@ fn maybe_remove_configured_worktree(
         );
     }
 
-    Ok(())
+    Ok(true)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -509,6 +558,7 @@ fn delete_entry_branches(
     stack_name: &str,
     username: &str,
     delete_remote: bool,
+    silent: bool,
 ) {
     // First, delete entry branches from config (if any)
     if let Some(stack_config) = config.get_stack(stack_name) {
@@ -516,11 +566,13 @@ fn delete_entry_branches(
             let entry_id = match git::normalize_gg_id(entry_id) {
                 Some(id) => id,
                 None => {
-                    println!(
-                        "{} Skipping invalid GG-ID '{}' in config.",
-                        style("Warning:").yellow(),
-                        entry_id
-                    );
+                    if !silent {
+                        println!(
+                            "{} Skipping invalid GG-ID '{}' in config.",
+                            style("Warning:").yellow(),
+                            entry_id
+                        );
+                    }
                     continue;
                 }
             };

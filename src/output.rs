@@ -125,6 +125,34 @@ pub struct SyncEntryResultJson {
 }
 
 #[derive(Serialize)]
+pub struct LintResponse {
+    pub version: u32,
+    pub lint: LintResultJson,
+}
+
+#[derive(Serialize)]
+pub struct LintResultJson {
+    pub results: Vec<LintCommitResult>,
+    pub all_passed: bool,
+}
+
+#[derive(Serialize)]
+pub struct LintCommitResult {
+    pub position: usize,
+    pub sha: String,
+    pub title: String,
+    pub passed: bool,
+    pub commands: Vec<LintCommandResult>,
+}
+
+#[derive(Serialize)]
+pub struct LintCommandResult {
+    pub command: String,
+    pub passed: bool,
+    pub output: Option<String>,
+}
+
+#[derive(Serialize)]
 pub struct LandResponse {
     pub version: u32,
     pub land: LandResultJson,
@@ -150,4 +178,52 @@ pub struct LandedEntryJson {
     pub pr_number: u64,
     pub action: String,
     pub error: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lint_response_serializes() {
+        let response = LintResponse {
+            version: OUTPUT_VERSION,
+            lint: LintResultJson {
+                all_passed: false,
+                results: vec![LintCommitResult {
+                    position: 1,
+                    sha: "abc1234".to_string(),
+                    title: "Test commit".to_string(),
+                    passed: false,
+                    commands: vec![LintCommandResult {
+                        command: "cargo clippy".to_string(),
+                        passed: false,
+                        output: Some("error: warning denied".to_string()),
+                    }],
+                }],
+            },
+        };
+
+        let value = serde_json::to_value(&response).expect("should serialize");
+        assert_eq!(value["version"], OUTPUT_VERSION);
+        assert_eq!(value["lint"]["all_passed"], false);
+        assert_eq!(value["lint"]["results"][0]["position"], 1);
+        assert_eq!(value["lint"]["results"][0]["commands"][0]["passed"], false);
+        assert_eq!(
+            value["lint"]["results"][0]["commands"][0]["output"],
+            "error: warning denied"
+        );
+    }
+}
+
+#[derive(Serialize)]
+pub struct CleanResponse {
+    pub version: u32,
+    pub clean: CleanResultJson,
+}
+
+#[derive(Serialize)]
+pub struct CleanResultJson {
+    pub cleaned: Vec<String>,
+    pub skipped: Vec<String>,
 }

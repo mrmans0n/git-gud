@@ -186,6 +186,10 @@ enum Commands {
         /// Clean all merged stacks without prompting
         #[arg(short, long)]
         all: bool,
+
+        /// Output structured JSON
+        #[arg(long)]
+        json: bool,
     },
 
     /// Rebase the stack onto the updated base branch
@@ -209,6 +213,10 @@ enum Commands {
         /// Stop at this commit position (default: current)
         #[arg(short, long)]
         until: Option<usize>,
+
+        /// Output structured JSON
+        #[arg(long)]
+        json: bool,
     },
 
     /// Set up git-gud config for this repository
@@ -356,11 +364,13 @@ fn main() {
                 json,
             )
         }
-        Some(Commands::Clean { all }) => (commands::clean::run(all), false),
+        Some(Commands::Clean { all, json }) => (commands::clean::run(all, json), json),
         Some(Commands::Rebase { target }) => (commands::rebase::run(target), false),
         Some(Commands::Continue) => (commands::rebase::continue_rebase(), false),
         Some(Commands::Abort) => (commands::rebase::abort_rebase(), false),
-        Some(Commands::Lint { until }) => (commands::lint::run(until, false), false),
+        Some(Commands::Lint { until, json }) => {
+            (commands::lint::run(until, json, json).map(|_| ()), json)
+        }
         Some(Commands::Setup) => (commands::setup::run(), false),
         Some(Commands::Absorb {
             dry_run,

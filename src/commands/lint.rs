@@ -1,6 +1,6 @@
 //! `gg lint` - Run lint commands on each commit in the stack
 
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use console::style;
 use git2::Oid;
@@ -8,10 +8,16 @@ use git2::Oid;
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
+use crate::output::{
+    self, LintCommandResult, LintCommitResult, LintResponse, LintResultJson, OUTPUT_VERSION,
+};
 use crate::stack::{Stack, StackEntry};
 
 /// Run the lint command
-pub fn run(until: Option<usize>, json: bool) -> Result<()> {
+///
+/// Returns `Ok(true)` when all lint commands passed for all linted commits,
+/// `Ok(false)` when one or more commits had lint failures.
+pub fn run(until: Option<usize>, json: bool, emit_json_output: bool) -> Result<bool> {
     let repo = git::open_repo()?;
     let config = Config::load(repo.commondir())?;
 
@@ -21,7 +27,9 @@ pub fn run(until: Option<usize>, json: bool) -> Result<()> {
     // Get lint commands from config
     let lint_commands = &config.defaults.lint;
     if lint_commands.is_empty() {
-        if !json {
+        if json && emit_json_output {
+            print_empty_response();
+        } else if !json {
             println!(
                 "{}",
                 style("No lint commands configured. Run 'gg setup' to configure lint commands.")
@@ -35,17 +43,19 @@ pub fn run(until: Option<usize>, json: bool) -> Result<()> {
             println!("    }}");
             println!("  }}");
         }
-        return Ok(());
+        return Ok(true);
     }
 
     // Load stack
     let stack = Stack::load(&repo, &config)?;
 
     if stack.is_empty() {
-        if !json {
+        if json && emit_json_output {
+            print_empty_response();
+        } else if !json {
             println!("{}", style("Stack is empty. Nothing to lint.").dim());
         }
-        return Ok(());
+        return Ok(true);
     }
 
     // Determine the end position
@@ -77,7 +87,7 @@ pub fn run(until: Option<usize>, json: bool) -> Result<()> {
     let original_head = repo.head()?.peel_to_commit()?.id();
 
     // Run lint with cleanup on error
-    let result = run_lint_on_commits(&repo, stack, lint_commands, end_pos, json);
+    let result = run_lint_on_commits(&repo, stack, lint_commands, end_pos, json, emit_json_output);
 
     // Try to restore original position on error, but NOT if there's a rebase in progress
     // (user needs to resolve conflicts in place)
@@ -88,6 +98,16 @@ pub fn run(until: Option<usize>, json: bool) -> Result<()> {
     result
 }
 
+fn print_empty_response() {
+    output::print_json(&LintResponse {
+        version: OUTPUT_VERSION,
+        lint: LintResultJson {
+            results: vec![],
+            all_passed: true,
+        },
+    });
+}
+
 /// Run lint commands on commits, returning the result
 fn run_lint_on_commits(
     repo: &git2::Repository,
@@ -95,18 +115,21 @@ fn run_lint_on_commits(
     lint_commands: &[String],
     end_pos: usize,
     json: bool,
-) -> Result<()> {
+    emit_json_output: bool,
+) -> Result<bool> {
     let original_branch = git::current_branch_name(repo);
     let original_head = repo.head()?.peel_to_commit()?.id();
     let mut had_changes = false;
     let base_branch = stack.base.clone();
     let stack_branch = stack.branch_name();
     let mut entries = stack.entries.clone();
+    let mut lint_results: Vec<LintCommitResult> = Vec::with_capacity(end_pos);
 
     // Process each commit from first to end_pos
     let mut i = 0;
     while i < end_pos {
         let entry = entries[i].clone();
+        let mut had_changes_this_commit = false;
 
         if !json {
             println!();
@@ -124,6 +147,9 @@ fn run_lint_on_commits(
         git::checkout_commit(repo, &commit)?;
 
         // Run lint commands
+        let mut commit_passed = true;
+        let mut command_results = Vec::with_capacity(lint_commands.len());
+
         for cmd in lint_commands {
             if !json {
                 print!("  Running: {} ... ", style(cmd).dim());
@@ -153,19 +179,51 @@ fn run_lint_on_commits(
                 }
             };
 
-            if output.status.success() {
+            let passed = output.status.success();
+            if passed {
                 if !json {
                     println!("{}", style("OK").green());
                 }
-            } else if !json {
-                println!("{}", style("FAILED").red());
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if !stderr.is_empty() {
-                    for line in stderr.lines().take(5) {
-                        println!("    {}", style(line).dim());
+            } else {
+                commit_passed = false;
+                if !json {
+                    println!("{}", style("FAILED").red());
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    if !stderr.is_empty() {
+                        for line in stderr.lines().take(5) {
+                            println!("    {}", style(line).dim());
+                        }
                     }
                 }
             }
+
+            let combined_output = if passed {
+                None
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let mut text = String::new();
+                if !stderr.trim().is_empty() {
+                    text.push_str(stderr.trim_end());
+                }
+                if !stdout.trim().is_empty() {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(stdout.trim_end());
+                }
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(text)
+                }
+            };
+
+            command_results.push(LintCommandResult {
+                command: cmd.clone(),
+                passed,
+                output: combined_output,
+            });
         }
 
         // Check if lint made changes
@@ -175,22 +233,30 @@ fn run_lint_on_commits(
             }
 
             // Stage all changes
-            let status = Command::new("git").args(["add", "-A"]).status()?;
+            let add_output = Command::new("git").args(["add", "-A"]).output()?;
 
-            if !status.success() {
-                return Err(GgError::Other("Failed to stage changes".to_string()));
+            if !add_output.status.success() {
+                return Err(GgError::Other(format!(
+                    "Failed to stage changes: {}",
+                    String::from_utf8_lossy(&add_output.stderr).trim()
+                )));
             }
 
             // Amend the commit
-            let status = Command::new("git")
+            let amend_output = Command::new("git")
                 .args(["commit", "--amend", "--no-edit"])
-                .status()?;
+                .stdin(Stdio::null())
+                .output()?;
 
-            if !status.success() {
-                return Err(GgError::Other("Failed to amend commit".to_string()));
+            if !amend_output.status.success() {
+                return Err(GgError::Other(format!(
+                    "Failed to amend commit: {}",
+                    String::from_utf8_lossy(&amend_output.stderr).trim()
+                )));
             }
 
             had_changes = true;
+            had_changes_this_commit = true;
             if !json {
                 println!("  {} Changes squashed", style("OK").green());
             }
@@ -234,6 +300,21 @@ fn run_lint_on_commits(
             }
         }
 
+        let final_sha = if had_changes_this_commit {
+            let head = repo.head()?.peel_to_commit()?;
+            git::short_sha(&head)
+        } else {
+            entry.short_sha.clone()
+        };
+
+        lint_results.push(LintCommitResult {
+            position: entry.position,
+            sha: final_sha,
+            title: entry.title.clone(),
+            passed: commit_passed,
+            commands: command_results,
+        });
+
         i += 1;
     }
 
@@ -274,11 +355,21 @@ fn run_lint_on_commits(
         }
     }
 
-    if !json {
+    let all_passed = lint_results.iter().all(|result| result.passed);
+
+    if json && emit_json_output {
+        output::print_json(&LintResponse {
+            version: OUTPUT_VERSION,
+            lint: LintResultJson {
+                results: lint_results,
+                all_passed,
+            },
+        });
+    } else if !json {
         println!("{} Linted {} commits", style("OK").green().bold(), end_pos);
     }
 
-    Ok(())
+    Ok(all_passed)
 }
 
 fn refresh_stack_entries(

@@ -55,7 +55,7 @@ fn maybe_rebase_if_base_is_behind(
     }
 
     if config.get_sync_auto_rebase() {
-        crate::commands::rebase::run_with_repo(repo, None)?;
+        crate::commands::rebase::run_with_repo(repo, None, json)?;
         return Ok(true);
     }
 
@@ -70,7 +70,7 @@ fn maybe_rebase_if_base_is_behind(
         .unwrap_or(true);
 
     if should_rebase {
-        crate::commands::rebase::run_with_repo(repo, None)?;
+        crate::commands::rebase::run_with_repo(repo, None, json)?;
         return Ok(true);
     }
 
@@ -431,9 +431,27 @@ pub fn run(
             let push_result = git::push_branch(&entry_branch, true, force);
             if let Err(e) = push_result {
                 pb.finish_and_clear();
-                if !json {
-                    format_push_error(&e, &entry_branch);
+                if json {
+                    action = "error".to_string();
+                    entry_error = Some(e.to_string());
+
+                    json_entries.push(SyncEntryResultJson {
+                        position: entry.position,
+                        sha: entry.short_sha.clone(),
+                        title: entry.title.clone(),
+                        gg_id: gg_id.clone(),
+                        branch: entry_branch,
+                        action,
+                        pr_number,
+                        pr_url,
+                        draft: entry_draft,
+                        pushed,
+                        error: entry_error,
+                    });
+                    continue;
                 }
+
+                format_push_error(&e, &entry_branch);
                 return Err(e);
             }
         }
@@ -850,6 +868,7 @@ mod tests {
         build_pr_payload, clean_title, ensure_draft_prefix_for_gitlab, is_wip_or_draft_prefix,
     };
     use crate::git;
+    use crate::output::{SyncEntryResultJson, SyncResponse, SyncResultJson, OUTPUT_VERSION};
 
     #[test]
     fn test_get_remote_branch_oid() {
@@ -1023,5 +1042,48 @@ mod tests {
             ensure_draft_prefix_for_gitlab("  Draft: Add feature", &Provider::GitLab, true),
             "  Draft: Add feature"
         );
+    }
+
+    #[test]
+    fn test_sync_json_response_structure() {
+        let response = SyncResponse {
+            version: OUTPUT_VERSION,
+            sync: SyncResultJson {
+                stack: "test-stack".to_string(),
+                base: "main".to_string(),
+                rebased_before_sync: false,
+                warnings: vec![],
+                entries: vec![SyncEntryResultJson {
+                    position: 1,
+                    sha: "abc1234".to_string(),
+                    title: "Add feature".to_string(),
+                    gg_id: "c-abc1234".to_string(),
+                    branch: "user/test-stack/c-abc1234".to_string(),
+                    action: "created".to_string(),
+                    pr_number: Some(42),
+                    pr_url: Some("https://github.com/org/repo/pull/42".to_string()),
+                    draft: false,
+                    pushed: true,
+                    error: None,
+                }],
+            },
+        };
+
+        let json_str = serde_json::to_string_pretty(&response).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(parsed["version"], OUTPUT_VERSION);
+        assert_eq!(parsed["sync"]["stack"], "test-stack");
+        assert_eq!(parsed["sync"]["base"], "main");
+        assert_eq!(parsed["sync"]["rebased_before_sync"], false);
+        assert!(parsed["sync"]["warnings"].is_array());
+        assert!(parsed["sync"]["entries"].is_array());
+
+        let entry = &parsed["sync"]["entries"][0];
+        assert_eq!(entry["position"], 1);
+        assert_eq!(entry["action"], "created");
+        assert_eq!(entry["pr_number"], 42);
+        assert_eq!(entry["pushed"], true);
+        assert!(entry["error"].is_null());
     }
 }

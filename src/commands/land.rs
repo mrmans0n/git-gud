@@ -287,7 +287,11 @@ pub fn run(
     if merge_trains_enabled {
         println!(
             "{}",
-            style("Merge trains enabled - MRs will be added to the merge train").dim()
+            style(format!(
+                "Merge trains enabled - {}s will be added to the merge train",
+                provider.pr_label()
+            ))
+            .dim()
         );
     }
 
@@ -574,8 +578,11 @@ pub fn run(
                                 );
                                 println!(
                                     "{}",
-                                    style("  You may need to rebase the remaining PRs manually.")
-                                        .dim()
+                                    style(format!(
+                                        "  You may need to rebase the remaining {}s manually.",
+                                        provider.pr_label()
+                                    ))
+                                    .dim()
                                 );
                                 break 'landing_loop;
                             }
@@ -604,7 +611,10 @@ pub fn run(
                         // Without --wait, stop after queuing
                         println!(
                             "{}",
-                            style("  Note: MR is queued but not yet merged. Run `gg land --wait` to wait for merge completion.")
+                            style(format!(
+                                "  Note: {} is queued but not yet merged. Run `gg land --wait` to wait for merge completion.",
+                                provider.pr_label()
+                            ))
                                 .dim()
                         );
                         // Note: We intentionally do NOT clean up config mappings or increment
@@ -673,8 +683,11 @@ pub fn run(
                                 );
                                 println!(
                                     "{}",
-                                    style("  You may need to rebase the remaining PRs manually.")
-                                        .dim()
+                                    style(format!(
+                                        "  You may need to rebase the remaining {}s manually.",
+                                        provider.pr_label()
+                                    ))
+                                    .dim()
                                 );
                                 break 'landing_loop;
                             }
@@ -703,7 +716,10 @@ pub fn run(
                         // Without --wait, stop after noting it's queued
                         println!(
                             "{}",
-                            style("  Note: MR is queued but not yet merged. Run `gg land --wait` to wait for merge completion.")
+                            style(format!(
+                                "  Note: {} is queued but not yet merged. Run `gg land --wait` to wait for merge completion.",
+                                provider.pr_label()
+                            ))
                                 .dim()
                         );
                         // Note: We intentionally do NOT clean up here - MR is not merged yet.
@@ -743,7 +759,10 @@ pub fn run(
                     );
                     println!(
                         "{}",
-                        style("  Note: MR is queued but not yet merged. Run `gg land` again after it merges to clean up.")
+                        style(format!(
+                            "  Note: {} is queued but not yet merged. Run `gg land` again after it merges to clean up.",
+                            provider.pr_label()
+                        ))
                             .dim()
                     );
                     // Note: We intentionally do NOT increment landed_count or clean up
@@ -760,7 +779,10 @@ pub fn run(
                     );
                     println!(
                         "{}",
-                        style("  Note: MR is queued but not yet merged. Run `gg land` again after it merges to clean up.")
+                        style(format!(
+                            "  Note: {} is queued but not yet merged. Run `gg land` again after it merges to clean up.",
+                            provider.pr_label()
+                        ))
                             .dim()
                     );
                     // Note: We intentionally do NOT increment landed_count or clean up here.
@@ -827,7 +849,11 @@ pub fn run(
                             );
                             println!(
                                 "{}",
-                                style("  You may need to rebase the remaining PRs manually.").dim()
+                                style(format!(
+                                    "  You may need to rebase the remaining {}s manually.",
+                                    provider.pr_label()
+                                ))
+                                .dim()
                             );
                             break 'landing_loop;
                         }
@@ -896,7 +922,10 @@ pub fn run(
                 // Interactive prompt (only if stdout is a TTY)
                 println!();
                 Confirm::new()
-                    .with_prompt("All PRs merged successfully. Clean up this stack?")
+                    .with_prompt(format!(
+                        "All {}s merged successfully. Clean up this stack?",
+                        provider.pr_label()
+                    ))
                     .default(false)
                     .interact()
                     .unwrap_or(false)

@@ -948,7 +948,7 @@ pub fn run(
 
                 // First, rebase to update main and detect merged commits
                 let rebase_result =
-                    crate::commands::rebase::run_with_repo(&repo, Some(stack.base.clone()));
+                    crate::commands::rebase::run_with_repo(&repo, Some(stack.base.clone()), false);
                 if let Err(e) = rebase_result {
                     println!("{} Failed to rebase: {}", style("Warning:").yellow(), e);
                     println!(

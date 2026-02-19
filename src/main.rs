@@ -75,6 +75,10 @@ enum Commands {
         #[arg(short, long)]
         draft: bool,
 
+        /// Output structured JSON
+        #[arg(long)]
+        json: bool,
+
         /// Skip checking whether base is behind origin/<base>
         #[arg(long)]
         no_rebase_check: bool,
@@ -255,7 +259,7 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
 
-    let (result, list_json_mode) = match cli.command {
+    let (result, json_mode) = match cli.command {
         // No command = show stacks (like `gg ls`)
         None => (commands::ls::run(false, false, false, false), false),
 
@@ -272,6 +276,7 @@ fn main() {
         }) => (commands::ls::run(all, refresh, remote, json), json),
         Some(Commands::Sync {
             draft,
+            json,
             no_rebase_check,
             force,
             update_descriptions,
@@ -297,13 +302,14 @@ fn main() {
             (
                 commands::sync::run(
                     draft,
+                    json,
                     no_rebase_check,
                     force,
                     update_descriptions,
                     run_lint,
                     until,
                 ),
-                false,
+                json,
             )
         }
         Some(Commands::Move { target }) => (commands::nav::move_to(&target), false),
@@ -349,7 +355,7 @@ fn main() {
         Some(Commands::Rebase { target }) => (commands::rebase::run(target), false),
         Some(Commands::Continue) => (commands::rebase::continue_rebase(), false),
         Some(Commands::Abort) => (commands::rebase::abort_rebase(), false),
-        Some(Commands::Lint { until }) => (commands::lint::run(until), false),
+        Some(Commands::Lint { until }) => (commands::lint::run(until, false), false),
         Some(Commands::Setup) => (commands::setup::run(), false),
         Some(Commands::Absorb {
             dry_run,
@@ -374,7 +380,7 @@ fn main() {
     };
 
     if let Err(e) = result {
-        if list_json_mode {
+        if json_mode {
             output::print_json_error(&e.to_string());
         } else {
             eprintln!("{} {}", style("error:").red().bold(), e);

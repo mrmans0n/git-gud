@@ -15,17 +15,19 @@ pub fn run(target: Option<String>) -> Result<()> {
     // Acquire operation lock to prevent concurrent operations
     let _lock = git::acquire_operation_lock(&repo, "rebase")?;
 
-    run_with_repo(&repo, target)
+    run_with_repo(&repo, target, false)
 }
 
 /// Run rebase with an already-open repository (no lock acquisition)
-pub fn run_with_repo(repo: &Repository, target: Option<String>) -> Result<()> {
+pub fn run_with_repo(repo: &Repository, target: Option<String>, json: bool) -> Result<()> {
     let config = Config::load(repo.commondir())?;
 
     // Auto-stash uncommitted changes if present
     let needs_stash = !git::is_working_directory_clean(repo)?;
     if needs_stash {
-        println!("{}", style("Auto-stashing uncommitted changes...").dim());
+        if !json {
+            println!("{}", style("Auto-stashing uncommitted changes...").dim());
+        }
         git::run_git_command(&["stash", "push", "-m", "gg-rebase-autostash"])?;
     }
 
@@ -42,33 +44,39 @@ pub fn run_with_repo(repo: &Repository, target: Option<String>) -> Result<()> {
     // Remember current branch to return to after updating base
     let current_branch = git::current_branch_name(repo);
 
-    println!(
-        "{}",
-        style(format!("Updating {} and rebasing stack...", target_branch)).dim()
-    );
+    if !json {
+        println!(
+            "{}",
+            style(format!("Updating {} and rebasing stack...", target_branch)).dim()
+        );
+    }
 
     // Fetch the latest from remote first
     let fetch_result = git::run_git_command(&["fetch", "origin", "--prune"]);
     if let Err(e) = fetch_result {
-        println!(
-            "{} Could not fetch from origin: {}",
-            style("Warning:").yellow(),
-            e
-        );
+        if !json {
+            println!(
+                "{} Could not fetch from origin: {}",
+                style("Warning:").yellow(),
+                e
+            );
+        }
     }
 
     // Update local base branch to match remote (fast-forward)
     // This ensures merged PRs are reflected in the local base
     let update_result = update_local_branch(&target_branch);
     if let Err(e) = update_result {
-        println!(
-            "{} Could not update local {}: {}",
-            style("Warning:").yellow(),
-            target_branch,
-            e
-        );
-        println!("  Continuing with rebase onto origin/{}...", target_branch);
-    } else {
+        if !json {
+            println!(
+                "{} Could not update local {}: {}",
+                style("Warning:").yellow(),
+                target_branch,
+                e
+            );
+            println!("  Continuing with rebase onto origin/{}...", target_branch);
+        }
+    } else if !json {
         println!(
             "{} Updated local {} to latest",
             style("→").cyan(),
@@ -87,26 +95,36 @@ pub fn run_with_repo(repo: &Repository, target: Option<String>) -> Result<()> {
 
     match rebase_result {
         Ok(_) => {
-            println!(
-                "{} Rebased stack onto {}",
-                style("OK").green().bold(),
-                target_branch
-            );
+            if !json {
+                println!(
+                    "{} Rebased stack onto {}",
+                    style("OK").green().bold(),
+                    target_branch
+                );
+            }
 
             // Restore stashed changes if we stashed earlier
             if needs_stash {
-                println!("{}", style("Restoring stashed changes...").dim());
+                if !json {
+                    println!("{}", style("Restoring stashed changes...").dim());
+                }
                 match git::run_git_command(&["stash", "pop"]) {
                     Ok(_) => {
-                        println!("{} Changes restored", style("→").cyan());
+                        if !json {
+                            println!("{} Changes restored", style("→").cyan());
+                        }
                     }
                     Err(e) => {
-                        println!(
-                            "{} Could not restore stashed changes: {}",
-                            style("Warning:").yellow(),
-                            e
-                        );
-                        println!("  Your changes are in the stash. Run 'git stash pop' manually.");
+                        if !json {
+                            println!(
+                                "{} Could not restore stashed changes: {}",
+                                style("Warning:").yellow(),
+                                e
+                            );
+                            println!(
+                                "  Your changes are in the stash. Run 'git stash pop' manually."
+                            );
+                        }
                     }
                 }
             }
@@ -116,25 +134,29 @@ pub fn run_with_repo(repo: &Repository, target: Option<String>) -> Result<()> {
         Err(e) => {
             let error_str = e.to_string();
             if error_str.contains("CONFLICT") || error_str.contains("conflict") {
-                println!("{} Rebase conflict detected.", style("!").yellow().bold());
-                println!("  Resolve conflicts, then run `gg continue`");
-                println!("  Or run `gg abort` to cancel the rebase");
+                if !json {
+                    println!("{} Rebase conflict detected.", style("!").yellow().bold());
+                    println!("  Resolve conflicts, then run `gg continue`");
+                    println!("  Or run `gg abort` to cancel the rebase");
 
-                if needs_stash {
-                    println!(
-                        "  {}",
-                        style("Note: Your uncommitted changes are stashed. They will be restored after the rebase completes.").dim()
-                    );
+                    if needs_stash {
+                        println!(
+                            "  {}",
+                            style("Note: Your uncommitted changes are stashed. They will be restored after the rebase completes.").dim()
+                        );
+                    }
                 }
 
                 Err(GgError::RebaseConflict)
             } else {
                 // On other errors, try to restore stash
                 if needs_stash {
-                    println!(
-                        "{}",
-                        style("Attempting to restore stashed changes...").dim()
-                    );
+                    if !json {
+                        println!(
+                            "{}",
+                            style("Attempting to restore stashed changes...").dim()
+                        );
+                    }
                     let _ = git::run_git_command(&["stash", "pop"]);
                 }
                 Err(e)

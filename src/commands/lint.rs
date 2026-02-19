@@ -126,6 +126,7 @@ fn run_lint_on_commits(
     let mut i = 0;
     while i < end_pos {
         let entry = entries[i].clone();
+        let mut had_changes_this_commit = false;
 
         if !json {
             println!();
@@ -252,6 +253,7 @@ fn run_lint_on_commits(
             }
 
             had_changes = true;
+            had_changes_this_commit = true;
             if !json {
                 println!("  {} Changes squashed", style("OK").green());
             }
@@ -295,9 +297,16 @@ fn run_lint_on_commits(
             }
         }
 
+        let final_sha = if had_changes_this_commit {
+            let head = repo.head()?.peel_to_commit()?;
+            git::short_sha(&head)
+        } else {
+            entry.short_sha.clone()
+        };
+
         lint_results.push(LintCommitResult {
             position: entry.position,
-            sha: entry.oid.to_string(),
+            sha: final_sha,
             title: entry.title.clone(),
             passed: commit_passed,
             commands: command_results,

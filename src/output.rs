@@ -216,14 +216,12 @@ mod tests {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Serialize)]
 pub struct CleanResponse {
     pub version: u32,
     pub clean: CleanResultJson,
 }
 
-#[allow(dead_code)]
 #[derive(Serialize)]
 pub struct CleanResultJson {
     pub cleaned: Vec<String>,

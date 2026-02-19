@@ -769,6 +769,51 @@ fn test_gg_squash_with_staged_changes() {
 }
 
 #[test]
+fn test_gg_squash_staged_changes_in_worktree_do_not_trigger_unstaged_warning() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let stack_name = "squash-worktree-staged";
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", stack_name, "--worktree"]);
+    assert!(success, "Failed to create worktree stack: {}", stderr);
+
+    let worktree_path = repo_path.parent().unwrap().join(format!(
+        "{}.{}",
+        repo_path.file_name().unwrap().to_string_lossy(),
+        stack_name
+    ));
+
+    fs::write(worktree_path.join("file1.txt"), "original content").expect("Failed to write file");
+    run_git(&worktree_path, &["add", "."]);
+    run_git(&worktree_path, &["commit", "-m", "Initial file"]);
+
+    fs::write(worktree_path.join("file1.txt"), "modified content").expect("Failed to write file");
+    run_git(&worktree_path, &["add", "file1.txt"]);
+
+    let (success, stdout, stderr) = run_gg(&worktree_path, &["sc"]);
+    assert!(
+        success,
+        "gg sc should succeed in worktree with only staged changes. stdout={}, stderr={}",
+        stdout, stderr
+    );
+    assert!(
+        !stdout.contains("You have unstaged changes")
+            && !stderr.contains("You have unstaged changes"),
+        "Should not warn about unstaged changes when all changes are staged. stdout={}, stderr={}",
+        stdout,
+        stderr
+    );
+}
+
+#[test]
 fn test_gg_squash_warns_about_unstaged_at_stack_head() {
     let (_temp_dir, repo_path) = create_test_repo();
 

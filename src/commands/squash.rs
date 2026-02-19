@@ -47,6 +47,28 @@ fn add_all_changes() -> Result<()> {
     Ok(())
 }
 
+fn has_unstaged_changes() -> Result<bool> {
+    let output = Command::new("git").args(["diff", "--quiet"]).output()?;
+    Ok(!output.status.success())
+}
+
+fn has_untracked_files() -> Result<bool> {
+    let output = Command::new("git")
+        .args(["ls-files", "--others", "--exclude-standard"])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::Other(format!(
+            "Failed to check untracked files: {}",
+            stderr.trim()
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(!stdout.trim().is_empty())
+}
+
 /// Run the squash command
 pub fn run(all: bool) -> Result<()> {
     let repo = git::open_repo()?;
@@ -77,19 +99,12 @@ pub fn run(all: bool) -> Result<()> {
         .map(|p| p < stack.len() - 1)
         .unwrap_or(false);
 
-    let statuses = repo.statuses(None)?;
-    let has_unstaged = statuses.iter().any(|s| {
-        let flags = s.status();
-        flags.is_wt_modified()
-            || flags.is_wt_deleted()
-            || flags.is_wt_renamed()
-            || flags.is_wt_typechange()
-            || flags.is_wt_new()
-    });
+    let has_unstaged = has_unstaged_changes()?;
+    let has_untracked = has_untracked_files()?;
 
     let mut auto_stashed = false;
 
-    if !all && has_unstaged && !needs_rebase {
+    if !all && (has_unstaged || has_untracked) && !needs_rebase {
         match config.get_unstaged_action() {
             UnstagedAction::Ask => {
                 println!(
@@ -171,15 +186,7 @@ pub fn run(all: bool) -> Result<()> {
     // Staged changes are fine (they'll be committed), but unstaged changes
     // would be lost during the rebase
     if needs_rebase {
-        let statuses = repo.statuses(None)?;
-        let has_unstaged = statuses.iter().any(|s| {
-            let flags = s.status();
-            // Check for unstaged changes (WT_* flags)
-            flags.is_wt_modified()
-                || flags.is_wt_deleted()
-                || flags.is_wt_renamed()
-                || flags.is_wt_typechange()
-        });
+        let has_unstaged = has_unstaged_changes()?;
 
         if has_unstaged {
             return Err(GgError::Other(

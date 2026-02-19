@@ -93,3 +93,32 @@ pub struct RemoteStackJson {
     pub commit_count: usize,
     pub pr_numbers: Vec<u64>,
 }
+
+#[derive(Serialize)]
+pub struct SyncResponse {
+    pub version: u32,
+    pub sync: SyncResultJson,
+}
+
+#[derive(Serialize)]
+pub struct SyncResultJson {
+    pub stack: String,
+    pub base: String,
+    pub rebased_before_sync: bool,
+    pub entries: Vec<SyncEntryResultJson>,
+}
+
+#[derive(Serialize)]
+pub struct SyncEntryResultJson {
+    pub position: usize,
+    pub sha: String,
+    pub title: String,
+    pub gg_id: String,
+    pub branch: String,
+    pub action: String,
+    pub pr_number: Option<u64>,
+    pub pr_url: Option<String>,
+    pub draft: bool,
+    pub pushed: bool,
+    pub error: Option<String>,
+}

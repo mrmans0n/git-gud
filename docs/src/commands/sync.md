@@ -15,6 +15,7 @@ gg sync [OPTIONS]
 - `--no-lint`: Disable lint before sync (overrides config default)
 - `--no-rebase-check`: Skip checking whether your stack base is behind `origin/<base>`
 - `-u, --until <UNTIL>`: Sync up to target commit (position, GG-ID, or SHA)
+- `--json`: Output structured JSON for automation (suppresses human/progress output)
 
 Before pushing, `gg sync` checks whether your stack base is behind `origin/<base>`. If it is behind by at least the configured threshold, git-gud warns and suggests rebasing first (`gg rebase`).
 
@@ -40,4 +41,36 @@ gg sync --lint
 
 # Skip behind-base check once
 gg sync --no-rebase-check
+
+# Machine-readable output
+# (useful in scripts/agents)
+gg sync --json
+```
+
+Example JSON (shape):
+
+```json
+{
+  "version": 1,
+  "sync": {
+    "stack": "my-stack",
+    "base": "main",
+    "rebased_before_sync": false,
+    "entries": [
+      {
+        "position": 1,
+        "sha": "abc1234",
+        "title": "Add feature",
+        "gg_id": "c-abc1234",
+        "branch": "user/my-stack--c-abc1234",
+        "action": "created",
+        "pr_number": 42,
+        "pr_url": "https://github.com/org/repo/pull/42",
+        "draft": false,
+        "pushed": true,
+        "error": null
+      }
+    ]
+  }
+}
 ```

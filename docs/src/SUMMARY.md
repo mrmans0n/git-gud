@@ -11,6 +11,7 @@
   - [Landing and Cleanup](./guides/landing-and-cleanup.md)
   - [Linting Your Stack](./guides/linting.md)
   - [Reconciling Out-of-Sync Stacks](./guides/reconciling.md)
+  - [Agent Skills Plugin](./guides/agent-skills.md)
 - [Command Reference](./commands/README.md)
   - [co (checkout)](./commands/co.md)
   - [ls](./commands/ls.md)

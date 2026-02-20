@@ -717,4 +717,44 @@ mod tests {
     fn no_refresh_for_human_output_without_flag() {
         assert!(!should_refresh_mr_info(false, false));
     }
+
+    // ==========================================================================
+    // Tests for remote stack classification (active vs landed)
+    // ==========================================================================
+    //
+    // The classification logic in list_remote_stacks checks each stack's PRs
+    // via the provider API. Full integration testing requires a mock provider.
+    //
+    // Classification rules:
+    // - If no provider is available: stack is treated as active
+    // - If stack has no MR mappings in config: treated as active
+    // - If ALL MRs are merged (PrState::Merged): treated as landed
+    // - If ANY MR is not merged: treated as active
+
+    #[test]
+    fn test_classification_rules_with_pr_states() {
+        use crate::provider::PrState;
+
+        // Simulate the classification predicate used in list_remote_stacks
+        let classify = |mr_states: &[PrState]| -> bool {
+            !mr_states.is_empty() && mr_states.iter().all(|s| *s == PrState::Merged)
+        };
+
+        // All merged -> landed
+        assert!(classify(&[PrState::Merged]));
+        assert!(classify(&[PrState::Merged, PrState::Merged]));
+
+        // Any open -> active
+        assert!(!classify(&[PrState::Open]));
+        assert!(!classify(&[PrState::Merged, PrState::Open]));
+
+        // Any closed -> active (not merged)
+        assert!(!classify(&[PrState::Closed]));
+
+        // Draft -> active
+        assert!(!classify(&[PrState::Draft]));
+
+        // Empty (no MRs) -> active
+        assert!(!classify(&[]));
+    }
 }

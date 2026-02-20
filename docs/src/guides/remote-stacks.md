@@ -8,6 +8,8 @@ Use this when a stack exists on origin but not in your local checkout (new machi
 gg ls --remote
 ```
 
+Active stacks are shown first. Stacks whose PRs/MRs have all been merged appear in a separate "Landed" section at the bottom, so you can focus on work that still needs attention.
+
 ## Check out a remote stack
 
 ```bash

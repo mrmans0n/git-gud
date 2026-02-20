@@ -342,48 +342,71 @@ fn list_remote_stacks(repo: &git2::Repository, config: &Config, json: bool) -> R
 
     let provider = Provider::detect(repo).ok();
 
-    println!("{}", style("Remote stacks:").bold());
-    println!();
+    // Classify stacks as active or merged
+    let mut active_stacks: Vec<&String> = Vec::new();
+    let mut merged_stacks: Vec<&String> = Vec::new();
 
     for stack_name in &remote_stacks {
-        let remote_branch = format!("origin/{}/{}", username, stack_name);
-
-        let commit_info = if let Ok(base) = git::find_base_branch(repo) {
-            if let Ok(count) = count_stack_commits(repo, &remote_branch, &base) {
-                format!(" ({} commits)", count)
-            } else {
-                String::new()
-            }
-        } else {
-            String::new()
-        };
-
-        let mr_info = if provider.is_some() {
+        let is_merged = if let Some(ref provider) = provider {
             if let Some(stack_config) = config.get_stack(stack_name) {
-                let mrs: Vec<String> = stack_config
-                    .mrs
-                    .values()
-                    .map(|n| format!("#{}", n))
-                    .collect();
-                if !mrs.is_empty() {
-                    format!(" [{}]", mrs.join(", "))
+                if stack_config.mrs.is_empty() {
+                    false
                 } else {
-                    String::new()
+                    stack_config.mrs.values().all(|mr_num| {
+                        provider
+                            .get_pr_info(*mr_num)
+                            .map(|info| info.state == PrState::Merged)
+                            .unwrap_or(false)
+                    })
                 }
             } else {
-                String::new()
+                false
             }
         } else {
-            String::new()
+            false
         };
 
+        if is_merged {
+            merged_stacks.push(stack_name);
+        } else {
+            active_stacks.push(stack_name);
+        }
+    }
+
+    println!("{}", style("Remote stacks:").bold());
+
+    if active_stacks.is_empty() && merged_stacks.is_empty() {
+        println!();
         println!(
-            "  {} {}{}{}",
-            style("○").dim(),
-            style(stack_name).cyan(),
-            style(&commit_info).dim(),
-            style(&mr_info).blue()
+            "{}",
+            style("No remote stacks found that aren't already checked out locally.").dim()
         );
+        return Ok(());
+    }
+
+    if !active_stacks.is_empty() {
+        println!();
+        for stack_name in &active_stacks {
+            print_remote_stack_line(
+                repo,
+                config,
+                stack_name,
+                &username,
+                provider.as_ref(),
+                false,
+            );
+        }
+    }
+
+    if !merged_stacks.is_empty() {
+        println!();
+        println!(
+            "  {}",
+            style(format!("Landed ({}):", merged_stacks.len())).dim()
+        );
+        for stack_name in &merged_stacks {
+            print_remote_stack_line(repo, config, stack_name, &username, provider.as_ref(), true);
+        }
     }
 
     println!();
@@ -393,6 +416,64 @@ fn list_remote_stacks(repo: &git2::Repository, config: &Config, json: bool) -> R
     );
 
     Ok(())
+}
+
+fn print_remote_stack_line(
+    repo: &git2::Repository,
+    config: &Config,
+    stack_name: &str,
+    username: &str,
+    provider: Option<&Provider>,
+    is_merged: bool,
+) {
+    let remote_branch = format!("origin/{}/{}", username, stack_name);
+
+    let commit_info = if let Ok(base) = git::find_base_branch(repo) {
+        if let Ok(count) = count_stack_commits(repo, &remote_branch, &base) {
+            format!(" ({} commits)", count)
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    let mr_info = if provider.is_some() {
+        if let Some(stack_config) = config.get_stack(stack_name) {
+            let mrs: Vec<String> = stack_config
+                .mrs
+                .values()
+                .map(|n| format!("#{}", n))
+                .collect();
+            if !mrs.is_empty() {
+                format!(" [{}]", mrs.join(", "))
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    if is_merged {
+        println!(
+            "  {} {}{}{}",
+            style("✓").green(),
+            style(stack_name).dim(),
+            style(&commit_info).dim(),
+            style(&mr_info).dim()
+        );
+    } else {
+        println!(
+            "  {} {}{}{}",
+            style("○").dim(),
+            style(stack_name).cyan(),
+            style(&commit_info).dim(),
+            style(&mr_info).blue()
+        );
+    }
 }
 
 fn count_stack_commits(repo: &git2::Repository, branch: &str, base: &str) -> Result<usize> {
@@ -635,5 +716,45 @@ mod tests {
     #[test]
     fn no_refresh_for_human_output_without_flag() {
         assert!(!should_refresh_mr_info(false, false));
+    }
+
+    // ==========================================================================
+    // Tests for remote stack classification (active vs landed)
+    // ==========================================================================
+    //
+    // The classification logic in list_remote_stacks checks each stack's PRs
+    // via the provider API. Full integration testing requires a mock provider.
+    //
+    // Classification rules:
+    // - If no provider is available: stack is treated as active
+    // - If stack has no MR mappings in config: treated as active
+    // - If ALL MRs are merged (PrState::Merged): treated as landed
+    // - If ANY MR is not merged: treated as active
+
+    #[test]
+    fn test_classification_rules_with_pr_states() {
+        use crate::provider::PrState;
+
+        // Simulate the classification predicate used in list_remote_stacks
+        let classify = |mr_states: &[PrState]| -> bool {
+            !mr_states.is_empty() && mr_states.iter().all(|s| *s == PrState::Merged)
+        };
+
+        // All merged -> landed
+        assert!(classify(&[PrState::Merged]));
+        assert!(classify(&[PrState::Merged, PrState::Merged]));
+
+        // Any open -> active
+        assert!(!classify(&[PrState::Open]));
+        assert!(!classify(&[PrState::Merged, PrState::Open]));
+
+        // Any closed -> active (not merged)
+        assert!(!classify(&[PrState::Closed]));
+
+        // Draft -> active
+        assert!(!classify(&[PrState::Draft]));
+
+        // Empty (no MRs) -> active
+        assert!(!classify(&[]));
     }
 }

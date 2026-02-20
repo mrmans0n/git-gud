@@ -450,13 +450,10 @@ fn check_stack_merged(
                     }
                 }
 
-                // Additional safety: verify commits are reachable from base branch.
-                if all_merged
-                    && verify_commits_reachable(repo, config, stack_name, username).is_err()
-                {
-                    all_merged = false;
-                    provider_verified = false;
-                }
+                // Note: we intentionally do NOT call verify_commits_reachable here.
+                // With squash or rebase merges, the local commit SHAs will differ from
+                // what's on the base branch, so a revwalk check would incorrectly report
+                // unmerged commits. The provider API confirmation is authoritative.
 
                 if all_merged {
                     return Ok(MergeStatus {
@@ -506,6 +503,7 @@ fn is_stack_branch_ancestor_of_base(
     Ok(repo.merge_base(stack_oid, base_oid)? == stack_oid)
 }
 
+#[allow(dead_code)]
 /// Verify that all commits in the stack are reachable from the base branch
 /// This provides additional safety before deleting remote branches
 fn verify_commits_reachable(

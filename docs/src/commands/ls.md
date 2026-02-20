@@ -12,7 +12,7 @@ gg ls [OPTIONS]
 
 - `-a, --all`: Show all local stacks
 - `-r, --refresh`: Refresh PR/MR status from remote
-- `--remote`: List remote stacks not checked out locally
+- `--remote`: List remote stacks not checked out locally. Stacks whose PRs/MRs are all merged are shown in a separate "Landed" section at the bottom with a `✓` marker
 - `--json`: Print structured JSON output (for scripts and automation). Automatically performs a best-effort refresh of PR/MR state from the provider API, so `pr_state` and `ci_status` fields are populated without needing `--refresh`.
 
 ## Examples
@@ -24,7 +24,7 @@ gg ls
 # All local stacks
 gg ls --all
 
-# Remote stacks you can check out
+# Remote stacks (active first, then landed)
 gg ls --remote
 
 # Refresh status badges from provider

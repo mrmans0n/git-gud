@@ -384,6 +384,16 @@ pub fn run(
                     } else if info.state == PrState::Merged {
                         if let Some(gg_id) = &entry.gg_id {
                             if seen_already_merged.insert(gg_id.clone()) {
+                                if !json {
+                                    println!(
+                                        "{} {} {}{} ({}) — already merged",
+                                        style("→").cyan(),
+                                        provider.pr_label(),
+                                        provider.pr_number_prefix(),
+                                        num,
+                                        entry.title
+                                    );
+                                }
                                 landed_entries.push(LandedEntryJson {
                                     position: entry.position,
                                     sha: entry.short_sha.clone(),
@@ -400,6 +410,16 @@ pub fn run(
                     } else if info.state == PrState::Closed {
                         if let Some(gg_id) = &entry.gg_id {
                             if seen_closed.insert(gg_id.clone()) {
+                                if !json {
+                                    println!(
+                                        "{} {} {}{} ({}) — closed, skipping",
+                                        style("⚠").yellow(),
+                                        provider.pr_label(),
+                                        provider.pr_number_prefix(),
+                                        num,
+                                        entry.title
+                                    );
+                                }
                                 landed_entries.push(LandedEntryJson {
                                     position: entry.position,
                                     sha: entry.short_sha.clone(),
@@ -457,6 +477,16 @@ pub fn run(
         match pr_info.state {
             PrState::Merged => {
                 if seen_already_merged.insert(gg_id.clone()) {
+                    if !json {
+                        println!(
+                            "{} {} {}{} ({}) — already merged",
+                            style("→").cyan(),
+                            provider.pr_label(),
+                            provider.pr_number_prefix(),
+                            pr_num,
+                            entry.title
+                        );
+                    }
                     landed_entries.push(LandedEntryJson {
                         position: entry.position,
                         sha: entry.short_sha.clone(),
@@ -472,6 +502,16 @@ pub fn run(
             }
             PrState::Closed => {
                 if seen_closed.insert(gg_id.clone()) {
+                    if !json {
+                        println!(
+                            "{} {} {}{} ({}) — closed, skipping",
+                            style("⚠").yellow(),
+                            provider.pr_label(),
+                            provider.pr_number_prefix(),
+                            pr_num,
+                            entry.title
+                        );
+                    }
                     landed_entries.push(LandedEntryJson {
                         position: entry.position,
                         sha: entry.short_sha.clone(),

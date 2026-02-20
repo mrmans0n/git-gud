@@ -1,6 +1,6 @@
 # Agent Skills Plugin
 
-git-gud ships as a [Claude Code plugin](https://code.claude.com/docs/en/plugins) and follows the open [Agent Skills](https://agentskills.io) standard. This means AI coding agents — Claude Code, Cursor, Gemini CLI, OpenAI Codex, and others — can learn to use `gg` for stacked-diff workflows.
+git-gud ships as a [Claude Code plugin](https://code.claude.com/docs/en/plugins) and follows the open [Agent Skills](https://agentskills.io) standard. This means AI coding agents — Claude Code, Cursor, Gemini CLI, OpenAI Codex, VS Code integrations, and others — can use `gg` for stacked-diff workflows.
 
 ## What's included
 
@@ -14,39 +14,77 @@ The plugin provides two skills:
 Each skill includes:
 
 - **SKILL.md** — concise instructions with agent operating rules
-- **reference.md** — full command reference with JSON output schemas
+- **reference.md** — command reference and JSON schemas
 - **examples/** — step-by-step workflow walkthroughs
 
-## Using with Claude Code
+## Installation
 
-Load the plugin from the git-gud repo:
+### 1) One-off plugin loading (CLI)
+
+Use this when launching Claude Code directly:
 
 ```bash
 claude --plugin-dir /path/to/git-gud
 ```
 
-Then use the skills as slash commands:
+### 2) Project-level config (`.claude/settings.json`)
 
+Use this when you want the plugin enabled by default for a repository:
+
+```json
+{
+  "plugins": [
+    {
+      "name": "git-gud",
+      "path": "/path/to/git-gud"
+    }
+  ]
+}
 ```
-/git-gud:gg-github
-/git-gud:gg-gitlab
-```
 
-Or let Claude pick them up automatically when you ask about stacked diffs or PRs.
+### 3) Other Agent Skills-compatible tools
 
-## Using with other tools
+Tools that support the Agent Skills standard can load skills from the repo's `skills/` directory. In practice, this includes Claude Code, Cursor, Gemini CLI, OpenAI Codex, and other compatible agent hosts.
 
-Any tool supporting the Agent Skills standard can consume the skills from the `skills/` directory. The `SKILL.md` files use standard YAML frontmatter with `name` and `description` fields.
+## How agents typically use gg
 
-## Agent operating rules
+A practical AI-assisted stacked-diff workflow looks like this:
 
-The skills enforce several safety rules for AI agents:
+1. Agent creates or switches to a stack (`gg co ...`, ideally with a worktree)
+2. Agent makes small commits and keeps each commit focused
+3. Agent syncs the stack (`gg sync`) so PRs/MRs are created/updated in order
+4. Agent iterates on review feedback (amend/reorder/re-sync)
+5. Agent asks for explicit user confirmation before `gg land`
 
-1. **Never land without user confirmation** — agents must always ask before merging
-2. **Always use `--json`** for parseable output
-3. **Prefer worktrees** (`gg co -w`) for isolation
-4. **Never `git add -A` blindly** — review and stage specific files only
-5. **Verify CI + approval** before suggesting to land
+This keeps work reviewable while preserving user control over merges.
+
+## JSON output for tool-driven agents
+
+For machine-readable parsing, `gg` supports `--json` on key commands:
+
+- `gg ls --json`
+- `gg sync --json`
+- `gg land --json`
+- `gg clean --json`
+- `gg lint --json`
+
+Use these outputs in agents and automation for reliable state checks and decisions. For full response schemas, see each skill's `reference.md`.
+
+## Safety model (required behavior)
+
+When using AI agents with `gg`, keep these rules:
+
+1. **Never land without explicit user confirmation**
+2. **Never run `git add -A` blindly** (stage only reviewed/intended files)
+3. **Prefer worktrees** for isolation (`gg co --wt`)
+4. **Use structured output (`--json`)** when automation must parse command results
+
+## Skill references
+
+For full operational details, prompts, and examples:
+
+- GitHub skill: [`skills/gg-github/SKILL.md`](https://github.com/mrmans0n/git-gud/blob/main/skills/gg-github/SKILL.md)
+- GitLab skill: [`skills/gg-gitlab/SKILL.md`](https://github.com/mrmans0n/git-gud/blob/main/skills/gg-gitlab/SKILL.md)
 
 ## File structure
 

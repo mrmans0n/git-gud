@@ -31,11 +31,12 @@ gg setup
 
 ```json
 {
-  "version": 2,
-  "base_branch": "main",
-  "username": "your-github-user",
-  "provider": "github",
-  "lint_commands": ["cargo fmt --all --check", "cargo clippy -- -D warnings"]
+  "defaults": {
+    "provider": "github",
+    "base": "main",
+    "branch_username": "your-github-user",
+    "lint": ["cargo fmt --all --check", "cargo clippy -- -D warnings"]
+  }
 }
 ```
 

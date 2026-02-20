@@ -33,7 +33,8 @@ gg sync --json
 Optionally verify in GitLab CLI:
 
 ```bash
-glab mr list --source-branch "$(git rev-parse --abbrev-ref HEAD)"
+# Use gg ls --json to see the MRs created by sync — it shows mr_number and mr_state per entry
+gg ls --json
 ```
 
 ## 5) Check approvals and CI

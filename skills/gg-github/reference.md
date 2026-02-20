@@ -13,11 +13,12 @@ Manual config (`.git/gg/config.json`):
 
 ```json
 {
-  "version": 2,
-  "base_branch": "main",
-  "username": "your-github-user",
-  "provider": "github",
-  "lint_commands": ["cargo fmt --all --check"]
+  "defaults": {
+    "provider": "github",
+    "base": "main",
+    "branch_username": "your-github-user",
+    "lint": ["cargo fmt --all --check"]
+  }
 }
 ```
 

@@ -31,11 +31,15 @@ gg setup
 
 ```json
 {
-  "version": 2,
-  "base_branch": "main",
-  "username": "your-gitlab-user",
-  "provider": "gitlab",
-  "lint_commands": ["cargo fmt --all --check", "cargo clippy -- -D warnings"]
+  "defaults": {
+    "provider": "gitlab",
+    "base": "main",
+    "branch_username": "your-gitlab-user",
+    "lint": ["cargo fmt --all --check", "cargo clippy -- -D warnings"],
+    "gitlab": {
+      "auto_merge_on_land": false
+    }
+  }
 }
 ```
 

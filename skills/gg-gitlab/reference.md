@@ -13,11 +13,15 @@ Manual config (`.git/gg/config.json`):
 
 ```json
 {
-  "version": 2,
-  "base_branch": "main",
-  "username": "your-gitlab-user",
-  "provider": "gitlab",
-  "lint_commands": ["cargo fmt --all --check"]
+  "defaults": {
+    "provider": "gitlab",
+    "base": "main",
+    "branch_username": "your-gitlab-user",
+    "lint": ["cargo fmt --all --check"],
+    "gitlab": {
+      "auto_merge_on_land": false
+    }
+  }
 }
 ```
 

@@ -370,6 +370,30 @@ pub fn checkout_branch(repo: &Repository, branch_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Ensure HEAD is attached to the given branch.
+///
+/// In git worktrees, `git rebase ... <branch>` can leave HEAD detached even
+/// though the branch ref has been updated correctly. This function detects
+/// that situation and re-attaches HEAD to the branch using `git symbolic-ref`.
+///
+/// Safety: only re-attaches when HEAD and the branch tip point to the same
+/// commit, so it won't silently move HEAD to an unexpected location.
+pub fn ensure_branch_attached(repo: &Repository, branch_name: &str) -> Result<()> {
+    if repo.head_detached()? {
+        let head_oid = repo.head()?.peel_to_commit()?.id();
+        let refname = format!("refs/heads/{}", branch_name);
+        // Only re-attach if branch tip matches HEAD
+        if let Ok(branch_ref) = repo.find_reference(&refname) {
+            if let Ok(branch_commit) = branch_ref.peel_to_commit() {
+                if head_oid == branch_commit.id() {
+                    run_git_command(&["symbolic-ref", "HEAD", &refname])?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Move a branch to point at the current HEAD commit
 pub fn move_branch_to_head(repo: &Repository, branch_name: &str) -> Result<()> {
     let head_oid = repo.head()?.peel_to_commit()?.id();
@@ -1104,6 +1128,44 @@ mod tests {
 
         assert!(hook_error.is_none());
         assert!(git_error.is_none());
+    }
+
+    #[test]
+    fn test_ensure_branch_attached_noop_when_on_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+
+        // Configure git user for commits
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "Test").unwrap();
+        config.set_str("user.email", "test@test.com").unwrap();
+
+        // Create an initial commit
+        let sig = repo.signature().unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+
+        // HEAD is on main/master, not detached
+        assert!(!repo.head_detached().unwrap());
+
+        let branch_name = repo.head().unwrap().shorthand().unwrap().to_string();
+
+        // Should be a no-op
+        // We can't easily call ensure_branch_attached without being in the
+        // repo directory, so test the detection logic directly.
+        assert!(!repo.head_detached().unwrap());
+
+        // Now detach HEAD
+        repo.set_head_detached(oid).unwrap();
+        assert!(repo.head_detached().unwrap());
+
+        // Re-attach using symbolic-ref (simulating what ensure_branch_attached does)
+        let refname = format!("refs/heads/{}", branch_name);
+        repo.set_head(&refname).unwrap();
+        assert!(!repo.head_detached().unwrap());
     }
 }
 

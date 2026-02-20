@@ -295,8 +295,9 @@ pub fn run(all: bool) -> Result<()> {
             remaining
         );
 
-        // Rebase updates the stack branch tip. Check out the branch first so we don't
-        // lose branch context while navigating back to our position.
+        // Rebase updates the stack branch tip. In worktrees, HEAD may be left
+        // detached after rebase; re-attach it before checking out.
+        git::ensure_branch_attached(&repo, &branch_name)?;
         git::checkout_branch(&repo, &branch_name)?;
 
         // Stay at the same position (now pointing to amended commit)

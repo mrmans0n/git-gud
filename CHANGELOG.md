@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-02-20
+
+### Fixed
+- `gg amend` / `gg rebase` no longer leave detached HEAD inside git worktrees — added `ensure_branch_attached` helper that safely re-attaches HEAD after rebase (#162)
+- `gg land` now shows a message when a PR/MR is already merged or closed, instead of silently skipping (#163)
+- `gg clean` now correctly detects squash-merged stacks as merged — removed overly strict commit reachability check that failed with squash/rebase merge strategies (#164)
+- `gg ls --remote` now separates active and landed stacks — merged stacks shown at the bottom with ✓ marker (#164)
+- `gg land --wait` no longer exits immediately after adding MR to merge train — added grace period for GitLab to register the MR in the train queue (#165)
+
+### Changed
+- Updated dependencies: `anyhow` to v1.0.102, `clap` to v4.5.60 (#160, #161)
+
 ## [0.4.1] - 2026-02-19
 
 ### Fixed
@@ -190,6 +202,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release with core stacked diffs functionality
 
 [Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.4.0...HEAD
+[0.4.2]: https://github.com/mrmans0n/git-gud/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/mrmans0n/git-gud/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/mrmans0n/git-gud/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/mrmans0n/git-gud/compare/v0.3.2...v0.3.3

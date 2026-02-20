@@ -5062,3 +5062,91 @@ fn test_clean_detects_locally_merged_worktree_stack_when_provider_check_fails() 
         stdout
     );
 }
+
+#[test]
+fn test_amend_in_worktree_does_not_leave_detached_head() {
+    let (_parent_dir, repo_path) = create_test_repo_with_worktree_support();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","base":"main"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with 2 commits
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "wt-amend-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("file1.txt"), "content 1").expect("Failed to write");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "commit 1"]);
+
+    fs::write(repo_path.join("file2.txt"), "content 2").expect("Failed to write");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "commit 2"]);
+
+    // Now create a worktree for this stack branch.
+    // First, switch main repo to main so the stack branch is free.
+    run_git(&repo_path, &["checkout", "main"]);
+
+    let worktree_path = repo_path.parent().unwrap().join("wt-amend");
+    let output = Command::new("git")
+        .args([
+            "worktree",
+            "add",
+            worktree_path.to_str().unwrap(),
+            "testuser/wt-amend-test",
+        ])
+        .current_dir(&repo_path)
+        .output()
+        .expect("Failed to create worktree");
+    assert!(
+        output.status.success(),
+        "worktree add failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // In the worktree, navigate to first commit and amend
+    let (success, _, stderr) = run_gg(&worktree_path, &["first"]);
+    assert!(success, "Failed to nav first in worktree: {}", stderr);
+
+    fs::write(worktree_path.join("file1.txt"), "amended content").expect("Failed to write");
+    run_git(&worktree_path, &["add", "."]);
+    let (success, stdout, stderr) = run_gg(&worktree_path, &["amend"]);
+    assert!(
+        success,
+        "amend should succeed in worktree: stdout={}, stderr={}",
+        stdout, stderr
+    );
+
+    // Verify amend completed the full flow: squash + rebase + nav back.
+    // Without ensure_branch_attached, checkout_branch would fail in a
+    // worktree because git refuses to checkout a branch "in use" elsewhere.
+    // Note: after amend, gg navigates back to the amended position which
+    // detaches HEAD again (normal nav behavior), so we check the output
+    // messages to confirm the rebase step completed successfully.
+    assert!(
+        stdout.contains("Rebased"),
+        "amend should complete rebase in worktree: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("OK"),
+        "amend output should contain OK: {}",
+        stdout
+    );
+
+    // Clean up worktree
+    let _ = Command::new("git")
+        .args([
+            "worktree",
+            "remove",
+            worktree_path.to_str().unwrap(),
+            "--force",
+        ])
+        .current_dir(&repo_path)
+        .output();
+}

@@ -95,6 +95,11 @@ pub fn run_with_repo(repo: &Repository, target: Option<String>, json: bool) -> R
 
     match rebase_result {
         Ok(_) => {
+            // In worktrees, rebase can leave HEAD detached; re-attach it.
+            if let Some(ref branch) = current_branch {
+                git::ensure_branch_attached(repo, branch)?;
+            }
+
             if !json {
                 println!(
                     "{} Rebased stack onto {}",

@@ -370,6 +370,35 @@ pub fn checkout_branch(repo: &Repository, branch_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Ensure HEAD is attached to the given branch.
+///
+/// In git worktrees, `git rebase ... <branch>` can leave HEAD detached even
+/// though the branch ref has been updated correctly. This function detects
+/// that situation and re-attaches HEAD to the branch using `git symbolic-ref`.
+///
+/// Safety: only re-attaches when HEAD and the branch tip point to the same
+/// commit, so it won't silently move HEAD to an unexpected location.
+///
+/// Note: we use `git symbolic-ref` instead of `repo.set_head()` because the
+/// latter performs a `git_branch_is_checked_out` check that refuses to point
+/// HEAD at a branch that is checked out in another worktree — which is exactly
+/// the scenario we need to fix.
+pub fn ensure_branch_attached(repo: &Repository, branch_name: &str) -> Result<()> {
+    if repo.head_detached()? {
+        let head_oid = repo.head()?.peel_to_commit()?.id();
+        let refname = format!("refs/heads/{}", branch_name);
+        // Only re-attach if branch tip matches HEAD
+        if let Ok(branch_ref) = repo.find_reference(&refname) {
+            if let Ok(branch_commit) = branch_ref.peel_to_commit() {
+                if head_oid == branch_commit.id() {
+                    run_git_command(&["symbolic-ref", "HEAD", &refname])?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Move a branch to point at the current HEAD commit
 pub fn move_branch_to_head(repo: &Repository, branch_name: &str) -> Result<()> {
     let head_oid = repo.head()?.peel_to_commit()?.id();
@@ -1104,6 +1133,100 @@ mod tests {
 
         assert!(hook_error.is_none());
         assert!(git_error.is_none());
+    }
+
+    #[test]
+    fn test_ensure_branch_attached_noop_when_on_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+
+        // Configure git user for commits
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "Test").unwrap();
+        config.set_str("user.email", "test@test.com").unwrap();
+
+        // Create an initial commit
+        let sig = repo.signature().unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+
+        // HEAD is on a branch, not detached
+        assert!(!repo.head_detached().unwrap());
+
+        let branch_name = repo.head().unwrap().shorthand().unwrap().to_string();
+
+        // Should be a no-op when HEAD is already attached
+        ensure_branch_attached(&repo, &branch_name).unwrap();
+        assert!(!repo.head_detached().unwrap());
+    }
+
+    #[test]
+    fn test_ensure_branch_attached_reattaches_detached_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "Test").unwrap();
+        config.set_str("user.email", "test@test.com").unwrap();
+
+        let sig = repo.signature().unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+
+        let branch_name = repo.head().unwrap().shorthand().unwrap().to_string();
+
+        // Detach HEAD at the same commit as the branch
+        repo.set_head_detached(oid).unwrap();
+        assert!(repo.head_detached().unwrap());
+
+        // run_git_command uses CWD, so we need to be in the repo dir
+        let prev_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        // Should re-attach because HEAD and branch tip match
+        let result = ensure_branch_attached(&repo, &branch_name);
+
+        std::env::set_current_dir(&prev_dir).unwrap();
+
+        result.unwrap();
+        assert!(!repo.head_detached().unwrap());
+    }
+
+    #[test]
+    fn test_ensure_branch_attached_skips_when_oids_differ() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "Test").unwrap();
+        config.set_str("user.email", "test@test.com").unwrap();
+
+        let sig = repo.signature().unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let oid1 = repo
+            .commit(Some("HEAD"), &sig, &sig, "first", &tree, &[])
+            .unwrap();
+
+        let branch_name = repo.head().unwrap().shorthand().unwrap().to_string();
+
+        // Create a second commit, advancing the branch
+        let parent = repo.find_commit(oid1).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "second", &tree, &[&parent])
+            .unwrap();
+
+        // Detach HEAD at the first commit (behind the branch tip)
+        repo.set_head_detached(oid1).unwrap();
+        assert!(repo.head_detached().unwrap());
+
+        // Should NOT re-attach because HEAD and branch tip differ
+        ensure_branch_attached(&repo, &branch_name).unwrap();
+        assert!(repo.head_detached().unwrap()); // still detached
     }
 }
 

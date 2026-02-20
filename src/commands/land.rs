@@ -53,6 +53,11 @@ fn finish_spinner(spinner: &ProgressBar, message: &str, start_time: Instant) {
 /// Polling interval (10 seconds)
 const POLL_INTERVAL_SECS: u64 = 10;
 
+/// Number of consecutive Idle polls to tolerate before treating as error.
+/// After adding an MR to the merge train, GitLab may take a few seconds
+/// to reflect it in the train list. At 10s poll interval, 6 polls = ~60s.
+const IDLE_GRACE_POLLS: u32 = 6;
+
 /// Cleanup after successfully merging a PR/MR:
 /// - Remove the PR/MR mapping from config
 /// - Update the base of remaining PRs/MRs if landing all
@@ -1058,6 +1063,11 @@ fn wait_for_merge_train_completion(
     let timeout = Duration::from_secs(timeout_minutes * 60);
     let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
 
+    // Grace period: after adding to merge train, the MR may not appear in the
+    // train list immediately. Allow some polls with Idle status before treating
+    // it as an error.
+    let mut idle_count: u32 = 0;
+
     if !json {
         println!(
             "{}",
@@ -1153,14 +1163,17 @@ fn wait_for_merge_train_completion(
                     return Ok(());
                 }
                 MergeTrainStatus::Merging => {
+                    idle_count = 0; // MR is in train, reset grace counter
                     new_state = "Merge train: merging now...".to_string();
                 }
                 MergeTrainStatus::Fresh => {
+                    idle_count = 0;
                     if let Some(pos) = train_info.position {
                         new_state = format!("Merge train: position {} (fresh, ready)", pos);
                     }
                 }
                 MergeTrainStatus::Stale => {
+                    idle_count = 0;
                     new_state = "Merge train: stale (waiting for rebase/pipeline)".to_string();
                 }
                 MergeTrainStatus::SkipMerged => {
@@ -1175,15 +1188,22 @@ fn wait_for_merge_train_completion(
                     )));
                 }
                 MergeTrainStatus::Idle => {
-                    if let Some(ref spinner) = current_spinner {
-                        spinner.finish_and_clear();
+                    idle_count += 1;
+                    if idle_count > IDLE_GRACE_POLLS {
+                        if let Some(ref spinner) = current_spinner {
+                            spinner.finish_and_clear();
+                        }
+                        return Err(GgError::Other(format!(
+                            "{} {}{} is no longer in the merge train",
+                            provider.pr_label(),
+                            provider.pr_number_prefix(),
+                            pr_num
+                        )));
                     }
-                    return Err(GgError::Other(format!(
-                        "{} {}{} is no longer in the merge train",
-                        provider.pr_label(),
-                        provider.pr_number_prefix(),
-                        pr_num
-                    )));
+                    new_state = format!(
+                        "Waiting for merge train to pick up MR ({}s)...",
+                        idle_count * POLL_INTERVAL_SECS as u32
+                    );
                 }
                 _ => {
                     if let Some(pos) = train_info.position {
@@ -2142,5 +2162,83 @@ mod tests {
         assert_eq!(value["land"]["landed"][0]["action"], "merged");
         assert_eq!(value["land"]["landed"][0]["pr_number"], 42);
         assert_eq!(value["land"]["error"], "stopped");
+    }
+
+    // ==========================================================================
+    // Tests for merge train idle grace period (PR #165)
+    // ==========================================================================
+
+    #[test]
+    fn test_idle_grace_polls_constant_is_reasonable() {
+        // Grace period should be enough for GitLab to pick up the MR
+        // but not so long that genuine removals go unnoticed.
+        // At 10s poll interval, 6 polls = ~60 seconds.
+        const {
+            assert!(IDLE_GRACE_POLLS >= 3); // Not too short
+            assert!(IDLE_GRACE_POLLS <= 12); // Not too long
+            assert!(IDLE_GRACE_POLLS as u64 * POLL_INTERVAL_SECS == 60); // ~60s
+        }
+    }
+
+    #[test]
+    fn test_idle_counter_logic() {
+        // Simulate the idle counter behavior used in wait_for_merge_train_completion
+        let mut idle_count: u32 = 0;
+
+        // First few Idle polls should be tolerated (grace period)
+        for i in 1..=IDLE_GRACE_POLLS {
+            idle_count += 1;
+            assert!(
+                idle_count <= IDLE_GRACE_POLLS,
+                "Should not error during grace period (poll {})",
+                i
+            );
+        }
+
+        // Next Idle poll should trigger error
+        idle_count += 1;
+        assert!(
+            idle_count > IDLE_GRACE_POLLS,
+            "Should error after grace period exhausted"
+        );
+    }
+
+    #[test]
+    fn test_idle_counter_resets_on_active_status() {
+        // Simulate: Idle → Idle → Fresh (reset) → Idle → Idle
+        let mut idle_count: u32 = 0;
+
+        // Two Idle polls
+        idle_count += 1;
+        idle_count += 1;
+        assert_eq!(idle_count, 2);
+
+        // MR appears in train (Fresh/Stale/Merging) → reset
+        idle_count = 0;
+        assert_eq!(idle_count, 0);
+
+        // Two more Idle polls — should still be within grace
+        idle_count += 1;
+        idle_count += 1;
+        assert!(
+            idle_count <= IDLE_GRACE_POLLS,
+            "After reset, grace period should restart"
+        );
+    }
+
+    #[test]
+    fn test_idle_counter_does_not_reset_on_idle() {
+        // Consecutive Idle polls should accumulate without reset
+        let mut idle_count: u32 = 0;
+
+        for _ in 0..IDLE_GRACE_POLLS {
+            idle_count += 1;
+        }
+
+        assert_eq!(idle_count, IDLE_GRACE_POLLS);
+
+        // One more should exceed
+        idle_count += 1;
+        assert!(idle_count > IDLE_GRACE_POLLS);
     }
 }

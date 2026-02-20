@@ -19,7 +19,14 @@ Each skill includes:
 
 ## Installation
 
-### 1) One-off plugin loading (CLI)
+### 1) Claude Code marketplace (recommended)
+
+```bash
+claude plugin marketplace add https://github.com/mrmans0n/git-gud
+claude plugin install git-gud
+```
+
+### 2) One-off plugin loading (CLI)
 
 Use this when launching Claude Code directly:
 
@@ -27,7 +34,7 @@ Use this when launching Claude Code directly:
 claude --plugin-dir /path/to/git-gud
 ```
 
-### 2) Project-level config (`.claude/settings.json`)
+### 3) Project-level config (`.claude/settings.json`)
 
 Use this when you want the plugin enabled by default for a repository:
 
@@ -42,7 +49,7 @@ Use this when you want the plugin enabled by default for a repository:
 }
 ```
 
-### 3) Other Agent Skills-compatible tools
+### 4) Other Agent Skills-compatible tools
 
 Tools that support the Agent Skills standard can load skills from the repo's `skills/` directory. In practice, this includes Claude Code, Cursor, Gemini CLI, OpenAI Codex, and other compatible agent hosts.
 

@@ -518,11 +518,12 @@ git-gud ships as a [Claude Code plugin](https://code.claude.com/docs/en/plugins)
 ### Quick setup
 
 ```bash
-# Claude Code
-claude --plugin-dir /path/to/git-gud
+# Install from the Claude Code marketplace
+claude plugin marketplace add https://github.com/mrmans0n/git-gud
+claude plugin install git-gud
 
-# Or add as a project dependency
-# Skills are auto-discovered from the skills/ directory
+# Or load directly
+claude --plugin-dir /path/to/git-gud
 ```
 
 Two skills are included:

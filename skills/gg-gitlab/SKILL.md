@@ -89,6 +89,9 @@ gg land -a --auto-merge -w --json
 - Use `glab` for any auxiliary GitLab checks/actions.
 - `gg land --auto-merge` is GitLab-specific and requests queueing/auto-merge.
 - With merge trains enabled, land may enqueue MRs instead of immediate merge.
+- JSON fields use `pr_*` naming even for GitLab MRs (`pr_number`, `pr_state`).
+- `pr_state` values: `open`, `merged`, `closed`, `draft`.
+- Land action values: `merged` (immediate), `queued`/`already_queued` (auto-merge).
 
 ## See also
 

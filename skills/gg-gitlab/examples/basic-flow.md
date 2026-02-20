@@ -33,7 +33,8 @@ gg sync --json
 Optionally verify in GitLab CLI:
 
 ```bash
-# Use gg ls --json to see the MRs created by sync — it shows mr_number and mr_state per entry
+# Use gg ls --json to see the MRs created by sync
+# Fields are pr_number and pr_state (even for GitLab MRs)
 gg ls --json
 ```
 

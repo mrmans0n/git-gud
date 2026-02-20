@@ -157,7 +157,7 @@ All JSON payloads include `version` (`u32`, currently `1`).
         "title": "string",
         "gg_id": "c-...",
         "pr_number": 123,
-        "pr_state": "opened",
+        "pr_state": "open",
         "approved": false,
         "ci_status": "success",
         "is_current": true,
@@ -272,7 +272,7 @@ All JSON payloads include `version` (`u32`, currently `1`).
         "title": "feat: add payments DTO",
         "gg_id": "c-abc1234",
         "pr_number": 21,
-        "action": "auto-merge-requested",
+        "action": "queued",
         "error": null
       }
     ],

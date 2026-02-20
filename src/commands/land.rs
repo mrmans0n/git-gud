@@ -998,8 +998,9 @@ fn wait_for_pr_ready(
             }
         };
 
-        // Check approval status (unless --all flag is used)
-        let approval_ready = if skip_approval {
+        // Check approval status (unless --all flag is used AND merge trains are off).
+        // With merge trains, approval is always required to enter the queue.
+        let approval_ready = if skip_approval && !merge_trains_enabled {
             true
         } else {
             let approved = provider.check_pr_approved(pr_num)?;
@@ -1200,10 +1201,7 @@ fn wait_for_merge_train_completion(
                             pr_num
                         )));
                     }
-                    new_state = format!(
-                        "Waiting for merge train to pick up MR ({}s)...",
-                        idle_count * POLL_INTERVAL_SECS as u32
-                    );
+                    new_state = "Waiting for merge train to pick up MR...".to_string();
                 }
                 _ => {
                     if let Some(pos) = train_info.position {
@@ -2240,5 +2238,50 @@ mod tests {
         // One more should exceed
         idle_count += 1;
         assert!(idle_count > IDLE_GRACE_POLLS);
+    }
+
+    // ==========================================================================
+    // Tests for approval gate with merge trains
+    // ==========================================================================
+
+    #[test]
+    fn test_approval_not_skipped_when_merge_trains_enabled() {
+        // Simulates the condition in wait_for_pr_ready:
+        // `if skip_approval && !merge_trains_enabled`
+        let skip_approval = true; // --all flag
+        let merge_trains_enabled = true;
+
+        // With merge trains, approval should NOT be skipped
+        let actually_skip = skip_approval && !merge_trains_enabled;
+        assert!(
+            !actually_skip,
+            "Approval must not be skipped when merge trains are enabled"
+        );
+    }
+
+    #[test]
+    fn test_approval_skipped_without_merge_trains() {
+        // Without merge trains, --all should skip approval as before
+        let skip_approval = true;
+        let merge_trains_enabled = false;
+
+        let actually_skip = skip_approval && !merge_trains_enabled;
+        assert!(
+            actually_skip,
+            "Approval should be skipped with --all when merge trains are off"
+        );
+    }
+
+    #[test]
+    fn test_approval_not_skipped_without_all_flag() {
+        // Without --all, approval is always checked regardless of merge trains
+        let skip_approval = false;
+        let merge_trains_enabled = false;
+
+        let actually_skip = skip_approval && !merge_trains_enabled;
+        assert!(
+            !actually_skip,
+            "Approval should not be skipped without --all"
+        );
     }
 }

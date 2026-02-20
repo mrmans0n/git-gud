@@ -1058,6 +1058,12 @@ fn wait_for_merge_train_completion(
     let timeout = Duration::from_secs(timeout_minutes * 60);
     let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
 
+    // Grace period: after adding to merge train, the MR may not appear in the
+    // train list immediately. Allow some polls with Idle status before treating
+    // it as an error.
+    const IDLE_GRACE_POLLS: u32 = 6; // ~60 seconds at 10s poll interval
+    let mut idle_count: u32 = 0;
+
     if !json {
         println!(
             "{}",
@@ -1153,14 +1159,17 @@ fn wait_for_merge_train_completion(
                     return Ok(());
                 }
                 MergeTrainStatus::Merging => {
+                    idle_count = 0; // MR is in train, reset grace counter
                     new_state = "Merge train: merging now...".to_string();
                 }
                 MergeTrainStatus::Fresh => {
+                    idle_count = 0;
                     if let Some(pos) = train_info.position {
                         new_state = format!("Merge train: position {} (fresh, ready)", pos);
                     }
                 }
                 MergeTrainStatus::Stale => {
+                    idle_count = 0;
                     new_state = "Merge train: stale (waiting for rebase/pipeline)".to_string();
                 }
                 MergeTrainStatus::SkipMerged => {
@@ -1175,15 +1184,22 @@ fn wait_for_merge_train_completion(
                     )));
                 }
                 MergeTrainStatus::Idle => {
-                    if let Some(ref spinner) = current_spinner {
-                        spinner.finish_and_clear();
+                    idle_count += 1;
+                    if idle_count > IDLE_GRACE_POLLS {
+                        if let Some(ref spinner) = current_spinner {
+                            spinner.finish_and_clear();
+                        }
+                        return Err(GgError::Other(format!(
+                            "{} {}{} is no longer in the merge train",
+                            provider.pr_label(),
+                            provider.pr_number_prefix(),
+                            pr_num
+                        )));
                     }
-                    return Err(GgError::Other(format!(
-                        "{} {}{} is no longer in the merge train",
-                        provider.pr_label(),
-                        provider.pr_number_prefix(),
-                        pr_num
-                    )));
+                    new_state = format!(
+                        "Waiting for merge train to pick up MR ({}s)...",
+                        idle_count * POLL_INTERVAL_SECS as u32
+                    );
                 }
                 _ => {
                     if let Some(pos) = train_info.position {

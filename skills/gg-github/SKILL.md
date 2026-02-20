@@ -51,7 +51,7 @@ gg co -w feature-auth
 2. Commit logical changes:
 
 ```bash
-git add -A
+git add <files>
 git commit -m "feat: add input validation"
 ```
 
@@ -76,11 +76,12 @@ gg land -a -c --json
 ## Agent operating rules (mandatory)
 
 1. **Never run `gg land` without explicit user confirmation.**
-2. **Always use `--json`** for `gg ls`, `gg sync`, `gg land`, `gg clean`, and `gg lint`.
+2. **Always use `--json`** for `gg ls`, `gg sync`, `gg land`, `gg clean -a`, and `gg lint`.
 3. **Prefer worktrees** for isolation (`gg co -w <stack>`).
 4. Verify `approved: true` and `ci_status` success before landing.
 5. If sync warns stack is behind base, run `gg rebase` first.
 6. Prefer `gg absorb -s` for multi-commit edits.
+7. **Never use `git add -A` blindly.** Review `git status` first and only stage intended files. Use `git add <specific-files>` to avoid leaking secrets, env files, or unrelated changes.
 
 ## Common operations
 
@@ -90,7 +91,7 @@ gg land -a -c --json
 - Reorder stack: `gg reorder -o "3,1,2"`
 - Sync subset: `gg sync -u <position|gg-id|sha> --json`
 - Lint stack: `gg lint --json`
-- Clean merged stacks: `gg clean --json`
+- Clean merged stacks: `gg clean -a --json`
 
 ## See also
 

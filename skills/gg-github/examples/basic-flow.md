@@ -11,12 +11,12 @@ gg co -w add-user-validation
 ```bash
 # Commit 1
 $EDITOR src/validation/email.rs
-git add -A
+git add <files>
 git commit -m "feat: add email validation"
 
 # Commit 2
 $EDITOR src/validation/phone.rs
-git add -A
+git add <files>
 git commit -m "feat: add phone validation"
 ```
 
@@ -60,5 +60,5 @@ gg land -a -c --json
 ## 7) Optional cleanup check
 
 ```bash
-gg clean --json
+gg clean -a --json
 ```

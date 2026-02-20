@@ -54,7 +54,7 @@ gg co -w feature-payments
 2. Create commits and verify:
 
 ```bash
-git add -A
+git add <files>
 git commit -m "feat: add payment DTO"
 gg ls --json
 ```
@@ -78,11 +78,12 @@ gg land -a --auto-merge -w --json
 ## Agent operating rules (mandatory)
 
 1. **Never run `gg land` without explicit user confirmation.**
-2. **Always use `--json`** for `gg ls`, `gg sync`, `gg land`, `gg clean`, and `gg lint`.
+2. **Always use `--json`** for `gg ls`, `gg sync`, `gg land`, `gg clean -a`, and `gg lint`.
 3. **Prefer worktrees** with `gg co -w <stack>`.
 4. Check `approved: true` and CI success in `gg ls --json` before landing.
 5. For merge trains, monitor `in_merge_train` and `merge_train_position`.
 6. If stack is behind base, run `gg rebase` before syncing.
+7. **Never use `git add -A` blindly.** Review `git status` first and only stage intended files. Use `git add <specific-files>` to avoid leaking secrets, env files, or unrelated changes.
 
 ## GitLab notes
 

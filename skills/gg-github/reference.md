@@ -298,7 +298,7 @@ Field types:
 }
 ```
 
-### `gg clean --json`
+### `gg clean -a --json`
 
 ```json
 {

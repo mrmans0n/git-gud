@@ -45,5 +45,5 @@ glab mr checks <iid>
 ## 5) Cleanup landed stacks
 
 ```bash
-gg clean --json
+gg clean -a --json
 ```

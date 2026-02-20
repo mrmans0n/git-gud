@@ -10,11 +10,11 @@ gg co -w add-audit-events
 
 ```bash
 $EDITOR src/audit/model.rs
-git add -A
+git add <files>
 git commit -m "feat: add audit event model"
 
 $EDITOR src/audit/store.rs
-git add -A
+git add <files>
 git commit -m "feat: persist audit events"
 ```
 

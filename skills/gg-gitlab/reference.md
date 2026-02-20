@@ -284,7 +284,7 @@ All JSON payloads include `version` (`u32`, currently `1`).
 }
 ```
 
-### `gg clean --json`
+### `gg clean -a --json`
 
 ```json
 {

@@ -14,7 +14,7 @@ gg ls --json
 ```bash
 gg mv 1
 $EDITOR src/billing/parser.rs
-git add -A
+git add <files>
 gg sc
 ```
 
@@ -28,7 +28,7 @@ gg last
 
 ```bash
 $EDITOR src/billing/*.rs
-git add -A
+git add <files>
 gg absorb -s
 ```
 

@@ -36,6 +36,14 @@ gg land --all --auto-merge
 gg land --all --json
 ```
 
+## Merge Trains (GitLab)
+
+When merge trains are enabled on the target branch, `gg land` automatically adds MRs to the merge train instead of merging directly.
+
+**Approval is always required** before an MR can enter the merge train queue — even with `--all`. If using `--wait`, the command will show "Waiting for approval..." until a reviewer approves the MR.
+
+## JSON Output
+
 Example JSON response:
 
 ```json

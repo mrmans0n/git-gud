@@ -378,6 +378,11 @@ pub fn checkout_branch(repo: &Repository, branch_name: &str) -> Result<()> {
 ///
 /// Safety: only re-attaches when HEAD and the branch tip point to the same
 /// commit, so it won't silently move HEAD to an unexpected location.
+///
+/// Note: we use `git symbolic-ref` instead of `repo.set_head()` because the
+/// latter performs a `git_branch_is_checked_out` check that refuses to point
+/// HEAD at a branch that is checked out in another worktree — which is exactly
+/// the scenario we need to fix.
 pub fn ensure_branch_attached(repo: &Repository, branch_name: &str) -> Result<()> {
     if repo.head_detached()? {
         let head_oid = repo.head()?.peel_to_commit()?.id();
@@ -386,7 +391,7 @@ pub fn ensure_branch_attached(repo: &Repository, branch_name: &str) -> Result<()
         if let Ok(branch_ref) = repo.find_reference(&refname) {
             if let Ok(branch_commit) = branch_ref.peel_to_commit() {
                 if head_oid == branch_commit.id() {
-                    repo.set_head(&refname)?;
+                    run_git_command(&["symbolic-ref", "HEAD", &refname])?;
                 }
             }
         }
@@ -1179,8 +1184,16 @@ mod tests {
         repo.set_head_detached(oid).unwrap();
         assert!(repo.head_detached().unwrap());
 
+        // run_git_command uses CWD, so we need to be in the repo dir
+        let prev_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
         // Should re-attach because HEAD and branch tip match
-        ensure_branch_attached(&repo, &branch_name).unwrap();
+        let result = ensure_branch_attached(&repo, &branch_name);
+
+        std::env::set_current_dir(&prev_dir).unwrap();
+
+        result.unwrap();
         assert!(!repo.head_detached().unwrap());
     }
 

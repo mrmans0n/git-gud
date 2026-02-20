@@ -5122,10 +5122,17 @@ fn test_amend_in_worktree_does_not_leave_detached_head() {
         stdout, stderr
     );
 
-    // After amend, HEAD should not be detached (the ensure_branch_attached fix)
-    // Note: gg nav leaves HEAD detached for positional navigation, but after
-    // amend + rebase the branch should be re-attached before nav re-detaches.
-    // The key assertion is that amend itself completed successfully without error.
+    // Verify amend completed the full flow: squash + rebase + nav back.
+    // Without ensure_branch_attached, checkout_branch would fail in a
+    // worktree because git refuses to checkout a branch "in use" elsewhere.
+    // Note: after amend, gg navigates back to the amended position which
+    // detaches HEAD again (normal nav behavior), so we check the output
+    // messages to confirm the rebase step completed successfully.
+    assert!(
+        stdout.contains("Rebased"),
+        "amend should complete rebase in worktree: {}",
+        stdout
+    );
     assert!(
         stdout.contains("OK"),
         "amend output should contain OK: {}",

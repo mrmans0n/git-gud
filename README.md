@@ -511,6 +511,26 @@ OK Reconciliation complete!
 - When inheriting a stack from another machine that got out of sync
 - When PRs were created manually outside of git-gud
 
+## AI Agent Integration
+
+git-gud ships as a [Claude Code plugin](https://code.claude.com/docs/en/plugins) following the open [Agent Skills](https://agentskills.io) standard. AI coding agents — Claude Code, Cursor, Gemini CLI, OpenAI Codex, and others — can use `gg` for stacked-diff workflows.
+
+### Quick setup
+
+```bash
+# Claude Code
+claude --plugin-dir /path/to/git-gud
+
+# Or add as a project dependency
+# Skills are auto-discovered from the skills/ directory
+```
+
+Two skills are included:
+- **gg-github** — Stacked PRs with GitHub (`gh` CLI)
+- **gg-gitlab** — Stacked MRs with GitLab (`glab` CLI, merge trains)
+
+📚 **[Agent Skills Guide](https://mrmans0n.github.io/git-gud/guides/agent-skills.html)** — full setup, usage, and agent operating rules.
+
 ## Troubleshooting
 
 ### "gh CLI not installed" / "glab is not installed"

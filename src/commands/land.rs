@@ -998,8 +998,9 @@ fn wait_for_pr_ready(
             }
         };
 
-        // Check approval status (unless --all flag is used)
-        let approval_ready = if skip_approval {
+        // Check approval status (unless --all flag is used AND merge trains are off).
+        // With merge trains, approval is always required to enter the queue.
+        let approval_ready = if skip_approval && !merge_trains_enabled {
             true
         } else {
             let approved = provider.check_pr_approved(pr_num)?;
@@ -1200,10 +1201,7 @@ fn wait_for_merge_train_completion(
                             pr_num
                         )));
                     }
-                    new_state = format!(
-                        "Waiting for merge train to pick up MR ({}s)...",
-                        idle_count * POLL_INTERVAL_SECS as u32
-                    );
+                    new_state = "Waiting for merge train to pick up MR...".to_string();
                 }
                 _ => {
                     if let Some(pos) = train_info.position {

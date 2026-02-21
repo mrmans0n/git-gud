@@ -526,9 +526,8 @@ claude plugin install git-gud
 claude --plugin-dir /path/to/git-gud
 ```
 
-Two skills are included:
-- **gg-github** — Stacked PRs with GitHub (`gh` CLI)
-- **gg-gitlab** — Stacked MRs with GitLab (`glab` CLI, merge trains)
+One unified skill is included:
+- **gg** — Stacked diffs with GitHub (`gh` CLI) or GitLab (`glab` CLI, merge trains)
 
 📚 **[Agent Skills Guide](https://mrmans0n.github.io/git-gud/guides/agent-skills.html)** — full setup, usage, and agent operating rules.
 

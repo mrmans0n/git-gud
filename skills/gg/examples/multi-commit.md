@@ -1,6 +1,6 @@
-# Multi-commit maintenance flow (GitHub)
+# Multi-commit maintenance flow
 
-Scenario: You already have a 3-commit stack synced to GitHub and need to adjust multiple commits.
+Scenario: You already have a 3-commit stack synced and need to adjust multiple commits.
 
 ## 1) Open stack and inspect
 

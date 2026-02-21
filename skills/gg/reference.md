@@ -1,15 +1,29 @@
-# gg-gitlab Reference
+# gg Reference
 
-This reference is for using `gg` with **GitLab** (`glab` CLI), including merge trains.
+This reference is for using `gg` with **GitHub** (`gh` CLI) or **GitLab** (`glab` CLI).
 
 ## Prereqs and setup
 
 ```bash
-glab auth status
+# provider auth
+gh auth status      # GitHub
+glab auth status    # GitLab
+
 gg setup
 ```
 
 Manual config (`.git/gg/config.json`):
+
+```json
+{
+  "defaults": {
+    "provider": "github",
+    "base": "main",
+    "branch_username": "your-github-user",
+    "lint": ["cargo fmt --all --check"]
+  }
+}
+```
 
 ```json
 {
@@ -32,16 +46,22 @@ Manual config (`.git/gg/config.json`):
 ### Stack lifecycle
 
 #### `gg co [OPTIONS] [STACK_NAME]`
+Create/switch stack, optionally worktree-backed.
+
 - `-b, --base <BASE>`
 - `-w, --worktree`
 
 #### `gg ls [OPTIONS]`
+List current/all/remote stacks.
+
 - `-a, --all`
 - `-r, --refresh`
 - `--remote`
 - `--json`
 
 #### `gg sync [OPTIONS]`
+Push and create/update PRs/MRs.
+
 - `-d, --draft`
 - `-f, --force`
 - `--update-descriptions`
@@ -52,6 +72,8 @@ Manual config (`.git/gg/config.json`):
 - `--json`
 
 #### `gg land [OPTIONS]`
+Merge approved PRs/MRs from bottom up.
+
 - `-a, --all`
 - `--auto-merge` *(GitLab only)*
 - `--no-squash`
@@ -62,18 +84,24 @@ Manual config (`.git/gg/config.json`):
 - `--json`
 
 #### `gg clean [OPTIONS]`
+Delete merged stacks/worktrees.
+
 - `-a, --all`
 - `--json`
 
 ### Editing and navigation
 
 #### `gg mv <TARGET>` / `gg first` / `gg last` / `gg prev` / `gg next`
-Move between stack entries.
+Move around stack entries.
 
 #### `gg sc [OPTIONS]`
+Squash changes into current stack commit.
+
 - `-a, --all`
 
 #### `gg absorb [OPTIONS]`
+Auto-distribute staged changes to matching commits.
+
 - `--dry-run`
 - `-a, --and-rebase`
 - `-w, --whole-file`
@@ -82,28 +110,34 @@ Move between stack entries.
 - `-s, --squash`
 
 #### `gg reorder [OPTIONS]`
+Reorder stack entries.
+
 - `-o, --order <ORDER>`
 
 #### `gg rebase [TARGET]`
-Rebase stack onto base/target.
+Rebase current stack onto base or explicit target.
 
 ### Utilities
 
 #### `gg lint [OPTIONS]`
+Run configured lint checks.
+
 - `-u, --until <UNTIL>`
 - `--json`
 
 #### `gg reconcile [OPTIONS]`
+Repair metadata after external branch/PR/MR manipulation.
+
 - `-n, --dry-run`
 
 #### `gg continue` / `gg abort`
-Continue/abort paused operations.
+Resume/abort paused operations.
 
 #### `gg setup`
-Interactive setup.
+Interactive config wizard.
 
 #### `gg completions <SHELL>`
-Generate shell completion scripts.
+Generate shell completion (`bash|elvish|fish|powershell|zsh`).
 
 ---
 
@@ -115,6 +149,7 @@ Generate shell completion scripts.
   - `in_merge_train: boolean`
   - `merge_train_position: number | null`
 - With `-w/--wait`, `gg land` can wait for approval/readiness transitions.
+- GitLab land actions can be `queued`/`already_queued` (in addition to `merged`).
 
 You can use `glab` for extra inspection (examples):
 
@@ -127,7 +162,7 @@ glab mr checks <iid>
 
 ## JSON output schemas (from Rust structs)
 
-All JSON payloads include `version` (`u32`, currently `1`).
+All JSON payloads include `version` (`u32`, current value: `1`).
 
 ### Common error shape
 
@@ -161,25 +196,35 @@ All JSON payloads include `version` (`u32`, currently `1`).
         "approved": false,
         "ci_status": "success",
         "is_current": true,
-        "in_merge_train": true,
-        "merge_train_position": 2
+        "in_merge_train": false,
+        "merge_train_position": null
       }
     ]
   }
 }
 ```
 
-### `gg ls --all --json`
+Field types:
+- `current_position`: `number | null`
+- `behind_base`: `number | null`
+- `gg_id`: `string | null`
+- `pr_number`: `number | null`
+- `pr_state`: `string | null`
+- `ci_status`: `string | null`
+- `in_merge_train`: `boolean` *(GitLab-specific)*
+- `merge_train_position`: `number | null` *(GitLab-specific)*
+
+### `gg ls --all --json` (all local stacks)
 
 ```json
 {
   "version": 1,
-  "current_stack": "feature-payments",
+  "current_stack": "feature-auth",
   "stacks": [
     {
-      "name": "feature-payments",
+      "name": "feature-auth",
       "base": "main",
-      "commit_count": 3,
+      "commit_count": 2,
       "is_current": true,
       "has_worktree": true,
       "behind_base": 0,
@@ -191,16 +236,16 @@ All JSON payloads include `version` (`u32`, currently `1`).
 }
 ```
 
-### `gg ls --remote --json`
+### `gg ls --remote --json` (remote stacks)
 
 ```json
 {
   "version": 1,
   "stacks": [
     {
-      "name": "feature-payments",
-      "commit_count": 3,
-      "pr_numbers": [21, 22, 23]
+      "name": "feature-auth",
+      "commit_count": 2,
+      "pr_numbers": [101, 102]
     }
   ]
 }
@@ -212,7 +257,7 @@ All JSON payloads include `version` (`u32`, currently `1`).
 {
   "version": 1,
   "sync": {
-    "stack": "feature-payments",
+    "stack": "feature-auth",
     "base": "main",
     "rebased_before_sync": false,
     "warnings": [],
@@ -220,12 +265,12 @@ All JSON payloads include `version` (`u32`, currently `1`).
       {
         "position": 1,
         "sha": "abc1234",
-        "title": "feat: add payments DTO",
+        "title": "feat: add validation",
         "gg_id": "c-abc1234",
-        "branch": "user/feature-payments--c-abc1234",
-        "action": "updated",
-        "pr_number": 21,
-        "pr_url": "https://gitlab.com/group/proj/-/merge_requests/21",
+        "branch": "user/feature-auth--c-abc1234",
+        "action": "created",
+        "pr_number": 101,
+        "pr_url": "https://host/org/repo/pull/101",
         "draft": false,
         "pushed": true,
         "error": null
@@ -245,10 +290,14 @@ All JSON payloads include `version` (`u32`, currently `1`).
       {
         "position": 1,
         "sha": "abc1234",
-        "title": "feat: add payments DTO",
+        "title": "feat: add validation",
         "passed": true,
         "commands": [
-          { "command": "cargo fmt --all --check", "passed": true, "output": null }
+          {
+            "command": "cargo clippy",
+            "passed": true,
+            "output": null
+          }
         ]
       }
     ],
@@ -263,26 +312,28 @@ All JSON payloads include `version` (`u32`, currently `1`).
 {
   "version": 1,
   "land": {
-    "stack": "feature-payments",
+    "stack": "feature-auth",
     "base": "main",
     "landed": [
       {
         "position": 1,
         "sha": "abc1234",
-        "title": "feat: add payments DTO",
+        "title": "feat: add validation",
         "gg_id": "c-abc1234",
-        "pr_number": 21,
-        "action": "queued",
+        "pr_number": 101,
+        "action": "merged",
         "error": null
       }
     ],
-    "remaining": 2,
-    "cleaned": false,
+    "remaining": 0,
+    "cleaned": true,
     "warnings": [],
     "error": null
   }
 }
 ```
+
+> On GitLab with `--auto-merge`, `action` may be `queued` or `already_queued`.
 
 ### `gg clean -a --json`
 
@@ -290,7 +341,7 @@ All JSON payloads include `version` (`u32`, currently `1`).
 {
   "version": 1,
   "clean": {
-    "cleaned": ["feature-payments"],
+    "cleaned": ["feature-auth"],
     "skipped": []
   }
 }
@@ -300,8 +351,8 @@ All JSON payloads include `version` (`u32`, currently `1`).
 
 ## Operational guardrails for agents
 
-- Never land without explicit user confirmation.
-- Always call JSON-capable commands with `--json`.
-- Prefer worktree stacks (`gg co -w`).
-- Rebase if behind-base warnings appear before syncing.
-- For merge trains, verify `in_merge_train` and `merge_train_position` in `gg ls --json`.
+- Never run `gg land` without explicit user approval.
+- Prefer `gg co -w` for isolated work.
+- Always parse `--json` output, do not scrape text.
+- If `gg sync --json` includes warnings about stale base, run `gg rebase`.
+- For GitLab merge trains, monitor `in_merge_train` and `merge_train_position` in `gg ls --json`.

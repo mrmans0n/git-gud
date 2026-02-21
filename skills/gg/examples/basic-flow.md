@@ -1,4 +1,4 @@
-# Basic Flow (GitHub): from zero to merged
+# Basic Flow: from zero to merged
 
 ## 1) Create stack in a worktree
 
@@ -30,7 +30,7 @@ Confirm:
 - `total_commits: 2`
 - each entry has expected title/order
 
-## 4) Publish PR chain
+## 4) Publish PR/MR chain
 
 ```bash
 gg sync --json

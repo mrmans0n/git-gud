@@ -1,22 +1,24 @@
 ---
-name: gg-github
-description: Use git-gud (gg) to manage stacked diffs with GitHub PRs. Use this when creating stacks, syncing updates, checking CI/review state, and landing approved work safely.
+name: gg
+description: Use git-gud (gg) to manage stacked diffs with GitHub PRs or GitLab MRs. Use this when creating stacks, syncing updates, checking CI/review state, and landing approved work safely.
 ---
 
-# gg-github
+# gg
 
-Use this skill to operate **git-gud (`gg`) as a CLI tool** for day-to-day stacked-diff workflows on GitHub.
+Use this skill to operate **git-gud (`gg`) as a CLI tool** for day-to-day stacked-diff workflows across GitHub and GitLab.
 
 ## When to use
 
-- You need multiple PRs that depend on each other
+- You need multiple PRs/MRs that depend on each other
 - You need to sync stack changes and keep review metadata updated
 - You need machine-readable command output for automation (`--json`)
 
 ## Prerequisites
 
 - `gg` installed
-- `gh` installed and authenticated (`gh auth status`)
+- Provider CLI installed + authenticated:
+  - GitHub: `gh auth status`
+  - GitLab: `glab auth status`
 - Git repo with `gg` initialized (`gg setup`)
 
 ## Setup
@@ -36,6 +38,20 @@ gg setup
     "base": "main",
     "branch_username": "your-github-user",
     "lint": ["cargo fmt --all --check", "cargo clippy -- -D warnings"]
+  }
+}
+```
+
+```json
+{
+  "defaults": {
+    "provider": "gitlab",
+    "base": "main",
+    "branch_username": "your-gitlab-user",
+    "lint": ["cargo fmt --all --check", "cargo clippy -- -D warnings"],
+    "gitlab": {
+      "auto_merge_on_land": false
+    }
   }
 }
 ```
@@ -61,7 +77,7 @@ git commit -m "feat: add input validation"
 gg ls --json
 ```
 
-4. Publish/update PR chain:
+4. Publish/update PR/MR chain:
 
 ```bash
 gg sync --json
@@ -93,8 +109,25 @@ gg land -a -c --json
 - Lint stack: `gg lint --json`
 - Clean merged stacks: `gg clean -a --json`
 
+## GitLab-specific
+
+- `gg land --auto-merge` is GitLab-only and requests queueing/auto-merge.
+- With merge trains enabled, landing may enqueue MRs instead of immediate merge.
+- Track train state in `gg ls --json` with:
+  - `in_merge_train`
+  - `merge_train_position`
+- Land action values on GitLab may include `queued` / `already_queued` (in addition to `merged`).
+- Use `glab` for auxiliary GitLab checks/actions.
+- JSON fields always use `pr_*` naming, even for GitLab MRs (`pr_number`, `pr_state`).
+
+## Provider-neutral notes
+
+- `pr_state` values: `open`, `merged`, `closed`, `draft` (same for both GitHub and GitLab).
+- `pr_url` format varies by provider (`/pull/N` for GitHub, `/-/merge_requests/N` for GitLab).
+
 ## See also
 
 - Full command + schema reference: `reference.md`
 - End-to-end walkthrough: `examples/basic-flow.md`
-- Advanced stack editing: `examples/multi-commit.md`
+- Multi-commit editing: `examples/multi-commit.md`
+- Merge trains (GitLab): `examples/merge-train.md`

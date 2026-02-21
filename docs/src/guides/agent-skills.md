@@ -4,12 +4,11 @@ git-gud ships as a [Claude Code plugin](https://code.claude.com/docs/en/plugins)
 
 ## What's included
 
-The plugin provides two skills:
+The plugin provides one unified skill:
 
 | Skill | Description |
 |-------|-------------|
-| `gg-github` | Use gg with GitHub PRs (`gh` CLI) |
-| `gg-gitlab` | Use gg with GitLab MRs (`glab` CLI, merge trains) |
+| `gg` | Use gg with GitHub PRs (`gh` CLI) or GitLab MRs (`glab` CLI, merge trains) |
 
 Each skill includes:
 
@@ -90,8 +89,7 @@ When using AI agents with `gg`, keep these rules:
 
 For full operational details, prompts, and examples:
 
-- GitHub skill: [`skills/gg-github/SKILL.md`](https://github.com/mrmans0n/git-gud/blob/main/skills/gg-github/SKILL.md)
-- GitLab skill: [`skills/gg-gitlab/SKILL.md`](https://github.com/mrmans0n/git-gud/blob/main/skills/gg-gitlab/SKILL.md)
+- Unified skill: [`skills/gg/SKILL.md`](https://github.com/mrmans0n/git-gud/blob/main/skills/gg/SKILL.md)
 
 ## File structure
 
@@ -99,16 +97,11 @@ For full operational details, prompts, and examples:
 .claude-plugin/
   plugin.json           # Plugin manifest
 skills/
-  gg-github/
-    SKILL.md            # GitHub skill
+  gg/
+    SKILL.md            # Unified GitHub + GitLab skill
     reference.md        # Command reference + JSON schemas
     examples/
-      basic-flow.md     # Simple feature workflow
+      basic-flow.md     # Provider-agnostic feature workflow
       multi-commit.md   # Absorb, reorder, lint
-  gg-gitlab/
-    SKILL.md            # GitLab skill
-    reference.md        # Command reference + merge trains
-    examples/
-      basic-flow.md     # Simple feature workflow
-      merge-train.md    # Merge train workflow
+      merge-train.md    # GitLab merge train workflow
 ```

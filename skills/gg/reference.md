@@ -209,7 +209,7 @@ Field types:
 - `behind_base`: `number | null`
 - `gg_id`: `string | null`
 - `pr_number`: `number | null`
-- `pr_state`: `string | null`
+- `pr_state`: `"open" | "merged" | "closed" | "draft" | null`
 - `ci_status`: `string | null`
 - `in_merge_train`: `boolean` *(GitLab-specific)*
 - `merge_train_position`: `number | null` *(GitLab-specific)*
@@ -270,7 +270,7 @@ Field types:
         "branch": "user/feature-auth--c-abc1234",
         "action": "created",
         "pr_number": 101,
-        "pr_url": "https://host/org/repo/pull/101",
+        "pr_url": "https://host/org/repo/...",
         "draft": false,
         "pushed": true,
         "error": null

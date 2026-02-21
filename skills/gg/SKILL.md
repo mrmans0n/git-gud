@@ -119,7 +119,11 @@ gg land -a -c --json
 - Land action values on GitLab may include `queued` / `already_queued` (in addition to `merged`).
 - Use `glab` for auxiliary GitLab checks/actions.
 - JSON fields always use `pr_*` naming, even for GitLab MRs (`pr_number`, `pr_state`).
-- `pr_state` values: `open`, `merged`, `closed`, `draft`.
+
+## Provider-neutral notes
+
+- `pr_state` values: `open`, `merged`, `closed`, `draft` (same for both GitHub and GitLab).
+- `pr_url` format varies by provider (`/pull/N` for GitHub, `/-/merge_requests/N` for GitLab).
 
 ## See also
 

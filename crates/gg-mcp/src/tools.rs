@@ -644,7 +644,6 @@ impl GgMcpServer {
     ) -> Result<String, String> {
         let mut args = vec!["rebase".to_string()];
         if let Some(ref target) = params.target {
-            args.push("--target".to_string());
             args.push(target.clone());
         }
         run_gg_command(&args)

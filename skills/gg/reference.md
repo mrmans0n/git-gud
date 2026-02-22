@@ -356,3 +356,51 @@ Field types:
 - Always parse `--json` output, do not scrape text.
 - If `gg sync --json` includes warnings about stale base, run `gg rebase`.
 - For GitLab merge trains, monitor `in_merge_train` and `merge_train_position` in `gg ls --json`.
+
+---
+
+## MCP Server (`gg-mcp`)
+
+An MCP (Model Context Protocol) server binary that exposes git-gud operations as structured tools for AI assistants.
+
+### Setup
+
+```bash
+# Set repo path and run
+GG_REPO_PATH=/path/to/repo gg-mcp
+```
+
+Transport: stdio (JSON-RPC over stdin/stdout).
+
+### Available Tools
+
+#### `stack_list`
+List the current stack with commit entries and PR/MR status.
+- **Params:** `refresh` (bool, default false) — refresh PR status from remote
+- **Returns:** `{ name, base, total_commits, synced_commits, current_position, entries: [{ position, sha, title, gg_id, pr_number, pr_state, approved, ci_status, is_current }] }`
+
+#### `stack_list_all`
+List all stacks in the repository.
+- **Params:** none
+- **Returns:** `{ current_stack, stacks: [{ name, base, commit_count, is_current }] }`
+
+#### `stack_status`
+Quick status summary of the current stack.
+- **Params:** none
+- **Returns:** `{ stack_name, base_branch, total_commits, synced_commits, current_position, behind_base }`
+
+#### `pr_info`
+Get detailed PR/MR information by number.
+- **Params:** `number` (u64, required)
+- **Returns:** `{ number, title, state, url, draft, approved, mergeable, ci_status }`
+
+#### `config_show`
+Show repository git-gud configuration.
+- **Params:** none
+- **Returns:** `{ provider, base_branch, branch_username, lint_commands, auto_add_gg_ids, land_auto_clean, sync_auto_lint, sync_auto_rebase }`
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `GG_REPO_PATH` | Path to git repository | Current working directory |

@@ -131,3 +131,4 @@ gg land -a -c --json
 - End-to-end walkthrough: `examples/basic-flow.md`
 - Multi-commit editing: `examples/multi-commit.md`
 - Merge trains (GitLab): `examples/merge-train.md`
+- MCP server tools & schemas: `reference.md` → MCP Server section

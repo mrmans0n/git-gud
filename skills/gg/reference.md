@@ -404,3 +404,51 @@ Show repository git-gud configuration.
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `GG_REPO_PATH` | Path to git repository | Current working directory |
+
+#### `stack_checkout`
+Create or switch to a stack.
+- **Params:** `name` (string, optional), `base` (string, optional), `worktree` (bool, default false)
+
+#### `stack_sync`
+Push branches and create/update PRs.
+- **Params:** `draft` (bool), `force` (bool), `update_descriptions` (bool), `no_rebase_check` (bool), `lint` (bool), `until` (string)
+- **Returns:** JSON sync results with PR URLs
+
+#### `stack_land`
+Merge approved PRs.
+- **Params:** `all` (bool), `squash` (bool), `auto_clean` (bool), `until` (string)
+- **Returns:** JSON land results
+
+#### `stack_clean`
+Clean up merged stacks.
+- **Params:** `all` (bool)
+- **Returns:** JSON with cleaned stacks
+
+#### `stack_rebase`
+Rebase stack onto latest base.
+- **Params:** `target` (string, optional)
+
+#### `stack_squash`
+Squash staged changes into current commit.
+- **Params:** `all` (bool)
+
+#### `stack_absorb`
+Auto-absorb staged changes into correct commits.
+- **Params:** `dry_run` (bool), `and_rebase` (bool), `whole_file` (bool), `one_fixup_per_commit` (bool), `squash` (bool)
+
+#### `stack_reconcile`
+Reconcile out-of-sync remote branches.
+- **Params:** `dry_run` (bool)
+
+#### `stack_move`
+Move to a specific commit in the stack.
+- **Params:** `target` (string, required) — position, GG-ID, or SHA
+
+#### `stack_navigate`
+Navigate within the stack.
+- **Params:** `direction` (string, required) — "first", "last", "prev", "next"
+
+#### `stack_lint`
+Run lint on stack commits.
+- **Params:** `until` (usize, optional) — lint up to this position
+- **Returns:** JSON with per-commit lint results

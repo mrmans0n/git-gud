@@ -585,6 +585,18 @@ git-gud includes an MCP (Model Context Protocol) server that lets AI assistants 
 
 **16 tools** available: stack inspection, PR status, sync, land, rebase, navigation, and more. See the [MCP Server docs](https://mrmans0n.github.io/git-gud/mcp-server.html) for details.
 
+### MCP vs Agent Skills
+
+git-gud also ships [agent skills](https://mrmans0n.github.io/git-gud/guides/agent-skills.html) (`skills/gg/`) for coding agents like Claude Code and Codex. Here's when to use each:
+
+| | **MCP Server** | **Agent Skills** |
+|---|---|---|
+| **Best for** | AI apps (Claude Desktop, Cursor, Windsurf) | Coding agents with shell access |
+| **How it works** | Structured tool calls over JSON-RPC | Agent reads SKILL.md, runs `gg` CLI directly |
+| **Setup** | Add `gg-mcp` to MCP client config | Drop `skills/gg/` into the project |
+| **Output** | Typed JSON responses | Parses CLI text or `--json` output |
+
+Use **MCP** when your AI client supports it. Use **Skills** when the agent has direct terminal access and you want zero extra setup.
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.

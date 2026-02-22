@@ -68,7 +68,7 @@ impl Provider {
         let common_dir = repo.commondir();
         if let Ok(config) = Config::load(common_dir) {
             if let Some(provider) = config.defaults.provider.as_deref() {
-                return Self::from_str(provider);
+                return Self::from_name(provider);
             }
         }
 
@@ -81,8 +81,7 @@ impl Provider {
     }
 
     /// Create provider from string ("github" or "gitlab")
-    #[allow(clippy::should_implement_trait)]
-    pub fn from_str(s: &str) -> Result<Self> {
+    pub fn from_name(s: &str) -> Result<Self> {
         match s.to_lowercase().as_str() {
             "github" => Ok(Provider::GitHub),
             "gitlab" => Ok(Provider::GitLab),
@@ -529,17 +528,17 @@ mod tests {
     #[test]
     fn test_provider_from_str() {
         // Valid providers (case-insensitive)
-        assert_eq!(Provider::from_str("github").unwrap(), Provider::GitHub);
-        assert_eq!(Provider::from_str("GitHub").unwrap(), Provider::GitHub);
-        assert_eq!(Provider::from_str("GITHUB").unwrap(), Provider::GitHub);
-        assert_eq!(Provider::from_str("gitlab").unwrap(), Provider::GitLab);
-        assert_eq!(Provider::from_str("GitLab").unwrap(), Provider::GitLab);
-        assert_eq!(Provider::from_str("GITLAB").unwrap(), Provider::GitLab);
+        assert_eq!(Provider::from_name("github").unwrap(), Provider::GitHub);
+        assert_eq!(Provider::from_name("GitHub").unwrap(), Provider::GitHub);
+        assert_eq!(Provider::from_name("GITHUB").unwrap(), Provider::GitHub);
+        assert_eq!(Provider::from_name("gitlab").unwrap(), Provider::GitLab);
+        assert_eq!(Provider::from_name("GitLab").unwrap(), Provider::GitLab);
+        assert_eq!(Provider::from_name("GITLAB").unwrap(), Provider::GitLab);
 
         // Invalid providers
-        assert!(Provider::from_str("bitbucket").is_err());
-        assert!(Provider::from_str("").is_err());
-        assert!(Provider::from_str("git").is_err());
+        assert!(Provider::from_name("bitbucket").is_err());
+        assert!(Provider::from_name("").is_err());
+        assert!(Provider::from_name("git").is_err());
     }
 
     #[test]

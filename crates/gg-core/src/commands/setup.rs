@@ -231,7 +231,7 @@ fn prompt_branch_username(
     let suggested = existing.map(|s| s.to_string()).or_else(|| {
         // Try to get username from the configured provider
         provider
-            .and_then(|p| Provider::from_str(p).ok())
+            .and_then(|p| Provider::from_name(p).ok())
             .and_then(|p| p.whoami().ok())
     });
 

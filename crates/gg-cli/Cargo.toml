@@ -7,6 +7,9 @@ authors = ["Nacho Lopez"]
 license = "MIT"
 repository = "https://github.com/mrmans0n/git-gud"
 
+[package.metadata.dist]
+formula = "gg-stack"
+
 [[bin]]
 name = "gg"
 path = "src/main.rs"

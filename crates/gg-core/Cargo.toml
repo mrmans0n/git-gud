@@ -1,0 +1,49 @@
+[package]
+name = "gg-core"
+version = "0.4.3"
+edition = "2021"
+description = "Core library for git-gud (gg) stacked-diffs CLI tool"
+authors = ["Nacho Lopez"]
+license = "MIT"
+repository = "https://github.com/mrmans0n/git-gud"
+
+[dependencies]
+# CLI (used by commands for argument types)
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+
+# Git
+git2 = { version = "0.20", features = ["default"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Async runtime (for glab subprocess handling)
+tokio = { version = "1", features = ["full"] }
+
+# Terminal UI (will be moved to gg-cli in a future phase)
+indicatif = "0.18"
+console = "0.16"
+dialoguer = { version = "0.12", features = ["fuzzy-select"] }
+skim = "0.20"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+regex = "1"
+ctrlc = "3"
+atty = "0.2"
+fs2 = "0.4"
+
+# Absorb (library integration)
+git-absorb = "0.9"
+slog = "2"
+slog-term = "2"
+slog-async = "2"
+
+[dev-dependencies]
+tempfile = "3"

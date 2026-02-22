@@ -28,31 +28,50 @@ cargo test --all-features                                    # Run all tests
 
 ## Project Structure
 
-```
-src/
-├── main.rs          # CLI entry point with clap subcommands
-├── config.rs        # Config file management (.git/gg/config.json)
-├── error.rs         # Error types using thiserror
-├── git.rs           # Git operations via git2-rs
-├── glab.rs          # GitLab CLI (glab) integration
-├── stack.rs         # Stack data model and operations
-└── commands/        # Individual command implementations
-    ├── absorb.rs    # Auto-distribute changes to commits
-    ├── checkout.rs  # Create/switch stacks (gg co)
-    ├── clean.rs     # Remove merged stacks
-    ├── completions.rs # Shell completions
-    ├── land.rs      # Merge approved PRs/MRs
-    ├── lint.rs      # Run lint commands per commit
-    ├── ls.rs        # List stacks and commits
-    ├── nav.rs       # Navigation (first/last/next/prev/mv)
-    ├── rebase.rs    # Rebase onto base branch
-    ├── reorder.rs   # Interactive reorder commits
-    ├── setup.rs     # Config setup wizard
-    ├── squash.rs    # Squash changes into current commit
-    └── sync.rs      # Push branches and create/update PRs/MRs
+This is a Cargo workspace with three crates:
 
-tests/
-└── integration_tests.rs  # Integration tests with temp repos
+```
+Cargo.toml                   # Workspace manifest
+dist-workspace.toml           # cargo-dist configuration
+crates/
+├── gg-core/                  # Core library (all business logic)
+│   ├── Cargo.toml
+│   └── src/
+│       ├── lib.rs            # Public API
+│       ├── context.rs        # Context trait for interactive/non-interactive modes
+│       ├── config.rs         # Config file management (.git/gg/config.json)
+│       ├── error.rs          # Error types using thiserror
+│       ├── git.rs            # Git operations via git2-rs
+│       ├── gh.rs             # GitHub CLI (gh) integration
+│       ├── glab.rs           # GitLab CLI (glab) integration
+│       ├── provider.rs       # Unified provider abstraction
+│       ├── stack.rs          # Stack data model and operations
+│       ├── output.rs         # Structured JSON output helpers
+│       ├── template.rs       # PR description templates
+│       └── commands/         # Individual command implementations
+│           ├── absorb.rs     # Auto-distribute changes to commits
+│           ├── checkout.rs   # Create/switch stacks (gg co)
+│           ├── clean.rs      # Remove merged stacks
+│           ├── completions.rs # Shell completions
+│           ├── land.rs       # Merge approved PRs/MRs
+│           ├── lint.rs       # Run lint commands per commit
+│           ├── ls.rs         # List stacks and commits
+│           ├── nav.rs        # Navigation (first/last/next/prev/mv)
+│           ├── rebase.rs     # Rebase onto base branch
+│           ├── reorder.rs    # Interactive reorder commits
+│           ├── setup.rs      # Config setup wizard
+│           ├── squash.rs     # Squash changes into current commit
+│           └── sync.rs       # Push branches and create/update PRs/MRs
+├── gg-cli/                   # CLI binary (entry point)
+│   ├── Cargo.toml
+│   ├── src/
+│   │   └── main.rs           # clap parsing + command dispatch
+│   └── tests/
+│       └── integration_tests.rs  # Integration tests with temp repos
+└── gg-mcp/                   # MCP server binary (stub, in development)
+    ├── Cargo.toml
+    └── src/
+        └── main.rs
 
 docs/
 └── src/                     # mdBook documentation source

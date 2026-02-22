@@ -568,6 +568,23 @@ Stacks must have linear history. Rebase your branch to remove merge commits:
 git rebase main
 ```
 
+## MCP Server
+
+git-gud includes an MCP (Model Context Protocol) server that lets AI assistants interact with your stacked-diffs workflows.
+
+```json
+{
+  "mcpServers": {
+    "git-gud": {
+      "command": "gg-mcp",
+      "env": { "GG_REPO_PATH": "/path/to/your/repo" }
+    }
+  }
+}
+```
+
+**16 tools** available: stack inspection, PR status, sync, land, rebase, navigation, and more. See the [MCP Server docs](https://mrmans0n.github.io/git-gud/mcp-server.html) for details.
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.

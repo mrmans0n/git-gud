@@ -2,17 +2,6 @@
 //!
 //! Entry point for the CLI application.
 
-mod commands;
-mod config;
-mod error;
-mod gh;
-mod git;
-mod glab;
-mod output;
-mod provider;
-mod stack;
-mod template;
-
 use std::process::exit;
 
 use clap::{Parser, Subcommand};
@@ -273,19 +262,25 @@ fn main() {
 
     let (result, json_mode) = match cli.command {
         // No command = show stacks (like `gg ls`)
-        None => (commands::ls::run(false, false, false, false), false),
+        None => (
+            gg_core::commands::ls::run(false, false, false, false),
+            false,
+        ),
 
         Some(Commands::Checkout {
             stack_name,
             base,
             worktree,
-        }) => (commands::checkout::run(stack_name, base, worktree), false),
+        }) => (
+            gg_core::commands::checkout::run(stack_name, base, worktree),
+            false,
+        ),
         Some(Commands::List {
             all,
             refresh,
             remote,
             json,
-        }) => (commands::ls::run(all, refresh, remote, json), json),
+        }) => (gg_core::commands::ls::run(all, refresh, remote, json), json),
         Some(Commands::Sync {
             draft,
             json,
@@ -305,14 +300,16 @@ fn main() {
                 false
             } else {
                 // No explicit flag, use config default
-                match git::open_repo().and_then(|repo| config::Config::load(repo.commondir())) {
+                match gg_core::git::open_repo()
+                    .and_then(|repo| gg_core::config::Config::load(repo.commondir()))
+                {
                     Ok(cfg) => cfg.get_sync_auto_lint(),
                     Err(_) => false, // If we can't load config, default to false
                 }
             };
 
             (
-                commands::sync::run(
+                gg_core::commands::sync::run(
                     draft,
                     json,
                     no_rebase_check,
@@ -324,14 +321,14 @@ fn main() {
                 json,
             )
         }
-        Some(Commands::Move { target }) => (commands::nav::move_to(&target), false),
-        Some(Commands::First) => (commands::nav::first(), false),
-        Some(Commands::Last) => (commands::nav::last(), false),
-        Some(Commands::Prev) => (commands::nav::prev(), false),
-        Some(Commands::Next) => (commands::nav::next(), false),
-        Some(Commands::Squash { all }) => (commands::squash::run(all), false),
+        Some(Commands::Move { target }) => (gg_core::commands::nav::move_to(&target), false),
+        Some(Commands::First) => (gg_core::commands::nav::first(), false),
+        Some(Commands::Last) => (gg_core::commands::nav::last(), false),
+        Some(Commands::Prev) => (gg_core::commands::nav::prev(), false),
+        Some(Commands::Next) => (gg_core::commands::nav::next(), false),
+        Some(Commands::Squash { all }) => (gg_core::commands::squash::run(all), false),
         Some(Commands::Reorder { order }) => (
-            commands::reorder::run(commands::reorder::ReorderOptions { order }),
+            gg_core::commands::reorder::run(gg_core::commands::reorder::ReorderOptions { order }),
             false,
         ),
         Some(Commands::Land {
@@ -353,25 +350,30 @@ fn main() {
                 false
             } else {
                 // No explicit flag, use config default
-                match git::open_repo().and_then(|repo| config::Config::load(repo.commondir())) {
+                match gg_core::git::open_repo()
+                    .and_then(|repo| gg_core::config::Config::load(repo.commondir()))
+                {
                     Ok(cfg) => cfg.get_land_auto_clean(),
                     Err(_) => false, // If we can't load config, default to false
                 }
             };
 
             (
-                commands::land::run(all, json, !no_squash, wait, auto_clean, auto_merge, until),
+                gg_core::commands::land::run(
+                    all, json, !no_squash, wait, auto_clean, auto_merge, until,
+                ),
                 json,
             )
         }
-        Some(Commands::Clean { all, json }) => (commands::clean::run(all, json), json),
-        Some(Commands::Rebase { target }) => (commands::rebase::run(target), false),
-        Some(Commands::Continue) => (commands::rebase::continue_rebase(), false),
-        Some(Commands::Abort) => (commands::rebase::abort_rebase(), false),
-        Some(Commands::Lint { until, json }) => {
-            (commands::lint::run(until, json, json).map(|_| ()), json)
-        }
-        Some(Commands::Setup) => (commands::setup::run(), false),
+        Some(Commands::Clean { all, json }) => (gg_core::commands::clean::run(all, json), json),
+        Some(Commands::Rebase { target }) => (gg_core::commands::rebase::run(target), false),
+        Some(Commands::Continue) => (gg_core::commands::rebase::continue_rebase(), false),
+        Some(Commands::Abort) => (gg_core::commands::rebase::abort_rebase(), false),
+        Some(Commands::Lint { until, json }) => (
+            gg_core::commands::lint::run(until, json, json).map(|_| ()),
+            json,
+        ),
+        Some(Commands::Setup) => (gg_core::commands::setup::run(), false),
         Some(Commands::Absorb {
             dry_run,
             and_rebase,
@@ -380,7 +382,7 @@ fn main() {
             no_limit,
             squash,
         }) => (
-            commands::absorb::run(commands::absorb::AbsorbOptions {
+            gg_core::commands::absorb::run(gg_core::commands::absorb::AbsorbOptions {
                 dry_run,
                 and_rebase,
                 whole_file,
@@ -390,13 +392,17 @@ fn main() {
             }),
             false,
         ),
-        Some(Commands::Completions { shell }) => (commands::completions::run(shell), false),
-        Some(Commands::Reconcile { dry_run }) => (commands::reconcile::run(dry_run), false),
+        Some(Commands::Completions { shell }) => {
+            (gg_core::commands::completions::run(shell), false)
+        }
+        Some(Commands::Reconcile { dry_run }) => {
+            (gg_core::commands::reconcile::run(dry_run), false)
+        }
     };
 
     if let Err(e) = result {
         if json_mode {
-            output::print_json_error(&e.to_string());
+            gg_core::output::print_json_error(&e.to_string());
         } else {
             eprintln!("{} {}", style("error:").red().bold(), e);
         }

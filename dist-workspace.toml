@@ -1,5 +1,5 @@
 [workspace]
-members = ["cargo:."]
+members = ["cargo:crates/gg-cli"]
 
 # Config for 'dist'
 [dist]

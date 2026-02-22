@@ -1,0 +1,22 @@
+[package]
+name = "gg-cli"
+version = "0.4.3"
+edition = "2021"
+description = "CLI binary for git-gud (gg) stacked-diffs tool"
+authors = ["Nacho Lopez"]
+license = "MIT"
+repository = "https://github.com/mrmans0n/git-gud"
+
+[[bin]]
+name = "gg"
+path = "src/main.rs"
+
+[dependencies]
+gg-core = { path = "../gg-core" }
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+console = "0.16"
+
+[dev-dependencies]
+tempfile = "3"
+serde_json = "1"

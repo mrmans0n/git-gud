@@ -637,7 +637,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "gg-stack"
+name = "gg-cli"
+version = "0.4.3"
+dependencies = [
+ "clap",
+ "clap_complete",
+ "console",
+ "gg-core",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "gg-core"
 version = "0.4.3"
 dependencies = [
  "anyhow",
@@ -662,6 +674,13 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "gg-mcp"
+version = "0.4.3"
+dependencies = [
+ "gg-core",
 ]
 
 [[package]]

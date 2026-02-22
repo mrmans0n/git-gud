@@ -151,6 +151,22 @@ cargo run -- <args>            # Run gg with arguments
 cargo install --path .         # Install locally
 ```
 
+## Commit Style
+
+Use [Conventional Commits](https://www.conventionalcommits.org/). Release notes are auto-generated from these prefixes:
+
+- `feat:` — new feature (→ ✨ Features)
+- `fix:` — bug fix (→ 🐛 Fixes)
+- `refactor:` — code restructuring (→ 🏗️ Internal)
+- `docs:` — documentation only (→ 📚 Docs)
+- `ci:` — CI/workflow changes
+- `test:` — test-only changes
+- `chore:` — maintenance tasks
+
+Use scopes when helpful: `feat(mcp):`, `fix(deps):`, `refactor(core):`.
+For breaking changes, add `!`: `feat!: remove deprecated API`.
+PR titles follow the same convention (squash merges use the PR title as commit message).
+
 ## Error Handling
 
 Use the `GgError` enum in `src/error.rs` for domain-specific errors. All errors should have user-friendly messages with actionable guidance.

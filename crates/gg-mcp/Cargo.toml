@@ -6,6 +6,7 @@ description = "MCP server for git-gud (gg) stacked-diffs tool"
 authors = ["Nacho Lopez"]
 license = "MIT"
 repository = "https://github.com/mrmans0n/git-gud"
+homepage = "https://github.com/mrmans0n/git-gud"
 
 [[bin]]
 name = "gg-mcp"

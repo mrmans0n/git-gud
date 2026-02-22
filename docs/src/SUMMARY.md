@@ -27,6 +27,7 @@
   - [setup](./commands/setup.md)
   - [continue / abort](./commands/continue-abort.md)
   - [reconcile](./commands/reconcile.md)
+- [MCP Server](./mcp-server.md)
 - [Configuration](./configuration.md)
 - [Shell Completions](./shell-completions.md)
 - [Troubleshooting / FAQ](./faq.md)

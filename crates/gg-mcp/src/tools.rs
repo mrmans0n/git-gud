@@ -9,11 +9,40 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use thiserror::Error;
 
 use gg_core::config::Config;
 use gg_core::git;
 use gg_core::provider::{CiStatus, PrState, Provider};
 use gg_core::stack::Stack;
+
+// --- Error types ---
+
+/// Errors that can occur during MCP tool execution.
+#[derive(Debug, Error)]
+pub enum McpToolError {
+    /// The current directory is not inside a git repository.
+    #[error("Not in a git repository ({path}): {source}")]
+    NotInRepo { path: String, source: git2::Error },
+
+    /// Failed to load git-gud configuration.
+    #[error("Failed to load config: {0}")]
+    ConfigLoad(#[from] gg_core::error::GgError),
+
+    /// Failed to detect the git hosting provider.
+    #[error("Failed to detect provider: {0}")]
+    ProviderDetect(String),
+
+    /// Failed to retrieve PR/MR information.
+    #[error("Failed to get PR #{number}: {reason}")]
+    PrLookup { number: u64, reason: String },
+}
+
+impl From<McpToolError> for String {
+    fn from(err: McpToolError) -> Self {
+        err.to_string()
+    }
+}
 
 /// Resolve the repository path from environment or current directory.
 fn repo_path() -> PathBuf {
@@ -23,20 +52,22 @@ fn repo_path() -> PathBuf {
 }
 
 /// Open the git repository.
-fn open_repo() -> Result<git2::Repository, String> {
+fn open_repo() -> Result<git2::Repository, McpToolError> {
     let path = repo_path();
-    git2::Repository::discover(&path)
-        .map_err(|e| format!("Not in a git repository ({}): {}", path.display(), e))
+    git2::Repository::discover(&path).map_err(|e| McpToolError::NotInRepo {
+        path: path.display().to_string(),
+        source: e,
+    })
 }
 
 /// Load config from repo.
-fn load_config(repo: &git2::Repository) -> Result<Config, String> {
-    Config::load(repo.commondir()).map_err(|e| format!("Failed to load config: {}", e))
+fn load_config(repo: &git2::Repository) -> Result<Config, McpToolError> {
+    Config::load(repo.commondir()).map_err(McpToolError::ConfigLoad)
 }
 
 /// Load current stack.
-fn load_stack(repo: &git2::Repository, config: &Config) -> Result<Stack, String> {
-    Stack::load(repo, config).map_err(|e| format!("Failed to load stack: {}", e))
+fn load_stack(repo: &git2::Repository, config: &Config) -> Result<Stack, McpToolError> {
+    Stack::load(repo, config).map_err(McpToolError::ConfigLoad)
 }
 
 // --- Response types ---
@@ -204,7 +235,7 @@ impl GgMcpServer {
 
         if params.refresh {
             let provider =
-                Provider::detect(&repo).map_err(|e| format!("Failed to detect provider: {}", e))?;
+                Provider::detect(&repo).map_err(|e| McpToolError::ProviderDetect(e.to_string()))?;
 
             for entry in &mut stack.entries {
                 if let Some(number) = entry.mr_number {
@@ -304,11 +335,14 @@ impl GgMcpServer {
     fn pr_info(&self, Parameters(params): Parameters<PrInfoParams>) -> Result<String, String> {
         let repo = open_repo()?;
         let provider =
-            Provider::detect(&repo).map_err(|e| format!("Failed to detect provider: {}", e))?;
+            Provider::detect(&repo).map_err(|e| McpToolError::ProviderDetect(e.to_string()))?;
 
         let info = provider
             .get_pr_info(params.number)
-            .map_err(|e| format!("Failed to get PR #{}: {}", params.number, e))?;
+            .map_err(|e| McpToolError::PrLookup {
+                number: params.number,
+                reason: e.to_string(),
+            })?;
 
         let ci = provider
             .get_pr_ci_status(params.number)
@@ -364,5 +398,96 @@ impl ServerHandler for GgMcpServer {
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             ..Default::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pr_state_str() {
+        assert_eq!(pr_state_str(&PrState::Open), "open");
+        assert_eq!(pr_state_str(&PrState::Merged), "merged");
+        assert_eq!(pr_state_str(&PrState::Closed), "closed");
+        assert_eq!(pr_state_str(&PrState::Draft), "draft");
+    }
+
+    #[test]
+    fn test_ci_status_str() {
+        assert_eq!(ci_status_str(&CiStatus::Pending), "pending");
+        assert_eq!(ci_status_str(&CiStatus::Running), "running");
+        assert_eq!(ci_status_str(&CiStatus::Success), "success");
+        assert_eq!(ci_status_str(&CiStatus::Failed), "failed");
+        assert_eq!(ci_status_str(&CiStatus::Canceled), "canceled");
+        assert_eq!(ci_status_str(&CiStatus::Unknown), "unknown");
+    }
+
+    #[test]
+    fn test_to_json_serializes_struct() {
+        let info = ConfigInfo {
+            provider: Some("github".to_string()),
+            base_branch: Some("main".to_string()),
+            branch_username: Some("user".to_string()),
+            lint_commands: vec!["cargo fmt".to_string()],
+            auto_add_gg_ids: true,
+            land_auto_clean: false,
+            sync_auto_lint: true,
+            sync_auto_rebase: false,
+        };
+        let json = to_json(&info);
+        assert!(json.contains("\"provider\": \"github\""));
+        assert!(json.contains("\"base_branch\": \"main\""));
+        assert!(json.contains("\"auto_add_gg_ids\": true"));
+        assert!(json.contains("\"lint_commands\""));
+    }
+
+    // NOTE: env var tests are combined into one test to avoid race conditions
+    // when running tests in parallel (env vars are process-global).
+    #[test]
+    fn test_repo_path_and_open_repo() {
+        // Test 1: env var overrides path
+        std::env::set_var("GG_REPO_PATH", "/tmp/test-repo-path-check");
+        let path = repo_path();
+        assert_eq!(path, PathBuf::from("/tmp/test-repo-path-check"));
+
+        // Test 2: open_repo fails outside git repo
+        std::env::set_var("GG_REPO_PATH", "/tmp/definitely-not-a-git-repo-12345");
+        let result = open_repo();
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("Not in a git repository"));
+
+        // Test 3: without env var, defaults to cwd
+        std::env::remove_var("GG_REPO_PATH");
+        let path = repo_path();
+        assert!(path.is_absolute() || path == PathBuf::new());
+    }
+
+    #[test]
+    fn test_mcp_tool_error_display() {
+        let err = McpToolError::ProviderDetect("auth failed".to_string());
+        assert_eq!(err.to_string(), "Failed to detect provider: auth failed");
+
+        let err = McpToolError::PrLookup {
+            number: 42,
+            reason: "not found".to_string(),
+        };
+        assert_eq!(err.to_string(), "Failed to get PR #42: not found");
+    }
+
+    #[test]
+    fn test_mcp_tool_error_to_string_conversion() {
+        let err = McpToolError::ProviderDetect("test".to_string());
+        let s: String = err.into();
+        assert!(s.contains("Failed to detect provider"));
+    }
+
+    #[test]
+    fn test_server_creation() {
+        let server = GgMcpServer::new();
+        let info = server.get_info();
+        assert!(info.instructions.is_some());
+        assert!(info.instructions.unwrap().contains("git-gud"));
     }
 }

@@ -132,3 +132,32 @@ gg land -a -c --json
 - Multi-commit editing: `examples/multi-commit.md`
 - Merge trains (GitLab): `examples/merge-train.md`
 - MCP server tools & schemas: `reference.md` → MCP Server section
+
+## MCP Server Usage for Agents
+
+The `gg-mcp` binary exposes git-gud as an MCP server (stdio transport). Set `GG_REPO_PATH` to the target repo.
+
+### Read-only tools (safe, no side effects)
+- `stack_list` / `stack_list_all` / `stack_status` — inspect stacks
+- `pr_info` — check PR state, CI, approval
+- `config_show` — read repo configuration
+
+### Write tools (mutating, use with care)
+- `stack_checkout` — create or switch stacks
+- `stack_sync` — push and create/update PRs (use `draft: true` for safety)
+- `stack_land` — merge approved PRs (**always confirm with user first**)
+- `stack_clean` — remove merged stacks
+- `stack_rebase` — rebase onto latest base
+- `stack_squash` / `stack_absorb` — amend commits
+- `stack_reconcile` — fix out-of-sync remote branches
+
+### Navigation tools
+- `stack_move` — jump to a commit by position, GG-ID, or SHA
+- `stack_navigate` — move first/last/prev/next in the stack
+
+### Agent guidelines for MCP
+- Prefer read-only tools to understand state before writing.
+- Use `stack_sync` with `draft: true` unless the user asks for non-draft PRs.
+- **Never call `stack_land` without explicit user approval.**
+- Parse JSON output from `stack_sync`, `stack_land`, `stack_clean`, and `stack_lint`.
+- If `stack_status` shows `behind_base > 0`, run `stack_rebase` before syncing.

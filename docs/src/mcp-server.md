@@ -79,6 +79,99 @@ Show the current git-gud configuration for this repository.
 
 **Returns:** Provider, base branch, branch username, lint commands, and all boolean settings (auto_add_gg_ids, land_auto_clean, sync_auto_lint, sync_auto_rebase).
 
+## Write Tools
+
+### `stack_checkout`
+
+Create a new stack or switch to an existing one.
+
+**Parameters:**
+- `name` (string, optional): Stack name.
+- `base` (string, optional): Base branch (default: main/master).
+- `worktree` (boolean, optional): Use a git worktree for isolation.
+
+### `stack_sync`
+
+Push branches and create/update PRs/MRs for the current stack.
+
+**Parameters:**
+- `draft` (boolean, optional): Create PRs as draft.
+- `force` (boolean, optional): Force-push branches.
+- `update_descriptions` (boolean, optional): Update PR descriptions from commit messages.
+- `no_rebase_check` (boolean, optional): Skip rebase-needed check.
+- `lint` (boolean, optional): Run lint before syncing.
+- `until` (string, optional): Only sync up to this position/GG-ID/SHA.
+
+### `stack_land`
+
+Merge approved PRs/MRs from the current stack.
+
+**Parameters:**
+- `all` (boolean, optional): Land all approved PRs.
+- `squash` (boolean, optional): Use squash merge.
+- `auto_clean` (boolean, optional): Auto-clean the stack after landing.
+- `until` (string, optional): Only land up to this position/GG-ID/SHA.
+
+### `stack_clean`
+
+Clean up stacks whose PRs have been merged.
+
+**Parameters:**
+- `all` (boolean, optional): Clean all merged stacks.
+
+### `stack_rebase`
+
+Rebase the current stack onto the latest base branch.
+
+**Parameters:**
+- `target` (string, optional): Target branch to rebase onto.
+
+### `stack_squash`
+
+Squash (amend) staged changes into the current commit.
+
+**Parameters:**
+- `all` (boolean, optional): Stage all changes first.
+
+### `stack_absorb`
+
+Auto-absorb staged changes into the correct commits.
+
+**Parameters:**
+- `dry_run` (boolean, optional): Show what would be absorbed.
+- `and_rebase` (boolean, optional): Rebase after absorbing.
+- `whole_file` (boolean, optional): Absorb whole files.
+- `one_fixup_per_commit` (boolean, optional): One fixup per target commit.
+- `squash` (boolean, optional): Squash fixups immediately.
+
+### `stack_reconcile`
+
+Reconcile out-of-sync branches pushed outside of gg.
+
+**Parameters:**
+- `dry_run` (boolean, optional): Show what would change.
+
+### `stack_move`
+
+Move to a specific commit in the stack.
+
+**Parameters:**
+- `target` (string, required): Position number, GG-ID, or SHA prefix.
+
+### `stack_navigate`
+
+Navigate within the stack.
+
+**Parameters:**
+- `direction` (string, required): `"first"`, `"last"`, `"prev"`, or `"next"`.
+
+### `stack_lint`
+
+Run configured lint commands on each commit.
+
+**Parameters:**
+- `until` (integer, optional): Only lint up to this position.
+
 ## Transport
 
 The MCP server uses **stdio** transport (JSON-RPC over stdin/stdout), which is the standard for local MCP tools. No network configuration is needed.

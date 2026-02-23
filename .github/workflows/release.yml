@@ -286,12 +286,13 @@ jobs:
       - name: Prepend changelog to release notes
         run: |
           TAG="${{ needs.plan.outputs.tag }}"
-          # Find the previous tag
-          PREV_TAG=$(git tag --sort=-v:refname | grep -A1 "^${TAG}$" | tail -1)
-          if [ "$PREV_TAG" = "$TAG" ] || [ -z "$PREV_TAG" ]; then
+          # Find the previous tag using git describe (more reliable than grep on sorted tags)
+          PREV_TAG=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
+          if [ -z "$PREV_TAG" ]; then
             echo "No previous tag found, skipping changelog"
             exit 0
           fi
+          echo "Generating changelog: ${PREV_TAG}..${TAG}"
 
           # Generate changelog from conventional commits
           echo "## Release Notes" > $RUNNER_TEMP/changelog.md

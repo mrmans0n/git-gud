@@ -1,0 +1,12 @@
+{
+  "name": "git-gud",
+  "owner": {
+    "name": "Nacho Lopez"
+  },
+  "plugins": [
+    {
+      "name": "git-gud",
+      "source": "./"
+    }
+  ]
+}

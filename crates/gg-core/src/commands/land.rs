@@ -50,6 +50,33 @@ fn finish_spinner(spinner: &ProgressBar, message: &str, start_time: Instant) {
     spinner.finish_with_message(format!("{} {} - {}", style("✓").green(), elapsed, message));
 }
 
+/// Sleep in small chunks so Ctrl+C interruption is handled promptly.
+fn interruptible_sleep(
+    duration: Duration,
+    interrupted: Option<&Arc<AtomicBool>>,
+    current_spinner: Option<&ProgressBar>,
+) -> Result<()> {
+    let sleep_step = Duration::from_millis(250);
+    let mut remaining = duration;
+
+    while remaining > Duration::ZERO {
+        let step = remaining.min(sleep_step);
+        std::thread::sleep(step);
+        remaining = remaining.saturating_sub(step);
+
+        if let Some(flag) = interrupted {
+            if flag.load(Ordering::SeqCst) {
+                if let Some(spinner) = current_spinner {
+                    spinner.finish_and_clear();
+                }
+                return Err(GgError::Other("Interrupted by user".to_string()));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Polling interval (10 seconds)
 const POLL_INTERVAL_SECS: u64 = 10;
 
@@ -352,6 +379,10 @@ pub fn run(
         let flag_clone = Arc::clone(&flag);
         let json_mode = json;
         ctrlc::set_handler(move || {
+            if flag_clone.load(Ordering::SeqCst) {
+                std::process::exit(130);
+            }
+
             flag_clone.store(true, Ordering::SeqCst);
             if !json_mode {
                 println!();
@@ -1046,7 +1077,7 @@ fn wait_for_pr_ready(
         }
 
         // Wait before next poll
-        std::thread::sleep(poll_interval);
+        interruptible_sleep(poll_interval, interrupted, current_spinner.as_ref())?;
     }
 }
 
@@ -1237,7 +1268,7 @@ fn wait_for_merge_train_completion(
         }
 
         // Wait before next poll
-        std::thread::sleep(poll_interval);
+        interruptible_sleep(poll_interval, interrupted, current_spinner.as_ref())?;
     }
 }
 
@@ -1256,6 +1287,24 @@ mod tests {
     fn test_poll_interval_is_reasonable() {
         // Poll interval should be between 1 and 60 seconds
         const { assert!(POLL_INTERVAL_SECS >= 1 && POLL_INTERVAL_SECS <= 60) };
+    }
+
+    #[test]
+    fn test_interruptible_sleep_returns_ok_when_not_interrupted() {
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let result = interruptible_sleep(Duration::ZERO, Some(&interrupted), None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_interruptible_sleep_returns_error_when_interrupted() {
+        let interrupted = Arc::new(AtomicBool::new(true));
+        let result = interruptible_sleep(Duration::from_millis(1), Some(&interrupted), None);
+        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(GgError::Other(msg)) if msg == "Interrupted by user"
+        ));
     }
 
     #[test]

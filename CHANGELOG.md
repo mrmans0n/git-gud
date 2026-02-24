@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-02-24
+
+### Fixed
+- `gg land --wait` now responds to Ctrl+C promptly instead of waiting up to 10 seconds — replaced blocking sleep with interruptible 250ms-chunk sleep (#181)
+- Second Ctrl+C during `--wait` now force-exits immediately via `abort()` (#181)
+- Use `git describe` to find previous tag for changelog generation (#179)
+- CI: fetch full history and tags for changelog generation
+
+### Added
+- Marketplace metadata for Claude plugin (#180)
+
 ## [0.4.2] - 2026-02-20
 
 ### Fixed

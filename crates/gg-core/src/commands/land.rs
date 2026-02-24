@@ -380,7 +380,10 @@ pub fn run(
         let json_mode = json;
         ctrlc::set_handler(move || {
             if flag_clone.load(Ordering::SeqCst) {
-                std::process::exit(130);
+                // Use abort() instead of process::exit(130) to avoid potential
+                // deadlock: process::exit calls fflush which needs the stdout
+                // lock, but the spinner thread (indicatif) may be holding it.
+                std::process::abort();
             }
 
             flag_clone.store(true, Ordering::SeqCst);

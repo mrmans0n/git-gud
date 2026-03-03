@@ -1433,9 +1433,9 @@ dependencies = [
 
 [[package]]
 name = "interprocess"
-version = "2.3.1"
+version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53bf2b0e0785c5394a7392f66d7c4fb9c653633c29b27a932280da3cb344c66a"
+checksum = "6be5e5c847dbdb44564bd85294740d031f4f8aeb3464e5375ef7141f7538db69"
 dependencies = [
  "doctest-file",
  "futures-core",
@@ -2624,9 +2624,9 @@ checksum = "b2aa850e253778c88a04c3d7323b043aeda9d3e30d5971937c1855769763678e"
 
 [[package]]
 name = "skim"
-version = "3.5.0"
+version = "3.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "656adb5bb5f4f73007899d686a56a97c6e92dfcc1113edb9299691a8315a21dc"
+checksum = "1294bd490a9cf6cc328467a11fa15b7fa01f026606de50050ea2273a64c57e51"
 dependencies = [
  "ansi-to-tui",
  "assert_enum_variants",
@@ -2645,6 +2645,7 @@ dependencies = [
  "interprocess",
  "kanal",
  "log",
+ "memchr",
  "nix 0.31.1",
  "portable-pty",
  "rand 0.10.0",

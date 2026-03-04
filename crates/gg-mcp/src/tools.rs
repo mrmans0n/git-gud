@@ -759,11 +759,10 @@ impl GgMcpServer {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for GgMcpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions(
-                "git-gud (gg) MCP server. Provides tools to inspect and manage stacked-diffs \
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
+            "git-gud (gg) MCP server. Provides tools to inspect and manage stacked-diffs \
                  workflows for GitHub and GitLab repositories.",
-            )
+        )
     }
 }
 

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-03-09
+
+### Fixed
+- `gg sync` now correctly detects when a branch needs rebasing even if local main is up-to-date — uses merge-base between HEAD and origin/main instead of comparing local main vs origin/main (#189)
+
+### Changed
+- Updated dependencies: `skim` to v3.7.0, `uuid` to v1.22.0, `rmcp` to v1 (#183, #184, #185, #186, #187, #188)
+
 ## [0.5.2] - 2026-02-24
 
 ### Fixed
@@ -212,7 +220,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/mrmans0n/git-gud/compare/v0.5.2...v0.5.3
 [0.4.2]: https://github.com/mrmans0n/git-gud/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/mrmans0n/git-gud/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/mrmans0n/git-gud/compare/v0.3.3...v0.4.0

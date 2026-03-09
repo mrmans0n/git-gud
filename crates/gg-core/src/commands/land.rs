@@ -890,7 +890,12 @@ pub fn run(
         );
     }
 
-    if let Some(error) = land_error {
+    // In JSON mode, the error is already included in the LandResponse payload.
+    // Returning Err would cause gg-cli to emit a second JSON error object,
+    // breaking machine consumers that expect a single JSON document.
+    if json {
+        Ok(())
+    } else if let Some(error) = land_error {
         Err(GgError::Other(error))
     } else {
         Ok(())

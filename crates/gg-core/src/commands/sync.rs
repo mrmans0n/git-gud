@@ -29,8 +29,11 @@ fn maybe_rebase_if_base_is_behind(
         return Ok(false);
     }
 
+    // Use merge-base to find how many commits on origin/<base_branch> are not
+    // reachable from HEAD. This correctly detects when a branch needs rebasing
+    // regardless of what local <base_branch> looks like.
     let behind =
-        match git::count_commits_behind(repo, base_branch, &format!("origin/{}", base_branch)) {
+        match git::count_branch_behind_upstream(repo, "HEAD", &format!("origin/{}", base_branch)) {
             Ok(count) => count,
             Err(_) => return Ok(false),
         };

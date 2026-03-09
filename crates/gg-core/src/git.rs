@@ -467,6 +467,30 @@ pub fn count_commits_behind(
     Ok(behind)
 }
 
+/// Count how many commits on `upstream_ref` are not reachable from `local_ref`.
+///
+/// This uses merge-base to find the fork point, then counts commits from
+/// merge-base to upstream. This is useful for determining if a branch needs
+/// rebasing regardless of what local tracking branches look like.
+///
+/// Returns an error if either ref cannot be resolved or if no merge-base exists.
+pub fn count_branch_behind_upstream(
+    repo: &Repository,
+    local_ref: &str,
+    upstream_ref: &str,
+) -> Result<usize> {
+    let local_oid = repo.revparse_single(local_ref)?.id();
+    let upstream_oid = repo.revparse_single(upstream_ref)?.id();
+
+    let merge_base = repo.merge_base(local_oid, upstream_oid).map_err(|_| {
+        GgError::Other("No merge-base found between branch and upstream".to_string())
+    })?;
+
+    // Count commits between merge_base and upstream
+    let (_ahead, behind) = repo.graph_ahead_behind(merge_base, upstream_oid)?;
+    Ok(behind)
+}
+
 /// Push a branch to origin
 ///
 /// - `force_with_lease`: Use --force-with-lease (safe force, recommended for stacked diffs)
@@ -1072,6 +1096,209 @@ mod tests {
 
         let err = count_commits_behind(&repo, "main", "origin/main");
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn test_count_branch_behind_upstream() {
+        use std::process::Command;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_path = temp_dir.path();
+
+        // Initialize repo
+        Command::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Create initial commit on main
+        std::fs::write(repo_path.join("file.txt"), "v1").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Create a feature branch from this point
+        Command::new("git")
+            .args(["checkout", "-b", "feature"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Make a commit on feature branch
+        std::fs::write(repo_path.join("feature.txt"), "feature work").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "feature work"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Go back to main and add commits (simulating upstream progress)
+        Command::new("git")
+            .args(["checkout", "main"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        std::fs::write(repo_path.join("file.txt"), "v2").unwrap();
+        Command::new("git")
+            .args(["commit", "-am", "main progress 1"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        std::fs::write(repo_path.join("file.txt"), "v3").unwrap();
+        Command::new("git")
+            .args(["commit", "-am", "main progress 2"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Create origin/main ref at current main position
+        let head = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        let origin_main_oid = String::from_utf8_lossy(&head.stdout).trim().to_string();
+        Command::new("git")
+            .args(["update-ref", "refs/remotes/origin/main", &origin_main_oid])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Now update local main to match origin/main (simulating `git pull`)
+        // Local main is now up-to-date with origin/main
+
+        // Switch to feature branch
+        Command::new("git")
+            .args(["checkout", "feature"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        let repo = Repository::open(repo_path).unwrap();
+
+        // The OLD approach: compare main vs origin/main
+        // This would return 0 because local main == origin/main
+        let old_behind = count_commits_behind(&repo, "main", "origin/main").unwrap();
+        assert_eq!(old_behind, 0, "local main is up-to-date with origin/main");
+
+        // The NEW approach: use merge-base between HEAD (feature) and origin/main
+        // This should return 2 because feature was forked from old main
+        let new_behind = count_branch_behind_upstream(&repo, "HEAD", "origin/main").unwrap();
+        assert_eq!(
+            new_behind, 2,
+            "feature branch is 2 commits behind origin/main"
+        );
+    }
+
+    #[test]
+    fn test_count_branch_behind_upstream_already_rebased() {
+        use std::process::Command;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_path = temp_dir.path();
+
+        // Initialize repo
+        Command::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Create initial commit on main
+        std::fs::write(repo_path.join("file.txt"), "v1").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Add more commits to main
+        std::fs::write(repo_path.join("file.txt"), "v2").unwrap();
+        Command::new("git")
+            .args(["commit", "-am", "main progress"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Create origin/main ref at current main position
+        let head = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        let origin_main_oid = String::from_utf8_lossy(&head.stdout).trim().to_string();
+        Command::new("git")
+            .args(["update-ref", "refs/remotes/origin/main", &origin_main_oid])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Create a feature branch FROM the latest main (already rebased)
+        Command::new("git")
+            .args(["checkout", "-b", "feature"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Make a commit on feature branch
+        std::fs::write(repo_path.join("feature.txt"), "feature work").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "feature work"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        let repo = Repository::open(repo_path).unwrap();
+
+        // Branch is already based on latest origin/main, should be 0 behind
+        let behind = count_branch_behind_upstream(&repo, "HEAD", "origin/main").unwrap();
+        assert_eq!(
+            behind, 0,
+            "feature branch is already rebased on origin/main"
+        );
     }
 
     #[test]

@@ -1009,10 +1009,7 @@ fn wait_for_pr_ready(
 
         // Check CI status
         let ci_status = match provider.get_pr_ci_status(pr_num) {
-            Ok(status) => {
-                consecutive_errors = 0;
-                status
-            }
+            Ok(status) => status,
             Err(e) => {
                 consecutive_errors += 1;
                 if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
@@ -1094,10 +1091,7 @@ fn wait_for_pr_ready(
             true
         } else {
             let approved = match provider.check_pr_approved(pr_num) {
-                Ok(approved) => {
-                    consecutive_errors = 0;
-                    approved
-                }
+                Ok(approved) => approved,
                 Err(e) => {
                     consecutive_errors += 1;
                     if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
@@ -1135,6 +1129,9 @@ fn wait_for_pr_ready(
             }
             approved
         };
+
+        // All API calls succeeded this iteration — reset retry counter
+        consecutive_errors = 0;
 
         // If both CI and approval are ready, we're done
         if ci_ready && approval_ready {
@@ -1242,10 +1239,7 @@ fn wait_for_merge_train_completion(
 
         // Check if MR is actually merged by checking its state first
         let pr_info = match provider.get_pr_info(pr_num) {
-            Ok(info) => {
-                consecutive_errors = 0;
-                info
-            }
+            Ok(info) => info,
             Err(e) => {
                 consecutive_errors += 1;
                 if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
@@ -1382,6 +1376,9 @@ fn wait_for_merge_train_completion(
             // If we can't get train status, check if it's been merged directly
             new_state = "Checking merge status...".to_string();
         }
+
+        // All API calls succeeded this iteration — reset retry counter
+        consecutive_errors = 0;
 
         // Update spinner if state changed
         if current_state.as_ref() != Some(&new_state) {

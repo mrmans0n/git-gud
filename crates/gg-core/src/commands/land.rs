@@ -864,9 +864,22 @@ pub fn run(
                 remaining,
                 cleaned,
                 warnings,
-                error: land_error,
+                error: land_error.clone(),
             },
         });
+    } else if let Some(ref error) = land_error {
+        // Report error in non-JSON mode
+        if landed_count > 0 {
+            println!();
+            println!(
+                "{} Landed {} {}(s), but encountered an error:",
+                style("⚠").yellow().bold(),
+                landed_count,
+                provider.pr_label()
+            );
+        }
+        eprintln!();
+        eprintln!("{} {}", style("Error:").red().bold(), error);
     } else if landed_count > 0 {
         println!();
         println!(
@@ -877,7 +890,16 @@ pub fn run(
         );
     }
 
-    Ok(())
+    // In JSON mode, the error is already included in the LandResponse payload.
+    // Returning Err would cause gg-cli to emit a second JSON error object,
+    // breaking machine consumers that expect a single JSON document.
+    if json {
+        Ok(())
+    } else if let Some(error) = land_error {
+        Err(GgError::Other(error))
+    } else {
+        Ok(())
+    }
 }
 
 /// Wait for a PR/MR to be ready to merge (CI passes, approvals met)
@@ -891,9 +913,12 @@ fn wait_for_pr_ready(
     target_branch: &str,
     json: bool,
 ) -> Result<()> {
+    const MAX_CONSECUTIVE_ERRORS: u32 = 5;
+
     let start_time = Instant::now();
     let timeout = Duration::from_secs(timeout_minutes * 60);
     let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
+    let mut consecutive_errors: u32 = 0;
 
     // Check if merge trains are enabled
     let merge_trains_enabled = provider.check_merge_trains_enabled().unwrap_or(false);
@@ -988,7 +1013,40 @@ fn wait_for_pr_ready(
         }
 
         // Check CI status
-        let ci_status = provider.get_pr_ci_status(pr_num)?;
+        let ci_status = match provider.get_pr_ci_status(pr_num) {
+            Ok(status) => status,
+            Err(e) => {
+                consecutive_errors += 1;
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                    if let Some(ref spinner) = current_spinner {
+                        spinner.finish_and_clear();
+                    }
+                    return Err(GgError::Other(format!(
+                        "Too many consecutive API errors ({}): {}",
+                        consecutive_errors, e
+                    )));
+                }
+                // Transient error — update spinner and retry on next poll
+                let error_state = format!(
+                    "API error (attempt {}/{}): {}",
+                    consecutive_errors, MAX_CONSECUTIVE_ERRORS, e
+                );
+                if !json && current_state.as_ref() != Some(&error_state) {
+                    if let Some(ref spinner) = current_spinner {
+                        finish_spinner(
+                            spinner,
+                            current_state.as_ref().unwrap_or(&String::new()),
+                            state_start_time,
+                        );
+                    }
+                    current_spinner = Some(create_spinner(&error_state));
+                    current_state = Some(error_state);
+                    state_start_time = Instant::now();
+                }
+                interruptible_sleep(poll_interval, interrupted, current_spinner.as_ref())?;
+                continue;
+            }
+        };
         match ci_status {
             CiStatus::Success => {
                 ci_ready = true;
@@ -1037,12 +1095,48 @@ fn wait_for_pr_ready(
         let approval_ready = if skip_approval && !merge_trains_enabled {
             true
         } else {
-            let approved = provider.check_pr_approved(pr_num)?;
+            let approved = match provider.check_pr_approved(pr_num) {
+                Ok(approved) => approved,
+                Err(e) => {
+                    consecutive_errors += 1;
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                        if let Some(ref spinner) = current_spinner {
+                            spinner.finish_and_clear();
+                        }
+                        return Err(GgError::Other(format!(
+                            "Too many consecutive API errors ({}): {}",
+                            consecutive_errors, e
+                        )));
+                    }
+                    // Transient error — update spinner and retry on next poll
+                    let error_state = format!(
+                        "API error (attempt {}/{}): {}",
+                        consecutive_errors, MAX_CONSECUTIVE_ERRORS, e
+                    );
+                    if !json && current_state.as_ref() != Some(&error_state) {
+                        if let Some(ref spinner) = current_spinner {
+                            finish_spinner(
+                                spinner,
+                                current_state.as_ref().unwrap_or(&String::new()),
+                                state_start_time,
+                            );
+                        }
+                        current_spinner = Some(create_spinner(&error_state));
+                        current_state = Some(error_state);
+                        state_start_time = Instant::now();
+                    }
+                    interruptible_sleep(poll_interval, interrupted, current_spinner.as_ref())?;
+                    continue;
+                }
+            };
             if !approved && ci_ready && new_state.is_empty() {
                 new_state = "Waiting for approval...".to_string();
             }
             approved
         };
+
+        // All API calls succeeded this iteration — reset retry counter
+        consecutive_errors = 0;
 
         // If both CI and approval are ready, we're done
         if ci_ready && approval_ready {
@@ -1094,9 +1188,12 @@ fn wait_for_merge_train_completion(
     target_branch: &str,
     json: bool,
 ) -> Result<()> {
+    const MAX_CONSECUTIVE_ERRORS: u32 = 5;
+
     let start_time = Instant::now();
     let timeout = Duration::from_secs(timeout_minutes * 60);
     let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
+    let mut consecutive_errors: u32 = 0;
 
     // Grace period: after adding to merge train, the MR may not appear in the
     // train list immediately. Allow some polls with Idle status before treating
@@ -1146,7 +1243,40 @@ fn wait_for_merge_train_completion(
         }
 
         // Check if MR is actually merged by checking its state first
-        let pr_info = provider.get_pr_info(pr_num)?;
+        let pr_info = match provider.get_pr_info(pr_num) {
+            Ok(info) => info,
+            Err(e) => {
+                consecutive_errors += 1;
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                    if let Some(ref spinner) = current_spinner {
+                        spinner.finish_and_clear();
+                    }
+                    return Err(GgError::Other(format!(
+                        "Too many consecutive API errors ({}): {}",
+                        consecutive_errors, e
+                    )));
+                }
+                // Transient error — update spinner and retry on next poll
+                let error_state = format!(
+                    "API error (attempt {}/{}): {}",
+                    consecutive_errors, MAX_CONSECUTIVE_ERRORS, e
+                );
+                if !json && current_state.as_ref() != Some(&error_state) {
+                    if let Some(ref spinner) = current_spinner {
+                        finish_spinner(
+                            spinner,
+                            current_state.as_ref().unwrap_or(&String::new()),
+                            state_start_time,
+                        );
+                    }
+                    current_spinner = Some(create_spinner(&error_state));
+                    current_state = Some(error_state);
+                    state_start_time = Instant::now();
+                }
+                interruptible_sleep(poll_interval, interrupted, current_spinner.as_ref())?;
+                continue;
+            }
+        };
         if pr_info.state == PrState::Merged {
             if let Some(ref spinner) = current_spinner {
                 finish_spinner(
@@ -1251,6 +1381,9 @@ fn wait_for_merge_train_completion(
             // If we can't get train status, check if it's been merged directly
             new_state = "Checking merge status...".to_string();
         }
+
+        // All API calls succeeded this iteration — reset retry counter
+        consecutive_errors = 0;
 
         // Update spinner if state changed
         if current_state.as_ref() != Some(&new_state) {

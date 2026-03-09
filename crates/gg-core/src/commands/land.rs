@@ -1029,19 +1029,18 @@ fn wait_for_pr_ready(
                     "API error (attempt {}/{}): {}",
                     consecutive_errors, MAX_CONSECUTIVE_ERRORS, e
                 );
-                if !json
-                    && current_state.as_ref() != Some(&error_state) {
-                        if let Some(ref spinner) = current_spinner {
-                            finish_spinner(
-                                spinner,
-                                current_state.as_ref().unwrap_or(&String::new()),
-                                state_start_time,
-                            );
-                        }
-                        current_spinner = Some(create_spinner(&error_state));
-                        current_state = Some(error_state);
-                        state_start_time = Instant::now();
+                if !json && current_state.as_ref() != Some(&error_state) {
+                    if let Some(ref spinner) = current_spinner {
+                        finish_spinner(
+                            spinner,
+                            current_state.as_ref().unwrap_or(&String::new()),
+                            state_start_time,
+                        );
                     }
+                    current_spinner = Some(create_spinner(&error_state));
+                    current_state = Some(error_state);
+                    state_start_time = Instant::now();
+                }
                 interruptible_sleep(poll_interval, interrupted, current_spinner.as_ref())?;
                 continue;
             }
@@ -1115,19 +1114,18 @@ fn wait_for_pr_ready(
                         "API error (attempt {}/{}): {}",
                         consecutive_errors, MAX_CONSECUTIVE_ERRORS, e
                     );
-                    if !json
-                        && current_state.as_ref() != Some(&error_state) {
-                            if let Some(ref spinner) = current_spinner {
-                                finish_spinner(
-                                    spinner,
-                                    current_state.as_ref().unwrap_or(&String::new()),
-                                    state_start_time,
-                                );
-                            }
-                            current_spinner = Some(create_spinner(&error_state));
-                            current_state = Some(error_state);
-                            state_start_time = Instant::now();
+                    if !json && current_state.as_ref() != Some(&error_state) {
+                        if let Some(ref spinner) = current_spinner {
+                            finish_spinner(
+                                spinner,
+                                current_state.as_ref().unwrap_or(&String::new()),
+                                state_start_time,
+                            );
                         }
+                        current_spinner = Some(create_spinner(&error_state));
+                        current_state = Some(error_state);
+                        state_start_time = Instant::now();
+                    }
                     interruptible_sleep(poll_interval, interrupted, current_spinner.as_ref())?;
                     continue;
                 }
@@ -1264,19 +1262,18 @@ fn wait_for_merge_train_completion(
                     "API error (attempt {}/{}): {}",
                     consecutive_errors, MAX_CONSECUTIVE_ERRORS, e
                 );
-                if !json
-                    && current_state.as_ref() != Some(&error_state) {
-                        if let Some(ref spinner) = current_spinner {
-                            finish_spinner(
-                                spinner,
-                                current_state.as_ref().unwrap_or(&String::new()),
-                                state_start_time,
-                            );
-                        }
-                        current_spinner = Some(create_spinner(&error_state));
-                        current_state = Some(error_state);
-                        state_start_time = Instant::now();
+                if !json && current_state.as_ref() != Some(&error_state) {
+                    if let Some(ref spinner) = current_spinner {
+                        finish_spinner(
+                            spinner,
+                            current_state.as_ref().unwrap_or(&String::new()),
+                            state_start_time,
+                        );
                     }
+                    current_spinner = Some(create_spinner(&error_state));
+                    current_state = Some(error_state);
+                    state_start_time = Instant::now();
+                }
                 interruptible_sleep(poll_interval, interrupted, current_spinner.as_ref())?;
                 continue;
             }

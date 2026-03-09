@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-03-09
+
+### Fixed
+- `gg land --wait` now shows error messages instead of silently exiting — errors were swallowed in non-JSON mode (#190)
+- `gg land --wait` retries transient API failures (up to 5 consecutive) instead of aborting the entire wait on a single network hiccup (#190)
+- `gg land --wait --json` no longer emits duplicate JSON objects on error (#190)
+
+### Changed
+- Updated dependencies: `rmcp` to v1.1.1 (#191)
+
 ## [0.5.3] - 2026-03-09
 
 ### Fixed
@@ -220,7 +230,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.5.4...HEAD
+[0.5.4]: https://github.com/mrmans0n/git-gud/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/mrmans0n/git-gud/compare/v0.5.2...v0.5.3
 [0.4.2]: https://github.com/mrmans0n/git-gud/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/mrmans0n/git-gud/compare/v0.4.0...v0.4.1

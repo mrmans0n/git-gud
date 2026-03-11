@@ -4,7 +4,7 @@ use console::style;
 use dialoguer::theme::ColorfulTheme;
 use dialoguer::{Confirm, Input, Select};
 
-use crate::config::{Config, Defaults};
+use crate::config::{Config, Defaults, UnstagedAction};
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::provider::Provider;
@@ -40,6 +40,11 @@ pub fn run() -> Result<()> {
 
     let defaults = prompt_defaults(&repo, &config.defaults, &theme)?;
     config.defaults = defaults;
+
+    // worktree_base_path lives on Config, not Defaults
+    config.worktree_base_path =
+        prompt_worktree_base_path(config.worktree_base_path.as_deref(), &theme)?;
+
     config.save(git_dir)?;
 
     println!(
@@ -70,6 +75,51 @@ fn prompt_defaults(
     // Ask about auto-lint only if lint commands are configured
     if !defaults.lint.is_empty() {
         defaults.sync_auto_lint = prompt_sync_auto_lint(existing.sync_auto_lint, theme)?;
+    }
+
+    // --- Additional configuration fields ---
+
+    defaults.auto_add_gg_ids = Confirm::with_theme(theme)
+        .with_prompt("Automatically add GG-IDs to commits? (tracks commit-to-PR mapping)")
+        .default(existing.auto_add_gg_ids)
+        .interact()
+        .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?;
+
+    defaults.sync_auto_rebase = Confirm::with_theme(theme)
+        .with_prompt("Automatically rebase before sync when base is behind origin?")
+        .default(existing.sync_auto_rebase)
+        .interact()
+        .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?;
+
+    defaults.sync_behind_threshold = Input::with_theme(theme)
+        .with_prompt("Number of commits behind origin before warning/rebase during sync")
+        .default(existing.sync_behind_threshold)
+        .interact_text()
+        .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?;
+
+    defaults.land_auto_clean = Confirm::with_theme(theme)
+        .with_prompt("Automatically clean up stack after landing all PRs/MRs?")
+        .default(existing.land_auto_clean)
+        .interact()
+        .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?;
+
+    let effective_timeout = existing.land_wait_timeout_minutes.unwrap_or(30);
+    let timeout: u64 = Input::with_theme(theme)
+        .with_prompt("Timeout in minutes for `gg land --wait`")
+        .default(effective_timeout)
+        .interact_text()
+        .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?;
+    defaults.land_wait_timeout_minutes = Some(timeout);
+
+    defaults.unstaged_action = prompt_unstaged_action(existing.unstaged_action, theme)?;
+
+    // GitLab-specific options
+    if defaults.provider.as_deref() == Some("gitlab") {
+        defaults.gitlab.auto_merge_on_land = Confirm::with_theme(theme)
+            .with_prompt("Use GitLab auto-merge ('merge when pipeline succeeds') when landing?")
+            .default(existing.gitlab.auto_merge_on_land)
+            .interact()
+            .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?;
     }
 
     Ok(defaults)
@@ -324,6 +374,64 @@ fn prompt_lint_commands(
     }
 
     Ok(lint)
+}
+
+fn prompt_unstaged_action(
+    existing: UnstagedAction,
+    theme: &ColorfulTheme,
+) -> Result<UnstagedAction> {
+    let options = &[
+        "ask",
+        "add (stage all)",
+        "stash",
+        "continue (ignore unstaged)",
+        "abort",
+    ];
+
+    let default_index = match existing {
+        UnstagedAction::Ask => 0,
+        UnstagedAction::Add => 1,
+        UnstagedAction::Stash => 2,
+        UnstagedAction::Continue => 3,
+        UnstagedAction::Abort => 4,
+    };
+
+    let selection = Select::with_theme(theme)
+        .with_prompt("Default action for `gg amend` with unstaged changes")
+        .items(options)
+        .default(default_index)
+        .interact()
+        .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?;
+
+    Ok(match selection {
+        0 => UnstagedAction::Ask,
+        1 => UnstagedAction::Add,
+        2 => UnstagedAction::Stash,
+        3 => UnstagedAction::Continue,
+        4 => UnstagedAction::Abort,
+        _ => unreachable!(),
+    })
+}
+
+fn prompt_worktree_base_path(
+    existing: Option<&str>,
+    theme: &ColorfulTheme,
+) -> Result<Option<String>> {
+    let input: String = Input::with_theme(theme)
+        .with_prompt(
+            "Base path template for stack worktrees (variables: {repo}, {stack}, leave empty to disable)",
+        )
+        .default(existing.unwrap_or("").to_string())
+        .allow_empty(true)
+        .interact_text()
+        .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?;
+
+    let trimmed = input.trim();
+    Ok(if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    })
 }
 
 fn detect_lint_suggestions(repo: &git2::Repository) -> Vec<String> {

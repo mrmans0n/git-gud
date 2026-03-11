@@ -19,50 +19,43 @@ use crate::error::{GgError, Result};
 pub struct Defaults {
     /// Git hosting provider ("github" or "gitlab")
     /// Used for self-hosted instances where URL detection fails
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
 
     /// GitLab-specific defaults
-    #[serde(default, skip_serializing_if = "GitLabDefaults::is_default")]
+    #[serde(default)]
     pub gitlab: GitLabDefaults,
 
     /// Base branch name (default: auto-detect main/master/trunk)
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
 
     /// Username for branch naming (default: glab whoami)
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub branch_username: Option<String>,
 
     /// Lint commands to run per commit
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub lint: Vec<String>,
 
     /// Automatically add GG-IDs to commits without prompting (default: true)
-    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    #[serde(default = "default_true")]
     pub auto_add_gg_ids: bool,
 
     /// Timeout in minutes for `gg land --wait` (default: 30)
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub land_wait_timeout_minutes: Option<u64>,
 
     /// Automatically clean up stack after landing all PRs/MRs (default: false)
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default)]
     pub land_auto_clean: bool,
 
     /// Automatically run lint before sync (default: false)
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default)]
     pub sync_auto_lint: bool,
 
     /// Automatically rebase before sync when stack base is behind origin/<base> (default: false)
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default)]
     pub sync_auto_rebase: bool,
 
     /// Warn/rebase threshold for sync when base is behind origin/<base> (default: 1)
-    #[serde(
-        default = "default_sync_behind_threshold",
-        skip_serializing_if = "is_default_sync_behind_threshold"
-    )]
+    #[serde(default = "default_sync_behind_threshold")]
     pub sync_behind_threshold: usize,
 
     /// Default action for `gg amend` when unstaged changes are present (default: ask)
@@ -74,20 +67,8 @@ fn default_sync_behind_threshold() -> usize {
     1
 }
 
-fn is_default_sync_behind_threshold(value: &usize) -> bool {
-    *value == default_sync_behind_threshold()
-}
-
 fn default_true() -> bool {
     true
-}
-
-fn is_true(b: &bool) -> bool {
-    *b
-}
-
-fn is_false(b: &bool) -> bool {
-    !*b
 }
 
 /// Behavior for `gg amend` when unstaged changes are detected.
@@ -131,14 +112,8 @@ impl Default for Defaults {
 pub struct GitLabDefaults {
     /// When landing, request GitLab to auto-merge the MR when the pipeline succeeds
     /// ("merge when pipeline succeeds") instead of attempting an immediate merge.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default)]
     pub auto_merge_on_land: bool,
-}
-
-impl GitLabDefaults {
-    fn is_default(this: &GitLabDefaults) -> bool {
-        this == &GitLabDefaults::default()
-    }
 }
 
 /// Per-stack configuration
@@ -502,18 +477,18 @@ mod tests {
     }
 
     #[test]
-    fn test_provider_config_not_serialized_when_none() {
+    fn test_provider_config_serialized_as_null_when_none() {
         let temp_dir = TempDir::new().unwrap();
         let git_dir = temp_dir.path();
 
         let config = Config::default();
         config.save(git_dir).unwrap();
 
-        // Read the raw JSON to verify provider is not included
+        // All Defaults fields are always serialized
         let contents = std::fs::read_to_string(Config::config_path(git_dir)).unwrap();
         assert!(
-            !contents.contains("provider"),
-            "provider should not be serialized when None"
+            contents.contains("provider"),
+            "provider should always be serialized"
         );
     }
 
@@ -537,7 +512,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gitlab_defaults_not_serialized_when_default() {
+    fn test_gitlab_defaults_always_serialized() {
         let temp_dir = TempDir::new().unwrap();
         let git_dir = temp_dir.path();
 
@@ -546,8 +521,8 @@ mod tests {
 
         let contents = std::fs::read_to_string(Config::config_path(git_dir)).unwrap();
         assert!(
-            !contents.contains("gitlab"),
-            "gitlab defaults should not be serialized when default"
+            contents.contains("gitlab"),
+            "gitlab defaults should always be serialized"
         );
     }
 

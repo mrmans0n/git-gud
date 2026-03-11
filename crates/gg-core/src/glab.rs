@@ -671,6 +671,101 @@ pub fn add_to_merge_train(mr_number: u64) -> Result<AutoMergeResult> {
     Ok(AutoMergeResult::Queued)
 }
 
+/// A failed CI job with its name, stage, and optional URL
+#[derive(Debug, Clone)]
+pub struct FailedJob {
+    pub name: String,
+    pub stage: String,
+    pub web_url: Option<String>,
+}
+
+/// Get failed CI jobs for an MR's head pipeline.
+///
+/// Steps:
+/// 1. `glab mr view <mr_number> --output json` → extract `head_pipeline.id`
+/// 2. `glab api "projects/:id/pipelines/<id>/jobs"` → find jobs with status "failed"
+pub fn get_mr_failed_ci_jobs(mr_number: u64) -> Result<Vec<FailedJob>> {
+    // Step 1: Get MR details to find the head pipeline ID
+    let output = Command::new("glab")
+        .args(["mr", "view", &mr_number.to_string(), "--output", "json"])
+        .output()?;
+
+    if !output.status.success() {
+        return Ok(vec![]);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mr_json: serde_json::Value = match serde_json::from_str(&stdout) {
+        Ok(v) => v,
+        Err(_) => return Ok(vec![]),
+    };
+
+    let pipeline_id = mr_json
+        .get("head_pipeline")
+        .and_then(|p| p.get("id"))
+        .and_then(|id| id.as_u64());
+
+    let pipeline_id = match pipeline_id {
+        Some(id) => id,
+        None => return Ok(vec![]),
+    };
+
+    // Step 2: Get jobs for this pipeline
+    let jobs_output = Command::new("glab")
+        .args([
+            "api",
+            &format!("projects/:id/pipelines/{}/jobs", pipeline_id),
+        ])
+        .output()?;
+
+    if !jobs_output.status.success() {
+        return Ok(vec![]);
+    }
+
+    let jobs_stdout = String::from_utf8_lossy(&jobs_output.stdout);
+
+    #[derive(Deserialize)]
+    struct JobJson {
+        name: String,
+        #[serde(default)]
+        stage: String,
+        status: String,
+        #[serde(default)]
+        web_url: Option<String>,
+    }
+
+    let jobs: Vec<JobJson> = match serde_json::from_str(&jobs_stdout) {
+        Ok(v) => v,
+        Err(_) => return Ok(vec![]),
+    };
+
+    let failed_jobs = jobs
+        .into_iter()
+        .filter(|j| j.status == "failed")
+        .map(|j| FailedJob {
+            name: j.name,
+            stage: j.stage,
+            web_url: j.web_url,
+        })
+        .collect();
+
+    Ok(failed_jobs)
+}
+
+/// Format failed jobs as a compact string for error messages
+pub fn format_failed_jobs(jobs: &[FailedJob]) -> String {
+    jobs.iter()
+        .map(|j| {
+            if j.stage.is_empty() {
+                j.name.clone()
+            } else {
+                format!("{} (stage: {})", j.name, j.stage)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Get merge train status for an MR
 /// Returns information about the MR's position and status in the merge train
 pub fn get_merge_train_status(mr_number: u64, target_branch: &str) -> Result<MergeTrainInfo> {
@@ -1106,4 +1201,89 @@ mod tests {
     // 2. Return Ok(AutoMergeResult::AlreadyQueued) in that case
     // 3. Return Ok(AutoMergeResult::Queued) on success
     // 4. Return Err(...) for other errors
+
+    #[test]
+    fn test_failed_job_construction() {
+        let job = FailedJob {
+            name: "lint".to_string(),
+            stage: "test".to_string(),
+            web_url: Some("https://gitlab.com/job/1".to_string()),
+        };
+        assert_eq!(job.name, "lint");
+        assert_eq!(job.stage, "test");
+        assert_eq!(job.web_url, Some("https://gitlab.com/job/1".to_string()));
+    }
+
+    #[test]
+    fn test_failed_job_no_url() {
+        let job = FailedJob {
+            name: "build".to_string(),
+            stage: "build".to_string(),
+            web_url: None,
+        };
+        assert_eq!(job.name, "build");
+        assert!(job.web_url.is_none());
+    }
+
+    #[test]
+    fn test_format_failed_jobs_with_stages() {
+        let jobs = vec![
+            FailedJob {
+                name: "lint".to_string(),
+                stage: "test".to_string(),
+                web_url: None,
+            },
+            FailedJob {
+                name: "build-android".to_string(),
+                stage: "build".to_string(),
+                web_url: None,
+            },
+        ];
+        let formatted = format_failed_jobs(&jobs);
+        assert_eq!(
+            formatted,
+            "lint (stage: test), build-android (stage: build)"
+        );
+    }
+
+    #[test]
+    fn test_format_failed_jobs_without_stage() {
+        let jobs = vec![FailedJob {
+            name: "unit-tests".to_string(),
+            stage: String::new(),
+            web_url: None,
+        }];
+        let formatted = format_failed_jobs(&jobs);
+        assert_eq!(formatted, "unit-tests");
+    }
+
+    #[test]
+    fn test_format_failed_jobs_empty() {
+        let jobs: Vec<FailedJob> = vec![];
+        let formatted = format_failed_jobs(&jobs);
+        assert_eq!(formatted, "");
+    }
+
+    #[test]
+    fn test_format_failed_jobs_single() {
+        let jobs = vec![FailedJob {
+            name: "security-scan".to_string(),
+            stage: "security".to_string(),
+            web_url: Some("https://gitlab.com/job/99".to_string()),
+        }];
+        let formatted = format_failed_jobs(&jobs);
+        assert_eq!(formatted, "security-scan (stage: security)");
+    }
+
+    #[test]
+    fn test_failed_job_clone() {
+        let job = FailedJob {
+            name: "test".to_string(),
+            stage: "test".to_string(),
+            web_url: None,
+        };
+        let cloned = job.clone();
+        assert_eq!(cloned.name, job.name);
+        assert_eq!(cloned.stage, job.stage);
+    }
 }

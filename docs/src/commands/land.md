@@ -42,6 +42,21 @@ When merge trains are enabled on the target branch, `gg land` automatically adds
 
 **Approval is always required** before an MR can enter the merge train queue — even with `--all`. If using `--wait`, the command will show "Waiting for approval..." until a reviewer approves the MR.
 
+## CI Failure Details
+
+When using `--wait`, if CI fails on an MR the command stops and shows which jobs failed:
+
+```
+OK Landed 1 MR(s)
+
+⚠ Landed 1 MR(s), but encountered an error:
+
+Error: MR !7621 CI failed
+  Failed jobs: lint (stage: test), build-android (stage: build)
+```
+
+This helps diagnose CI issues without having to open the GitLab UI. Failed job names and stages are fetched from the MR's head pipeline.
+
 ## JSON Output
 
 Example JSON response:

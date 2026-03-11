@@ -880,6 +880,9 @@ pub fn run(
         }
         eprintln!();
         eprintln!("{} {}", style("Error:").red().bold(), error);
+        for warning in &warnings {
+            println!("{} {}", style("⚠").yellow(), warning);
+        }
     } else if landed_count > 0 {
         println!();
         println!(
@@ -1065,12 +1068,21 @@ fn wait_for_pr_ready(
                 if let Some(ref spinner) = current_spinner {
                     spinner.finish_and_clear();
                 }
-                return Err(GgError::Other(format!(
+                let mut msg = format!(
                     "{} {}{} CI failed",
                     provider.pr_label(),
                     provider.pr_number_prefix(),
                     pr_num
-                )));
+                );
+                if let Ok(failed_jobs) = provider.get_failed_ci_jobs(pr_num) {
+                    if !failed_jobs.is_empty() {
+                        msg.push_str(&format!(
+                            "\n  Failed jobs: {}",
+                            crate::glab::format_failed_jobs(&failed_jobs)
+                        ));
+                    }
+                }
+                return Err(GgError::Other(msg));
             }
             CiStatus::Canceled => {
                 if let Some(ref spinner) = current_spinner {

@@ -10,6 +10,8 @@ use crate::gh::{self, CiStatus as GhCiStatus, PrState as GhPrState};
 use crate::git;
 use crate::glab::{self, AutoMergeResult, CiStatus as GlabCiStatus, MrState as GlabMrState};
 
+pub use crate::glab::FailedJob;
+
 /// Supported git hosting providers
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
@@ -334,6 +336,16 @@ impl Provider {
         match self {
             Provider::GitHub => Ok(None),
             Provider::GitLab => Ok(Some(glab::get_merge_train_status(number, target_branch)?)),
+        }
+    }
+
+    /// Get failed CI jobs for a PR/MR's head pipeline.
+    ///
+    /// GitLab only — returns empty vec for GitHub (not yet implemented).
+    pub fn get_failed_ci_jobs(&self, number: u64) -> Result<Vec<FailedJob>> {
+        match self {
+            Provider::GitHub => Ok(vec![]),
+            Provider::GitLab => glab::get_mr_failed_ci_jobs(number),
         }
     }
 }

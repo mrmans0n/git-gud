@@ -867,14 +867,27 @@ pub fn run(
                 error: land_error,
             },
         });
-    } else if landed_count > 0 {
-        println!();
-        println!(
-            "{} Landed {} {}(s)",
-            style("OK").green().bold(),
-            landed_count,
-            provider.pr_label()
-        );
+    } else {
+        if landed_count > 0 {
+            println!();
+            println!(
+                "{} Landed {} {}(s)",
+                style("OK").green().bold(),
+                landed_count,
+                provider.pr_label()
+            );
+        }
+        if let Some(ref err) = land_error {
+            println!();
+            if landed_count > 0 {
+                println!("{} Stopped: {}", style("⚠").yellow(), err);
+            } else {
+                println!("{} {}", style("✗").red().bold(), err);
+            }
+        }
+        for warning in &warnings {
+            println!("{} {}", style("⚠").yellow(), warning);
+        }
     }
 
     Ok(())
@@ -1007,12 +1020,21 @@ fn wait_for_pr_ready(
                 if let Some(ref spinner) = current_spinner {
                     spinner.finish_and_clear();
                 }
-                return Err(GgError::Other(format!(
+                let mut msg = format!(
                     "{} {}{} CI failed",
                     provider.pr_label(),
                     provider.pr_number_prefix(),
                     pr_num
-                )));
+                );
+                if let Ok(failed_jobs) = provider.get_failed_ci_jobs(pr_num) {
+                    if !failed_jobs.is_empty() {
+                        msg.push_str(&format!(
+                            "\n  Failed jobs: {}",
+                            crate::glab::format_failed_jobs(&failed_jobs)
+                        ));
+                    }
+                }
+                return Err(GgError::Other(msg));
             }
             CiStatus::Canceled => {
                 if let Some(ref spinner) = current_spinner {

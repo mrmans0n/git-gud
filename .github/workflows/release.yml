@@ -283,67 +283,8 @@ jobs:
         run: |
           # Remove date from release title, keep just the version tag
           gh release edit "${{ needs.plan.outputs.tag }}" --title "${{ needs.plan.outputs.tag }}"
-      - name: Prepend changelog to release notes
-        run: |
-          TAG="${{ needs.plan.outputs.tag }}"
-          # Find the previous tag using git describe (more reliable than grep on sorted tags)
-          PREV_TAG=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
-          if [ -z "$PREV_TAG" ]; then
-            echo "No previous tag found, skipping changelog"
-            exit 0
-          fi
-          echo "Generating changelog: ${PREV_TAG}..${TAG}"
-
-          # Generate changelog from conventional commits
-          echo "## Release Notes" > $RUNNER_TEMP/changelog.md
-          echo "" >> $RUNNER_TEMP/changelog.md
-
-          # Features
-          FEATS=$(git log "${PREV_TAG}..${TAG}" --pretty=format:"%s" | grep -iE "^feat" | sed 's/^feat[(!:]*[)]*: */- /' || true)
-          if [ -n "$FEATS" ]; then
-            echo "### ✨ Features" >> $RUNNER_TEMP/changelog.md
-            echo "$FEATS" >> $RUNNER_TEMP/changelog.md
-            echo "" >> $RUNNER_TEMP/changelog.md
-          fi
-
-          # Fixes
-          FIXES=$(git log "${PREV_TAG}..${TAG}" --pretty=format:"%s" | grep -iE "^fix" | sed 's/^fix[(!:]*[)]*: */- /' || true)
-          if [ -n "$FIXES" ]; then
-            echo "### 🐛 Fixes" >> $RUNNER_TEMP/changelog.md
-            echo "$FIXES" >> $RUNNER_TEMP/changelog.md
-            echo "" >> $RUNNER_TEMP/changelog.md
-          fi
-
-          # Refactors
-          REFACTORS=$(git log "${PREV_TAG}..${TAG}" --pretty=format:"%s" | grep -iE "^refactor" | sed 's/^refactor[(!:]*[)]*: */- /' || true)
-          if [ -n "$REFACTORS" ]; then
-            echo "### 🏗️ Internal" >> $RUNNER_TEMP/changelog.md
-            echo "$REFACTORS" >> $RUNNER_TEMP/changelog.md
-            echo "" >> $RUNNER_TEMP/changelog.md
-          fi
-
-          # Docs
-          DOCS=$(git log "${PREV_TAG}..${TAG}" --pretty=format:"%s" | grep -iE "^docs" | sed 's/^docs[(!:]*[)]*: */- /' || true)
-          if [ -n "$DOCS" ]; then
-            echo "### 📚 Docs" >> $RUNNER_TEMP/changelog.md
-            echo "$DOCS" >> $RUNNER_TEMP/changelog.md
-            echo "" >> $RUNNER_TEMP/changelog.md
-          fi
-
-          # Check if we generated anything beyond the header
-          if [ "$(wc -l < $RUNNER_TEMP/changelog.md)" -le 2 ]; then
-            echo "No conventional commits found, skipping"
-            exit 0
-          fi
-
-          echo "---" >> $RUNNER_TEMP/changelog.md
-          echo "" >> $RUNNER_TEMP/changelog.md
-
-          # Prepend changelog to existing release body
-          EXISTING=$(gh release view "$TAG" --json body --jq .body)
-          cat $RUNNER_TEMP/changelog.md > $RUNNER_TEMP/final-notes.md
-          echo "$EXISTING" >> $RUNNER_TEMP/final-notes.md
-          gh release edit "$TAG" --notes-file $RUNNER_TEMP/final-notes.md
+      # Note: changelog is already included by cargo-dist from CHANGELOG.md.
+      # A previous "Prepend changelog" step was removed to avoid duplicate release notes.
 
   publish-homebrew-formula:
     needs:

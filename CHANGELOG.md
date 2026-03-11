@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-03-11
+
+### Fixed
+- `gg land --wait --all` now shows CI failure details when stopping mid-stack — displays failed job names and stages instead of just "Landed N MR(s)" (#195)
+
+### Changed
+- Updated dependencies: `skim` to v4 (#192)
+
 ## [0.5.4] - 2026-03-09
 
 ### Fixed
@@ -230,7 +238,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.5.4...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.5.5...HEAD
+[0.5.5]: https://github.com/mrmans0n/git-gud/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/mrmans0n/git-gud/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/mrmans0n/git-gud/compare/v0.5.2...v0.5.3
 [0.4.2]: https://github.com/mrmans0n/git-gud/compare/v0.4.1...v0.4.2

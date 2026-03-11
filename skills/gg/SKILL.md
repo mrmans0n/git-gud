@@ -29,6 +29,8 @@ Use this skill to operate **git-gud (`gg`) as a CLI tool** for day-to-day stacke
 gg setup
 ```
 
+The wizard prompts for all configurable fields: provider, base branch, username, lint commands, auto GG-IDs, sync auto-rebase, sync behind threshold, land auto-clean, land wait timeout, unstaged action for amend, GitLab auto-merge, and worktree base path.
+
 ### Manual setup (`.git/gg/config.json`)
 
 ```json
@@ -37,7 +39,14 @@ gg setup
     "provider": "github",
     "base": "main",
     "branch_username": "your-github-user",
-    "lint": ["cargo fmt --all --check", "cargo clippy -- -D warnings"]
+    "lint": ["cargo fmt --all --check", "cargo clippy -- -D warnings"],
+    "auto_add_gg_ids": true,
+    "sync_auto_rebase": false,
+    "sync_behind_threshold": 1,
+    "sync_auto_lint": false,
+    "land_auto_clean": false,
+    "land_wait_timeout_minutes": 30,
+    "unstaged_action": "ask"
   }
 }
 ```

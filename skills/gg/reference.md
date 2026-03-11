@@ -150,6 +150,7 @@ Generate shell completion (`bash|elvish|fish|powershell|zsh`).
   - `merge_train_position: number | null`
 - With `-w/--wait`, `gg land` can wait for approval/readiness transitions.
 - GitLab land actions can be `queued`/`already_queued` (in addition to `merged`).
+- When `--wait` detects CI failure, the error includes failed job names and stages (e.g., `Failed jobs: lint (stage: test), build-android (stage: build)`).
 
 You can use `glab` for extra inspection (examples):
 

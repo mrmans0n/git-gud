@@ -117,6 +117,7 @@ gg land -a -c --json
   - `in_merge_train`
   - `merge_train_position`
 - Land action values on GitLab may include `queued` / `already_queued` (in addition to `merged`).
+- When `--wait` detects CI failure, the error message includes the names and stages of failed pipeline jobs (fetched from the MR's head pipeline).
 - Use `glab` for auxiliary GitLab checks/actions.
 - JSON fields always use `pr_*` naming, even for GitLab MRs (`pr_number`, `pr_state`).
 

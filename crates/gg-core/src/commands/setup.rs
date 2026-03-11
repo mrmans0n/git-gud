@@ -91,13 +91,11 @@ fn prompt_defaults(
         .interact()
         .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?;
 
-    if !defaults.sync_auto_rebase {
-        defaults.sync_behind_threshold = Input::with_theme(theme)
-            .with_prompt("Number of commits behind origin before warning during sync")
-            .default(existing.sync_behind_threshold)
-            .interact_text()
-            .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?;
-    }
+    defaults.sync_behind_threshold = Input::with_theme(theme)
+        .with_prompt("Number of commits behind origin before warning/rebase during sync")
+        .default(existing.sync_behind_threshold)
+        .interact_text()
+        .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?;
 
     defaults.land_auto_clean = Confirm::with_theme(theme)
         .with_prompt("Automatically clean up stack after landing all PRs/MRs?")

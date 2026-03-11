@@ -134,7 +134,7 @@ Repair metadata after external branch/PR/MR manipulation.
 Resume/abort paused operations.
 
 #### `gg setup`
-Interactive config wizard.
+Interactive config wizard. Prompts for all configurable fields: provider, base branch, username, lint commands, sync/land behavior, unstaged action, worktree path, and GitLab-specific options. All fields are written to `config.json` for easy manual editing.
 
 #### `gg completions <SHELL>`
 Generate shell completion (`bash|elvish|fish|powershell|zsh`).

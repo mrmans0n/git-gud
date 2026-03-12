@@ -21,6 +21,8 @@ Use this skill to operate **git-gud (`gg`) as a CLI tool** for day-to-day stacke
   - GitLab: `glab auth status`
 - Git repo with `gg` initialized (`gg setup`)
 
+> **Note:** Network errors during auth check are non-fatal — gg prints a warning and continues. The operation may fail later if authentication is actually required.
+
 ## Setup
 
 ### Interactive wizard (recommended)

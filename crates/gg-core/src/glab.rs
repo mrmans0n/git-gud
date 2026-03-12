@@ -55,14 +55,30 @@ pub fn check_glab_installed() -> Result<()> {
 }
 
 /// Check if authenticated with GitLab
+///
+/// Distinguishes between actual auth failures and network errors:
+/// - Returns `Ok(())` if authenticated
+/// - Returns `Err(GgError::NetworkError(...))` if a network error is detected
+/// - Returns `Err(GgError::GlabNotAuthenticated)` for actual auth failures
 pub fn check_glab_auth() -> Result<()> {
     let output = Command::new("glab").args(["auth", "status"]).output()?;
 
     if output.status.success() {
-        Ok(())
-    } else {
-        Err(GgError::GlabNotAuthenticated)
+        return Ok(());
     }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{} {}", stderr, stdout);
+
+    if crate::error::is_network_error(&combined) {
+        return Err(GgError::NetworkError(
+            "Could not verify GitLab authentication (network error). Check your connection."
+                .to_string(),
+        ));
+    }
+
+    Err(GgError::GlabNotAuthenticated)
 }
 
 /// Get the current GitLab username

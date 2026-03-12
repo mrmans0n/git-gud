@@ -12,6 +12,21 @@ use crate::glab::{self, AutoMergeResult, CiStatus as GlabCiStatus, MrState as Gl
 
 pub use crate::glab::FailedJob;
 
+/// Handle auth check result with network error fallback.
+///
+/// On network errors, prints a warning and returns Ok(()) to allow
+/// the operation to continue (auth may still be valid, we just can't verify).
+fn check_auth_with_network_fallback(result: Result<()>) -> Result<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(GgError::NetworkError(msg)) => {
+            eprintln!("{} {}", console::style("Warning:").yellow().bold(), msg);
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Supported git hosting providers
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
@@ -112,10 +127,13 @@ impl Provider {
     }
 
     /// Check if authenticated with provider
+    ///
+    /// On network errors, prints a warning and returns Ok(()) to allow
+    /// the operation to continue (auth may still be valid, we just can't verify).
     pub fn check_auth(&self) -> Result<()> {
         match self {
-            Provider::GitHub => gh::check_gh_auth(),
-            Provider::GitLab => glab::check_glab_auth(),
+            Provider::GitHub => check_auth_with_network_fallback(gh::check_gh_auth()),
+            Provider::GitLab => check_auth_with_network_fallback(glab::check_glab_auth()),
         }
     }
 
@@ -557,5 +575,26 @@ mod tests {
     fn test_provider_as_config_str() {
         assert_eq!(Provider::GitHub.as_config_str(), "github");
         assert_eq!(Provider::GitLab.as_config_str(), "gitlab");
+    }
+
+    #[test]
+    fn test_check_auth_with_network_fallback_returns_ok_on_network_error() {
+        let result = check_auth_with_network_fallback(Err(GgError::NetworkError(
+            "Could not verify authentication (network error)".to_string(),
+        )));
+        assert!(result.is_ok(), "NetworkError should be converted to Ok(())");
+    }
+
+    #[test]
+    fn test_check_auth_with_network_fallback_propagates_other_errors() {
+        let result =
+            check_auth_with_network_fallback(Err(GgError::Other("Not authenticated".to_string())));
+        assert!(result.is_err(), "Non-network errors should propagate");
+    }
+
+    #[test]
+    fn test_check_auth_with_network_fallback_passes_through_ok() {
+        let result = check_auth_with_network_fallback(Ok(()));
+        assert!(result.is_ok());
     }
 }

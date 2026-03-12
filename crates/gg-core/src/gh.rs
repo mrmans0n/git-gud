@@ -61,16 +61,32 @@ pub fn check_gh_installed() -> Result<()> {
 }
 
 /// Check if authenticated with GitHub
+///
+/// Distinguishes between actual auth failures and network errors:
+/// - Returns `Ok(())` if authenticated
+/// - Returns `Err(GgError::NetworkError(...))` if a network error is detected
+/// - Returns `Err(GgError::Other(...))` for actual auth failures
 pub fn check_gh_auth() -> Result<()> {
     let output = Command::new("gh").args(["auth", "status"]).output()?;
 
     if output.status.success() {
-        Ok(())
-    } else {
-        Err(GgError::Other(
-            "Not authenticated with GitHub. Run `gh auth login` first.".to_string(),
-        ))
+        return Ok(());
     }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let combined = format!("{} {}", stderr, stdout);
+
+    if crate::error::is_network_error(&combined) {
+        return Err(GgError::NetworkError(
+            "Could not verify GitHub authentication (network error). Check your connection."
+                .to_string(),
+        ));
+    }
+
+    Err(GgError::Other(
+        "Not authenticated with GitHub. Run `gh auth login` first.".to_string(),
+    ))
 }
 
 /// Get the current GitHub username

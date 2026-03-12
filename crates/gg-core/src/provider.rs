@@ -112,10 +112,27 @@ impl Provider {
     }
 
     /// Check if authenticated with provider
+    ///
+    /// On network errors, prints a warning and returns Ok(()) to allow
+    /// the operation to continue (auth may still be valid, we just can't verify).
     pub fn check_auth(&self) -> Result<()> {
         match self {
-            Provider::GitHub => gh::check_gh_auth(),
-            Provider::GitLab => glab::check_glab_auth(),
+            Provider::GitHub => match gh::check_gh_auth() {
+                Ok(()) => Ok(()),
+                Err(GgError::NetworkError(msg)) => {
+                    eprintln!("{} {}", console::style("Warning:").yellow().bold(), msg);
+                    Ok(()) // Continue despite network error
+                }
+                Err(e) => Err(e),
+            },
+            Provider::GitLab => match glab::check_glab_auth() {
+                Ok(()) => Ok(()),
+                Err(GgError::NetworkError(msg)) => {
+                    eprintln!("{} {}", console::style("Warning:").yellow().bold(), msg);
+                    Ok(()) // Continue despite network error
+                }
+                Err(e) => Err(e),
+            },
         }
     }
 

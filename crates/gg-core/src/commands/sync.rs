@@ -209,7 +209,12 @@ pub fn run(
         // Reload stack to get post-rebase state. After rebase, landed commits
         // are dropped so initial_stack.len() may be stale.
         let current_stack = Stack::load(&repo, &config)?;
-        let end_pos = lint_end_pos.unwrap_or(current_stack.len());
+        // Clamp lint_end_pos to current stack size. If --until was specified but
+        // rebase dropped commits (making the original position invalid), use the
+        // new stack size instead of failing.
+        let end_pos = lint_end_pos
+            .map(|pos| pos.min(current_stack.len()))
+            .unwrap_or(current_stack.len());
         if !json {
             println!("{}", console::style("Running lint before sync...").dim());
         }

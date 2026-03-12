@@ -2,7 +2,7 @@
 
 A stacked-diffs CLI tool for GitHub and GitLab, inspired by Gerrit, Phabricator/Arcanist, and Graphite.
 
-<video src="https://github.com/mrmans0n/git-gud/raw/main/art/demo.mp4" width="100%" autoplay loop muted playsinline></video>
+<video src="https://private-user-images.githubusercontent.com/534307/562564274-c6039fb6-2f6d-4f39-ab54-a3d0520895b6.mp4?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3NzMzNTEzOTIsIm5iZiI6MTc3MzM1MTA5MiwicGF0aCI6Ii81MzQzMDcvNTYyNTY0Mjc0LWM2MDM5ZmI2LTJmNmQtNGYzOS1hYjU0LWEzZDA1MjA4OTViNi5tcDQ_WC1BbXotQWxnb3JpdGhtPUFXUzQtSE1BQy1TSEEyNTYmWC1BbXotQ3JlZGVudGlhbD1BS0lBVkNPRFlMU0E1M1BRSzRaQSUyRjIwMjYwMzEyJTJGdXMtZWFzdC0xJTJGczMlMkZhd3M0X3JlcXVlc3QmWC1BbXotRGF0ZT0yMDI2MDMxMlQyMTMxMzJaJlgtQW16LUV4cGlyZXM9MzAwJlgtQW16LVNpZ25hdHVyZT05YTBhNjI1YzU1NDMwYzIyNzJlMzQxNjIxMzM3NTAyMjMzMGNkZDA4ZmNhOGMyNDNiMjY2MWQzNjU0NjIzY2E3JlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCJ9.Nbdgx78CZiYP2BggSMrJNsx7nx8HpbOLgNt8JijjwSs" width="100%" autoplay loop muted playsinline></video>
 
 ## What are Stacked Diffs?
 

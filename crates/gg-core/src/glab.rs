@@ -67,8 +67,8 @@ pub fn check_glab_auth() -> Result<()> {
         return Ok(());
     }
 
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
     let combined = format!("{} {}", stderr, stdout);
 
     if crate::error::is_network_error(&combined) {

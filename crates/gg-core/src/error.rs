@@ -95,9 +95,19 @@ pub fn is_network_error(output: &str) -> bool {
         "network is unreachable",
         "no route to host",
         "tls handshake timeout",
-        "ssl",
-        "timeout",
-        "dns",
+        // SSL patterns - specific enough to avoid false positives
+        "ssl connection",
+        "ssl handshake",
+        "ssl certificate",
+        "ssl error",
+        "ssl_connect",
+        // Timeout patterns - specific variants
+        "timed out",
+        "request timeout",
+        // DNS patterns - specific enough to avoid false positives
+        "dns resolution",
+        "dns lookup",
+        "dns error",
         "getaddrinfo",
         "econnrefused",
         "econnreset",
@@ -122,6 +132,8 @@ mod tests {
     fn test_is_network_error_detects_dns_errors() {
         assert!(is_network_error("Could not resolve host: github.com"));
         assert!(is_network_error("DNS resolution failed"));
+        assert!(is_network_error("DNS lookup failed for api.github.com"));
+        assert!(is_network_error("DNS error: NXDOMAIN"));
         assert!(is_network_error(
             "getaddrinfo failed: Name or service not known"
         ));
@@ -148,11 +160,17 @@ mod tests {
     fn test_is_network_error_detects_tls_errors() {
         assert!(is_network_error("TLS handshake timeout"));
         assert!(is_network_error("SSL connection failed"));
+        assert!(is_network_error("SSL handshake failed"));
+        assert!(is_network_error("SSL certificate verify failed"));
+        assert!(is_network_error("SSL error: certificate expired"));
+        assert!(is_network_error("curl: (35) SSL_connect returned"));
     }
 
     #[test]
     fn test_is_network_error_detects_timeout_errors() {
-        assert!(is_network_error("timeout"));
+        assert!(is_network_error("connection timed out"));
+        assert!(is_network_error("request timeout"));
+        assert!(is_network_error("Operation timed out"));
         assert!(is_network_error("ETIMEDOUT"));
     }
 
@@ -189,6 +207,6 @@ mod tests {
     fn test_is_network_error_case_insensitive() {
         assert!(is_network_error("COULD NOT RESOLVE HOST"));
         assert!(is_network_error("Connection Timed Out"));
-        assert!(is_network_error("DNS FAILURE"));
+        assert!(is_network_error("DNS RESOLUTION FAILED"));
     }
 }

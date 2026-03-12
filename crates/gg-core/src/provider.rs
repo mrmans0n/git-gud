@@ -12,6 +12,21 @@ use crate::glab::{self, AutoMergeResult, CiStatus as GlabCiStatus, MrState as Gl
 
 pub use crate::glab::FailedJob;
 
+/// Handle auth check result with network error fallback.
+///
+/// On network errors, prints a warning and returns Ok(()) to allow
+/// the operation to continue (auth may still be valid, we just can't verify).
+fn check_auth_with_network_fallback(result: Result<()>) -> Result<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(GgError::NetworkError(msg)) => {
+            eprintln!("{} {}", console::style("Warning:").yellow().bold(), msg);
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Supported git hosting providers
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
@@ -117,22 +132,8 @@ impl Provider {
     /// the operation to continue (auth may still be valid, we just can't verify).
     pub fn check_auth(&self) -> Result<()> {
         match self {
-            Provider::GitHub => match gh::check_gh_auth() {
-                Ok(()) => Ok(()),
-                Err(GgError::NetworkError(msg)) => {
-                    eprintln!("{} {}", console::style("Warning:").yellow().bold(), msg);
-                    Ok(()) // Continue despite network error
-                }
-                Err(e) => Err(e),
-            },
-            Provider::GitLab => match glab::check_glab_auth() {
-                Ok(()) => Ok(()),
-                Err(GgError::NetworkError(msg)) => {
-                    eprintln!("{} {}", console::style("Warning:").yellow().bold(), msg);
-                    Ok(()) // Continue despite network error
-                }
-                Err(e) => Err(e),
-            },
+            Provider::GitHub => check_auth_with_network_fallback(gh::check_gh_auth()),
+            Provider::GitLab => check_auth_with_network_fallback(glab::check_glab_auth()),
         }
     }
 

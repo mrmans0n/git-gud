@@ -1,6 +1,6 @@
 [package]
 name = "gg-mcp"
-version = "0.5.6"
+version = "0.5.7"
 edition = "2021"
 description = "MCP server for git-gud (gg) stacked-diffs tool"
 authors = ["Nacho Lopez"]

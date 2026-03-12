@@ -5151,41 +5151,32 @@ fn test_amend_in_worktree_does_not_leave_detached_head() {
         .output();
 }
 
-// Test for sync lint crash after rebase drops landed commits
+// Test for lint after rebase drops landed commits (auth-independent)
 // See: https://github.com/mrmans0n/git-gud/issues/199
+//
+// This test uses `gg rebase` + `gg lint` instead of `gg sync --lint` to avoid
+// the provider auth requirement. Both commands exercise the same code paths:
+// - rebase drops commits that are already on the base branch
+// - lint runs on the post-rebase stack
+//
+// The original bug was that lint would try to run on position 3 of a 2-commit
+// stack after rebase dropped a landed commit.
 #[test]
-fn test_sync_lint_after_rebase_does_not_crash_out_of_range() {
-    // This test documents the full sync + lint workflow where a crash
-    // could occur with "Position 3 is out of range (max: 2)" when:
-    // 1. Stack has 3 commits
-    // 2. First commit is landed (merged to main)
-    // 3. `gg sync --lint` triggers rebase (dropping the landed commit)
-    // 4. Lint runs with old stack size (3) on new stack (2) → crash
-    //
-    // NOTE: This test depends on provider auth (gh auth) to reach the
-    // rebase/lint code path. In CI environments without auth, sync will
-    // fail early at check_auth(). The test validates that IF sync fails,
-    // it does NOT fail with "out of range" - which would indicate the bug.
-    //
-    // For direct lint boundary testing without provider, see:
-    // test_lint_position_clamped_to_stack_size
-
+fn test_lint_after_rebase_drops_landed_commits() {
     let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
 
-    // Setup config with GitHub provider, lint command, and auto-rebase
+    // Setup config with lint command (no provider needed for rebase + lint)
     // Using "true" as lint command (always succeeds)
-    // sync_auto_rebase: true to automatically rebase when behind
-    // sync_behind_threshold: 1 (default, but explicit for clarity)
     let gg_dir = repo_path.join(".git/gg");
     fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
     fs::write(
         gg_dir.join("config.json"),
-        r#"{"defaults":{"branch_username":"testuser","provider":"github","lint":["true"],"sync_auto_rebase":true,"sync_behind_threshold":1}}"#,
+        r#"{"defaults":{"branch_username":"testuser","lint":["true"]}}"#,
     )
     .expect("Failed to write config");
 
     // Create stack with gg co
-    let (success, _, stderr) = run_gg(&repo_path, &["co", "sync-lint-test"]);
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "rebase-lint-test"]);
     assert!(success, "Failed to create stack: {}", stderr);
 
     // Create commit 1
@@ -5237,7 +5228,7 @@ fn test_sync_lint_after_rebase_does_not_crash_out_of_range() {
     run_git(&repo_path, &["push", "origin", "main"]);
 
     // 4. Go back to our stack branch
-    run_git(&repo_path, &["checkout", "testuser/sync-lint-test"]);
+    run_git(&repo_path, &["checkout", "testuser/rebase-lint-test"]);
 
     // Verify stack is behind origin/main (rebase needed)
     run_git(&repo_path, &["fetch", "origin"]);
@@ -5253,48 +5244,53 @@ fn test_sync_lint_after_rebase_does_not_crash_out_of_range() {
     assert!(success, "gg ls should succeed");
     assert!(
         stdout_ls.contains("[3]"),
-        "Stack should have 3 commits before sync. stdout: {}",
+        "Stack should have 3 commits before rebase. stdout: {}",
         stdout_ls
     );
 
-    // Now run sync with lint. This should:
-    // 1. Detect that main is ahead (rebase needed)
-    // 2. Rebase, which drops commit 1 (already on main)
-    // 3. Run lint on remaining 2 commits
-    //
-    // BUG: Before fix, lint would try to run on position 3 (old stack size)
-    // and crash with "Position 3 is out of range (max: 2)"
-    let (success, stdout, stderr) = run_gg(&repo_path, &["sync", "--lint", "--json"]);
+    // Run rebase (no auth required). This should:
+    // 1. Fetch and update main to match origin/main
+    // 2. Rebase stack onto new main
+    // 3. Drop commit 1 because its changes are already on main
+    let (success, stdout, stderr) = run_gg(&repo_path, &["rebase"]);
+    assert!(
+        success,
+        "gg rebase should succeed. stdout: {}, stderr: {}",
+        stdout, stderr
+    );
 
-    // The test passes if sync doesn't crash with "out of range" error
-    // Check both stdout (JSON errors) and stderr
+    // Verify stack now has only 2 commits after rebase
+    let (success, stdout_ls, _) = run_gg(&repo_path, &["ls"]);
+    assert!(success, "gg ls should succeed after rebase");
+    assert!(
+        stdout_ls.contains("[1]") && stdout_ls.contains("[2]") && !stdout_ls.contains("[3]"),
+        "Stack should have 2 commits after rebase (commit 1 was dropped). stdout: {}",
+        stdout_ls
+    );
+
+    // Now run lint on the post-rebase stack. This is the critical test:
+    // Before the fix, if we had tracked "end position = 3" from before rebase,
+    // lint would crash with "Position 3 is out of range (max: 2)"
+    let (success, stdout, stderr) = run_gg(&repo_path, &["lint"]);
+    assert!(
+        success,
+        "gg lint should succeed on post-rebase stack. stdout: {}, stderr: {}",
+        stdout, stderr
+    );
     assert!(
         !stdout.contains("out of range") && !stderr.contains("out of range"),
-        "sync --lint should not crash with 'out of range' after rebase. stdout: {}, stderr: {}",
+        "lint should not crash with 'out of range'. stdout: {}, stderr: {}",
         stdout,
         stderr
     );
 
-    // Note: sync may still fail for other reasons (no real GitHub API, auth)
-    // but the specific bug we're testing is the "out of range" crash.
-    // We don't need to validate WHY it failed, just that it didn't fail
-    // with the specific bug we fixed. The assertion above covers this.
-
-    // Verify that rebase happened and stack now has only 2 commits
-    // (the JSON output shows positions 1 and 2 for what were originally commits 2 and 3)
-    if success {
-        assert!(
-            stdout.contains("\"rebased_before_sync\": true"),
-            "Should have rebased before sync. stdout: {}",
-            stdout
-        );
-        // After rebase, only 2 commits remain (commit 1 was dropped as landed)
-        assert!(
-            !stdout.contains("\"position\": 3"),
-            "Stack should have only 2 commits after rebase. stdout: {}",
-            stdout
-        );
-    }
+    // Lint should have run on both remaining commits
+    // The lint command is "true" which always succeeds
+    assert!(
+        stdout.contains("Running lint on commits 1-2"),
+        "Should lint commits 1-2. stdout: {}",
+        stdout
+    );
 }
 
 // See: https://github.com/mrmans0n/git-gud/issues/199

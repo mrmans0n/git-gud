@@ -576,4 +576,25 @@ mod tests {
         assert_eq!(Provider::GitHub.as_config_str(), "github");
         assert_eq!(Provider::GitLab.as_config_str(), "gitlab");
     }
+
+    #[test]
+    fn test_check_auth_with_network_fallback_returns_ok_on_network_error() {
+        let result = check_auth_with_network_fallback(Err(GgError::NetworkError(
+            "Could not verify authentication (network error)".to_string(),
+        )));
+        assert!(result.is_ok(), "NetworkError should be converted to Ok(())");
+    }
+
+    #[test]
+    fn test_check_auth_with_network_fallback_propagates_other_errors() {
+        let result =
+            check_auth_with_network_fallback(Err(GgError::Other("Not authenticated".to_string())));
+        assert!(result.is_err(), "Non-network errors should propagate");
+    }
+
+    #[test]
+    fn test_check_auth_with_network_fallback_passes_through_ok() {
+        let result = check_auth_with_network_fallback(Ok(()));
+        assert!(result.is_ok());
+    }
 }

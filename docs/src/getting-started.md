@@ -42,6 +42,8 @@ glab auth login
 
 If authentication is missing, `gg sync` and `gg land` cannot create or merge PRs/MRs.
 
+> **Note:** If the auth check fails due to a network error (e.g., DNS resolution failure, connection timeout), gg will print a warning and continue. The operation may still fail later if authentication is actually required.
+
 ## Initial setup
 
 After installing, run the setup wizard in any git repository to configure git-gud:

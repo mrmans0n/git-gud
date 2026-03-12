@@ -12,6 +12,8 @@ glab auth status    # GitLab
 gg setup
 ```
 
+> **Note:** Network errors during auth check are non-fatal — gg prints a warning and continues. The operation may fail later if authentication is actually required.
+
 Manual config (`.git/gg/config.json`):
 
 ```json

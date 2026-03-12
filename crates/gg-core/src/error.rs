@@ -77,6 +77,9 @@ pub enum GgError {
 
     #[error("{0}")]
     Other(String),
+
+    #[error("A git operation is currently in progress.\n{0}\nIf no other process is running, remove the stale lock:\n  rm {1}")]
+    GitOperationInProgress(String, String),
 }
 
 pub type Result<T> = std::result::Result<T, GgError>;

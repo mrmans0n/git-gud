@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-03-12
+
+### Added
+- Git operation lock detection: `gg` now checks for `.git/index.lock` before starting operations — if `git` is running concurrently, `gg` waits (up to 10s) instead of risking repository corruption (#204)
+- `gg setup` now prompts for all configurable fields (base branch, username, lint commands) (#196)
+
+### Fixed
+- `gg sync --lint` no longer crashes after rebase drops landed commits — fixed out-of-range index in lint position calculation (#200)
+- Network errors during auth check no longer show misleading "Not authenticated" message — `gg` now prints a warning and continues instead of blocking (#203)
+- Sync lint regression test is now auth-independent and exercises the actual lint-after-rebase code path (#205)
+
+### Changed
+- Updated dependencies: `rmcp` to v1.2.0 (#197)
+
 ## [0.5.5] - 2026-03-11
 
 ### Fixed
@@ -239,6 +253,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release with core stacked diffs functionality
 
 [Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.5.5...HEAD
+[0.5.6]: https://github.com/mrmans0n/git-gud/compare/v0.5.5...v0.5.6
 [0.5.5]: https://github.com/mrmans0n/git-gud/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/mrmans0n/git-gud/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/mrmans0n/git-gud/compare/v0.5.2...v0.5.3

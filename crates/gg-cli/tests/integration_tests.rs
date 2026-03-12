@@ -5150,3 +5150,229 @@ fn test_amend_in_worktree_does_not_leave_detached_head() {
         .current_dir(&repo_path)
         .output();
 }
+
+// Test for sync lint crash after rebase drops landed commits
+// See: https://github.com/mrmans0n/git-gud/issues/199
+#[test]
+fn test_sync_lint_after_rebase_does_not_crash_out_of_range() {
+    // This test documents the full sync + lint workflow where a crash
+    // could occur with "Position 3 is out of range (max: 2)" when:
+    // 1. Stack has 3 commits
+    // 2. First commit is landed (merged to main)
+    // 3. `gg sync --lint` triggers rebase (dropping the landed commit)
+    // 4. Lint runs with old stack size (3) on new stack (2) → crash
+    //
+    // NOTE: This test depends on provider auth (gh auth) to reach the
+    // rebase/lint code path. In CI environments without auth, sync will
+    // fail early at check_auth(). The test validates that IF sync fails,
+    // it does NOT fail with "out of range" - which would indicate the bug.
+    //
+    // For direct lint boundary testing without provider, see:
+    // test_lint_position_clamped_to_stack_size
+
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+
+    // Setup config with GitHub provider, lint command, and auto-rebase
+    // Using "true" as lint command (always succeeds)
+    // sync_auto_rebase: true to automatically rebase when behind
+    // sync_behind_threshold: 1 (default, but explicit for clarity)
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","provider":"github","lint":["true"],"sync_auto_rebase":true,"sync_behind_threshold":1}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create stack with gg co
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "sync-lint-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    // Create commit 1
+    fs::write(repo_path.join("file1.txt"), "content 1").expect("Failed to write file1");
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "feat: commit 1\n\nGG-ID: c-aaa1111"],
+    );
+
+    // Create commit 2
+    fs::write(repo_path.join("file2.txt"), "content 2").expect("Failed to write file2");
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "feat: commit 2\n\nGG-ID: c-bbb2222"],
+    );
+
+    // Create commit 3
+    fs::write(repo_path.join("file3.txt"), "content 3").expect("Failed to write file3");
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "feat: commit 3\n\nGG-ID: c-ccc3333"],
+    );
+
+    // Verify stack has 3 commits
+    let (success, stdout, _) = run_gg(&repo_path, &["ls"]);
+    assert!(success, "gg ls should succeed");
+    assert!(
+        stdout.contains("[1]") && stdout.contains("[2]") && stdout.contains("[3]"),
+        "Stack should have 3 commits before landing. stdout: {}",
+        stdout
+    );
+
+    // Simulate landing the first commit (squash merge to main on origin)
+    // 1. Checkout main
+    run_git(&repo_path, &["checkout", "main"]);
+
+    // 2. Create a new commit that represents the squash merge of commit 1
+    fs::write(repo_path.join("file1.txt"), "content 1").expect("Failed to write file1");
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "feat: commit 1 (#1)\n\nSquash merged"],
+    );
+
+    // 3. Push to origin (this advances origin/main)
+    run_git(&repo_path, &["push", "origin", "main"]);
+
+    // 4. Go back to our stack branch
+    run_git(&repo_path, &["checkout", "testuser/sync-lint-test"]);
+
+    // Verify stack is behind origin/main (rebase needed)
+    run_git(&repo_path, &["fetch", "origin"]);
+
+    let (_, log_behind) = run_git(&repo_path, &["log", "--oneline", "HEAD..origin/main"]);
+    assert!(
+        !log_behind.trim().is_empty(),
+        "Stack should be behind origin/main after landing"
+    );
+
+    // Verify stack still shows 3 commits (pre-rebase)
+    let (success, stdout_ls, _) = run_gg(&repo_path, &["ls"]);
+    assert!(success, "gg ls should succeed");
+    assert!(
+        stdout_ls.contains("[3]"),
+        "Stack should have 3 commits before sync. stdout: {}",
+        stdout_ls
+    );
+
+    // Now run sync with lint. This should:
+    // 1. Detect that main is ahead (rebase needed)
+    // 2. Rebase, which drops commit 1 (already on main)
+    // 3. Run lint on remaining 2 commits
+    //
+    // BUG: Before fix, lint would try to run on position 3 (old stack size)
+    // and crash with "Position 3 is out of range (max: 2)"
+    let (success, stdout, stderr) = run_gg(&repo_path, &["sync", "--lint", "--json"]);
+
+    // The test passes if sync doesn't crash with "out of range" error
+    // Check both stdout (JSON errors) and stderr
+    assert!(
+        !stdout.contains("out of range") && !stderr.contains("out of range"),
+        "sync --lint should not crash with 'out of range' after rebase. stdout: {}, stderr: {}",
+        stdout,
+        stderr
+    );
+
+    // Note: sync may still fail for other reasons (no real GitHub API, auth)
+    // but the specific bug we're testing is the "out of range" crash.
+    // We don't need to validate WHY it failed, just that it didn't fail
+    // with the specific bug we fixed. The assertion above covers this.
+
+    // Verify that rebase happened and stack now has only 2 commits
+    // (the JSON output shows positions 1 and 2 for what were originally commits 2 and 3)
+    if success {
+        assert!(
+            stdout.contains("\"rebased_before_sync\": true"),
+            "Should have rebased before sync. stdout: {}",
+            stdout
+        );
+        // After rebase, only 2 commits remain (commit 1 was dropped as landed)
+        assert!(
+            !stdout.contains("\"position\": 3"),
+            "Stack should have only 2 commits after rebase. stdout: {}",
+            stdout
+        );
+    }
+}
+
+// See: https://github.com/mrmans0n/git-gud/issues/199
+// Direct lint test that exercises boundary checking without needing provider auth
+#[test]
+fn test_lint_position_clamped_to_stack_size() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config with a simple lint command that always succeeds
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","lint":["true"]}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with 2 commits
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "lint-boundary-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    // First commit
+    fs::write(repo_path.join("file1.txt"), "content1").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "First commit\n\nGG-ID: c-lint001"],
+    );
+
+    // Second commit
+    fs::write(repo_path.join("file2.txt"), "content2").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Second commit\n\nGG-ID: c-lint002"],
+    );
+
+    // Verify stack has 2 commits
+    let (success, stdout, _) = run_gg(&repo_path, &["ls"]);
+    assert!(success, "gg ls should succeed");
+    assert!(
+        stdout.contains("[1]") && stdout.contains("[2]"),
+        "Stack should have 2 commits. stdout: {}",
+        stdout
+    );
+
+    // Test 1: lint --until 3 on a 2-commit stack should error with "out of range"
+    // This verifies the boundary check works correctly
+    let (success, stdout, stderr) = run_gg(&repo_path, &["lint", "--until", "3"]);
+    assert!(!success, "lint --until 3 should fail on a 2-commit stack");
+    let combined = format!("{}{}", stdout, stderr);
+    assert!(
+        combined.contains("out of range") || combined.contains("invalid"),
+        "Should get out of range error for position 3 on 2-commit stack. combined: {}",
+        combined
+    );
+
+    // Test 2: lint without --until should succeed and lint all commits
+    let (success, stdout, stderr) = run_gg(&repo_path, &["lint"]);
+    assert!(
+        success,
+        "lint (without --until) should succeed. stdout: {}, stderr: {}",
+        stdout, stderr
+    );
+
+    // Test 3: lint --until 2 should succeed (exactly at boundary)
+    let (success, stdout, stderr) = run_gg(&repo_path, &["lint", "--until", "2"]);
+    assert!(
+        success,
+        "lint --until 2 should succeed on 2-commit stack. stdout: {}, stderr: {}",
+        stdout, stderr
+    );
+
+    // Test 4: lint --until 1 should succeed (within bounds)
+    let (success, stdout, stderr) = run_gg(&repo_path, &["lint", "--until", "1"]);
+    assert!(
+        success,
+        "lint --until 1 should succeed. stdout: {}, stderr: {}",
+        stdout, stderr
+    );
+}

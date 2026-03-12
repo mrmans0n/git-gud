@@ -206,7 +206,10 @@ pub fn run(
 
     // Run lint ONCE if requested (before GG-ID addition loop)
     if run_lint {
-        let end_pos = lint_end_pos.unwrap_or(initial_stack.len());
+        // Reload stack to get post-rebase state. After rebase, landed commits
+        // are dropped so initial_stack.len() may be stale.
+        let current_stack = Stack::load(&repo, &config)?;
+        let end_pos = lint_end_pos.unwrap_or(current_stack.len());
         if !json {
             println!("{}", console::style("Running lint before sync...").dim());
         }

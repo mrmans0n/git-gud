@@ -7,6 +7,9 @@ use std::fs::{self, File};
 use std::process::Command;
 use std::time::Duration;
 
+/// Default timeout in seconds for acquiring the index.lock
+const INDEX_LOCK_TIMEOUT_SECS: u64 = 10;
+
 use fs2::FileExt;
 #[allow(unused_imports)]
 use git2::Branch;
@@ -24,20 +27,68 @@ pub fn open_repo() -> Result<Repository> {
 }
 
 /// Operation lock handle that automatically releases on drop
+#[derive(Debug)]
 pub struct OperationLock {
-    _lock_file: File,
+    _lock_file: File, // gg/operation.lock (existing flock)
 }
 
 impl Drop for OperationLock {
     fn drop(&mut self) {
-        // Lock is released when the file handle is dropped.
-        // Do not delete the lock file to avoid races with new lock acquisitions.
+        // gg/operation.lock flock released automatically via File drop
     }
 }
 
-/// Acquire an exclusive operation lock to prevent concurrent gg operations
-/// Returns a lock handle that will automatically release when dropped
+/// Acquire an exclusive operation lock to prevent concurrent gg operations.
+///
+/// This function implements locking in two layers:
+/// 1. Checks for `.git/index.lock` — if git is running, waits or fails
+///    (prevents gg from conflicting with an active git operation)
+/// 2. Acquires `.git/gg/operation.lock` with flock to block other gg instances
+///
+/// Note: We don't CREATE index.lock ourselves because libgit2 also checks
+/// it internally, and creating it would block gg's own git2 operations.
+/// This means git can still start while gg is running (best-effort detection).
+///
+/// Returns a lock handle that will automatically release when dropped.
 pub fn acquire_operation_lock(repo: &Repository, operation: &str) -> Result<OperationLock> {
+    acquire_operation_lock_with_timeout(repo, operation, INDEX_LOCK_TIMEOUT_SECS)
+}
+
+/// Internal version with configurable timeout (for testing)
+pub(crate) fn acquire_operation_lock_with_timeout(
+    repo: &Repository,
+    operation: &str,
+    timeout_secs: u64,
+) -> Result<OperationLock> {
+    // --- Step 1: Check for index.lock (detect if git is running) ---
+    // Use repo.path() for per-worktree index.lock
+    let git_dir = repo.path();
+    let index_lock_path = git_dir.join("index.lock");
+    let index_timeout = Duration::from_secs(timeout_secs);
+    let index_start = std::time::Instant::now();
+
+    // Wait for any existing index.lock to be released
+    let mut warned = false;
+    while index_lock_path.exists() {
+        if !warned {
+            eprintln!(
+                "{} Waiting for git operation to complete (index.lock exists)...",
+                console::style("Note:").cyan().bold()
+            );
+            warned = true;
+        }
+        if index_start.elapsed() >= index_timeout {
+            return Err(GgError::GitOperationInProgress(
+                "git operation timed out".to_string(),
+                index_lock_path.display().to_string(),
+            ));
+        }
+        // Note: narrow TOCTOU gap between exists() check and gg lock acquisition
+        // is acceptable for best-effort detection
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    // --- Step 2: gg/operation.lock management (blocks other gg instances) ---
     let common_dir = repo.commondir();
     let gg_dir = common_dir.join("gg");
 
@@ -1454,6 +1505,117 @@ mod tests {
         // Should NOT re-attach because HEAD and branch tip differ
         ensure_branch_attached(&repo, &branch_name).unwrap();
         assert!(repo.head_detached().unwrap()); // still detached
+    }
+
+    #[test]
+    fn test_operation_lock_succeeds_when_no_index_lock() {
+        use std::process::Command;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_path = temp_dir.path();
+
+        Command::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Create initial commit
+        std::fs::write(repo_path.join("file.txt"), "content").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        let repo = Repository::open(repo_path).unwrap();
+        let index_lock = repo_path.join(".git/index.lock");
+
+        assert!(
+            !index_lock.exists(),
+            "index.lock should not exist before lock"
+        );
+
+        {
+            let lock = acquire_operation_lock(&repo, "test");
+            assert!(lock.is_ok(), "Should succeed when no index.lock exists");
+        }
+
+        // Lock dropped - we only check for index.lock, we don't create it
+        // so there's nothing to verify about index.lock after drop
+    }
+
+    #[test]
+    fn test_operation_lock_blocks_when_index_lock_exists() {
+        use std::process::Command;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_path = temp_dir.path();
+
+        Command::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        std::fs::write(repo_path.join("file.txt"), "content").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        let repo = Repository::open(repo_path).unwrap();
+        let index_lock = repo_path.join(".git/index.lock");
+
+        // Create an index.lock file to simulate git holding the lock
+        // (git's real index.lock is a binary copy of the index, not text)
+        std::fs::write(&index_lock, "binary index data").unwrap();
+
+        // acquire_operation_lock should timeout and fail
+        // Use short timeout (1 second) for test speed
+        let result = acquire_operation_lock_with_timeout(&repo, "test", 1);
+        assert!(result.is_err(), "Should fail when index.lock exists");
+
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("git operation is currently in progress") || err.contains("index.lock"),
+            "Error should mention git operation in progress. Got: {}",
+            err
+        );
+
+        // Clean up
+        std::fs::remove_file(&index_lock).ok();
     }
 }
 

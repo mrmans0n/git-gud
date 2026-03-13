@@ -122,7 +122,7 @@ Split a commit into two. Selected files/hunks become a new commit inserted befor
 - `-c, --commit <TARGET>` — target commit (position, SHA, or GG-ID; default: current)
 - `-m, --message <MSG>` — message for the new commit
 - `--no-edit` — keep original message for remainder, don't prompt
-- `-i, --interactive` — select individual hunks interactively with TUI. Auto-enabled for single-file commits.
+- `-i, --interactive` — select individual hunks interactively with TUI. Auto-enabled for single-file commits. After selecting hunks, an inline text input appears for the commit message (pre-filled with `Split from: <original title>`). Press Enter to confirm, Esc to go back to hunk selection.
 - `--no-tui` — disable TUI, use sequential prompt instead (legacy `git add -p` style)
 - `FILES...` — files for the new commit (interactive selector if omitted)
 

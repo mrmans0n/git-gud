@@ -141,6 +141,9 @@ pub fn run(options: SplitOptions) -> Result<()> {
     let use_hunk_mode =
         options.interactive || (changed_files.len() < 2 && options.files.is_empty());
 
+    // If the TUI provides a commit message inline, it's stored here to skip the editor
+    let mut tui_commit_message: Option<String> = None;
+
     let first_tree = if use_hunk_mode {
         // === Hunk-level splitting ===
         let mut hunks = get_hunks(&repo, &parent_commit, &target_commit)?;
@@ -160,7 +163,17 @@ pub fn run(options: SplitOptions) -> Result<()> {
         let use_tui = !options.no_tui && is_tty;
 
         let selected_indices = if use_tui {
-            super::split_tui::select_hunks_tui(hunks.clone())?
+            let commit_title = git::get_commit_title(&target_commit);
+            match super::split_tui::select_hunks_tui(hunks.clone(), &commit_title)? {
+                Some(result) => {
+                    tui_commit_message = Some(result.commit_message);
+                    result.selected_indices
+                }
+                None => {
+                    // User aborted
+                    return Err(GgError::Other("Selection aborted".to_string()));
+                }
+            }
         } else {
             select_hunks_interactive(&mut hunks)?
         };
@@ -207,7 +220,14 @@ pub fn run(options: SplitOptions) -> Result<()> {
     };
 
     // Get commit messages
-    let new_commit_message = get_new_commit_message(&options, &target_commit)?;
+    // Priority: -m flag > TUI inline message > editor prompt
+    let new_commit_message = if options.message.is_some() {
+        get_new_commit_message(&options, &target_commit)?
+    } else if let Some(msg) = tui_commit_message {
+        msg
+    } else {
+        get_new_commit_message(&options, &target_commit)?
+    };
     let remainder_message = get_remainder_message(&options, &target_commit)?;
 
     // 2. Create the first (new, lower) commit

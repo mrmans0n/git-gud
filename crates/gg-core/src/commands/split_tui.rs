@@ -23,11 +23,29 @@ use ratatui::{
 use super::split::DiffHunk;
 use crate::error::{GgError, Result};
 
+/// Result of the TUI hunk selection + inline commit message
+#[derive(Debug, Clone)]
+pub struct TuiResult {
+    /// Indices of selected hunks
+    pub selected_indices: Vec<usize>,
+    /// Commit message entered inline
+    pub commit_message: String,
+}
+
 /// Which panel is currently active
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Panel {
     Files,
     Diff,
+}
+
+/// TUI interaction mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TuiMode {
+    /// Selecting hunks (the main mode)
+    HunkSelection,
+    /// Typing the commit message inline
+    MessageInput,
 }
 
 /// A file in the TUI file list
@@ -49,6 +67,8 @@ struct SplitTuiState {
     files: Vec<TuiFile>,
     /// Currently active panel
     active_panel: Panel,
+    /// Current TUI mode
+    mode: TuiMode,
     /// Selected file index
     file_cursor: usize,
     /// Selected hunk index within the current file's hunks in the diff panel
@@ -59,10 +79,16 @@ struct SplitTuiState {
     confirmed: bool,
     /// Whether user aborted
     aborted: bool,
+    /// Commit message being edited (in MessageInput mode)
+    message_text: String,
+    /// Cursor position within the message text (byte offset)
+    message_cursor: usize,
+    /// Default commit message (pre-filled)
+    default_message: String,
 }
 
 impl SplitTuiState {
-    fn new(hunks: Vec<DiffHunk>) -> Self {
+    fn new(hunks: Vec<DiffHunk>, default_message: String) -> Self {
         let selected = vec![false; hunks.len()];
 
         // Group hunks by file
@@ -78,16 +104,21 @@ impl SplitTuiState {
             }
         }
 
+        let message_cursor = default_message.len();
         Self {
             hunks,
             selected,
             files,
             active_panel: Panel::Files,
+            mode: TuiMode::HunkSelection,
             file_cursor: 0,
             hunk_cursor: 0,
             diff_scroll: 0,
             confirmed: false,
             aborted: false,
+            message_text: default_message.clone(),
+            message_cursor,
+            default_message,
         }
     }
 
@@ -339,6 +370,80 @@ impl SplitTuiState {
             .filter_map(|(idx, &sel)| if sel { Some(idx) } else { None })
             .collect()
     }
+
+    /// Enter message input mode (called when user confirms hunk selection)
+    fn enter_message_mode(&mut self) {
+        self.mode = TuiMode::MessageInput;
+        // Reset message to default and place cursor at end
+        self.message_text = self.default_message.clone();
+        self.message_cursor = self.message_text.len();
+    }
+
+    /// Return to hunk selection mode (called when user presses Esc in message input)
+    fn exit_message_mode(&mut self) {
+        self.mode = TuiMode::HunkSelection;
+    }
+
+    /// Insert a character at the current cursor position
+    fn message_insert_char(&mut self, c: char) {
+        self.message_text.insert(self.message_cursor, c);
+        self.message_cursor += c.len_utf8();
+    }
+
+    /// Delete the character before the cursor (backspace)
+    fn message_backspace(&mut self) {
+        if self.message_cursor > 0 {
+            // Find the previous char boundary
+            let prev = self.message_text[..self.message_cursor]
+                .char_indices()
+                .next_back()
+                .map(|(idx, _)| idx)
+                .unwrap_or(0);
+            self.message_text.remove(prev);
+            self.message_cursor = prev;
+        }
+    }
+
+    /// Delete the character at the cursor (delete key)
+    fn message_delete(&mut self) {
+        if self.message_cursor < self.message_text.len() {
+            self.message_text.remove(self.message_cursor);
+        }
+    }
+
+    /// Move cursor left by one character
+    fn message_cursor_left(&mut self) {
+        if self.message_cursor > 0 {
+            let prev = self.message_text[..self.message_cursor]
+                .char_indices()
+                .next_back()
+                .map(|(idx, _)| idx)
+                .unwrap_or(0);
+            self.message_cursor = prev;
+        }
+    }
+
+    /// Move cursor right by one character
+    fn message_cursor_right(&mut self) {
+        if self.message_cursor < self.message_text.len() {
+            let next = self.message_text[self.message_cursor..]
+                .char_indices()
+                .nth(1)
+                .map(|(idx, _)| self.message_cursor + idx)
+                .unwrap_or(self.message_text.len());
+            self.message_cursor = next;
+        }
+    }
+
+    /// Move cursor to beginning of message
+    fn message_cursor_home(&mut self) {
+        self.message_cursor = 0;
+    }
+
+    /// Move cursor to end of message
+    fn message_cursor_end(&mut self) {
+        self.message_cursor = self.message_text.len();
+    }
 }
 
 /// Terminal cleanup guard - restores terminal on drop
@@ -363,12 +468,19 @@ impl Drop for TerminalGuard {
     }
 }
 
-/// Run the TUI for hunk selection
-/// Returns selected hunk indices
-pub fn select_hunks_tui(hunks: Vec<DiffHunk>) -> Result<Vec<usize>> {
+/// Run the TUI for hunk selection with inline commit message input.
+///
+/// Returns `Ok(Some(TuiResult))` with selected hunk indices and commit message,
+/// or `Ok(None)` if the user aborted.
+///
+/// `commit_title` is the original commit's title, used to pre-fill the message as
+/// `"Split from: <title>"`.
+pub fn select_hunks_tui(hunks: Vec<DiffHunk>, commit_title: &str) -> Result<Option<TuiResult>> {
     if hunks.is_empty() {
         return Err(GgError::Other("No hunks to display".to_string()));
     }
+
+    let default_message = format!("Split from: {}", commit_title);
 
     // Set up terminal with cleanup guard
     let _guard = TerminalGuard::new()?;
@@ -377,7 +489,7 @@ pub fn select_hunks_tui(hunks: Vec<DiffHunk>) -> Result<Vec<usize>> {
     let mut terminal = Terminal::new(backend)
         .map_err(|e| GgError::Other(format!("Failed to create terminal: {}", e)))?;
 
-    let mut state = SplitTuiState::new(hunks);
+    let mut state = SplitTuiState::new(hunks, default_message);
 
     // Main loop
     loop {
@@ -403,10 +515,13 @@ pub fn select_hunks_tui(hunks: Vec<DiffHunk>) -> Result<Vec<usize>> {
                 handle_key(&mut state, key.code, key.modifiers);
 
                 if state.confirmed {
-                    return Ok(state.get_selected_indices());
+                    return Ok(Some(TuiResult {
+                        selected_indices: state.get_selected_indices(),
+                        commit_message: state.message_text.trim().to_string(),
+                    }));
                 }
                 if state.aborted {
-                    return Err(GgError::Other("Selection aborted".to_string()));
+                    return Ok(None);
                 }
             }
         }
@@ -415,7 +530,7 @@ pub fn select_hunks_tui(hunks: Vec<DiffHunk>) -> Result<Vec<usize>> {
 
 /// Handle a key press
 fn handle_key(state: &mut SplitTuiState, code: KeyCode, modifiers: KeyModifiers) {
-    // Handle Ctrl+C in raw mode (no SIGINT)
+    // Handle Ctrl+C in raw mode (no SIGINT) — always aborts
     if modifiers.contains(KeyModifiers::CONTROL) {
         if let KeyCode::Char('c') = code {
             state.aborted = true;
@@ -423,6 +538,14 @@ fn handle_key(state: &mut SplitTuiState, code: KeyCode, modifiers: KeyModifiers)
         }
     }
 
+    match state.mode {
+        TuiMode::HunkSelection => handle_key_hunk_selection(state, code, modifiers),
+        TuiMode::MessageInput => handle_key_message_input(state, code, modifiers),
+    }
+}
+
+/// Handle keys in hunk selection mode
+fn handle_key_hunk_selection(state: &mut SplitTuiState, code: KeyCode, _modifiers: KeyModifiers) {
     match code {
         KeyCode::Up | KeyCode::Char('k') => state.move_up(),
         KeyCode::Down | KeyCode::Char('j') => state.move_down(),
@@ -434,10 +557,57 @@ fn handle_key(state: &mut SplitTuiState, code: KeyCode, modifiers: KeyModifiers)
             state.try_split_current_hunk();
         }
         KeyCode::Enter => {
-            state.confirmed = true;
+            // Switch to message input mode instead of confirming immediately
+            state.enter_message_mode();
         }
         KeyCode::Char('q') | KeyCode::Esc => {
             state.aborted = true;
+        }
+        _ => {}
+    }
+}
+
+/// Handle keys in message input mode
+fn handle_key_message_input(state: &mut SplitTuiState, code: KeyCode, modifiers: KeyModifiers) {
+    match code {
+        KeyCode::Enter => {
+            // Confirm with the entered message
+            if state.message_text.trim().is_empty() {
+                // Don't allow empty messages — stay in input mode
+                return;
+            }
+            state.confirmed = true;
+        }
+        KeyCode::Esc => {
+            // Go back to hunk selection
+            state.exit_message_mode();
+        }
+        KeyCode::Backspace => state.message_backspace(),
+        KeyCode::Delete => state.message_delete(),
+        KeyCode::Left => state.message_cursor_left(),
+        KeyCode::Right => state.message_cursor_right(),
+        KeyCode::Home => state.message_cursor_home(),
+        KeyCode::End => state.message_cursor_end(),
+        KeyCode::Char(c) => {
+            // Ctrl+A = home, Ctrl+E = end (emacs-style)
+            if modifiers.contains(KeyModifiers::CONTROL) {
+                match c {
+                    'a' => state.message_cursor_home(),
+                    'e' => state.message_cursor_end(),
+                    'u' => {
+                        // Ctrl+U: clear from cursor to beginning
+                        state.message_text = state.message_text[state.message_cursor..].to_string();
+                        state.message_cursor = 0;
+                    }
+                    'k' => {
+                        // Ctrl+K: clear from cursor to end
+                        state.message_text.truncate(state.message_cursor);
+                    }
+                    _ => {}
+                }
+            } else {
+                state.message_insert_char(c);
+            }
         }
         _ => {}
     }
@@ -447,10 +617,16 @@ fn handle_key(state: &mut SplitTuiState, code: KeyCode, modifiers: KeyModifiers)
 fn draw(f: &mut Frame, state: &SplitTuiState) {
     let size = f.area();
 
-    // Main layout: content area + status bar
+    // Bottom bar height depends on mode
+    let bottom_height = match state.mode {
+        TuiMode::HunkSelection => 3,
+        TuiMode::MessageInput => 3,
+    };
+
+    // Main layout: content area + status/input bar
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(3)])
+        .constraints([Constraint::Min(1), Constraint::Length(bottom_height)])
         .split(size);
 
     // Content area: file panel (1/3) + diff panel (2/3)
@@ -461,7 +637,11 @@ fn draw(f: &mut Frame, state: &SplitTuiState) {
 
     draw_file_panel(f, state, content_chunks[0]);
     draw_diff_panel(f, state, content_chunks[1]);
-    draw_status_bar(f, state, main_chunks[1]);
+
+    match state.mode {
+        TuiMode::HunkSelection => draw_status_bar(f, state, main_chunks[1]),
+        TuiMode::MessageInput => draw_message_input(f, state, main_chunks[1]),
+    }
 }
 
 /// Draw the file panel (left side)
@@ -634,7 +814,7 @@ fn draw_diff_panel(f: &mut Frame, state: &SplitTuiState, area: Rect) {
     f.render_widget(paragraph, area);
 }
 
-/// Draw the status bar (bottom)
+/// Draw the status bar (bottom, in HunkSelection mode)
 fn draw_status_bar(f: &mut Frame, state: &SplitTuiState, area: Rect) {
     let selected = state.total_selected();
     let total = state.hunks.len();
@@ -647,6 +827,51 @@ fn draw_status_bar(f: &mut Frame, state: &SplitTuiState, area: Rect) {
     let paragraph = Paragraph::new(status_text)
         .style(Style::default().bg(Color::DarkGray).fg(Color::White))
         .wrap(Wrap { trim: true });
+
+    f.render_widget(paragraph, area);
+}
+
+/// Draw the inline commit message input (bottom, in MessageInput mode)
+fn draw_message_input(f: &mut Frame, state: &SplitTuiState, area: Rect) {
+    let label = " Commit message: ";
+
+    // Build spans: label + text before cursor + cursor char + text after cursor
+    let (before, cursor_char, after) = {
+        let text = &state.message_text;
+        let pos = state.message_cursor;
+        let before = &text[..pos];
+        if pos < text.len() {
+            let ch = text[pos..].chars().next().unwrap();
+            let ch_len = ch.len_utf8();
+            let after = &text[pos + ch_len..];
+            (before.to_string(), ch.to_string(), after.to_string())
+        } else {
+            (before.to_string(), " ".to_string(), String::new())
+        }
+    };
+
+    let line = Line::from(vec![
+        Span::styled(
+            label,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(&before),
+        Span::styled(
+            &cursor_char,
+            Style::default().bg(Color::White).fg(Color::Black),
+        ),
+        Span::raw(&after),
+        Span::styled(
+            "  [Enter] confirm · [Esc] back",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]);
+
+    let paragraph = Paragraph::new(line)
+        .style(Style::default().bg(Color::DarkGray).fg(Color::White))
+        .wrap(Wrap { trim: false });
 
     f.render_widget(paragraph, area);
 }
@@ -689,7 +914,7 @@ mod tests {
             make_test_hunk("file2.rs", "@@ -1,2 +1,2 @@"),
         ];
 
-        let state = SplitTuiState::new(hunks);
+        let state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
 
         assert_eq!(state.files.len(), 2);
         assert_eq!(state.files[0].path, "file1.rs");
@@ -708,7 +933,7 @@ mod tests {
             make_test_hunk("file2.rs", "@@ -1,2 +1,2 @@"),
         ];
 
-        let mut state = SplitTuiState::new(hunks);
+        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
 
         // Toggle file1 (should select both hunks)
         state.toggle_selection();
@@ -726,7 +951,7 @@ mod tests {
             make_test_hunk("file1.rs", "@@ -10,2 +10,2 @@"),
         ];
 
-        let mut state = SplitTuiState::new(hunks);
+        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
         state.active_panel = Panel::Diff;
 
         // Toggle first hunk
@@ -747,7 +972,7 @@ mod tests {
             make_test_hunk("file3.rs", "@@ -1,2 +1,2 @@"),
         ];
 
-        let mut state = SplitTuiState::new(hunks);
+        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
 
         assert_eq!(state.file_cursor, 0);
 
@@ -780,7 +1005,7 @@ mod tests {
             make_test_hunk("file2.rs", "@@ -1,2 +1,2 @@"),
         ];
 
-        let mut state = SplitTuiState::new(hunks);
+        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
 
         // Select all globally (in Files panel)
         state.select_all();
@@ -803,7 +1028,7 @@ mod tests {
     #[test]
     fn test_panel_switching() {
         let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
-        let mut state = SplitTuiState::new(hunks);
+        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
 
         assert_eq!(state.active_panel, Panel::Files);
 
@@ -822,7 +1047,7 @@ mod tests {
             make_test_hunk("file2.rs", "@@ -1,2 +1,2 @@"),
         ];
 
-        let mut state = SplitTuiState::new(hunks);
+        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
 
         // Initial: nothing selected
         assert_eq!(state.selected_count_for_file(0), (0, 2));
@@ -845,7 +1070,7 @@ mod tests {
             make_test_hunk("file2.rs", "@@ -1,2 +1,2 @@"),
         ];
 
-        let mut state = SplitTuiState::new(hunks);
+        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
         state.selected[0] = true;
         state.selected[2] = true;
 
@@ -861,7 +1086,7 @@ mod tests {
             make_test_hunk("file3.rs", "@@ -1,2 +1,2 @@"),
         ];
 
-        let mut state = SplitTuiState::new(hunks);
+        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
         assert_eq!(state.total_selected(), 0);
 
         state.selected[1] = true;
@@ -875,7 +1100,7 @@ mod tests {
     #[test]
     fn test_ctrl_c_aborts() {
         let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
-        let mut state = SplitTuiState::new(hunks);
+        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
 
         assert!(!state.aborted);
         handle_key(&mut state, KeyCode::Char('c'), KeyModifiers::CONTROL);
@@ -885,7 +1110,7 @@ mod tests {
     #[test]
     fn test_ctrl_c_does_not_trigger_without_modifier() {
         let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
-        let mut state = SplitTuiState::new(hunks);
+        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
 
         // Plain 'c' should not abort
         handle_key(&mut state, KeyCode::Char('c'), KeyModifiers::NONE);
@@ -899,7 +1124,7 @@ mod tests {
             .map(|i| make_test_hunk("file1.rs", &format!("@@ -{},2 +{},2 @@", i * 10, i * 10)))
             .collect();
 
-        let mut state = SplitTuiState::new(hunks);
+        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
         state.active_panel = Panel::Diff;
 
         // Small visible height to force scrolling
@@ -933,7 +1158,7 @@ mod tests {
     #[test]
     fn test_diff_scroll_zero_height() {
         let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
-        let mut state = SplitTuiState::new(hunks);
+        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
         state.active_panel = Panel::Diff;
 
         // Should not panic with zero visible height
@@ -981,5 +1206,295 @@ mod tests {
         // 'src/日本語/ファイル.rs' is 18 chars, max 13 → truncated
         assert!(display_path.starts_with('…'));
         assert!(display_path.len() <= path.len());
+    }
+
+    // ====================================================================
+    // Message input mode tests
+    // ====================================================================
+
+    #[test]
+    fn test_enter_message_mode() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
+
+        assert_eq!(state.mode, TuiMode::HunkSelection);
+
+        state.enter_message_mode();
+        assert_eq!(state.mode, TuiMode::MessageInput);
+        assert_eq!(state.message_text, "Split from: test commit");
+        assert_eq!(state.message_cursor, "Split from: test commit".len());
+    }
+
+    #[test]
+    fn test_exit_message_mode() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
+
+        state.enter_message_mode();
+        assert_eq!(state.mode, TuiMode::MessageInput);
+
+        state.exit_message_mode();
+        assert_eq!(state.mode, TuiMode::HunkSelection);
+    }
+
+    #[test]
+    fn test_enter_in_hunk_selection_switches_to_message_input() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
+
+        handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+
+        assert_eq!(state.mode, TuiMode::MessageInput);
+        assert!(!state.confirmed);
+    }
+
+    #[test]
+    fn test_esc_in_message_input_returns_to_hunk_selection() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
+
+        state.enter_message_mode();
+        handle_key(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+
+        assert_eq!(state.mode, TuiMode::HunkSelection);
+        assert!(!state.aborted);
+    }
+
+    #[test]
+    fn test_enter_in_message_input_confirms() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
+
+        state.enter_message_mode();
+        handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+
+        assert!(state.confirmed);
+        assert_eq!(state.message_text, "Split from: test commit");
+    }
+
+    #[test]
+    fn test_enter_with_empty_message_does_not_confirm() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(hunks, String::new());
+
+        state.enter_message_mode();
+        handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+
+        assert!(!state.confirmed);
+        assert_eq!(state.mode, TuiMode::MessageInput);
+    }
+
+    #[test]
+    fn test_message_insert_char() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(hunks, String::new());
+
+        state.enter_message_mode();
+        state.message_insert_char('H');
+        state.message_insert_char('i');
+
+        assert_eq!(state.message_text, "Hi");
+        assert_eq!(state.message_cursor, 2);
+    }
+
+    #[test]
+    fn test_message_backspace() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(hunks, "Hello".to_string());
+
+        state.enter_message_mode();
+        assert_eq!(state.message_cursor, 5);
+
+        state.message_backspace();
+        assert_eq!(state.message_text, "Hell");
+        assert_eq!(state.message_cursor, 4);
+
+        // Backspace at position 0 does nothing
+        state.message_cursor_home();
+        state.message_backspace();
+        assert_eq!(state.message_text, "Hell");
+        assert_eq!(state.message_cursor, 0);
+    }
+
+    #[test]
+    fn test_message_delete() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(hunks, "Hello".to_string());
+
+        state.enter_message_mode();
+        state.message_cursor_home();
+
+        state.message_delete();
+        assert_eq!(state.message_text, "ello");
+        assert_eq!(state.message_cursor, 0);
+
+        // Delete at end does nothing
+        state.message_cursor_end();
+        state.message_delete();
+        assert_eq!(state.message_text, "ello");
+    }
+
+    #[test]
+    fn test_message_cursor_movement() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(hunks, "Hello".to_string());
+
+        state.enter_message_mode();
+        assert_eq!(state.message_cursor, 5); // at end
+
+        state.message_cursor_left();
+        assert_eq!(state.message_cursor, 4);
+
+        state.message_cursor_left();
+        assert_eq!(state.message_cursor, 3);
+
+        state.message_cursor_right();
+        assert_eq!(state.message_cursor, 4);
+
+        state.message_cursor_home();
+        assert_eq!(state.message_cursor, 0);
+
+        state.message_cursor_end();
+        assert_eq!(state.message_cursor, 5);
+
+        // Can't go past bounds
+        state.message_cursor_right();
+        assert_eq!(state.message_cursor, 5);
+
+        state.message_cursor_home();
+        state.message_cursor_left();
+        assert_eq!(state.message_cursor, 0);
+    }
+
+    #[test]
+    fn test_message_insert_at_middle() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(hunks, "Helo".to_string());
+
+        state.enter_message_mode();
+        // Move cursor to position 3 (before 'o')
+        state.message_cursor = 3;
+        state.message_insert_char('l');
+
+        assert_eq!(state.message_text, "Hello");
+        assert_eq!(state.message_cursor, 4);
+    }
+
+    #[test]
+    fn test_message_ctrl_u_clears_to_beginning() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(hunks, "Hello World".to_string());
+
+        state.enter_message_mode();
+        state.message_cursor = 5; // after "Hello"
+
+        handle_key(&mut state, KeyCode::Char('u'), KeyModifiers::CONTROL);
+
+        assert_eq!(state.message_text, " World");
+        assert_eq!(state.message_cursor, 0);
+    }
+
+    #[test]
+    fn test_message_ctrl_k_clears_to_end() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(hunks, "Hello World".to_string());
+
+        state.enter_message_mode();
+        state.message_cursor = 5; // after "Hello"
+
+        handle_key(&mut state, KeyCode::Char('k'), KeyModifiers::CONTROL);
+
+        assert_eq!(state.message_text, "Hello");
+        assert_eq!(state.message_cursor, 5);
+    }
+
+    #[test]
+    fn test_ctrl_c_aborts_from_message_input() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(hunks, "test".to_string());
+
+        state.enter_message_mode();
+        handle_key(&mut state, KeyCode::Char('c'), KeyModifiers::CONTROL);
+
+        assert!(state.aborted);
+    }
+
+    #[test]
+    fn test_message_typing_via_handle_key() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(hunks, String::new());
+
+        state.enter_message_mode();
+
+        // Type "Hi" using handle_key
+        handle_key(&mut state, KeyCode::Char('H'), KeyModifiers::NONE);
+        handle_key(&mut state, KeyCode::Char('i'), KeyModifiers::NONE);
+
+        assert_eq!(state.message_text, "Hi");
+        assert!(!state.confirmed);
+
+        // Press Enter to confirm
+        handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(state.confirmed);
+    }
+
+    #[test]
+    fn test_full_flow_hunk_selection_to_message_to_confirm() {
+        let hunks = vec![
+            make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@"),
+            make_test_hunk("file2.rs", "@@ -1,2 +1,2 @@"),
+        ];
+        let mut state = SplitTuiState::new(hunks, "Split from: original".to_string());
+
+        // Select a hunk
+        handle_key(&mut state, KeyCode::Char(' '), KeyModifiers::NONE);
+        assert_eq!(state.selected, vec![true, false]);
+
+        // Press Enter → message input mode
+        handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(state.mode, TuiMode::MessageInput);
+
+        // Confirm with default message
+        handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(state.confirmed);
+        assert_eq!(state.message_text, "Split from: original");
+    }
+
+    #[test]
+    fn test_full_flow_message_edit_and_go_back() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(hunks, "Split from: original".to_string());
+
+        // Enter message mode
+        handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(state.mode, TuiMode::MessageInput);
+
+        // Go back with Esc
+        handle_key(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(state.mode, TuiMode::HunkSelection);
+        assert!(!state.aborted);
+
+        // Can still navigate hunks
+        handle_key(&mut state, KeyCode::Char(' '), KeyModifiers::NONE);
+        assert_eq!(state.selected, vec![true]);
+    }
+
+    #[test]
+    fn test_message_unicode_handling() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(hunks, String::new());
+
+        state.enter_message_mode();
+        state.message_insert_char('é');
+        state.message_insert_char('ñ');
+
+        assert_eq!(state.message_text, "éñ");
+        assert_eq!(state.message_cursor, "éñ".len());
+
+        state.message_backspace();
+        assert_eq!(state.message_text, "é");
+
+        state.message_cursor_left();
+        assert_eq!(state.message_cursor, 0);
     }
 }

@@ -25,36 +25,38 @@ pub struct SplitOptions {
     pub no_edit: bool,
     /// If true, enter interactive hunk selection mode (like git add -p).
     pub interactive: bool,
+    /// If true, disable TUI and use sequential prompt instead.
+    pub no_tui: bool,
 }
 
 /// A single line in a diff hunk
 #[derive(Debug, Clone)]
-struct DiffLine {
+pub struct DiffLine {
     /// Origin character: '+' (added), '-' (deleted), ' ' (context)
-    origin: char,
+    pub origin: char,
     /// The line content (without the origin character)
-    content: String,
+    pub content: String,
 }
 
 /// A diff hunk representing a contiguous change in a file
 #[derive(Debug, Clone)]
-struct DiffHunk {
+pub struct DiffHunk {
     /// File path relative to repo root
-    file_path: String,
+    pub file_path: String,
     /// Hunk header (e.g., "@@ -10,6 +10,12 @@ fn authenticate...")
-    header: String,
+    pub header: String,
     /// Lines in the hunk
-    lines: Vec<DiffLine>,
+    pub lines: Vec<DiffLine>,
     /// Starting line number in the old file
-    old_start: u32,
+    pub old_start: u32,
     /// Number of lines in the old file (used in split/display)
     #[allow(dead_code)]
-    old_lines: u32,
+    pub old_lines: u32,
     /// Starting line number in the new file
-    new_start: u32,
+    pub new_start: u32,
     /// Number of lines in the new file (used in split/display)
     #[allow(dead_code)]
-    new_lines: u32,
+    pub new_lines: u32,
 }
 
 /// Information about a file changed in a commit
@@ -153,7 +155,15 @@ pub fn run(options: SplitOptions) -> Result<()> {
             return Err(GgError::Other("No hunks found to split".to_string()));
         }
 
-        let selected_indices = select_hunks_interactive(&mut hunks)?;
+        // Determine whether to use TUI or sequential prompt
+        let is_tty = atty::is(atty::Stream::Stdin) && atty::is(atty::Stream::Stdout);
+        let use_tui = !options.no_tui && is_tty;
+
+        let selected_indices = if use_tui {
+            super::split_tui::select_hunks_tui(hunks.clone())?
+        } else {
+            select_hunks_interactive(&mut hunks)?
+        };
 
         if selected_indices.is_empty() {
             return Err(GgError::Other(
@@ -736,7 +746,7 @@ fn print_hunk_help() {
 
 /// Try to split a hunk into smaller sub-hunks
 /// Returns None if the hunk cannot be split further
-fn try_split_hunk(hunk: &DiffHunk) -> Option<Vec<DiffHunk>> {
+pub fn try_split_hunk(hunk: &DiffHunk) -> Option<Vec<DiffHunk>> {
     // Find points where we can split: context lines between change groups
     // A change group is a sequence of + and - lines
     // We can split when we see a change line after one or more context lines

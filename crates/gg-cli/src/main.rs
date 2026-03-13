@@ -152,6 +152,10 @@ enum Commands {
         #[arg(short, long)]
         interactive: bool,
 
+        /// Disable TUI, use sequential prompt instead
+        #[arg(long)]
+        no_tui: bool,
+
         /// Files to include in the new commit
         #[arg(value_name = "FILES")]
         files: Vec<String>,
@@ -360,6 +364,7 @@ fn main() {
             message,
             no_edit,
             interactive,
+            no_tui,
             files,
         }) => (
             gg_core::commands::split::run(gg_core::commands::split::SplitOptions {
@@ -368,6 +373,7 @@ fn main() {
                 message,
                 no_edit,
                 interactive,
+                no_tui,
             }),
             false,
         ),

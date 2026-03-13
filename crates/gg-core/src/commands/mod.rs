@@ -13,5 +13,6 @@ pub mod reconcile;
 pub mod reorder;
 pub mod setup;
 pub mod split;
+pub mod split_tui;
 pub mod squash;
 pub mod sync;

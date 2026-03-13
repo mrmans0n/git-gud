@@ -39,6 +39,10 @@ ctrlc = "3"
 atty = "0.2"
 fs2 = "0.4"
 
+# TUI (for split interactive mode)
+ratatui = "0.30"
+crossterm = "0.29"
+
 # Absorb (library integration)
 git-absorb = "0.9"
 slog = "2"

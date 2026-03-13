@@ -11,7 +11,8 @@ gg split [OPTIONS] [FILES...]
 - `-c, --commit <TARGET>`: Target commit — position (1-indexed), short SHA, or GG-ID. Defaults to the current commit (HEAD).
 - `-m, --message <MESSAGE>`: Commit message for the new (first) commit. Skips the editor prompt.
 - `--no-edit`: Keep the original message for the remainder commit without prompting.
-- `-i, --interactive`: Select individual hunks interactively (like `git add -p`). Auto-enabled for single-file commits.
+- `-i, --interactive`: Select individual hunks interactively. Auto-enabled for single-file commits.
+- `--no-tui`: Disable TUI, use sequential prompt instead (legacy `git add -p` style).
 - `FILES...`: Files to include in the new commit. If omitted, opens an interactive file selector (or hunk selector in interactive mode).
 
 ## How It Works
@@ -78,7 +79,50 @@ gg split -i src/auth.rs
 
 **Note:** Single-file commits automatically enter hunk mode since file-level splitting wouldn't make sense.
 
-### Interactive Hunk Selection
+### TUI Mode (Default)
+
+When run interactively with a TTY, `gg split -i` opens a two-panel TUI for hunk selection:
+
+```
+┌── Files (1/3 width) ──┬── Diff (2/3 width) ──────────────┐
+│ [✓] src/auth.rs (3)   │ @@ -10,6 +10,12 @@               │
+│ [ ] src/logging.rs (1)│ +  // Validate token              │
+│ [~] src/tests.rs (2)  │ +  if token.is_empty() {          │
+│                        │ +      return false;               │
+│                        │ +  }                               │
+├────────────────────────┴────────────────────────────────────┤
+│ 5/12 hunks selected │ [Space] toggle · [Tab] switch panel │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### TUI Keyboard Shortcuts
+
+| Key | In File Panel | In Diff Panel |
+|-----|---------------|---------------|
+| ↑/↓ or j/k | Navigate files | Navigate hunks |
+| Space | Toggle all hunks for file | Toggle current hunk |
+| a | Select all hunks (all files) | Select all hunks (this file) |
+| n | Deselect all hunks (all files) | Deselect all hunks (this file) |
+| s | — | Split current hunk into sub-hunks |
+| Tab / ← / → | Switch to diff panel | Switch to file panel |
+| Enter | Confirm selection | Confirm selection |
+| q / Esc | Abort (cancel split) | Abort (cancel split) |
+
+#### File Panel Indicators
+
+- `[✓]` — All hunks selected (green)
+- `[~]` — Some hunks selected (yellow)
+- `[ ]` — No hunks selected
+
+### Sequential Prompt Mode (`--no-tui`)
+
+Use `--no-tui` to fall back to the legacy `git add -p` style sequential prompt:
+
+```bash
+gg split -i --no-tui
+```
+
+This mode is automatically used when no TTY is available (e.g., in CI pipelines or when piping).
 
 For each hunk, you'll see the diff with colored output and a prompt:
 
@@ -94,7 +138,7 @@ For each hunk, you'll see the diff with colored output and a prompt:
 Include this hunk? [y]es/[n]o/[a]ll file/[d]one file/[s]plit/[q]uit/?help:
 ```
 
-### Hunk Actions
+#### Sequential Mode Actions
 
 | Key | Action | Description |
 |-----|--------|-------------|

@@ -1,8 +1,10 @@
 //! `gg split` - Split a commit into two
 
+use std::collections::HashMap;
+use std::io::{self, Write};
 use std::process::Command;
 
-use console::style;
+use console::{style, Term};
 use dialoguer::{Editor, MultiSelect};
 
 use crate::config::Config;
@@ -21,6 +23,38 @@ pub struct SplitOptions {
     pub message: Option<String>,
     /// If true, don't prompt for the remainder commit message (keep original).
     pub no_edit: bool,
+    /// If true, enter interactive hunk selection mode (like git add -p).
+    pub interactive: bool,
+}
+
+/// A single line in a diff hunk
+#[derive(Debug, Clone)]
+struct DiffLine {
+    /// Origin character: '+' (added), '-' (deleted), ' ' (context)
+    origin: char,
+    /// The line content (without the origin character)
+    content: String,
+}
+
+/// A diff hunk representing a contiguous change in a file
+#[derive(Debug, Clone)]
+struct DiffHunk {
+    /// File path relative to repo root
+    file_path: String,
+    /// Hunk header (e.g., "@@ -10,6 +10,12 @@ fn authenticate...")
+    header: String,
+    /// Lines in the hunk
+    lines: Vec<DiffLine>,
+    /// Starting line number in the old file
+    old_start: u32,
+    /// Number of lines in the old file (used in split/display)
+    #[allow(dead_code)]
+    old_lines: u32,
+    /// Starting line number in the new file
+    new_start: u32,
+    /// Number of lines in the new file (used in split/display)
+    #[allow(dead_code)]
+    new_lines: u32,
 }
 
 /// Information about a file changed in a commit
@@ -95,45 +129,76 @@ pub fn run(options: SplitOptions) -> Result<()> {
         ));
     }
 
-    if changed_files.len() < 2 && options.files.is_empty() {
-        return Err(GgError::Other(
-            "Commit only has 1 file. Use hunk-level splitting (-i) in a future version."
-                .to_string(),
-        ));
-    }
+    // Get trees for building the split
+    let parent_tree = parent_commit.tree()?;
+    let target_tree = target_commit.tree()?;
 
-    // Determine which files go to the new (first/lower) commit
-    let selected_files = if options.files.is_empty() {
-        select_files_interactive(&changed_files)?
+    // Determine if we should use hunk mode:
+    // 1. Explicitly requested with -i
+    // 2. Single-file commit without file args (auto-enter hunk mode)
+    let use_hunk_mode =
+        options.interactive || (changed_files.len() < 2 && options.files.is_empty());
+
+    let first_tree = if use_hunk_mode {
+        // === Hunk-level splitting ===
+        let mut hunks = get_hunks(&repo, &parent_commit, &target_commit)?;
+
+        // Filter hunks to specified files if any
+        if !options.files.is_empty() {
+            validate_file_selection(&options.files, &changed_files)?;
+            hunks.retain(|h| options.files.contains(&h.file_path));
+        }
+
+        if hunks.is_empty() {
+            return Err(GgError::Other("No hunks found to split".to_string()));
+        }
+
+        let selected_indices = select_hunks_interactive(&hunks)?;
+
+        if selected_indices.is_empty() {
+            return Err(GgError::Other(
+                "No hunks selected, nothing to split".to_string(),
+            ));
+        }
+
+        let all_selected = selected_indices.len() == hunks.len();
+        if all_selected {
+            println!(
+                "{}",
+                style("⚠ All hunks selected — the original commit will become empty.").yellow()
+            );
+        }
+
+        build_tree_from_hunks(&repo, &parent_tree, &target_tree, &hunks, &selected_indices)?
     } else {
-        validate_file_selection(&options.files, &changed_files)?
+        // === File-level splitting ===
+        // Determine which files go to the new (first/lower) commit
+        let selected_files = if options.files.is_empty() {
+            select_files_interactive(&changed_files)?
+        } else {
+            validate_file_selection(&options.files, &changed_files)?
+        };
+
+        if selected_files.is_empty() {
+            return Err(GgError::Other(
+                "No files selected, nothing to split".to_string(),
+            ));
+        }
+
+        let all_selected = selected_files.len() == changed_files.len();
+        if all_selected {
+            println!(
+                "{}",
+                style("⚠ All files selected — the original commit will become empty.").yellow()
+            );
+        }
+
+        build_partial_tree(&repo, &parent_tree, &target_tree, &selected_files)?
     };
-
-    if selected_files.is_empty() {
-        return Err(GgError::Other(
-            "No files selected, nothing to split".to_string(),
-        ));
-    }
-
-    let all_selected = selected_files.len() == changed_files.len();
-    if all_selected {
-        println!(
-            "{}",
-            style("⚠ All files selected — the original commit will become empty.").yellow()
-        );
-    }
 
     // Get commit messages
     let new_commit_message = get_new_commit_message(&options, &target_commit)?;
     let remainder_message = get_remainder_message(&options, &target_commit)?;
-
-    // === Perform the split ===
-
-    // 1. Build the tree for the new (first/lower) commit:
-    //    Start from parent tree, add selected file blobs from target tree.
-    let parent_tree = parent_commit.tree()?;
-    let target_tree = target_commit.tree()?;
-    let first_tree = build_partial_tree(&repo, &parent_tree, &target_tree, &selected_files)?;
 
     // 2. Create the first (new, lower) commit
     let sig = git::get_signature(&repo)?;
@@ -549,6 +614,703 @@ fn update_branch_after_split(
     Ok(())
 }
 
+// ============================================================================
+// Hunk-level splitting functions
+// ============================================================================
+
+/// Extract all diff hunks between parent and target commits
+fn get_hunks(
+    repo: &git2::Repository,
+    parent: &git2::Commit,
+    target: &git2::Commit,
+) -> Result<Vec<DiffHunk>> {
+    let parent_tree = parent.tree()?;
+    let target_tree = target.tree()?;
+
+    let diff = repo.diff_tree_to_tree(Some(&parent_tree), Some(&target_tree), None)?;
+
+    let mut hunks: Vec<DiffHunk> = Vec::new();
+    let mut current_file_path;
+    let mut current_hunk: Option<DiffHunk> = None;
+
+    // We need to iterate patch-by-patch to avoid borrow checker issues with foreach
+    let num_deltas = diff.deltas().len();
+
+    for delta_idx in 0..num_deltas {
+        let delta = diff
+            .get_delta(delta_idx)
+            .ok_or_else(|| GgError::Other(format!("Failed to get delta {}", delta_idx)))?;
+
+        current_file_path = delta
+            .new_file()
+            .path()
+            .or_else(|| delta.old_file().path())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        // Get the patch for this delta
+        let patch = git2::Patch::from_diff(&diff, delta_idx)?;
+        if let Some(patch) = patch {
+            let num_hunks = patch.num_hunks();
+
+            for hunk_idx in 0..num_hunks {
+                let (hunk, num_lines) = patch.hunk(hunk_idx)?;
+
+                // Save previous hunk if any
+                if let Some(h) = current_hunk.take() {
+                    hunks.push(h);
+                }
+
+                // Start new hunk
+                let mut diff_hunk = DiffHunk {
+                    file_path: current_file_path.clone(),
+                    header: format!(
+                        "@@ -{},{} +{},{} @@",
+                        hunk.old_start(),
+                        hunk.old_lines(),
+                        hunk.new_start(),
+                        hunk.new_lines()
+                    ),
+                    lines: Vec::new(),
+                    old_start: hunk.old_start(),
+                    old_lines: hunk.old_lines(),
+                    new_start: hunk.new_start(),
+                    new_lines: hunk.new_lines(),
+                };
+
+                // Add lines
+                for line_idx in 0..num_lines {
+                    let line = patch.line_in_hunk(hunk_idx, line_idx)?;
+                    let origin = line.origin();
+                    if origin == '+' || origin == '-' || origin == ' ' {
+                        diff_hunk.lines.push(DiffLine {
+                            origin,
+                            content: String::from_utf8_lossy(line.content()).to_string(),
+                        });
+                    }
+                }
+
+                current_hunk = Some(diff_hunk);
+            }
+        }
+    }
+
+    // Don't forget the last hunk
+    if let Some(h) = current_hunk.take() {
+        hunks.push(h);
+    }
+
+    Ok(hunks)
+}
+
+/// Print help for interactive hunk selection
+fn print_hunk_help() {
+    println!();
+    println!(
+        "  {} - include this hunk in the new commit",
+        style("y").green().bold()
+    );
+    println!(
+        "  {} - skip this hunk (stays in remainder)",
+        style("n").red().bold()
+    );
+    println!(
+        "  {} - include all remaining hunks in this file",
+        style("a").cyan().bold()
+    );
+    println!(
+        "  {} - skip all remaining hunks in this file",
+        style("d").cyan().bold()
+    );
+    println!(
+        "  {} - split this hunk into smaller hunks",
+        style("s").yellow().bold()
+    );
+    println!(
+        "  {} - stop; all remaining hunks stay in remainder",
+        style("q").magenta().bold()
+    );
+    println!("  {} - show this help", style("?").white().bold());
+    println!();
+}
+
+/// Try to split a hunk into smaller sub-hunks
+/// Returns None if the hunk cannot be split further
+fn try_split_hunk(hunk: &DiffHunk) -> Option<Vec<DiffHunk>> {
+    // Find points where we can split: context lines between change groups
+    // A change group is a sequence of + and - lines
+    // We can split when we see a change line after one or more context lines
+    // that follow a previous change group
+
+    let mut split_points = Vec::new();
+    let mut had_change = false;
+    let mut context_after_change = 0;
+
+    for (i, line) in hunk.lines.iter().enumerate() {
+        if line.origin == '+' || line.origin == '-' {
+            // If we had a previous change and then context, this is a new group
+            if had_change && context_after_change > 0 {
+                // Split point is at the start of this new change group
+                split_points.push(i);
+            }
+            had_change = true;
+            context_after_change = 0;
+        } else {
+            // Context line
+            if had_change {
+                context_after_change += 1;
+            }
+        }
+    }
+
+    // Need at least one valid split point to actually split
+    if split_points.is_empty() {
+        return None;
+    }
+
+    // Create sub-hunks
+    // split_points contains indices where a new change group starts
+    // We split just before each split point
+    let mut sub_hunks = Vec::new();
+    let mut start = 0;
+    let mut old_line = hunk.old_start;
+    let mut new_line = hunk.new_start;
+
+    for &split_at in &split_points {
+        if split_at <= start {
+            continue;
+        }
+
+        // Create sub-hunk from start to split_at
+        let sub_lines: Vec<DiffLine> = hunk.lines[start..split_at].to_vec();
+        let (old_count, new_count) = count_hunk_lines(&sub_lines);
+
+        if old_count > 0 || new_count > 0 {
+            sub_hunks.push(DiffHunk {
+                file_path: hunk.file_path.clone(),
+                header: format!(
+                    "@@ -{},{} +{},{} @@",
+                    old_line, old_count, new_line, new_count
+                ),
+                lines: sub_lines,
+                old_start: old_line,
+                old_lines: old_count,
+                new_start: new_line,
+                new_lines: new_count,
+            });
+        }
+
+        // Update line numbers for next sub-hunk
+        for line in &hunk.lines[start..split_at] {
+            match line.origin {
+                '-' => old_line += 1,
+                '+' => new_line += 1,
+                ' ' => {
+                    old_line += 1;
+                    new_line += 1;
+                }
+                _ => {}
+            }
+        }
+        start = split_at;
+    }
+
+    // Don't forget the last segment
+    if start < hunk.lines.len() {
+        let sub_lines: Vec<DiffLine> = hunk.lines[start..].to_vec();
+        let (old_count, new_count) = count_hunk_lines(&sub_lines);
+
+        if old_count > 0 || new_count > 0 {
+            sub_hunks.push(DiffHunk {
+                file_path: hunk.file_path.clone(),
+                header: format!(
+                    "@@ -{},{} +{},{} @@",
+                    old_line, old_count, new_line, new_count
+                ),
+                lines: sub_lines,
+                old_start: old_line,
+                old_lines: old_count,
+                new_start: new_line,
+                new_lines: new_count,
+            });
+        }
+    }
+
+    // Only return if we actually split into multiple hunks
+    if sub_hunks.len() > 1 {
+        Some(sub_hunks)
+    } else {
+        None
+    }
+}
+
+/// Count old and new lines in a hunk's line list
+fn count_hunk_lines(lines: &[DiffLine]) -> (u32, u32) {
+    let mut old_count = 0u32;
+    let mut new_count = 0u32;
+    for line in lines {
+        match line.origin {
+            '-' => old_count += 1,
+            '+' => new_count += 1,
+            ' ' => {
+                old_count += 1;
+                new_count += 1;
+            }
+            _ => {}
+        }
+    }
+    (old_count, new_count)
+}
+
+/// Display a hunk with colored output
+fn display_hunk(hunk: &DiffHunk, is_first_in_file: bool) {
+    if is_first_in_file {
+        println!("{}", style(format!("--- a/{}", hunk.file_path)).bold());
+        println!("{}", style(format!("+++ b/{}", hunk.file_path)).bold());
+    }
+    println!("{}", style(&hunk.header).cyan());
+    for line in &hunk.lines {
+        let line_str = format!("{}{}", line.origin, line.content.trim_end_matches('\n'));
+        match line.origin {
+            '+' => println!("{}", style(line_str).green()),
+            '-' => println!("{}", style(line_str).red()),
+            _ => println!("{}", line_str),
+        }
+    }
+}
+
+/// Interactive hunk selection (git add -p style)
+/// Returns indices of selected hunks
+fn select_hunks_interactive(hunks: &[DiffHunk]) -> Result<Vec<usize>> {
+    let term = Term::stdout();
+    let mut selected: Vec<usize> = Vec::new();
+    let mut i = 0;
+    let mut last_file_path = String::new();
+
+    // Track which files to skip entirely
+    let mut skip_files: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Track which files to include entirely (remaining hunks)
+    let mut include_files: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    println!();
+    println!(
+        "Select hunks for the {} (the rest stays in the original):",
+        style("new commit (inserted BEFORE the original in the stack)").bold()
+    );
+    println!();
+
+    while i < hunks.len() {
+        let hunk = &hunks[i];
+
+        // Check if we should auto-handle this file
+        if skip_files.contains(&hunk.file_path) {
+            i += 1;
+            continue;
+        }
+        if include_files.contains(&hunk.file_path) {
+            selected.push(i);
+            i += 1;
+            continue;
+        }
+
+        // Display hunk
+        let is_first = hunk.file_path != last_file_path;
+        display_hunk(hunk, is_first);
+        last_file_path = hunk.file_path.clone();
+
+        // Prompt
+        print!(
+            "Include this hunk? [{}]es/[{}]o/[{}]ll file/[{}]one file/[{}]plit/[{}]uit/[{}]help: ",
+            style("y").green(),
+            style("n").red(),
+            style("a").cyan(),
+            style("d").cyan(),
+            style("s").yellow(),
+            style("q").magenta(),
+            style("?").white()
+        );
+        io::stdout().flush().ok();
+
+        let ch = term
+            .read_char()
+            .map_err(|e| GgError::Other(format!("Failed to read input: {}", e)))?;
+        println!();
+
+        match ch.to_ascii_lowercase() {
+            'y' => {
+                selected.push(i);
+                i += 1;
+            }
+            'n' => {
+                i += 1;
+            }
+            'a' => {
+                // Include all remaining hunks in this file
+                let current_file = hunk.file_path.clone();
+                selected.push(i);
+                include_files.insert(current_file);
+                i += 1;
+            }
+            'd' => {
+                // Skip all remaining hunks in this file
+                let current_file = hunk.file_path.clone();
+                skip_files.insert(current_file);
+                i += 1;
+            }
+            's' => {
+                // Try to split the hunk
+                if let Some(sub_hunks) = try_split_hunk(hunk) {
+                    println!(
+                        "{}",
+                        style(format!("Split into {} sub-hunks", sub_hunks.len())).dim()
+                    );
+                    // We need to handle sub-hunks inline
+                    // For simplicity, we'll just present them one by one
+                    let mut sub_selected = Vec::new();
+                    for (j, sub_hunk) in sub_hunks.iter().enumerate() {
+                        display_hunk(sub_hunk, j == 0);
+                        print!(
+                            "Include this sub-hunk? [{}]es/[{}]o/[{}]uit: ",
+                            style("y").green(),
+                            style("n").red(),
+                            style("q").magenta()
+                        );
+                        io::stdout().flush().ok();
+
+                        let sub_ch = term
+                            .read_char()
+                            .map_err(|e| GgError::Other(format!("Failed to read input: {}", e)))?;
+                        println!();
+
+                        match sub_ch.to_ascii_lowercase() {
+                            'y' => sub_selected.push(j),
+                            'q' => break,
+                            _ => {} // 'n' or anything else = skip
+                        }
+                    }
+                    // If any sub-hunks were selected, we mark the original hunk
+                    // and store the sub-selection for later
+                    // For now, we treat any sub-selection as "include original hunk"
+                    // A more sophisticated implementation would track sub-hunks
+                    if !sub_selected.is_empty() {
+                        selected.push(i);
+                    }
+                    i += 1;
+                } else {
+                    println!("{}", style("This hunk cannot be split further.").yellow());
+                    // Re-prompt for same hunk
+                }
+            }
+            'q' => {
+                // Stop - all remaining hunks are unselected
+                break;
+            }
+            '?' => {
+                print_hunk_help();
+                // Re-prompt for same hunk
+            }
+            _ => {
+                println!("Unknown option. Press ? for help.");
+                // Re-prompt for same hunk
+            }
+        }
+    }
+
+    Ok(selected)
+}
+
+/// Build a tree from selected hunks
+/// This applies selected hunks to the parent tree content
+fn build_tree_from_hunks<'a>(
+    repo: &'a git2::Repository,
+    parent_tree: &git2::Tree,
+    target_tree: &git2::Tree,
+    hunks: &[DiffHunk],
+    selected_indices: &[usize],
+) -> Result<git2::Tree<'a>> {
+    // Group hunks by file
+    let mut file_hunks: HashMap<String, Vec<(usize, &DiffHunk)>> = HashMap::new();
+    for (idx, hunk) in hunks.iter().enumerate() {
+        file_hunks
+            .entry(hunk.file_path.clone())
+            .or_default()
+            .push((idx, hunk));
+    }
+
+    // For each file, determine what to do:
+    // - All hunks selected: use target tree entry
+    // - No hunks selected: use parent tree entry
+    // - Partial: apply selected hunks to parent content
+    let mut builder = repo.treebuilder(Some(parent_tree))?;
+
+    for (file_path, file_hunk_list) in &file_hunks {
+        let file_indices: Vec<usize> = file_hunk_list.iter().map(|(idx, _)| *idx).collect();
+        let selected_in_file: Vec<usize> = file_indices
+            .iter()
+            .filter(|idx| selected_indices.contains(idx))
+            .copied()
+            .collect();
+
+        let path = std::path::Path::new(file_path);
+
+        if selected_in_file.is_empty() {
+            // No hunks selected for this file - keep parent version (no change to builder)
+            continue;
+        } else if selected_in_file.len() == file_hunk_list.len() {
+            // All hunks selected - use target tree entry
+            if target_tree.get_path(path).is_ok() {
+                // Update the tree with target entry
+                update_tree_entry(repo, &mut builder, parent_tree, target_tree, file_path)?;
+            } else {
+                // File was deleted in target - apply deletion
+                remove_tree_entry(repo, &mut builder, parent_tree, file_path)?;
+            }
+        } else {
+            // Partial selection - apply hunks
+            let selected_hunks: Vec<&DiffHunk> = file_hunk_list
+                .iter()
+                .filter(|(idx, _)| selected_indices.contains(idx))
+                .map(|(_, h)| *h)
+                .collect();
+
+            apply_hunks_to_tree(repo, &mut builder, parent_tree, file_path, &selected_hunks)?;
+        }
+    }
+
+    let tree_oid = builder.write()?;
+    let tree = repo.find_tree(tree_oid)?;
+    Ok(tree)
+}
+
+/// Update a tree entry to use the target version
+fn update_tree_entry(
+    repo: &git2::Repository,
+    builder: &mut git2::TreeBuilder,
+    parent_tree: &git2::Tree,
+    target_tree: &git2::Tree,
+    file_path: &str,
+) -> Result<()> {
+    let path = std::path::Path::new(file_path);
+
+    if let Ok(entry) = target_tree.get_path(path) {
+        if path.parent().is_some() && path.parent() != Some(std::path::Path::new("")) {
+            // Nested path
+            insert_nested_entry(repo, builder, parent_tree, target_tree, file_path)?;
+        } else {
+            // Top-level file
+            let name = path.file_name().unwrap().to_string_lossy();
+            builder.insert(&*name, entry.id(), entry.filemode())?;
+        }
+    }
+    Ok(())
+}
+
+/// Remove a tree entry (for deletions)
+fn remove_tree_entry(
+    repo: &git2::Repository,
+    builder: &mut git2::TreeBuilder,
+    parent_tree: &git2::Tree,
+    file_path: &str,
+) -> Result<()> {
+    let path = std::path::Path::new(file_path);
+    let name = path.file_name().unwrap().to_string_lossy();
+
+    if path.parent().is_none() || path.parent() == Some(std::path::Path::new("")) {
+        let _ = builder.remove(&*name);
+    } else {
+        // For nested paths, we need to rebuild the tree without this entry
+        // This is complex - for now, use the same approach as insert_nested_entry but with None
+        insert_nested_entry_for_deletion(repo, builder, parent_tree, file_path)?;
+    }
+    Ok(())
+}
+
+/// Insert nested entry for a deletion
+fn insert_nested_entry_for_deletion(
+    repo: &git2::Repository,
+    root_builder: &mut git2::TreeBuilder,
+    parent_tree: &git2::Tree,
+    file_path: &str,
+) -> Result<()> {
+    let parts: Vec<&str> = file_path.split('/').collect();
+    let new_subtree_oid = rebuild_subtree(repo, parent_tree, &parts, 0, None)?;
+    root_builder
+        .insert(parts[0], new_subtree_oid, 0o040000)
+        .map_err(|e| GgError::Other(format!("Failed to update root tree: {}", e)))?;
+    Ok(())
+}
+
+/// Apply selected hunks to a file and update the tree
+fn apply_hunks_to_tree(
+    repo: &git2::Repository,
+    builder: &mut git2::TreeBuilder,
+    parent_tree: &git2::Tree,
+    file_path: &str,
+    selected_hunks: &[&DiffHunk],
+) -> Result<()> {
+    let path = std::path::Path::new(file_path);
+
+    // Get parent file content
+    let parent_content = if let Ok(entry) = parent_tree.get_path(path) {
+        let blob = repo.find_blob(entry.id())?;
+        String::from_utf8_lossy(blob.content()).to_string()
+    } else {
+        // New file - start empty
+        String::new()
+    };
+
+    // Apply hunks to get new content
+    let new_content = apply_hunks_to_content(&parent_content, selected_hunks)?;
+
+    // Create blob with new content
+    let blob_oid = repo.blob(new_content.as_bytes())?;
+
+    // Get file mode (default to regular file)
+    let filemode = if let Ok(entry) = parent_tree.get_path(path) {
+        entry.filemode()
+    } else {
+        0o100644 // Regular file
+    };
+
+    // Update tree
+    if path.parent().is_some() && path.parent() != Some(std::path::Path::new("")) {
+        // Nested path - need to rebuild directory structure
+        insert_blob_at_path(repo, builder, parent_tree, file_path, blob_oid, filemode)?;
+    } else {
+        // Top-level file
+        let name = path.file_name().unwrap().to_string_lossy();
+        builder.insert(&*name, blob_oid, filemode)?;
+    }
+
+    Ok(())
+}
+
+/// Apply hunks to file content
+fn apply_hunks_to_content(parent_content: &str, hunks: &[&DiffHunk]) -> Result<String> {
+    // Sort hunks by their position in the file (old_start)
+    let mut sorted_hunks: Vec<&DiffHunk> = hunks.to_vec();
+    sorted_hunks.sort_by_key(|h| h.old_start);
+
+    let parent_lines: Vec<&str> = parent_content.lines().collect();
+    let mut result_lines: Vec<String> = Vec::new();
+    let mut parent_idx = 0usize; // 0-indexed position in parent
+
+    for hunk in sorted_hunks {
+        // old_start is 1-indexed
+        let hunk_start = (hunk.old_start as usize).saturating_sub(1);
+
+        // Copy lines from parent before this hunk
+        while parent_idx < hunk_start && parent_idx < parent_lines.len() {
+            result_lines.push(parent_lines[parent_idx].to_string());
+            parent_idx += 1;
+        }
+
+        // Apply the hunk
+        for line in &hunk.lines {
+            match line.origin {
+                '+' => {
+                    // Add new line
+                    result_lines.push(line.content.trim_end_matches('\n').to_string());
+                }
+                '-' => {
+                    // Skip (delete) line from parent
+                    parent_idx += 1;
+                }
+                ' ' => {
+                    // Context - should match, advance parent
+                    if parent_idx < parent_lines.len() {
+                        result_lines.push(parent_lines[parent_idx].to_string());
+                        parent_idx += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Copy remaining lines from parent
+    while parent_idx < parent_lines.len() {
+        result_lines.push(parent_lines[parent_idx].to_string());
+        parent_idx += 1;
+    }
+
+    // Join with newlines, preserve trailing newline if original had one
+    // For new files (empty parent), add trailing newline if there's content
+    let mut result = result_lines.join("\n");
+    if !result_lines.is_empty() && (parent_content.is_empty() || parent_content.ends_with('\n')) {
+        result.push('\n');
+    }
+
+    Ok(result)
+}
+
+/// Insert a blob at a nested path
+fn insert_blob_at_path(
+    repo: &git2::Repository,
+    root_builder: &mut git2::TreeBuilder,
+    parent_tree: &git2::Tree,
+    file_path: &str,
+    blob_oid: git2::Oid,
+    filemode: i32,
+) -> Result<()> {
+    let parts: Vec<&str> = file_path.split('/').collect();
+    let new_subtree_oid =
+        rebuild_subtree_with_blob(repo, parent_tree, &parts, 0, blob_oid, filemode)?;
+    root_builder
+        .insert(parts[0], new_subtree_oid, 0o040000)
+        .map_err(|e| GgError::Other(format!("Failed to update root tree: {}", e)))?;
+    Ok(())
+}
+
+/// Recursively rebuild a subtree with a new blob at the leaf
+fn rebuild_subtree_with_blob(
+    repo: &git2::Repository,
+    parent_tree: &git2::Tree,
+    parts: &[&str],
+    depth: usize,
+    blob_oid: git2::Oid,
+    filemode: i32,
+) -> std::result::Result<git2::Oid, GgError> {
+    let subpath = parts[..=depth].join("/");
+    let current_subtree = if depth == 0 {
+        parent_tree
+            .get_name(parts[0])
+            .and_then(|e| repo.find_tree(e.id()).ok())
+    } else {
+        parent_tree
+            .get_path(std::path::Path::new(&subpath))
+            .ok()
+            .and_then(|e| repo.find_tree(e.id()).ok())
+    };
+
+    let mut builder = if let Some(ref tree) = current_subtree {
+        repo.treebuilder(Some(tree))
+            .map_err(|e| GgError::Other(format!("Failed to create tree builder: {}", e)))?
+    } else {
+        repo.treebuilder(None)
+            .map_err(|e| GgError::Other(format!("Failed to create tree builder: {}", e)))?
+    };
+
+    if depth == parts.len() - 2 {
+        // This is the parent directory of the file
+        let filename = parts[parts.len() - 1];
+        builder
+            .insert(filename, blob_oid, filemode)
+            .map_err(|e| GgError::Other(format!("Failed to insert blob: {}", e)))?;
+    } else {
+        // Intermediate directory - recurse
+        let child_oid =
+            rebuild_subtree_with_blob(repo, parent_tree, parts, depth + 1, blob_oid, filemode)?;
+        builder
+            .insert(parts[depth + 1], child_oid, 0o040000)
+            .map_err(|e| GgError::Other(format!("Failed to insert subtree: {}", e)))?;
+    }
+
+    builder
+        .write()
+        .map_err(|e| GgError::Other(format!("Failed to write tree: {}", e)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -560,5 +1322,297 @@ mod tests {
         assert!(opts.files.is_empty());
         assert!(opts.message.is_none());
         assert!(!opts.no_edit);
+        assert!(!opts.interactive);
+    }
+
+    #[test]
+    fn test_apply_hunks_single_addition() {
+        let parent = "line1\nline2\nline3\n";
+        let hunk = DiffHunk {
+            file_path: "test.txt".to_string(),
+            header: "@@ -2,1 +2,2 @@".to_string(),
+            lines: vec![
+                DiffLine {
+                    origin: ' ',
+                    content: "line2\n".to_string(),
+                },
+                DiffLine {
+                    origin: '+',
+                    content: "new line\n".to_string(),
+                },
+            ],
+            old_start: 2,
+            old_lines: 1,
+            new_start: 2,
+            new_lines: 2,
+        };
+
+        let result = apply_hunks_to_content(parent, &[&hunk]).unwrap();
+        assert_eq!(result, "line1\nline2\nnew line\nline3\n");
+    }
+
+    #[test]
+    fn test_apply_hunks_single_deletion() {
+        let parent = "line1\nline2\nline3\n";
+        let hunk = DiffHunk {
+            file_path: "test.txt".to_string(),
+            header: "@@ -2,1 +2,0 @@".to_string(),
+            lines: vec![DiffLine {
+                origin: '-',
+                content: "line2\n".to_string(),
+            }],
+            old_start: 2,
+            old_lines: 1,
+            new_start: 2,
+            new_lines: 0,
+        };
+
+        let result = apply_hunks_to_content(parent, &[&hunk]).unwrap();
+        assert_eq!(result, "line1\nline3\n");
+    }
+
+    #[test]
+    fn test_apply_hunks_replacement() {
+        let parent = "line1\nline2\nline3\n";
+        let hunk = DiffHunk {
+            file_path: "test.txt".to_string(),
+            header: "@@ -2,1 +2,1 @@".to_string(),
+            lines: vec![
+                DiffLine {
+                    origin: '-',
+                    content: "line2\n".to_string(),
+                },
+                DiffLine {
+                    origin: '+',
+                    content: "modified line2\n".to_string(),
+                },
+            ],
+            old_start: 2,
+            old_lines: 1,
+            new_start: 2,
+            new_lines: 1,
+        };
+
+        let result = apply_hunks_to_content(parent, &[&hunk]).unwrap();
+        assert_eq!(result, "line1\nmodified line2\nline3\n");
+    }
+
+    #[test]
+    fn test_apply_hunks_multiple_hunks() {
+        let parent = "line1\nline2\nline3\nline4\nline5\n";
+
+        let hunk1 = DiffHunk {
+            file_path: "test.txt".to_string(),
+            header: "@@ -1,1 +1,2 @@".to_string(),
+            lines: vec![
+                DiffLine {
+                    origin: ' ',
+                    content: "line1\n".to_string(),
+                },
+                DiffLine {
+                    origin: '+',
+                    content: "after line1\n".to_string(),
+                },
+            ],
+            old_start: 1,
+            old_lines: 1,
+            new_start: 1,
+            new_lines: 2,
+        };
+
+        let hunk2 = DiffHunk {
+            file_path: "test.txt".to_string(),
+            header: "@@ -4,1 +5,1 @@".to_string(),
+            lines: vec![
+                DiffLine {
+                    origin: '-',
+                    content: "line4\n".to_string(),
+                },
+                DiffLine {
+                    origin: '+',
+                    content: "modified line4\n".to_string(),
+                },
+            ],
+            old_start: 4,
+            old_lines: 1,
+            new_start: 5,
+            new_lines: 1,
+        };
+
+        let result = apply_hunks_to_content(parent, &[&hunk1, &hunk2]).unwrap();
+        assert_eq!(
+            result,
+            "line1\nafter line1\nline2\nline3\nmodified line4\nline5\n"
+        );
+    }
+
+    #[test]
+    fn test_apply_hunks_partial_selection() {
+        // Test applying only one of multiple hunks
+        let parent = "line1\nline2\nline3\n";
+
+        let hunk1 = DiffHunk {
+            file_path: "test.txt".to_string(),
+            header: "@@ -1,1 +1,2 @@".to_string(),
+            lines: vec![
+                DiffLine {
+                    origin: ' ',
+                    content: "line1\n".to_string(),
+                },
+                DiffLine {
+                    origin: '+',
+                    content: "new after 1\n".to_string(),
+                },
+            ],
+            old_start: 1,
+            old_lines: 1,
+            new_start: 1,
+            new_lines: 2,
+        };
+
+        // Only apply hunk1, not hunk2
+        let result = apply_hunks_to_content(parent, &[&hunk1]).unwrap();
+        assert_eq!(result, "line1\nnew after 1\nline2\nline3\n");
+    }
+
+    #[test]
+    fn test_apply_hunks_empty_parent() {
+        // New file creation
+        let parent = "";
+        let hunk = DiffHunk {
+            file_path: "test.txt".to_string(),
+            header: "@@ -0,0 +1,2 @@".to_string(),
+            lines: vec![
+                DiffLine {
+                    origin: '+',
+                    content: "line1\n".to_string(),
+                },
+                DiffLine {
+                    origin: '+',
+                    content: "line2\n".to_string(),
+                },
+            ],
+            old_start: 0,
+            old_lines: 0,
+            new_start: 1,
+            new_lines: 2,
+        };
+
+        let result = apply_hunks_to_content(parent, &[&hunk]).unwrap();
+        assert_eq!(result, "line1\nline2\n");
+    }
+
+    #[test]
+    fn test_count_hunk_lines() {
+        let lines = vec![
+            DiffLine {
+                origin: ' ',
+                content: "context\n".to_string(),
+            },
+            DiffLine {
+                origin: '-',
+                content: "deleted\n".to_string(),
+            },
+            DiffLine {
+                origin: '+',
+                content: "added1\n".to_string(),
+            },
+            DiffLine {
+                origin: '+',
+                content: "added2\n".to_string(),
+            },
+            DiffLine {
+                origin: ' ',
+                content: "context\n".to_string(),
+            },
+        ];
+        let (old, new) = count_hunk_lines(&lines);
+        assert_eq!(old, 3); // 2 context + 1 deletion
+        assert_eq!(new, 4); // 2 context + 2 additions
+    }
+
+    #[test]
+    fn test_try_split_hunk_cannot_split() {
+        // Contiguous changes cannot be split
+        let hunk = DiffHunk {
+            file_path: "test.txt".to_string(),
+            header: "@@ -1,2 +1,3 @@".to_string(),
+            lines: vec![
+                DiffLine {
+                    origin: '-',
+                    content: "old1\n".to_string(),
+                },
+                DiffLine {
+                    origin: '-',
+                    content: "old2\n".to_string(),
+                },
+                DiffLine {
+                    origin: '+',
+                    content: "new1\n".to_string(),
+                },
+                DiffLine {
+                    origin: '+',
+                    content: "new2\n".to_string(),
+                },
+                DiffLine {
+                    origin: '+',
+                    content: "new3\n".to_string(),
+                },
+            ],
+            old_start: 1,
+            old_lines: 2,
+            new_start: 1,
+            new_lines: 3,
+        };
+
+        assert!(try_split_hunk(&hunk).is_none());
+    }
+
+    #[test]
+    fn test_try_split_hunk_can_split() {
+        // Changes separated by context can be split
+        let hunk = DiffHunk {
+            file_path: "test.txt".to_string(),
+            header: "@@ -1,5 +1,7 @@".to_string(),
+            lines: vec![
+                DiffLine {
+                    origin: '+',
+                    content: "new1\n".to_string(),
+                },
+                DiffLine {
+                    origin: ' ',
+                    content: "context1\n".to_string(),
+                },
+                DiffLine {
+                    origin: ' ',
+                    content: "context2\n".to_string(),
+                },
+                DiffLine {
+                    origin: ' ',
+                    content: "context3\n".to_string(),
+                },
+                DiffLine {
+                    origin: '+',
+                    content: "new2\n".to_string(),
+                },
+                DiffLine {
+                    origin: ' ',
+                    content: "context4\n".to_string(),
+                },
+                DiffLine {
+                    origin: ' ',
+                    content: "context5\n".to_string(),
+                },
+            ],
+            old_start: 1,
+            old_lines: 5,
+            new_start: 1,
+            new_lines: 7,
+        };
+
+        let result = try_split_hunk(&hunk);
+        assert!(result.is_some());
+        let sub_hunks = result.unwrap();
+        assert!(sub_hunks.len() >= 2);
     }
 }

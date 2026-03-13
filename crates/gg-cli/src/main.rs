@@ -148,6 +148,10 @@ enum Commands {
         #[arg(long)]
         no_edit: bool,
 
+        /// Select hunks interactively (like git add -p)
+        #[arg(short, long)]
+        interactive: bool,
+
         /// Files to include in the new commit
         #[arg(value_name = "FILES")]
         files: Vec<String>,
@@ -355,6 +359,7 @@ fn main() {
             commit,
             message,
             no_edit,
+            interactive,
             files,
         }) => (
             gg_core::commands::split::run(gg_core::commands::split::SplitOptions {
@@ -362,6 +367,7 @@ fn main() {
                 files,
                 message,
                 no_edit,
+                interactive,
             }),
             false,
         ),

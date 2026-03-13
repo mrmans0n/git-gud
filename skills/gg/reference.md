@@ -117,11 +117,12 @@ Reorder stack entries.
 - `-o, --order <ORDER>`
 
 #### `gg split [OPTIONS] [FILES...]`
-Split a commit into two. Selected files become a new commit inserted before the original.
+Split a commit into two. Selected files/hunks become a new commit inserted before the original.
 
 - `-c, --commit <TARGET>` — target commit (position, SHA, or GG-ID; default: current)
 - `-m, --message <MSG>` — message for the new commit
 - `--no-edit` — keep original message for remainder, don't prompt
+- `-i, --interactive` — select individual hunks interactively (like `git add -p`). Auto-enabled for single-file commits.
 - `FILES...` — files for the new commit (interactive selector if omitted)
 
 #### `gg rebase [TARGET]`

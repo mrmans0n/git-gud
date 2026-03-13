@@ -1,6 +1,6 @@
 # `gg split`
 
-Split a commit in the stack into two commits. The selected files become a new commit inserted **before** the original in the stack, while the remaining files stay in the original commit.
+Split a commit in the stack into two commits. The selected files/hunks become a new commit inserted **before** the original in the stack, while the remaining changes stay in the original commit.
 
 ```bash
 gg split [OPTIONS] [FILES...]
@@ -11,14 +11,15 @@ gg split [OPTIONS] [FILES...]
 - `-c, --commit <TARGET>`: Target commit — position (1-indexed), short SHA, or GG-ID. Defaults to the current commit (HEAD).
 - `-m, --message <MESSAGE>`: Commit message for the new (first) commit. Skips the editor prompt.
 - `--no-edit`: Keep the original message for the remainder commit without prompting.
-- `FILES...`: Files to include in the new commit. If omitted, opens an interactive file selector.
+- `-i, --interactive`: Select individual hunks interactively (like `git add -p`). Auto-enabled for single-file commits.
+- `FILES...`: Files to include in the new commit. If omitted, opens an interactive file selector (or hunk selector in interactive mode).
 
 ## How It Works
 
 When you split commit **K** into two:
 
-1. **New commit (K')** — Contains only the selected files. Inserted **before** K in the stack. Gets a new GG-ID.
-2. **Remainder (K'')** — Contains the remaining files. Stays in K's original position. Keeps the original GG-ID (preserving PR association).
+1. **New commit (K')** — Contains only the selected files/hunks. Inserted **before** K in the stack. Gets a new GG-ID.
+2. **Remainder (K'')** — Contains the remaining files/hunks. Stays in K's original position. Keeps the original GG-ID (preserving PR association).
 
 All descendant commits are automatically rebased onto the remainder.
 
@@ -26,12 +27,12 @@ All descendant commits are automatically rebased onto the remainder.
 BEFORE                    AFTER
   4: "Fix tests"            5: "Fix tests"       (rebased)
   3: "Add auth+logging"     4: "Add logging"      ← remainder (keeps GG-ID)
-  2: "Setup DB"             3: "Add auth"         ← NEW commit (selected files)
+  2: "Setup DB"             3: "Add auth"         ← NEW commit (selected changes)
   1: "Init project"         2: "Setup DB"
                              1: "Init project"
 ```
 
-## Examples
+## File-Level Splitting
 
 ### Interactive file selection
 
@@ -63,10 +64,55 @@ gg split -c c-abc1234 src/config.rs
 gg split -c 2 -m "Extract helpers" --no-edit helpers.rs utils.rs
 ```
 
+## Hunk-Level Splitting (`-i`)
+
+When you need finer control than whole files, use interactive hunk mode:
+
+```bash
+# Force hunk mode for any commit
+gg split -i
+
+# Hunk mode on specific files
+gg split -i src/auth.rs
+```
+
+**Note:** Single-file commits automatically enter hunk mode since file-level splitting wouldn't make sense.
+
+### Interactive Hunk Selection
+
+For each hunk, you'll see the diff with colored output and a prompt:
+
+```
+--- a/src/auth.rs
++++ b/src/auth.rs
+@@ -10,6 +10,12 @@ fn authenticate(user: &str) -> bool {
++    // Validate token
++    if token.is_empty() {
++        return false;
++    }
+
+Include this hunk? [y]es/[n]o/[a]ll file/[d]one file/[s]plit/[q]uit/?help:
+```
+
+### Hunk Actions
+
+| Key | Action | Description |
+|-----|--------|-------------|
+| `y` | Yes | Include this hunk in the new commit |
+| `n` | No | Skip this hunk (stays in remainder) |
+| `a` | All file | Include all remaining hunks from this file |
+| `d` | Done file | Skip all remaining hunks from this file |
+| `s` | Split | Split this hunk into smaller hunks |
+| `q` | Quit | Stop; all remaining hunks stay in remainder |
+| `?` | Help | Show this help |
+
+### Hunk Splitting
+
+If a hunk contains multiple logical changes separated by unchanged lines, pressing `s` will break it into smaller hunks. You can then select each sub-hunk individually. If the hunk is already atomic (contiguous changes), you'll see "This hunk cannot be split further."
+
 ## Edge Cases
 
-- **All files selected** — Warning: the original commit will be empty.
-- **No files selected** — Error.
-- **Single-file commit** — Error (use hunk-level splitting in a future version).
+- **All changes selected** — Warning: the original commit will be empty.
+- **No changes selected** — Error.
 - **Dirty working directory** — Error. Commit or stash changes first.
 - **Merge conflicts during rebase** — Split is aborted, original state restored.

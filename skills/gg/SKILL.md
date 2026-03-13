@@ -116,7 +116,7 @@ gg land -a -c --json
 - Amend current commit: `gg sc` / `gg sc -a`
 - Auto-distribute staged hunks: `gg absorb -s`
 - Split a commit into two (file-level): `gg split -c 3 file1.rs file2.rs`
-- Split a commit into two (hunk-level): `gg split -i` — opens a two-panel TUI for hunk selection (files on the left, colored diff on the right), followed by an inline commit message input. Use `--no-tui` to fall back to sequential `git add -p` style prompts. The `-m` flag bypasses both the TUI message input and the editor.
+- Split a commit into two (hunk-level): `gg split -i` — opens a two-panel TUI for hunk selection (files on the left, colored diff on the right), followed by inline commit message inputs for both the new and remainder commits. Use `--no-tui` to fall back to sequential `git add -p` style prompts. The `-m` flag bypasses the TUI message input for the new commit. The `--no-edit` flag skips the remainder message input.
 - Reorder stack: `gg reorder -o "3,1,2"`
 - Sync subset: `gg sync -u <position|gg-id|sha> --json`
 - Lint stack: `gg lint --json`

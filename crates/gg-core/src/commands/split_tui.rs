@@ -30,6 +30,8 @@ pub struct TuiResult {
     pub selected_indices: Vec<usize>,
     /// Commit message entered inline
     pub commit_message: String,
+    /// Remainder commit message entered inline (None if --no-edit was used)
+    pub remainder_message: Option<String>,
 }
 
 /// Which panel is currently active
@@ -44,8 +46,10 @@ enum Panel {
 enum TuiMode {
     /// Selecting hunks (the main mode)
     HunkSelection,
-    /// Typing the commit message inline
+    /// Typing the commit message inline (for the new commit)
     MessageInput,
+    /// Typing the remainder commit message inline
+    RemainderInput,
 }
 
 /// A file in the TUI file list
@@ -85,10 +89,23 @@ struct SplitTuiState {
     message_cursor: usize,
     /// Default commit message (pre-filled)
     default_message: String,
+    /// Remainder commit message being edited (in RemainderInput mode)
+    remainder_text: String,
+    /// Cursor position within the remainder message text (byte offset)
+    remainder_cursor: usize,
+    /// Original commit message (used to pre-fill remainder)
+    original_message: String,
+    /// Whether to skip remainder message input (--no-edit)
+    no_edit: bool,
 }
 
 impl SplitTuiState {
-    fn new(hunks: Vec<DiffHunk>, default_message: String) -> Self {
+    fn new(
+        hunks: Vec<DiffHunk>,
+        default_message: String,
+        original_message: String,
+        no_edit: bool,
+    ) -> Self {
         let selected = vec![false; hunks.len()];
 
         // Group hunks by file
@@ -105,6 +122,7 @@ impl SplitTuiState {
         }
 
         let message_cursor = default_message.len();
+        let remainder_cursor = original_message.len();
         Self {
             hunks,
             selected,
@@ -119,6 +137,10 @@ impl SplitTuiState {
             message_text: default_message.clone(),
             message_cursor,
             default_message,
+            remainder_text: original_message.clone(),
+            remainder_cursor,
+            original_message,
+            no_edit,
         }
     }
 
@@ -384,65 +406,92 @@ impl SplitTuiState {
         self.mode = TuiMode::HunkSelection;
     }
 
+    /// Enter remainder message input mode (called after new commit message is confirmed)
+    fn enter_remainder_mode(&mut self) {
+        self.mode = TuiMode::RemainderInput;
+        // Reset remainder to original message and place cursor at end
+        self.remainder_text = self.original_message.clone();
+        self.remainder_cursor = self.remainder_text.len();
+    }
+
+    /// Return to message input mode (called when user presses Esc in remainder input)
+    fn exit_remainder_mode(&mut self) {
+        self.mode = TuiMode::MessageInput;
+    }
+
+    /// Get mutable references to the active text and cursor based on current mode
+    fn active_text_and_cursor(&mut self) -> (&mut String, &mut usize) {
+        match self.mode {
+            TuiMode::RemainderInput => (&mut self.remainder_text, &mut self.remainder_cursor),
+            _ => (&mut self.message_text, &mut self.message_cursor),
+        }
+    }
+
     /// Insert a character at the current cursor position
     fn message_insert_char(&mut self, c: char) {
-        self.message_text.insert(self.message_cursor, c);
-        self.message_cursor += c.len_utf8();
+        let (text, cursor) = self.active_text_and_cursor();
+        text.insert(*cursor, c);
+        *cursor += c.len_utf8();
     }
 
     /// Delete the character before the cursor (backspace)
     fn message_backspace(&mut self) {
-        if self.message_cursor > 0 {
-            // Find the previous char boundary
-            let prev = self.message_text[..self.message_cursor]
+        let (text, cursor) = self.active_text_and_cursor();
+        if *cursor > 0 {
+            let prev = text[..*cursor]
                 .char_indices()
                 .next_back()
                 .map(|(idx, _)| idx)
                 .unwrap_or(0);
-            self.message_text.remove(prev);
-            self.message_cursor = prev;
+            text.remove(prev);
+            *cursor = prev;
         }
     }
 
     /// Delete the character at the cursor (delete key)
     fn message_delete(&mut self) {
-        if self.message_cursor < self.message_text.len() {
-            self.message_text.remove(self.message_cursor);
+        let (text, cursor) = self.active_text_and_cursor();
+        if *cursor < text.len() {
+            text.remove(*cursor);
         }
     }
 
     /// Move cursor left by one character
     fn message_cursor_left(&mut self) {
-        if self.message_cursor > 0 {
-            let prev = self.message_text[..self.message_cursor]
+        let (text, cursor) = self.active_text_and_cursor();
+        if *cursor > 0 {
+            let prev = text[..*cursor]
                 .char_indices()
                 .next_back()
                 .map(|(idx, _)| idx)
                 .unwrap_or(0);
-            self.message_cursor = prev;
+            *cursor = prev;
         }
     }
 
     /// Move cursor right by one character
     fn message_cursor_right(&mut self) {
-        if self.message_cursor < self.message_text.len() {
-            let next = self.message_text[self.message_cursor..]
+        let (text, cursor) = self.active_text_and_cursor();
+        if *cursor < text.len() {
+            let next = text[*cursor..]
                 .char_indices()
                 .nth(1)
-                .map(|(idx, _)| self.message_cursor + idx)
-                .unwrap_or(self.message_text.len());
-            self.message_cursor = next;
+                .map(|(idx, _)| *cursor + idx)
+                .unwrap_or(text.len());
+            *cursor = next;
         }
     }
 
     /// Move cursor to beginning of message
     fn message_cursor_home(&mut self) {
-        self.message_cursor = 0;
+        let (_text, cursor) = self.active_text_and_cursor();
+        *cursor = 0;
     }
 
     /// Move cursor to end of message
     fn message_cursor_end(&mut self) {
-        self.message_cursor = self.message_text.len();
+        let (text, cursor) = self.active_text_and_cursor();
+        *cursor = text.len();
     }
 }
 
@@ -473,9 +522,17 @@ impl Drop for TerminalGuard {
 /// Returns `Ok(Some(TuiResult))` with selected hunk indices and commit message,
 /// or `Ok(None)` if the user aborted.
 ///
-/// `commit_title` is the original commit's title, used to pre-fill the message as
-/// `"Split from: <title>"`.
-pub fn select_hunks_tui(hunks: Vec<DiffHunk>, commit_title: &str) -> Result<Option<TuiResult>> {
+/// - `commit_title` is the original commit's title, used to pre-fill the new message as
+///   `"Split from: <title>"`.
+/// - `original_message` is the full original commit message (without GG-ID), used to
+///   pre-fill the remainder message input.
+/// - `no_edit` — if true, skip the remainder message input and use original message as-is.
+pub fn select_hunks_tui(
+    hunks: Vec<DiffHunk>,
+    commit_title: &str,
+    original_message: &str,
+    no_edit: bool,
+) -> Result<Option<TuiResult>> {
     if hunks.is_empty() {
         return Err(GgError::Other("No hunks to display".to_string()));
     }
@@ -489,7 +546,12 @@ pub fn select_hunks_tui(hunks: Vec<DiffHunk>, commit_title: &str) -> Result<Opti
     let mut terminal = Terminal::new(backend)
         .map_err(|e| GgError::Other(format!("Failed to create terminal: {}", e)))?;
 
-    let mut state = SplitTuiState::new(hunks, default_message);
+    let mut state = SplitTuiState::new(
+        hunks,
+        default_message,
+        original_message.to_string(),
+        no_edit,
+    );
 
     // Main loop
     loop {
@@ -518,6 +580,11 @@ pub fn select_hunks_tui(hunks: Vec<DiffHunk>, commit_title: &str) -> Result<Opti
                     return Ok(Some(TuiResult {
                         selected_indices: state.get_selected_indices(),
                         commit_message: state.message_text.trim().to_string(),
+                        remainder_message: if state.no_edit {
+                            None
+                        } else {
+                            Some(state.remainder_text.trim().to_string())
+                        },
                     }));
                 }
                 if state.aborted {
@@ -541,6 +608,7 @@ fn handle_key(state: &mut SplitTuiState, code: KeyCode, modifiers: KeyModifiers)
     match state.mode {
         TuiMode::HunkSelection => handle_key_hunk_selection(state, code, modifiers),
         TuiMode::MessageInput => handle_key_message_input(state, code, modifiers),
+        TuiMode::RemainderInput => handle_key_remainder_input(state, code, modifiers),
     }
 }
 
@@ -576,7 +644,13 @@ fn handle_key_message_input(state: &mut SplitTuiState, code: KeyCode, modifiers:
                 // Don't allow empty messages — stay in input mode
                 return;
             }
-            state.confirmed = true;
+            if state.no_edit {
+                // Skip remainder input, confirm immediately
+                state.confirmed = true;
+            } else {
+                // Move to remainder message input
+                state.enter_remainder_mode();
+            }
         }
         KeyCode::Esc => {
             // Go back to hunk selection
@@ -596,12 +670,61 @@ fn handle_key_message_input(state: &mut SplitTuiState, code: KeyCode, modifiers:
                     'e' => state.message_cursor_end(),
                     'u' => {
                         // Ctrl+U: clear from cursor to beginning
-                        state.message_text = state.message_text[state.message_cursor..].to_string();
-                        state.message_cursor = 0;
+                        let (text, cursor) = state.active_text_and_cursor();
+                        *text = text[*cursor..].to_string();
+                        *cursor = 0;
                     }
                     'k' => {
                         // Ctrl+K: clear from cursor to end
-                        state.message_text.truncate(state.message_cursor);
+                        let (text, cursor) = state.active_text_and_cursor();
+                        text.truncate(*cursor);
+                    }
+                    _ => {}
+                }
+            } else {
+                state.message_insert_char(c);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Handle keys in remainder message input mode
+fn handle_key_remainder_input(state: &mut SplitTuiState, code: KeyCode, modifiers: KeyModifiers) {
+    match code {
+        KeyCode::Enter => {
+            // Confirm with the entered remainder message
+            if state.remainder_text.trim().is_empty() {
+                // Don't allow empty messages — stay in input mode
+                return;
+            }
+            state.confirmed = true;
+        }
+        KeyCode::Esc => {
+            // Go back to message input (not all the way to hunk selection)
+            state.exit_remainder_mode();
+        }
+        KeyCode::Backspace => state.message_backspace(),
+        KeyCode::Delete => state.message_delete(),
+        KeyCode::Left => state.message_cursor_left(),
+        KeyCode::Right => state.message_cursor_right(),
+        KeyCode::Home => state.message_cursor_home(),
+        KeyCode::End => state.message_cursor_end(),
+        KeyCode::Char(c) => {
+            if modifiers.contains(KeyModifiers::CONTROL) {
+                match c {
+                    'a' => state.message_cursor_home(),
+                    'e' => state.message_cursor_end(),
+                    'u' => {
+                        // Ctrl+U: clear from cursor to beginning
+                        let (text, cursor) = state.active_text_and_cursor();
+                        *text = text[*cursor..].to_string();
+                        *cursor = 0;
+                    }
+                    'k' => {
+                        // Ctrl+K: clear from cursor to end
+                        let (text, cursor) = state.active_text_and_cursor();
+                        text.truncate(*cursor);
                     }
                     _ => {}
                 }
@@ -621,6 +744,7 @@ fn draw(f: &mut Frame, state: &SplitTuiState) {
     let bottom_height = match state.mode {
         TuiMode::HunkSelection => 3,
         TuiMode::MessageInput => 3,
+        TuiMode::RemainderInput => 3,
     };
 
     // Main layout: content area + status/input bar
@@ -641,6 +765,7 @@ fn draw(f: &mut Frame, state: &SplitTuiState) {
     match state.mode {
         TuiMode::HunkSelection => draw_status_bar(f, state, main_chunks[1]),
         TuiMode::MessageInput => draw_message_input(f, state, main_chunks[1]),
+        TuiMode::RemainderInput => draw_remainder_input(f, state, main_chunks[1]),
     }
 }
 
@@ -833,7 +958,7 @@ fn draw_status_bar(f: &mut Frame, state: &SplitTuiState, area: Rect) {
 
 /// Draw the inline commit message input (bottom, in MessageInput mode)
 fn draw_message_input(f: &mut Frame, state: &SplitTuiState, area: Rect) {
-    let label = " Commit message: ";
+    let label = " New commit message: ";
 
     // Build spans: label + text before cursor + cursor char + text after cursor
     let (before, cursor_char, after) = {
@@ -855,6 +980,51 @@ fn draw_message_input(f: &mut Frame, state: &SplitTuiState, area: Rect) {
             label,
             Style::default()
                 .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(&before),
+        Span::styled(
+            &cursor_char,
+            Style::default().bg(Color::White).fg(Color::Black),
+        ),
+        Span::raw(&after),
+        Span::styled(
+            "  [Enter] confirm · [Esc] back",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]);
+
+    let paragraph = Paragraph::new(line)
+        .style(Style::default().bg(Color::DarkGray).fg(Color::White))
+        .wrap(Wrap { trim: false });
+
+    f.render_widget(paragraph, area);
+}
+
+/// Draw the inline remainder commit message input (bottom, in RemainderInput mode)
+fn draw_remainder_input(f: &mut Frame, state: &SplitTuiState, area: Rect) {
+    let label = " Remainder commit message: ";
+
+    // Build spans: label + text before cursor + cursor char + text after cursor
+    let (before, cursor_char, after) = {
+        let text = &state.remainder_text;
+        let pos = state.remainder_cursor;
+        let before = &text[..pos];
+        if pos < text.len() {
+            let ch = text[pos..].chars().next().unwrap();
+            let ch_len = ch.len_utf8();
+            let after = &text[pos + ch_len..];
+            (before.to_string(), ch.to_string(), after.to_string())
+        } else {
+            (before.to_string(), " ".to_string(), String::new())
+        }
+    };
+
+    let line = Line::from(vec![
+        Span::styled(
+            label,
+            Style::default()
+                .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(&before),
@@ -914,7 +1084,12 @@ mod tests {
             make_test_hunk("file2.rs", "@@ -1,2 +1,2 @@"),
         ];
 
-        let state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
+        let state = SplitTuiState::new(
+            hunks,
+            "Split from: test commit".to_string(),
+            "test commit".to_string(),
+            false,
+        );
 
         assert_eq!(state.files.len(), 2);
         assert_eq!(state.files[0].path, "file1.rs");
@@ -933,7 +1108,12 @@ mod tests {
             make_test_hunk("file2.rs", "@@ -1,2 +1,2 @@"),
         ];
 
-        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test commit".to_string(),
+            "test commit".to_string(),
+            false,
+        );
 
         // Toggle file1 (should select both hunks)
         state.toggle_selection();
@@ -951,7 +1131,12 @@ mod tests {
             make_test_hunk("file1.rs", "@@ -10,2 +10,2 @@"),
         ];
 
-        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test commit".to_string(),
+            "test commit".to_string(),
+            false,
+        );
         state.active_panel = Panel::Diff;
 
         // Toggle first hunk
@@ -972,7 +1157,12 @@ mod tests {
             make_test_hunk("file3.rs", "@@ -1,2 +1,2 @@"),
         ];
 
-        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test commit".to_string(),
+            "test commit".to_string(),
+            false,
+        );
 
         assert_eq!(state.file_cursor, 0);
 
@@ -1005,7 +1195,12 @@ mod tests {
             make_test_hunk("file2.rs", "@@ -1,2 +1,2 @@"),
         ];
 
-        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test commit".to_string(),
+            "test commit".to_string(),
+            false,
+        );
 
         // Select all globally (in Files panel)
         state.select_all();
@@ -1028,7 +1223,12 @@ mod tests {
     #[test]
     fn test_panel_switching() {
         let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
-        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test commit".to_string(),
+            "test commit".to_string(),
+            false,
+        );
 
         assert_eq!(state.active_panel, Panel::Files);
 
@@ -1047,7 +1247,12 @@ mod tests {
             make_test_hunk("file2.rs", "@@ -1,2 +1,2 @@"),
         ];
 
-        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test commit".to_string(),
+            "test commit".to_string(),
+            false,
+        );
 
         // Initial: nothing selected
         assert_eq!(state.selected_count_for_file(0), (0, 2));
@@ -1070,7 +1275,12 @@ mod tests {
             make_test_hunk("file2.rs", "@@ -1,2 +1,2 @@"),
         ];
 
-        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test commit".to_string(),
+            "test commit".to_string(),
+            false,
+        );
         state.selected[0] = true;
         state.selected[2] = true;
 
@@ -1086,7 +1296,12 @@ mod tests {
             make_test_hunk("file3.rs", "@@ -1,2 +1,2 @@"),
         ];
 
-        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test commit".to_string(),
+            "test commit".to_string(),
+            false,
+        );
         assert_eq!(state.total_selected(), 0);
 
         state.selected[1] = true;
@@ -1100,7 +1315,12 @@ mod tests {
     #[test]
     fn test_ctrl_c_aborts() {
         let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
-        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test commit".to_string(),
+            "test commit".to_string(),
+            false,
+        );
 
         assert!(!state.aborted);
         handle_key(&mut state, KeyCode::Char('c'), KeyModifiers::CONTROL);
@@ -1110,7 +1330,12 @@ mod tests {
     #[test]
     fn test_ctrl_c_does_not_trigger_without_modifier() {
         let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
-        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test commit".to_string(),
+            "test commit".to_string(),
+            false,
+        );
 
         // Plain 'c' should not abort
         handle_key(&mut state, KeyCode::Char('c'), KeyModifiers::NONE);
@@ -1124,7 +1349,12 @@ mod tests {
             .map(|i| make_test_hunk("file1.rs", &format!("@@ -{},2 +{},2 @@", i * 10, i * 10)))
             .collect();
 
-        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test commit".to_string(),
+            "test commit".to_string(),
+            false,
+        );
         state.active_panel = Panel::Diff;
 
         // Small visible height to force scrolling
@@ -1158,7 +1388,12 @@ mod tests {
     #[test]
     fn test_diff_scroll_zero_height() {
         let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
-        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test commit".to_string(),
+            "test commit".to_string(),
+            false,
+        );
         state.active_panel = Panel::Diff;
 
         // Should not panic with zero visible height
@@ -1215,7 +1450,12 @@ mod tests {
     #[test]
     fn test_enter_message_mode() {
         let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
-        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test commit".to_string(),
+            "test commit".to_string(),
+            false,
+        );
 
         assert_eq!(state.mode, TuiMode::HunkSelection);
 
@@ -1228,7 +1468,12 @@ mod tests {
     #[test]
     fn test_exit_message_mode() {
         let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
-        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test commit".to_string(),
+            "test commit".to_string(),
+            false,
+        );
 
         state.enter_message_mode();
         assert_eq!(state.mode, TuiMode::MessageInput);
@@ -1240,7 +1485,12 @@ mod tests {
     #[test]
     fn test_enter_in_hunk_selection_switches_to_message_input() {
         let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
-        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test commit".to_string(),
+            "test commit".to_string(),
+            false,
+        );
 
         handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
 
@@ -1251,7 +1501,12 @@ mod tests {
     #[test]
     fn test_esc_in_message_input_returns_to_hunk_selection() {
         let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
-        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test commit".to_string(),
+            "test commit".to_string(),
+            false,
+        );
 
         state.enter_message_mode();
         handle_key(&mut state, KeyCode::Esc, KeyModifiers::NONE);
@@ -1263,11 +1518,22 @@ mod tests {
     #[test]
     fn test_enter_in_message_input_confirms() {
         let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
-        let mut state = SplitTuiState::new(hunks, "Split from: test commit".to_string());
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test commit".to_string(),
+            "test commit".to_string(),
+            false,
+        );
 
         state.enter_message_mode();
         handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
 
+        // Enter in MessageInput now goes to RemainderInput (no_edit=false)
+        assert_eq!(state.mode, TuiMode::RemainderInput);
+        assert!(!state.confirmed);
+
+        // Enter in RemainderInput confirms
+        handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
         assert!(state.confirmed);
         assert_eq!(state.message_text, "Split from: test commit");
     }
@@ -1275,7 +1541,7 @@ mod tests {
     #[test]
     fn test_enter_with_empty_message_does_not_confirm() {
         let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
-        let mut state = SplitTuiState::new(hunks, String::new());
+        let mut state = SplitTuiState::new(hunks, String::new(), "test commit".to_string(), false);
 
         state.enter_message_mode();
         handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
@@ -1287,7 +1553,7 @@ mod tests {
     #[test]
     fn test_message_insert_char() {
         let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
-        let mut state = SplitTuiState::new(hunks, String::new());
+        let mut state = SplitTuiState::new(hunks, String::new(), "test commit".to_string(), false);
 
         state.enter_message_mode();
         state.message_insert_char('H');
@@ -1300,7 +1566,8 @@ mod tests {
     #[test]
     fn test_message_backspace() {
         let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
-        let mut state = SplitTuiState::new(hunks, "Hello".to_string());
+        let mut state =
+            SplitTuiState::new(hunks, "Hello".to_string(), "test commit".to_string(), false);
 
         state.enter_message_mode();
         assert_eq!(state.message_cursor, 5);
@@ -1319,7 +1586,8 @@ mod tests {
     #[test]
     fn test_message_delete() {
         let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
-        let mut state = SplitTuiState::new(hunks, "Hello".to_string());
+        let mut state =
+            SplitTuiState::new(hunks, "Hello".to_string(), "test commit".to_string(), false);
 
         state.enter_message_mode();
         state.message_cursor_home();
@@ -1337,7 +1605,8 @@ mod tests {
     #[test]
     fn test_message_cursor_movement() {
         let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
-        let mut state = SplitTuiState::new(hunks, "Hello".to_string());
+        let mut state =
+            SplitTuiState::new(hunks, "Hello".to_string(), "test commit".to_string(), false);
 
         state.enter_message_mode();
         assert_eq!(state.message_cursor, 5); // at end
@@ -1369,7 +1638,8 @@ mod tests {
     #[test]
     fn test_message_insert_at_middle() {
         let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
-        let mut state = SplitTuiState::new(hunks, "Helo".to_string());
+        let mut state =
+            SplitTuiState::new(hunks, "Helo".to_string(), "test commit".to_string(), false);
 
         state.enter_message_mode();
         // Move cursor to position 3 (before 'o')
@@ -1383,7 +1653,12 @@ mod tests {
     #[test]
     fn test_message_ctrl_u_clears_to_beginning() {
         let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
-        let mut state = SplitTuiState::new(hunks, "Hello World".to_string());
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Hello World".to_string(),
+            "test commit".to_string(),
+            false,
+        );
 
         state.enter_message_mode();
         state.message_cursor = 5; // after "Hello"
@@ -1397,7 +1672,12 @@ mod tests {
     #[test]
     fn test_message_ctrl_k_clears_to_end() {
         let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
-        let mut state = SplitTuiState::new(hunks, "Hello World".to_string());
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Hello World".to_string(),
+            "test commit".to_string(),
+            false,
+        );
 
         state.enter_message_mode();
         state.message_cursor = 5; // after "Hello"
@@ -1411,7 +1691,8 @@ mod tests {
     #[test]
     fn test_ctrl_c_aborts_from_message_input() {
         let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
-        let mut state = SplitTuiState::new(hunks, "test".to_string());
+        let mut state =
+            SplitTuiState::new(hunks, "test".to_string(), "test commit".to_string(), false);
 
         state.enter_message_mode();
         handle_key(&mut state, KeyCode::Char('c'), KeyModifiers::CONTROL);
@@ -1422,7 +1703,7 @@ mod tests {
     #[test]
     fn test_message_typing_via_handle_key() {
         let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
-        let mut state = SplitTuiState::new(hunks, String::new());
+        let mut state = SplitTuiState::new(hunks, String::new(), "test commit".to_string(), false);
 
         state.enter_message_mode();
 
@@ -1433,7 +1714,12 @@ mod tests {
         assert_eq!(state.message_text, "Hi");
         assert!(!state.confirmed);
 
-        // Press Enter to confirm
+        // Press Enter → goes to remainder input
+        handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(state.mode, TuiMode::RemainderInput);
+        assert!(!state.confirmed);
+
+        // Press Enter in remainder to confirm
         handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
         assert!(state.confirmed);
     }
@@ -1444,7 +1730,12 @@ mod tests {
             make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@"),
             make_test_hunk("file2.rs", "@@ -1,2 +1,2 @@"),
         ];
-        let mut state = SplitTuiState::new(hunks, "Split from: original".to_string());
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: original".to_string(),
+            "test commit".to_string(),
+            false,
+        );
 
         // Select a hunk
         handle_key(&mut state, KeyCode::Char(' '), KeyModifiers::NONE);
@@ -1454,7 +1745,12 @@ mod tests {
         handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(state.mode, TuiMode::MessageInput);
 
-        // Confirm with default message
+        // Confirm new commit message → remainder input
+        handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(state.mode, TuiMode::RemainderInput);
+        assert!(!state.confirmed);
+
+        // Confirm remainder message
         handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
         assert!(state.confirmed);
         assert_eq!(state.message_text, "Split from: original");
@@ -1463,7 +1759,12 @@ mod tests {
     #[test]
     fn test_full_flow_message_edit_and_go_back() {
         let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
-        let mut state = SplitTuiState::new(hunks, "Split from: original".to_string());
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: original".to_string(),
+            "test commit".to_string(),
+            false,
+        );
 
         // Enter message mode
         handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
@@ -1482,7 +1783,7 @@ mod tests {
     #[test]
     fn test_message_unicode_handling() {
         let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
-        let mut state = SplitTuiState::new(hunks, String::new());
+        let mut state = SplitTuiState::new(hunks, String::new(), "test commit".to_string(), false);
 
         state.enter_message_mode();
         state.message_insert_char('é');
@@ -1496,5 +1797,246 @@ mod tests {
 
         state.message_cursor_left();
         assert_eq!(state.message_cursor, 0);
+    }
+
+    // ====================================================================
+    // Remainder input mode tests
+    // ====================================================================
+
+    #[test]
+    fn test_enter_remainder_mode() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test".to_string(),
+            "original commit message".to_string(),
+            false,
+        );
+
+        state.enter_message_mode();
+        // Confirm new commit message → should go to remainder
+        handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(state.mode, TuiMode::RemainderInput);
+        assert_eq!(state.remainder_text, "original commit message");
+        assert_eq!(state.remainder_cursor, "original commit message".len());
+        assert!(!state.confirmed);
+    }
+
+    #[test]
+    fn test_esc_from_remainder_goes_to_message_input() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test".to_string(),
+            "original".to_string(),
+            false,
+        );
+
+        state.enter_message_mode();
+        handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE); // → RemainderInput
+        assert_eq!(state.mode, TuiMode::RemainderInput);
+
+        handle_key(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(state.mode, TuiMode::MessageInput);
+        assert!(!state.aborted);
+    }
+
+    #[test]
+    fn test_esc_navigation_remainder_to_message_to_hunk() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test".to_string(),
+            "original".to_string(),
+            false,
+        );
+
+        // HunkSelection → MessageInput → RemainderInput
+        state.enter_message_mode();
+        handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(state.mode, TuiMode::RemainderInput);
+
+        // Esc → back to MessageInput
+        handle_key(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(state.mode, TuiMode::MessageInput);
+
+        // Esc → back to HunkSelection
+        handle_key(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(state.mode, TuiMode::HunkSelection);
+        assert!(!state.aborted);
+    }
+
+    #[test]
+    fn test_no_edit_skips_remainder_input() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test".to_string(),
+            "original".to_string(),
+            true, // no_edit = true
+        );
+
+        state.enter_message_mode();
+        // Enter in MessageInput should confirm directly (skip remainder)
+        handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(state.confirmed);
+        // Should NOT have entered RemainderInput
+        assert_eq!(state.mode, TuiMode::MessageInput);
+    }
+
+    #[test]
+    fn test_remainder_enter_confirms() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test".to_string(),
+            "original message".to_string(),
+            false,
+        );
+
+        state.enter_message_mode();
+        handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE); // → RemainderInput
+        assert_eq!(state.mode, TuiMode::RemainderInput);
+
+        // Enter confirms from remainder
+        handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(state.confirmed);
+        assert_eq!(state.remainder_text, "original message");
+    }
+
+    #[test]
+    fn test_remainder_empty_message_does_not_confirm() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state =
+            SplitTuiState::new(hunks, "Split from: test".to_string(), String::new(), false);
+
+        state.enter_message_mode();
+        // Type something for new commit message so we can proceed
+        handle_key(&mut state, KeyCode::Char('x'), KeyModifiers::NONE);
+        handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE); // → RemainderInput
+
+        // Remainder is empty, Enter should not confirm
+        handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(!state.confirmed);
+        assert_eq!(state.mode, TuiMode::RemainderInput);
+    }
+
+    #[test]
+    fn test_remainder_typing_and_editing() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test".to_string(),
+            "original".to_string(),
+            false,
+        );
+
+        state.enter_message_mode();
+        handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE); // → RemainderInput
+        assert_eq!(state.mode, TuiMode::RemainderInput);
+
+        // Clear and type new remainder message
+        handle_key(&mut state, KeyCode::Char('u'), KeyModifiers::CONTROL); // Ctrl+U clears to beginning
+                                                                           // Cursor is at end, so Ctrl+U clears everything before cursor
+                                                                           // Actually Ctrl+U clears from cursor to beginning, so we need cursor at end first
+                                                                           // The cursor is at end after entering remainder mode, so Ctrl+U clears all
+        state.remainder_text.clear();
+        state.remainder_cursor = 0;
+
+        // Type new message
+        handle_key(&mut state, KeyCode::Char('n'), KeyModifiers::NONE);
+        handle_key(&mut state, KeyCode::Char('e'), KeyModifiers::NONE);
+        handle_key(&mut state, KeyCode::Char('w'), KeyModifiers::NONE);
+
+        assert_eq!(state.remainder_text, "new");
+    }
+
+    #[test]
+    fn test_full_flow_with_both_messages() {
+        let hunks = vec![
+            make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@"),
+            make_test_hunk("file2.rs", "@@ -1,2 +1,2 @@"),
+        ];
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: original".to_string(),
+            "original commit msg".to_string(),
+            false,
+        );
+
+        // Select a hunk
+        handle_key(&mut state, KeyCode::Char(' '), KeyModifiers::NONE);
+        assert_eq!(state.selected, vec![true, false]);
+
+        // Enter → message input
+        handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(state.mode, TuiMode::MessageInput);
+
+        // Confirm new commit message → remainder input
+        handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(state.mode, TuiMode::RemainderInput);
+        assert_eq!(state.remainder_text, "original commit msg");
+
+        // Confirm remainder message
+        handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(state.confirmed);
+        assert_eq!(state.message_text, "Split from: original");
+        assert_eq!(state.remainder_text, "original commit msg");
+    }
+
+    #[test]
+    fn test_ctrl_c_aborts_from_remainder_input() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test".to_string(),
+            "original".to_string(),
+            false,
+        );
+
+        state.enter_message_mode();
+        handle_key(&mut state, KeyCode::Enter, KeyModifiers::NONE); // → RemainderInput
+        handle_key(&mut state, KeyCode::Char('c'), KeyModifiers::CONTROL);
+
+        assert!(state.aborted);
+    }
+
+    #[test]
+    fn test_remainder_cursor_movement() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test".to_string(),
+            "Hello".to_string(),
+            false,
+        );
+
+        state.enter_remainder_mode();
+        assert_eq!(state.remainder_cursor, 5); // at end
+
+        state.message_cursor_left();
+        assert_eq!(state.remainder_cursor, 4);
+
+        state.message_cursor_home();
+        assert_eq!(state.remainder_cursor, 0);
+
+        state.message_cursor_end();
+        assert_eq!(state.remainder_cursor, 5);
+    }
+
+    #[test]
+    fn test_remainder_backspace() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(
+            hunks,
+            "Split from: test".to_string(),
+            "Hello".to_string(),
+            false,
+        );
+
+        state.enter_remainder_mode();
+        state.message_backspace();
+        assert_eq!(state.remainder_text, "Hell");
+        assert_eq!(state.remainder_cursor, 4);
     }
 }

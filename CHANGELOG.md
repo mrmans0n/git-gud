@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-03-13
+
+### Added
+- `gg split` command — split any commit in the stack into two, by file or by hunk (#207)
+- Interactive hunk selection (`gg split -i`) with a full ratatui TUI: two-panel layout (files + colored diff), hunk checkboxes, keyboard navigation (#209, #210)
+- Inline commit message editing in the split TUI — both the new commit and the remainder commit messages are edited inline, no external editor needed (#213, #214)
+- `--no-tui` flag for `gg split -i` to fall back to sequential prompts (#211)
+
+### Fixed
+- Split TUI: Ctrl+C now aborts properly in raw mode (#211)
+- Split TUI: diff panel scrolling works correctly when hunks exceed visible area (#211)
+- Split TUI: path truncation no longer panics on narrow terminals or non-ASCII file paths (#211)
+
+### Changed
+- Updated dependencies: `console` to v0.16.3 (#208)
+
 ## [0.5.6] - 2026-03-12
 
 ### Added
@@ -252,7 +268,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.5.5...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/mrmans0n/git-gud/compare/v0.5.6...v0.6.0
 [0.5.6]: https://github.com/mrmans0n/git-gud/compare/v0.5.5...v0.5.6
 [0.5.5]: https://github.com/mrmans0n/git-gud/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/mrmans0n/git-gud/compare/v0.5.3...v0.5.4

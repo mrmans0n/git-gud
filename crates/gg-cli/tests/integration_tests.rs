@@ -1307,16 +1307,77 @@ fn test_gg_reorder_missing_commits() {
 
 #[test]
 fn test_reorder_no_tui_flag() {
-    // Verify --no-tui flag is accepted by gg reorder
-    let (_temp_dir, repo_path) = create_test_repo();
-
     // Verify --no-tui flag appears in help
+    let (_temp_dir, repo_path) = create_test_repo();
     let (success, stdout, _stderr) = run_gg(&repo_path, &["reorder", "--help"]);
     assert!(success, "reorder --help should succeed");
     assert!(
         stdout.contains("--no-tui"),
         "reorder help should mention --no-tui flag: {}",
         stdout
+    );
+}
+
+#[test]
+fn test_reorder_no_tui_editor_fallback() {
+    // Test that --no-tui uses the editor path instead of the TUI.
+    // Using VISUAL=true (the `true` command exits immediately, keeping original order).
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up gg config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with 2 commits
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "test-reorder-notui"]);
+    assert!(success, "Failed to checkout: {}", stderr);
+
+    fs::write(repo_path.join("a.txt"), "aaa\n").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Commit A\n\nGG-ID: c-aaaa001"],
+    );
+
+    fs::write(repo_path.join("b.txt"), "bbb\n").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Commit B\n\nGG-ID: c-aaaa002"],
+    );
+
+    // Run reorder with --no-tui and VISUAL=true (editor exits immediately, order unchanged)
+    let gg_path = env!("CARGO_BIN_EXE_gg");
+    let output = Command::new(gg_path)
+        .args(["reorder", "--no-tui"])
+        .current_dir(&repo_path)
+        .env("VISUAL", "true")
+        .output()
+        .expect("Failed to run gg reorder --no-tui");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    assert!(
+        output.status.success(),
+        "gg reorder --no-tui should succeed: stdout={}, stderr={}",
+        stdout,
+        stderr,
+    );
+
+    // The editor (true) exits immediately without modifying the file,
+    // so reorder should report either "cancelled" or "unchanged"
+    let combined = format!("{}{}", stdout, stderr);
+    assert!(
+        combined.contains("cancelled") || combined.contains("unchanged"),
+        "Expected 'cancelled' or 'unchanged' message, got: stdout={}, stderr={}",
+        stdout,
+        stderr,
     );
 }
 

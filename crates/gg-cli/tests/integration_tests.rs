@@ -5602,17 +5602,33 @@ fn test_split_single_file_commit_errors() {
     run_git(&repo_path, &["add", "-A"]);
     run_git(&repo_path, &["commit", "-m", "Single file commit"]);
 
-    // Try to split interactively (no file args) - should error because only 1 file
-    let (success, stdout, stderr) = run_gg(&repo_path, &["split", "-m", "test", "--no-edit"]);
+    // Single-file commits now auto-enter hunk mode (-i), but without a TTY
+    // the interactive prompt will fail. The important thing is we no longer
+    // get the old "only has 1 file" error.
+    let (_success, stdout, stderr) = run_gg(&repo_path, &["split", "-m", "test", "--no-edit"]);
+
+    // Should NOT contain the old "only has 1 file" message
     assert!(
-        !success,
-        "split should fail with single file: stdout={}, stderr={}",
-        stdout, stderr
-    );
-    assert!(
-        stderr.contains("only has 1 file") || stdout.contains("only has 1 file"),
-        "Should mention single file limitation: stdout={}, stderr={}",
+        !stderr.contains("only has 1 file") && !stdout.contains("only has 1 file"),
+        "Should NOT mention single file limitation (hunk mode is now used): stdout={}, stderr={}",
         stdout,
         stderr
+    );
+
+    // Instead, it will fail on interactive input (no TTY) or succeed if no hunks
+    // Either way, we're testing that the behavior changed
+}
+
+#[test]
+fn test_split_interactive_flag_exists() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Verify -i/--interactive flag is documented in help
+    let (success, stdout, _stderr) = run_gg(&repo_path, &["split", "--help"]);
+    assert!(success, "split --help should succeed");
+    assert!(
+        stdout.contains("-i") || stdout.contains("--interactive"),
+        "split help should mention -i/--interactive flag: {}",
+        stdout
     );
 }

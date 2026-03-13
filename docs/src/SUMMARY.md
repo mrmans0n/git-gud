@@ -20,6 +20,7 @@
   - [sc (squash/amend)](./commands/sc.md)
   - [absorb](./commands/absorb.md)
   - [reorder](./commands/reorder.md)
+  - [split](./commands/split.md)
   - [rebase](./commands/rebase.md)
   - [land](./commands/land.md)
   - [clean](./commands/clean.md)

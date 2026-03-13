@@ -115,6 +115,7 @@ gg land -a -c --json
 - Navigate: `gg mv`, `gg first`, `gg last`, `gg prev`, `gg next`
 - Amend current commit: `gg sc` / `gg sc -a`
 - Auto-distribute staged hunks: `gg absorb -s`
+- Split a commit into two: `gg split -c 3 file1.rs file2.rs`
 - Reorder stack: `gg reorder -o "3,1,2"`
 - Sync subset: `gg sync -u <position|gg-id|sha> --json`
 - Lint stack: `gg lint --json`

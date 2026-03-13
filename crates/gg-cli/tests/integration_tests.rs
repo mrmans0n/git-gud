@@ -4827,7 +4827,7 @@ fn test_worktree_shares_config() {
     fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
     fs::write(
         gg_dir.join("config.json"),
-        r#"{"defaults":{"branch_username":"testuser","base":"main"}}"#,
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
     )
     .expect("Failed to write config");
 
@@ -4862,7 +4862,7 @@ fn test_worktree_independent_nav_state() {
     fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
     fs::write(
         gg_dir.join("config.json"),
-        r#"{"defaults":{"branch_username":"testuser","base":"main"}}"#,
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
     )
     .expect("Failed to write config");
 
@@ -4909,7 +4909,7 @@ fn test_worktree_shared_lock() {
     fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
     fs::write(
         gg_dir.join("config.json"),
-        r#"{"defaults":{"branch_username":"testuser","base":"main"}}"#,
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
     )
     .expect("Failed to write config");
 
@@ -5072,7 +5072,7 @@ fn test_amend_in_worktree_does_not_leave_detached_head() {
     fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
     fs::write(
         gg_dir.join("config.json"),
-        r#"{"defaults":{"branch_username":"testuser","base":"main"}}"#,
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
     )
     .expect("Failed to write config");
 
@@ -5383,7 +5383,7 @@ fn test_split_head_with_file_args() {
     fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
     fs::write(
         gg_dir.join("config.json"),
-        r#"{"defaults":{"branch_username":"testuser","base":"main"}}"#,
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
     )
     .expect("Failed to write config");
 
@@ -5438,7 +5438,7 @@ fn test_split_non_head_rebases_descendants() {
     fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
     fs::write(
         gg_dir.join("config.json"),
-        r#"{"defaults":{"branch_username":"testuser","base":"main"}}"#,
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
     )
     .expect("Failed to write config");
 
@@ -5496,7 +5496,7 @@ fn test_split_invalid_file_errors() {
     fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
     fs::write(
         gg_dir.join("config.json"),
-        r#"{"defaults":{"branch_username":"testuser","base":"main"}}"#,
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
     )
     .expect("Failed to write config");
 
@@ -5537,7 +5537,7 @@ fn test_split_preserves_gg_id_on_remainder() {
     fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
     fs::write(
         gg_dir.join("config.json"),
-        r#"{"defaults":{"branch_username":"testuser","base":"main"}}"#,
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
     )
     .expect("Failed to write config");
 
@@ -5589,7 +5589,7 @@ fn test_split_single_file_commit_errors() {
     fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
     fs::write(
         gg_dir.join("config.json"),
-        r#"{"defaults":{"branch_username":"testuser","base":"main"}}"#,
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
     )
     .expect("Failed to write config");
 

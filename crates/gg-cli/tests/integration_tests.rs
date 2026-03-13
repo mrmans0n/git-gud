@@ -1305,6 +1305,21 @@ fn test_gg_reorder_missing_commits() {
     );
 }
 
+#[test]
+fn test_reorder_no_tui_flag() {
+    // Verify --no-tui flag is accepted by gg reorder
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Verify --no-tui flag appears in help
+    let (success, stdout, _stderr) = run_gg(&repo_path, &["reorder", "--help"]);
+    assert!(success, "reorder --help should succeed");
+    assert!(
+        stdout.contains("--no-tui"),
+        "reorder help should mention --no-tui flag: {}",
+        stdout
+    );
+}
+
 /// Helper to create a test repo with a bare remote
 fn create_test_repo_with_remote() -> (TempDir, PathBuf, PathBuf) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");

@@ -5,6 +5,7 @@ use std::io::Write;
 use console::style;
 use dialoguer::Editor;
 
+use super::reorder_tui::{self, ReorderEntry};
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
@@ -16,6 +17,8 @@ pub struct ReorderOptions {
     /// New order specified as positions (1-indexed), e.g., "3,1,2" or "3 1 2"
     /// Position 1 = bottom of stack (closest to base)
     pub order: Option<String>,
+    /// If true, disable TUI and use editor fallback
+    pub no_tui: bool,
 }
 
 /// Run the reorder command
@@ -34,11 +37,17 @@ pub fn run(options: ReorderOptions) -> Result<()> {
         return Ok(());
     }
 
-    // Get the new order - either from CLI or interactive editor
+    // Get the new order - from CLI, TUI, or editor
     let new_order = if let Some(order_str) = options.order {
         parse_order_from_string(&order_str, &stack)?
     } else {
-        get_order_from_editor(&stack)?
+        let is_tty = atty::is(atty::Stream::Stdin) && atty::is(atty::Stream::Stdout);
+        let use_tui = !options.no_tui && is_tty;
+        if use_tui {
+            get_order_from_tui(&stack)?
+        } else {
+            get_order_from_editor(&stack)?
+        }
     };
 
     // Handle cancellation
@@ -156,6 +165,20 @@ fn parse_order_from_string(order_str: &str, stack: &Stack) -> Result<Option<Vec<
     }
 
     Ok(Some(new_order))
+}
+
+/// Get order from interactive TUI
+fn get_order_from_tui(stack: &Stack) -> Result<Option<Vec<String>>> {
+    let entries: Vec<ReorderEntry> = stack
+        .entries
+        .iter()
+        .map(|e| ReorderEntry {
+            short_sha: e.short_sha.clone(),
+            title: e.title.clone(),
+        })
+        .collect();
+
+    reorder_tui::reorder_tui(entries)
 }
 
 /// Get order from interactive editor
@@ -286,7 +309,18 @@ mod tests {
     fn test_reorder_options_with_order() {
         let opts = ReorderOptions {
             order: Some("3,1,2".to_string()),
+            ..Default::default()
         };
         assert_eq!(opts.order, Some("3,1,2".to_string()));
+        assert!(!opts.no_tui);
+    }
+
+    #[test]
+    fn test_reorder_options_no_tui() {
+        let opts = ReorderOptions {
+            no_tui: true,
+            ..Default::default()
+        };
+        assert!(opts.no_tui);
     }
 }

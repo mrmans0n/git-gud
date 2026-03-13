@@ -131,6 +131,10 @@ enum Commands {
         /// Position 1 = bottom of stack (closest to base)
         #[arg(short, long, value_name = "ORDER")]
         order: Option<String>,
+
+        /// Disable TUI, use text editor instead
+        #[arg(long)]
+        no_tui: bool,
     },
 
     /// Split a commit into two
@@ -355,8 +359,11 @@ fn main() {
         Some(Commands::Prev) => (gg_core::commands::nav::prev(), false),
         Some(Commands::Next) => (gg_core::commands::nav::next(), false),
         Some(Commands::Squash { all }) => (gg_core::commands::squash::run(all), false),
-        Some(Commands::Reorder { order }) => (
-            gg_core::commands::reorder::run(gg_core::commands::reorder::ReorderOptions { order }),
+        Some(Commands::Reorder { order, no_tui }) => (
+            gg_core::commands::reorder::run(gg_core::commands::reorder::ReorderOptions {
+                order,
+                no_tui,
+            }),
             false,
         ),
         Some(Commands::Split {

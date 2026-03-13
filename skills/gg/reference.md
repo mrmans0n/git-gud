@@ -112,9 +112,10 @@ Auto-distribute staged changes to matching commits.
 - `-s, --squash`
 
 #### `gg reorder [OPTIONS]`
-Reorder stack entries.
+Reorder stack entries. Opens an interactive TUI by default where you can move commits with `J`/`K` (or Shift+arrows).
 
 - `-o, --order <ORDER>`
+- `--no-tui` — disable TUI, use text editor instead
 
 #### `gg split [OPTIONS] [FILES...]`
 Split a commit into two. Selected files/hunks become a new commit inserted before the original.

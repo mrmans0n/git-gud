@@ -123,7 +123,14 @@ After pressing **Enter** to confirm your hunk selection, an inline text input ap
 | Ctrl+U | Clear from cursor to beginning |
 | Ctrl+K | Clear from cursor to end |
 
-This replaces the external editor (`$EDITOR`) prompt for the first commit's message. The `-m` flag still works and bypasses both the TUI input and the editor. The remainder commit (keeping leftover changes) still uses the original message or opens the editor unless `--no-edit` is passed.
+After confirming the new commit message, a second inline input appears for the **remainder commit message** (pre-filled with the original commit's message). This replaces the external editor for both messages, keeping the entire split workflow inside the TUI.
+
+| Key | Action |
+|-----|--------|
+| Enter | Confirm remainder message and complete the split |
+| Esc | Go back to the new commit message input |
+
+The `-m` flag still works and bypasses the TUI input for the new commit. The `--no-edit` flag skips the remainder message input entirely, keeping the original message as-is.
 
 #### File Panel Indicators
 

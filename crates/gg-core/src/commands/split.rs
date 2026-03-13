@@ -141,8 +141,9 @@ pub fn run(options: SplitOptions) -> Result<()> {
     let use_hunk_mode =
         options.interactive || (changed_files.len() < 2 && options.files.is_empty());
 
-    // If the TUI provides a commit message inline, it's stored here to skip the editor
+    // If the TUI provides commit messages inline, they're stored here to skip the editor
     let mut tui_commit_message: Option<String> = None;
+    let mut tui_remainder_message: Option<String> = None;
 
     let first_tree = if use_hunk_mode {
         // === Hunk-level splitting ===
@@ -164,9 +165,16 @@ pub fn run(options: SplitOptions) -> Result<()> {
 
         let selected_indices = if use_tui {
             let commit_title = git::get_commit_title(&target_commit);
-            match super::split_tui::select_hunks_tui(hunks.clone(), &commit_title)? {
+            let original_msg = git::strip_gg_id_from_message(target_commit.message().unwrap_or(""));
+            match super::split_tui::select_hunks_tui(
+                hunks.clone(),
+                &commit_title,
+                &original_msg,
+                options.no_edit,
+            )? {
                 Some(result) => {
                     tui_commit_message = Some(result.commit_message);
+                    tui_remainder_message = result.remainder_message;
                     result.selected_indices
                 }
                 None => {
@@ -228,7 +236,12 @@ pub fn run(options: SplitOptions) -> Result<()> {
     } else {
         get_new_commit_message(&options, &target_commit)?
     };
-    let remainder_message = get_remainder_message(&options, &target_commit)?;
+    // Priority for remainder message: TUI inline > editor prompt
+    let remainder_message = if let Some(msg) = tui_remainder_message {
+        msg
+    } else {
+        get_remainder_message(&options, &target_commit)?
+    };
 
     // 2. Create the first (new, lower) commit
     let sig = git::get_signature(&repo)?;

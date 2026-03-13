@@ -105,8 +105,25 @@ When run interactively with a TTY, `gg split -i` opens a two-panel TUI for hunk 
 | n | Deselect all hunks (all files) | Deselect all hunks (this file) |
 | s | — | Split current hunk into sub-hunks |
 | Tab / ← / → | Switch to diff panel | Switch to file panel |
-| Enter | Confirm selection | Confirm selection |
+| Enter | Enter commit message | Enter commit message |
 | q / Esc | Abort (cancel split) | Abort (cancel split) |
+
+#### Inline Commit Message
+
+After pressing **Enter** to confirm your hunk selection, an inline text input appears at the bottom of the TUI for the commit message. It's pre-filled with `Split from: <original commit title>`.
+
+| Key | Action |
+|-----|--------|
+| Enter | Confirm message and create the split |
+| Esc | Go back to hunk selection |
+| ← / → | Move cursor |
+| Home / End | Jump to beginning/end |
+| Backspace / Delete | Delete characters |
+| Ctrl+A / Ctrl+E | Jump to beginning/end (emacs-style) |
+| Ctrl+U | Clear from cursor to beginning |
+| Ctrl+K | Clear from cursor to end |
+
+This replaces the external editor (`$EDITOR`) prompt for the first commit's message. The `-m` flag still works and bypasses both the TUI input and the editor. The remainder commit (keeping leftover changes) still uses the original message or opens the editor unless `--no-edit` is passed.
 
 #### File Panel Indicators
 

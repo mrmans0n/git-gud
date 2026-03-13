@@ -133,6 +133,26 @@ enum Commands {
         order: Option<String>,
     },
 
+    /// Split a commit into two
+    #[command(name = "split")]
+    Split {
+        /// Target commit: position (1-indexed), short SHA, or GG-ID
+        #[arg(short, long, value_name = "TARGET")]
+        commit: Option<String>,
+
+        /// Message for the new (first) commit
+        #[arg(short, long, value_name = "MESSAGE")]
+        message: Option<String>,
+
+        /// Don't prompt for the remainder commit message
+        #[arg(long)]
+        no_edit: bool,
+
+        /// Files to include in the new commit
+        #[arg(value_name = "FILES")]
+        files: Vec<String>,
+    },
+
     /// Land (merge) approved PRs/MRs starting from the first commit
     #[command(name = "land", alias = "merge")]
     Land {
@@ -329,6 +349,20 @@ fn main() {
         Some(Commands::Squash { all }) => (gg_core::commands::squash::run(all), false),
         Some(Commands::Reorder { order }) => (
             gg_core::commands::reorder::run(gg_core::commands::reorder::ReorderOptions { order }),
+            false,
+        ),
+        Some(Commands::Split {
+            commit,
+            message,
+            no_edit,
+            files,
+        }) => (
+            gg_core::commands::split::run(gg_core::commands::split::SplitOptions {
+                target: commit,
+                files,
+                message,
+                no_edit,
+            }),
             false,
         ),
         Some(Commands::Land {

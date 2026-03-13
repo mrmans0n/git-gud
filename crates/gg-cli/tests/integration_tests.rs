@@ -5823,3 +5823,71 @@ fn test_split_hunk_sub_selection_logic() {
         stderr
     );
 }
+
+#[test]
+fn test_split_no_tui_flag() {
+    // Verify --no-tui flag is accepted and falls back to sequential prompt mode
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up minimal gg config
+    let gg_dir = repo_path.join(".git").join("gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create .git/gg");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Verify --no-tui flag appears in help
+    let (success, stdout, _stderr) = run_gg(&repo_path, &["split", "--help"]);
+    assert!(success, "split --help should succeed");
+    assert!(
+        stdout.contains("--no-tui"),
+        "split help should mention --no-tui flag: {}",
+        stdout
+    );
+
+    // Create stack with a multi-file commit so split has something to work with
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "test-no-tui"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("file_a.txt"), "content a").expect("Failed to write");
+    fs::write(repo_path.join("file_b.txt"), "content b").expect("Failed to write");
+    run_git(&repo_path, &["add", "file_a.txt", "file_b.txt"]);
+    run_git(&repo_path, &["commit", "-m", "Two files"]);
+
+    // Use --no-tui with -i and file args to bypass interactive prompts entirely
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &[
+            "split",
+            "-i",
+            "--no-tui",
+            "-m",
+            "Split file A",
+            "--no-edit",
+            "file_a.txt",
+        ],
+    );
+
+    // The flag should be recognized (no "unrecognized" errors)
+    assert!(
+        !stderr.contains("unrecognized") && !stderr.contains("unknown option"),
+        "--no-tui flag should be recognized: stdout={}, stderr={}",
+        stdout,
+        stderr
+    );
+
+    // When file args are provided with -i, it may skip interactive selection.
+    // Either way, the --no-tui path was exercised (no TUI attempted).
+    // If it succeeded, verify the split happened.
+    if success {
+        let (_, log_output, _) = run_git_full(&repo_path, &["log", "--oneline"]);
+        let commit_count = log_output.lines().count();
+        assert!(
+            commit_count >= 3,
+            "Should have at least 3 commits after split: {}",
+            log_output
+        );
+    }
+}

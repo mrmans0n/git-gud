@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-66577ee6.js";
+            window.path_to_searchindex_js = "searchindex-434c1676.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-d621d862.js"></script>
+        <script src="toc-30a7c093.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -823,6 +823,59 @@ gg reorder
 gg reorder --order "3,1,2"
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
+<h1 id="gg-split"><a class="header" href="#gg-split"><code>gg split</code></a></h1>
+<p>Split a commit in the stack into two commits. The selected files become a new commit inserted <strong>before</strong> the original in the stack, while the remaining files stay in the original commit.</p>
+<pre><code class="language-bash">gg split [OPTIONS] [FILES...]
+</code></pre>
+<h2 id="options-6"><a class="header" href="#options-6">Options</a></h2>
+<ul>
+<li><code>-c, --commit &lt;TARGET&gt;</code>: Target commit — position (1-indexed), short SHA, or GG-ID. Defaults to the current commit (HEAD).</li>
+<li><code>-m, --message &lt;MESSAGE&gt;</code>: Commit message for the new (first) commit. Skips the editor prompt.</li>
+<li><code>--no-edit</code>: Keep the original message for the remainder commit without prompting.</li>
+<li><code>FILES...</code>: Files to include in the new commit. If omitted, opens an interactive file selector.</li>
+</ul>
+<h2 id="how-it-works"><a class="header" href="#how-it-works">How It Works</a></h2>
+<p>When you split commit <strong>K</strong> into two:</p>
+<ol>
+<li><strong>New commit (K’)</strong> — Contains only the selected files. Inserted <strong>before</strong> K in the stack. Gets a new GG-ID.</li>
+<li><strong>Remainder (K’’)</strong> — Contains the remaining files. Stays in K’s original position. Keeps the original GG-ID (preserving PR association).</li>
+</ol>
+<p>All descendant commits are automatically rebased onto the remainder.</p>
+<pre><code>BEFORE                    AFTER
+  4: "Fix tests"            5: "Fix tests"       (rebased)
+  3: "Add auth+logging"     4: "Add logging"      ← remainder (keeps GG-ID)
+  2: "Setup DB"             3: "Add auth"         ← NEW commit (selected files)
+  1: "Init project"         2: "Setup DB"
+                             1: "Init project"
+</code></pre>
+<h2 id="examples-6"><a class="header" href="#examples-6">Examples</a></h2>
+<h3 id="interactive-file-selection"><a class="header" href="#interactive-file-selection">Interactive file selection</a></h3>
+<pre><code class="language-bash"># Split the current commit — opens a checkbox selector
+gg split
+</code></pre>
+<h3 id="split-with-explicit-files"><a class="header" href="#split-with-explicit-files">Split with explicit files</a></h3>
+<pre><code class="language-bash"># Move auth files to a new commit before the current one
+gg split -m "Add authentication" src/auth.rs src/auth_test.rs
+</code></pre>
+<h3 id="split-a-specific-commit-in-the-stack"><a class="header" href="#split-a-specific-commit-in-the-stack">Split a specific commit in the stack</a></h3>
+<pre><code class="language-bash"># Split commit at position 3
+gg split -c 3 src/config.rs
+
+# Split by GG-ID
+gg split -c c-abc1234 src/config.rs
+</code></pre>
+<h3 id="non-interactive-with-both-messages"><a class="header" href="#non-interactive-with-both-messages">Non-interactive with both messages</a></h3>
+<pre><code class="language-bash">gg split -c 2 -m "Extract helpers" --no-edit helpers.rs utils.rs
+</code></pre>
+<h2 id="edge-cases"><a class="header" href="#edge-cases">Edge Cases</a></h2>
+<ul>
+<li><strong>All files selected</strong> — Warning: the original commit will be empty.</li>
+<li><strong>No files selected</strong> — Error.</li>
+<li><strong>Single-file commit</strong> — Error (use hunk-level splitting in a future version).</li>
+<li><strong>Dirty working directory</strong> — Error. Commit or stash changes first.</li>
+<li><strong>Merge conflicts during rebase</strong> — Split is aborted, original state restored.</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
 <h1 id="gg-rebase"><a class="header" href="#gg-rebase"><code>gg rebase</code></a></h1>
 <p>Rebase the current stack onto an updated branch.</p>
 <pre><code class="language-bash">gg rebase [TARGET]
@@ -830,7 +883,7 @@ gg reorder --order "3,1,2"
 <ul>
 <li>If <code>TARGET</code> is omitted, git-gud uses the stack base branch.</li>
 </ul>
-<h2 id="examples-6"><a class="header" href="#examples-6">Examples</a></h2>
+<h2 id="examples-7"><a class="header" href="#examples-7">Examples</a></h2>
 <pre><code class="language-bash"># Rebase onto configured base
 gg rebase
 
@@ -842,7 +895,7 @@ gg rebase main
 <p>Merge approved PRs/MRs from the bottom of your stack upward.</p>
 <pre><code class="language-bash">gg land [OPTIONS]
 </code></pre>
-<h2 id="options-6"><a class="header" href="#options-6">Options</a></h2>
+<h2 id="options-7"><a class="header" href="#options-7">Options</a></h2>
 <ul>
 <li><code>-a, --all</code>: Land all approved entries in sequence</li>
 <li><code>--auto-merge</code>: <em>(GitLab only)</em> Request auto-merge instead of immediate merge</li>
@@ -853,7 +906,7 @@ gg rebase main
 <li><code>--no-clean</code>: Disable auto-clean for this run</li>
 <li><code>--json</code>: Emit machine-readable JSON output (no human logs)</li>
 </ul>
-<h2 id="examples-7"><a class="header" href="#examples-7">Examples</a></h2>
+<h2 id="examples-8"><a class="header" href="#examples-8">Examples</a></h2>
 <pre><code class="language-bash"># Land one approved entry
 gg land
 
@@ -912,12 +965,12 @@ Error: MR !7621 CI failed
 <p>Delete merged stacks (and associated managed worktrees).</p>
 <pre><code class="language-bash">gg clean [OPTIONS]
 </code></pre>
-<h2 id="options-7"><a class="header" href="#options-7">Options</a></h2>
+<h2 id="options-8"><a class="header" href="#options-8">Options</a></h2>
 <ul>
 <li><code>-a, --all</code>: Clean all merged stacks without prompting</li>
 <li><code>--json</code>: Emit machine-readable JSON output</li>
 </ul>
-<h2 id="examples-8"><a class="header" href="#examples-8">Examples</a></h2>
+<h2 id="examples-9"><a class="header" href="#examples-9">Examples</a></h2>
 <pre><code class="language-bash">gg clean
 gg clean --all
 gg clean --json
@@ -933,12 +986,12 @@ gg clean --json
 <p>Run configured lint commands on stack commits.</p>
 <pre><code class="language-bash">gg lint [OPTIONS]
 </code></pre>
-<h2 id="options-8"><a class="header" href="#options-8">Options</a></h2>
+<h2 id="options-9"><a class="header" href="#options-9">Options</a></h2>
 <ul>
 <li><code>-u, --until &lt;UNTIL&gt;</code>: Stop at target entry (position, GG-ID, SHA)</li>
 <li><code>--json</code>: Emit structured JSON output</li>
 </ul>
-<h2 id="examples-9"><a class="header" href="#examples-9">Examples</a></h2>
+<h2 id="examples-10"><a class="header" href="#examples-10">Examples</a></h2>
 <pre><code class="language-bash"># Lint from bottom to current
 gg lint
 
@@ -1004,7 +1057,7 @@ Use <code>gg abort</code> when you want to stop and roll back the in-progress op
 <p>Repair stack metadata when branches/PRs were manipulated outside <code>gg sync</code>.</p>
 <pre><code class="language-bash">gg reconcile [OPTIONS]
 </code></pre>
-<h2 id="options-9"><a class="header" href="#options-9">Options</a></h2>
+<h2 id="options-10"><a class="header" href="#options-10">Options</a></h2>
 <ul>
 <li><code>-n, --dry-run</code>: Preview only; make no changes</li>
 </ul>
@@ -1013,7 +1066,7 @@ Use <code>gg abort</code> when you want to stop and roll back the in-progress op
 <li>Adds missing GG-ID trailers to stack commits</li>
 <li>Maps existing remote PRs/MRs back to local stack entries</li>
 </ul>
-<h2 id="examples-10"><a class="header" href="#examples-10">Examples</a></h2>
+<h2 id="examples-11"><a class="header" href="#examples-11">Examples</a></h2>
 <pre><code class="language-bash"># Safe preview
 gg reconcile --dry-run
 

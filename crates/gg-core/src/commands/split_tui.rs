@@ -504,8 +504,13 @@ impl TerminalGuard {
     fn new() -> Result<Self> {
         enable_raw_mode()
             .map_err(|e| GgError::Other(format!("Failed to enable raw mode: {}", e)))?;
-        execute!(io::stdout(), EnterAlternateScreen)
-            .map_err(|e| GgError::Other(format!("Failed to enter alternate screen: {}", e)))?;
+        if let Err(e) = execute!(io::stdout(), EnterAlternateScreen) {
+            let _ = disable_raw_mode();
+            return Err(GgError::Other(format!(
+                "Failed to enter alternate screen: {}",
+                e
+            )));
+        }
         Ok(Self { _private: () })
     }
 }

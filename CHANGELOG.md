@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-03-13
+
+### Added
+- `gg reorder` interactive TUI — drag-and-drop commit reordering with arrow keys, full ratatui interface with color-coded commit list, `--no-tui` fallback for sequential prompts (#215)
+
+### Fixed
+- `TerminalGuard` cleanup: raw mode and alternate screen are now reliably restored on panic, Ctrl+C, or early return in all TUI commands (#217)
+- `--no-tui` integration test no longer requires a real terminal (#217)
+
 ## [0.6.0] - 2026-03-13
 
 ### Added
@@ -268,7 +277,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/mrmans0n/git-gud/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/mrmans0n/git-gud/compare/v0.5.6...v0.6.0
 [0.5.6]: https://github.com/mrmans0n/git-gud/compare/v0.5.5...v0.5.6
 [0.5.5]: https://github.com/mrmans0n/git-gud/compare/v0.5.4...v0.5.5

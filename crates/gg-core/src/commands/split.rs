@@ -153,7 +153,7 @@ pub fn run(options: SplitOptions) -> Result<()> {
             return Err(GgError::Other("No hunks found to split".to_string()));
         }
 
-        let selected_indices = select_hunks_interactive(&hunks)?;
+        let selected_indices = select_hunks_interactive(&mut hunks)?;
 
         if selected_indices.is_empty() {
             return Err(GgError::Other(
@@ -881,7 +881,9 @@ fn display_hunk(hunk: &DiffHunk, is_first_in_file: bool) {
 
 /// Interactive hunk selection (git add -p style)
 /// Returns indices of selected hunks
-fn select_hunks_interactive(hunks: &[DiffHunk]) -> Result<Vec<usize>> {
+/// When a hunk is split and sub-hunks are selected, the original hunk is replaced
+/// with a merged hunk containing only the selected sub-hunk lines.
+fn select_hunks_interactive(hunks: &mut Vec<DiffHunk>) -> Result<Vec<usize>> {
     let term = Term::stdout();
     let mut selected: Vec<usize> = Vec::new();
     let mut i = 0;
@@ -900,7 +902,8 @@ fn select_hunks_interactive(hunks: &[DiffHunk]) -> Result<Vec<usize>> {
     println!();
 
     while i < hunks.len() {
-        let hunk = &hunks[i];
+        // Clone the hunk to avoid borrow conflicts when splicing for 's' action
+        let hunk = hunks[i].clone();
 
         // Check if we should auto-handle this file
         if skip_files.contains(&hunk.file_path) {
@@ -915,7 +918,7 @@ fn select_hunks_interactive(hunks: &[DiffHunk]) -> Result<Vec<usize>> {
 
         // Display hunk
         let is_first = hunk.file_path != last_file_path;
-        display_hunk(hunk, is_first);
+        display_hunk(&hunk, is_first);
         last_file_path = hunk.file_path.clone();
 
         // Prompt
@@ -958,44 +961,17 @@ fn select_hunks_interactive(hunks: &[DiffHunk]) -> Result<Vec<usize>> {
                 i += 1;
             }
             's' => {
-                // Try to split the hunk
-                if let Some(sub_hunks) = try_split_hunk(hunk) {
+                // Try to split the hunk into sub-hunks
+                if let Some(sub_hunks) = try_split_hunk(&hunk) {
                     println!(
                         "{}",
                         style(format!("Split into {} sub-hunks", sub_hunks.len())).dim()
                     );
-                    // We need to handle sub-hunks inline
-                    // For simplicity, we'll just present them one by one
-                    let mut sub_selected = Vec::new();
-                    for (j, sub_hunk) in sub_hunks.iter().enumerate() {
-                        display_hunk(sub_hunk, j == 0);
-                        print!(
-                            "Include this sub-hunk? [{}]es/[{}]o/[{}]uit: ",
-                            style("y").green(),
-                            style("n").red(),
-                            style("q").magenta()
-                        );
-                        io::stdout().flush().ok();
 
-                        let sub_ch = term
-                            .read_char()
-                            .map_err(|e| GgError::Other(format!("Failed to read input: {}", e)))?;
-                        println!();
-
-                        match sub_ch.to_ascii_lowercase() {
-                            'y' => sub_selected.push(j),
-                            'q' => break,
-                            _ => {} // 'n' or anything else = skip
-                        }
-                    }
-                    // If any sub-hunks were selected, we mark the original hunk
-                    // and store the sub-selection for later
-                    // For now, we treat any sub-selection as "include original hunk"
-                    // A more sophisticated implementation would track sub-hunks
-                    if !sub_selected.is_empty() {
-                        selected.push(i);
-                    }
-                    i += 1;
+                    // Splice: replace the current hunk with the sub-hunks
+                    // The main loop will then process each sub-hunk individually with y/n
+                    hunks.splice(i..=i, sub_hunks);
+                    // Don't increment i - the loop continues with the first sub-hunk
                 } else {
                     println!("{}", style("This hunk cannot be split further.").yellow());
                     // Re-prompt for same hunk

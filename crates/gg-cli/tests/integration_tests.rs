@@ -5372,3 +5372,247 @@ fn test_lint_position_clamped_to_stack_size() {
         stdout, stderr
     );
 }
+// ========== Split command tests ==========
+
+#[test]
+fn test_split_head_with_file_args() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","base":"main"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create stack
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "test-split"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    // Create first commit (1 file)
+    fs::write(repo_path.join("file_a.txt"), "content a").expect("Failed to write file_a");
+    run_git(&repo_path, &["add", "-A"]);
+    run_git(&repo_path, &["commit", "-m", "Add file A"]);
+
+    // Create second commit (2 files)
+    fs::write(repo_path.join("file_b.txt"), "content b").expect("Failed to write file_b");
+    fs::write(repo_path.join("file_c.txt"), "content c").expect("Failed to write file_c");
+    run_git(&repo_path, &["add", "-A"]);
+    run_git(&repo_path, &["commit", "-m", "Add files B and C"]);
+
+    // Split HEAD: move file_b to a new commit before the current
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &["split", "-m", "Add file B only", "--no-edit", "file_b.txt"],
+    );
+    assert!(
+        success,
+        "split should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+    assert!(
+        stdout.contains("Split complete"),
+        "Expected 'Split complete' in output: {}",
+        stdout
+    );
+
+    // Verify we now have 3 commits in the stack
+    let (success, stdout, _) = run_gg(&repo_path, &["ls"]);
+    assert!(success, "ls should succeed");
+    // Should see 3 entries: file A, file B only, files B and C (remainder)
+    assert!(
+        stdout.contains("Add file B only"),
+        "Should have the new split commit: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_split_non_head_rebases_descendants() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","base":"main"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create stack
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "test-split-rebase"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    // Commit 1: file_a
+    fs::write(repo_path.join("file_a.txt"), "a").expect("Failed to write");
+    run_git(&repo_path, &["add", "-A"]);
+    run_git(&repo_path, &["commit", "-m", "Commit 1: file A"]);
+
+    // Commit 2: file_b + file_c (this is the one we'll split)
+    fs::write(repo_path.join("file_b.txt"), "b").expect("Failed to write");
+    fs::write(repo_path.join("file_c.txt"), "c").expect("Failed to write");
+    run_git(&repo_path, &["add", "-A"]);
+    run_git(&repo_path, &["commit", "-m", "Commit 2: files B and C"]);
+
+    // Commit 3: file_d (descendant that should be rebased)
+    fs::write(repo_path.join("file_d.txt"), "d").expect("Failed to write");
+    run_git(&repo_path, &["add", "-A"]);
+    run_git(&repo_path, &["commit", "-m", "Commit 3: file D"]);
+
+    // Navigate to commit 2 and split it
+    let (success, _, stderr) = run_gg(&repo_path, &["mv", "2"]);
+    assert!(success, "Failed to navigate to commit 2: {}", stderr);
+
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &["split", "-m", "Split: file B", "--no-edit", "file_b.txt"],
+    );
+    assert!(
+        success,
+        "split should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+    assert!(
+        stdout.contains("Split complete"),
+        "Expected 'Split complete' in output: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Rebased"),
+        "Expected rebasing descendants: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_split_invalid_file_errors() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","base":"main"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create stack
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "test-split-error"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    // Create commit with two files
+    fs::write(repo_path.join("file_a.txt"), "a").expect("Failed to write");
+    fs::write(repo_path.join("file_b.txt"), "b").expect("Failed to write");
+    run_git(&repo_path, &["add", "-A"]);
+    run_git(&repo_path, &["commit", "-m", "Two files"]);
+
+    // Try to split with a file that doesn't exist in the commit
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &["split", "-m", "test", "--no-edit", "nonexistent.txt"],
+    );
+    assert!(
+        !success,
+        "split should fail with invalid file: stdout={}, stderr={}",
+        stdout, stderr
+    );
+    assert!(
+        stderr.contains("not in the commit") || stdout.contains("not in the commit"),
+        "Should mention file not in commit: stdout={}, stderr={}",
+        stdout,
+        stderr
+    );
+}
+
+#[test]
+fn test_split_preserves_gg_id_on_remainder() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","base":"main"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create stack
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "test-split-ggid"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    // Create commit with two files and a valid GG-ID (format: c-XXXXXXX)
+    fs::write(repo_path.join("file_a.txt"), "a").expect("Failed to write");
+    fs::write(repo_path.join("file_b.txt"), "b").expect("Failed to write");
+    run_git(&repo_path, &["add", "-A"]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Two files\n\nGG-ID: c-abc1234"],
+    );
+
+    // Split the commit
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &["split", "-m", "Split file A", "--no-edit", "file_a.txt"],
+    );
+    assert!(
+        success,
+        "split should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+    assert!(
+        stdout.contains("Split complete"),
+        "Expected 'Split complete' in output: {}",
+        stdout
+    );
+
+    // The remainder commit (HEAD) should still have the original GG-ID
+    let (success, log_output) = run_git(&repo_path, &["log", "-1", "--format=%B", "HEAD"]);
+    assert!(success, "git log should succeed");
+    assert!(
+        log_output.contains("GG-ID: c-abc1234"),
+        "Remainder commit should preserve original GG-ID: {}",
+        log_output
+    );
+}
+
+#[test]
+fn test_split_single_file_commit_errors() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","base":"main"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create stack
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "test-split-single"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    // Create commit with only one file
+    fs::write(repo_path.join("only_file.txt"), "content").expect("Failed to write");
+    run_git(&repo_path, &["add", "-A"]);
+    run_git(&repo_path, &["commit", "-m", "Single file commit"]);
+
+    // Try to split interactively (no file args) - should error because only 1 file
+    let (success, stdout, stderr) = run_gg(&repo_path, &["split", "-m", "test", "--no-edit"]);
+    assert!(
+        !success,
+        "split should fail with single file: stdout={}, stderr={}",
+        stdout, stderr
+    );
+    assert!(
+        stderr.contains("only has 1 file") || stdout.contains("only has 1 file"),
+        "Should mention single file limitation: stdout={}, stderr={}",
+        stdout,
+        stderr
+    );
+}

@@ -12,5 +12,6 @@ pub mod rebase;
 pub mod reconcile;
 pub mod reorder;
 pub mod setup;
+pub mod split;
 pub mod squash;
 pub mod sync;

@@ -292,6 +292,45 @@ impl SplitTuiState {
         }
     }
 
+    /// Adjust diff_scroll so the current hunk cursor stays visible.
+    /// Call this before drawing. `visible_height` is the inner height of the diff panel.
+    fn adjust_diff_scroll(&mut self, visible_height: u16) {
+        if self.active_panel != Panel::Diff {
+            return;
+        }
+
+        let Some(file) = self.files.get(self.file_cursor) else {
+            return;
+        };
+
+        // Calculate the line offset of the current hunk within the rendered diff.
+        // Layout: 3 header lines (--- a/..., +++ b/..., blank), then per hunk:
+        //   1 header line + N diff lines + 1 blank separator
+        let mut line_offset: usize = 3; // file header lines
+        for (i, &hunk_idx) in file.hunk_indices.iter().enumerate() {
+            if i == self.hunk_cursor {
+                break;
+            }
+            if let Some(hunk) = self.hunks.get(hunk_idx) {
+                line_offset += 1 + hunk.lines.len() + 1; // header + lines + blank
+            }
+        }
+
+        let vh = visible_height as usize;
+        if vh == 0 {
+            return;
+        }
+
+        // Scroll down if cursor is below visible area
+        if line_offset >= self.diff_scroll + vh {
+            self.diff_scroll = line_offset.saturating_sub(vh) + 1;
+        }
+        // Scroll up if cursor is above visible area
+        if line_offset < self.diff_scroll {
+            self.diff_scroll = line_offset;
+        }
+    }
+
     /// Get selected hunk indices (for return value)
     fn get_selected_indices(&self) -> Vec<usize> {
         self.selected
@@ -342,6 +381,14 @@ pub fn select_hunks_tui(hunks: Vec<DiffHunk>) -> Result<Vec<usize>> {
 
     // Main loop
     loop {
+        // Calculate visible height of the diff panel for scroll adjustment.
+        // Main layout: content area (Min(1)) + status bar (Length(3)).
+        // Content area: 33% files + 67% diff. Diff panel inner height = height - 2 (borders).
+        let term_height = terminal.size().map(|s| s.height).unwrap_or(24);
+        let content_height = term_height.saturating_sub(3);
+        let diff_inner_height = content_height.saturating_sub(2);
+        state.adjust_diff_scroll(diff_inner_height);
+
         terminal
             .draw(|f| draw(f, &state))
             .map_err(|e| GgError::Other(format!("Failed to draw: {}", e)))?;
@@ -367,7 +414,15 @@ pub fn select_hunks_tui(hunks: Vec<DiffHunk>) -> Result<Vec<usize>> {
 }
 
 /// Handle a key press
-fn handle_key(state: &mut SplitTuiState, code: KeyCode, _modifiers: KeyModifiers) {
+fn handle_key(state: &mut SplitTuiState, code: KeyCode, modifiers: KeyModifiers) {
+    // Handle Ctrl+C in raw mode (no SIGINT)
+    if modifiers.contains(KeyModifiers::CONTROL) {
+        if let KeyCode::Char('c') = code {
+            state.aborted = true;
+            return;
+        }
+    }
+
     match code {
         KeyCode::Up | KeyCode::Char('k') => state.move_up(),
         KeyCode::Down | KeyCode::Char('j') => state.move_down(),
@@ -429,12 +484,18 @@ fn draw_file_panel(f: &mut Frame, state: &SplitTuiState, area: Rect) {
                 ("[ ]", Style::default().fg(Color::DarkGray))
             };
 
-            // Truncate path if needed
+            // Truncate path if needed (char-boundary-aware for UTF-8 safety)
             let max_path_len = area.width.saturating_sub(12) as usize;
-            let display_path = if file.path.len() > max_path_len {
-                format!("…{}", &file.path[file.path.len() - max_path_len + 1..])
+            let display_path = if max_path_len == 0 {
+                String::new()
             } else {
-                file.path.clone()
+                let chars: Vec<char> = file.path.chars().collect();
+                if chars.len() > max_path_len {
+                    let start_char = chars.len() - max_path_len + 1;
+                    format!("…{}", chars[start_char..].iter().collect::<String>())
+                } else {
+                    file.path.clone()
+                }
             };
 
             let line = Line::from(vec![
@@ -809,5 +870,116 @@ mod tests {
         state.selected[0] = true;
         state.selected[2] = true;
         assert_eq!(state.total_selected(), 3);
+    }
+
+    #[test]
+    fn test_ctrl_c_aborts() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(hunks);
+
+        assert!(!state.aborted);
+        handle_key(&mut state, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(state.aborted);
+    }
+
+    #[test]
+    fn test_ctrl_c_does_not_trigger_without_modifier() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(hunks);
+
+        // Plain 'c' should not abort
+        handle_key(&mut state, KeyCode::Char('c'), KeyModifiers::NONE);
+        assert!(!state.aborted);
+    }
+
+    #[test]
+    fn test_diff_scroll_adjusts_when_cursor_moves_past_visible_area() {
+        // Create many hunks for a single file so they exceed visible height
+        let hunks: Vec<DiffHunk> = (0..20)
+            .map(|i| make_test_hunk("file1.rs", &format!("@@ -{},2 +{},2 @@", i * 10, i * 10)))
+            .collect();
+
+        let mut state = SplitTuiState::new(hunks);
+        state.active_panel = Panel::Diff;
+
+        // Small visible height to force scrolling
+        let visible_height = 10u16;
+
+        // Move cursor down past visible area
+        for _ in 0..15 {
+            state.move_down();
+            state.adjust_diff_scroll(visible_height);
+        }
+
+        // diff_scroll should be non-zero now
+        assert!(
+            state.diff_scroll > 0,
+            "diff_scroll should be adjusted when cursor moves past visible area"
+        );
+
+        // Move cursor back up
+        for _ in 0..15 {
+            state.move_up();
+            state.adjust_diff_scroll(visible_height);
+        }
+
+        // diff_scroll should return to 3 (first hunk starts after 3 header lines)
+        assert_eq!(
+            state.diff_scroll, 3,
+            "diff_scroll should return to first hunk position when cursor is at top"
+        );
+    }
+
+    #[test]
+    fn test_diff_scroll_zero_height() {
+        let hunks = vec![make_test_hunk("file1.rs", "@@ -1,2 +1,2 @@")];
+        let mut state = SplitTuiState::new(hunks);
+        state.active_panel = Panel::Diff;
+
+        // Should not panic with zero visible height
+        state.adjust_diff_scroll(0);
+        assert_eq!(state.diff_scroll, 0);
+    }
+
+    #[test]
+    fn test_path_truncation_narrow_terminal() {
+        // Simulate the truncation logic with width <= 12 (max_path_len = 0)
+        let path = "src/very/long/path/to/file.rs";
+        let width: u16 = 10; // narrower than 12
+        let max_path_len = width.saturating_sub(12) as usize;
+        let display_path = if max_path_len == 0 {
+            String::new()
+        } else {
+            let chars: Vec<char> = path.chars().collect();
+            if chars.len() > max_path_len {
+                let start_char = chars.len() - max_path_len + 1;
+                format!("…{}", chars[start_char..].iter().collect::<String>())
+            } else {
+                path.to_string()
+            }
+        };
+        assert_eq!(display_path, "");
+    }
+
+    #[test]
+    fn test_path_truncation_non_ascii() {
+        // Non-ASCII path should not panic
+        let path = "src/日本語/ファイル.rs";
+        let width: u16 = 25;
+        let max_path_len = width.saturating_sub(12) as usize; // 13
+        let display_path = if max_path_len == 0 {
+            String::new()
+        } else {
+            let chars: Vec<char> = path.chars().collect();
+            if chars.len() > max_path_len {
+                let start_char = chars.len() - max_path_len + 1;
+                format!("…{}", chars[start_char..].iter().collect::<String>())
+            } else {
+                path.to_string()
+            }
+        };
+        // 'src/日本語/ファイル.rs' is 18 chars, max 13 → truncated
+        assert!(display_path.starts_with('…'));
+        assert!(display_path.len() <= path.len());
     }
 }

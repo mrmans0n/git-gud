@@ -161,6 +161,12 @@ pub fn run(
     let git_dir = repo.commondir();
     let mut config = Config::load_with_global(git_dir)?;
 
+    // Apply config defaults to CLI flags:
+    // - draft: CLI flag OR config setting (either one makes it draft)
+    // - update_descriptions: CLI flag AND config setting (both must be true)
+    let draft = draft || config.get_sync_draft();
+    let update_descriptions = update_descriptions && config.get_sync_update_descriptions();
+
     // Load stack early to validate --until
     let initial_stack = Stack::load(&repo, &config)?;
     if initial_stack.is_empty() {

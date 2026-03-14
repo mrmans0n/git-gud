@@ -63,7 +63,7 @@ fn open_repo() -> Result<git2::Repository, McpToolError> {
 
 /// Load config from repo.
 fn load_config(repo: &git2::Repository) -> Result<Config, McpToolError> {
-    Config::load(repo.commondir()).map_err(McpToolError::ConfigLoad)
+    Config::load_with_global(repo.commondir()).map_err(McpToolError::ConfigLoad)
 }
 
 /// Load current stack.

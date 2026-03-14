@@ -66,6 +66,7 @@ pub fn run(all: bool) -> Result<()> {
 
     // worktree_base_path lives on Config, not Defaults
     if all {
+        print_group_header("Worktrees");
         let effective_worktree = if config_path.exists() {
             config.worktree_base_path.as_deref()
         } else {
@@ -490,8 +491,6 @@ fn prompt_worktree_base_path(
     existing: Option<&str>,
     theme: &ColorfulTheme,
 ) -> Result<Option<String>> {
-    print_group_header("Worktrees");
-
     let input: String = Input::with_theme(theme)
         .with_prompt(
             "Base path template for stack worktrees (variables: {repo}, {stack}, leave empty to disable)",

@@ -83,7 +83,7 @@ impl Provider {
     pub fn detect(repo: &Repository) -> Result<Self> {
         // Try to load config and check for explicit provider setting
         let common_dir = repo.commondir();
-        if let Ok(config) = Config::load(common_dir) {
+        if let Ok(config) = Config::load_with_global(common_dir) {
             if let Some(provider) = config.defaults.provider.as_deref() {
                 return Self::from_name(provider);
             }

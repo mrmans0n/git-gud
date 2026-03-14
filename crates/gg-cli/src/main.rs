@@ -242,7 +242,11 @@ enum Commands {
 
     /// Set up git-gud config for this repository
     #[command(name = "setup")]
-    Setup,
+    Setup {
+        /// Configure all options (grouped by category)
+        #[arg(long)]
+        all: bool,
+    },
 
     /// Absorb staged changes into the appropriate commits
     #[command(name = "absorb")]
@@ -426,7 +430,7 @@ fn main() {
             gg_core::commands::lint::run(until, json, json).map(|_| ()),
             json,
         ),
-        Some(Commands::Setup) => (gg_core::commands::setup::run(), false),
+        Some(Commands::Setup { all }) => (gg_core::commands::setup::run(all), false),
         Some(Commands::Absorb {
             dry_run,
             and_rebase,

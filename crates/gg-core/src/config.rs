@@ -382,10 +382,7 @@ impl Config {
     /// Resolution: hardcoded defaults → global config → repo-local config
     pub fn load_with_global(git_dir: &Path) -> Result<Self> {
         // Start with global (or default if no global exists)
-        let mut config = match Self::load_global()? {
-            Some(global) => global,
-            None => Config::default(),
-        };
+        let mut config: Config = Self::load_global()?.unwrap_or_default();
 
         let local_path = Self::config_path(git_dir);
         if local_path.exists() {

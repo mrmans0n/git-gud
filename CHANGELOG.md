@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-03-14
+
+### Added
+- Global config file support (`~/.config/gg/config.json`) — personal defaults that apply across all repositories (#218)
+- `gg setup --all` flag — full setup mode with all options organized into groups (General, Sync, Land, Lint, Worktrees, GitLab) (#218)
+- `sync_draft` config option — create new PRs/MRs as drafts by default (#218)
+- `sync_update_descriptions` config option — control whether PR/MR descriptions are updated on re-sync (#218)
+
+### Changed
+- `gg setup` (without `--all`) now only asks essential settings: provider, base branch, and username (#218)
+
 ## [0.6.1] - 2026-03-13
 
 ### Added
@@ -278,6 +289,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release with core stacked diffs functionality
 
 [Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.6.1...HEAD
+[0.6.2]: https://github.com/mrmans0n/git-gud/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/mrmans0n/git-gud/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/mrmans0n/git-gud/compare/v0.5.6...v0.6.0
 [0.5.6]: https://github.com/mrmans0n/git-gud/compare/v0.5.5...v0.5.6

@@ -26,7 +26,7 @@ pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
 /// Run clean for a stack with an already-open repository (no lock acquisition)
 pub fn run_for_stack_with_repo(repo: &Repository, stack_name: &str, force: bool) -> Result<()> {
     let git_dir = repo.commondir();
-    let mut config = Config::load(git_dir)?;
+    let mut config = Config::load_with_global(git_dir)?;
 
     // Detect provider (best-effort)
     let provider = Provider::detect(repo).ok();
@@ -143,7 +143,7 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
     }
 
     let git_dir = repo.commondir();
-    let mut config = Config::load(git_dir)?;
+    let mut config = Config::load_with_global(git_dir)?;
 
     // Detect provider (best-effort).
     // Some repos (e.g. local remotes in tests) won't match GitHub/GitLab.

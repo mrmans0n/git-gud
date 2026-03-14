@@ -49,7 +49,7 @@ impl ReconcileActions {
 pub fn run(dry_run: bool) -> Result<()> {
     let repo = git::open_repo()?;
     let git_dir = repo.commondir();
-    let mut config = Config::load(git_dir)?;
+    let mut config = Config::load_with_global(git_dir)?;
 
     // Detect provider
     let provider = Provider::detect(&repo)?;

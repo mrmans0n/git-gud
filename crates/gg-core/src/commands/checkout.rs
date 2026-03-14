@@ -22,7 +22,7 @@ pub fn run(stack_name: Option<String>, base: Option<String>, use_worktree: bool)
     let _lock = git::acquire_operation_lock(&repo, "checkout")?;
 
     let git_dir = repo.commondir();
-    let mut config = Config::load(git_dir)?;
+    let mut config = Config::load_with_global(git_dir)?;
 
     // Get username from config or provider
     let username = config

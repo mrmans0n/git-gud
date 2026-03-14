@@ -76,7 +76,7 @@ pub fn run(all: bool) -> Result<()> {
     // Acquire operation lock to prevent concurrent operations
     let _lock = git::acquire_operation_lock(&repo, "squash")?;
 
-    let config = Config::load(repo.commondir())?;
+    let config = Config::load_with_global(repo.commondir())?;
 
     // Verify we're on a stack
     let stack = Stack::load(&repo, &config)?;

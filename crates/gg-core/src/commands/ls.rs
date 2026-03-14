@@ -16,7 +16,7 @@ use crate::stack::{self, Stack};
 pub fn run(all: bool, refresh: bool, remote: bool, json: bool) -> Result<()> {
     let repo = git::open_repo()?;
     let git_dir = repo.path();
-    let config = Config::load(git_dir)?;
+    let config = Config::load_with_global(git_dir)?;
 
     // Handle --remote flag
     if remote {

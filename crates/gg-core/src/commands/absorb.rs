@@ -34,7 +34,7 @@ pub struct AbsorbOptions {
 /// Run the absorb command
 pub fn run(options: AbsorbOptions) -> Result<()> {
     let repo = git::open_repo()?;
-    let gg_config = Config::load(repo.commondir())?;
+    let gg_config = Config::load_with_global(repo.commondir())?;
 
     // Check if there are staged changes
     let statuses = repo.statuses(None)?;

@@ -159,7 +159,7 @@ pub fn run(
     let _lock = git::acquire_operation_lock(&repo, "sync")?;
 
     let git_dir = repo.commondir();
-    let mut config = Config::load(git_dir)?;
+    let mut config = Config::load_with_global(git_dir)?;
 
     // Load stack early to validate --until
     let initial_stack = Stack::load(&repo, &config)?;

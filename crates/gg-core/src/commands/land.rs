@@ -317,7 +317,7 @@ pub fn run(
     let _lock = git::acquire_operation_lock(&repo, "land")?;
 
     let git_dir = repo.commondir();
-    let mut config = Config::load(git_dir)?;
+    let mut config = Config::load_with_global(git_dir)?;
 
     let provider = Provider::detect(&repo)?;
     provider.check_installed()?;

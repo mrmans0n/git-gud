@@ -9,12 +9,15 @@ This reference is for using `gg` with **GitHub** (`gh` CLI) or **GitLab** (`glab
 gh auth status      # GitHub
 glab auth status    # GitLab
 
-gg setup
+gg setup        # Quick mode: essential settings
+gg setup --all  # Full mode: all settings organized by category
 ```
 
 > **Note:** Network errors during auth check are non-fatal — gg prints a warning and continues. The operation may fail later if authentication is actually required.
 
-Manual config (`.git/gg/config.json`):
+Global config (`~/.config/gg/config.json`) provides defaults for all repos. Local config (`.git/gg/config.json`) overrides global.
+
+Example local config:
 
 ```json
 {
@@ -22,7 +25,9 @@ Manual config (`.git/gg/config.json`):
     "provider": "github",
     "base": "main",
     "branch_username": "your-github-user",
-    "lint": ["cargo fmt --all --check"]
+    "lint": ["cargo fmt --all --check"],
+    "sync_draft": false,
+    "sync_update_descriptions": true
   }
 }
 ```
@@ -147,7 +152,11 @@ Repair metadata after external branch/PR/MR manipulation.
 Resume/abort paused operations.
 
 #### `gg setup`
-Interactive config wizard. Prompts for all configurable fields: provider, base branch, username, lint commands, sync/land behavior, unstaged action, worktree path, and GitLab-specific options. All fields are written to `config.json` for easy manual editing.
+Interactive config wizard.
+- **Quick mode** (`gg setup`): Essential settings (provider, base, username)
+- **Full mode** (`gg setup --all`): All settings organized by category (General, Sync, Land, Lint, Worktrees, GitLab)
+
+Supports global config at `~/.config/gg/config.json` for shared defaults across repos. New fields: `sync_draft` (create PRs as drafts) and `sync_update_descriptions` (update PR descriptions on re-sync).
 
 #### `gg completions <SHELL>`
 Generate shell completion (`bash|elvish|fish|powershell|zsh`).

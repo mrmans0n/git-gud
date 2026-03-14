@@ -24,7 +24,7 @@ pub struct ReorderOptions {
 /// Run the reorder command
 pub fn run(options: ReorderOptions) -> Result<()> {
     let repo = git::open_repo()?;
-    let config = Config::load(repo.commondir())?;
+    let config = Config::load_with_global(repo.commondir())?;
 
     // Require clean working directory
     git::require_clean_working_directory(&repo)?;

@@ -61,6 +61,14 @@ pub struct Defaults {
     /// Default action for `gg amend` when unstaged changes are present (default: ask)
     #[serde(default)]
     pub unstaged_action: UnstagedAction,
+
+    /// Create new PRs/MRs as drafts by default during sync (default: false)
+    #[serde(default)]
+    pub sync_draft: bool,
+
+    /// Update PR/MR descriptions on re-sync (default: true)
+    #[serde(default = "default_true")]
+    pub sync_update_descriptions: bool,
 }
 
 fn default_sync_behind_threshold() -> usize {
@@ -103,6 +111,8 @@ impl Default for Defaults {
             sync_auto_rebase: false,
             sync_behind_threshold: default_sync_behind_threshold(),
             unstaged_action: UnstagedAction::Ask,
+            sync_draft: false,
+            sync_update_descriptions: true,
         }
     }
 }
@@ -329,6 +339,80 @@ impl Config {
     /// Get the default action for `gg amend` when unstaged changes are present.
     pub fn get_unstaged_action(&self) -> UnstagedAction {
         self.defaults.unstaged_action
+    }
+
+    /// Get whether to create PRs/MRs as drafts by default (default: false)
+    pub fn get_sync_draft(&self) -> bool {
+        self.defaults.sync_draft
+    }
+
+    /// Get whether to update PR/MR descriptions on re-sync (default: true)
+    pub fn get_sync_update_descriptions(&self) -> bool {
+        self.defaults.sync_update_descriptions
+    }
+
+    // ============ Global config loading ============
+
+    /// Get the global config directory path (~/.config/gg)
+    /// Uses home directory to ensure consistent cross-platform behavior
+    pub fn global_config_dir() -> Option<PathBuf> {
+        dirs::home_dir().map(|h| h.join(".config").join("gg"))
+    }
+
+    /// Get the global config file path (~/.config/gg/config.json)
+    pub fn global_config_path() -> Option<PathBuf> {
+        Self::global_config_dir().map(|d| d.join("config.json"))
+    }
+
+    /// Load global config from ~/.config/gg/config.json
+    /// Returns None if the file doesn't exist
+    pub fn load_global() -> Result<Option<Config>> {
+        let Some(path) = Self::global_config_path() else {
+            return Ok(None);
+        };
+        if !path.exists() {
+            return Ok(None);
+        }
+        let contents = fs::read_to_string(&path)?;
+        let config: Config = serde_json::from_str(&contents)?;
+        Ok(Some(config))
+    }
+
+    /// Load config with global defaults applied first, then repo-local on top.
+    /// Resolution: hardcoded defaults → global config → repo-local config
+    pub fn load_with_global(git_dir: &Path) -> Result<Self> {
+        // Start with global (or default if no global exists)
+        let mut config: Config = Self::load_global()?.unwrap_or_default();
+
+        let local_path = Self::config_path(git_dir);
+        if local_path.exists() {
+            let lock = Self::acquire_lock(git_dir, /*exclusive=*/ false)?;
+            let contents = fs::read_to_string(&local_path)?;
+            let local: Config = serde_json::from_str(&contents)?;
+            drop(lock);
+
+            // Local overrides global
+            config.merge_local(local);
+        }
+
+        Ok(config)
+    }
+
+    /// Merge a local config on top of self (global).
+    /// Local stacks always replace. Local defaults override global defaults.
+    /// worktree_base_path from local overrides global if set.
+    fn merge_local(&mut self, local: Config) {
+        // Stacks are always local
+        self.stacks = local.stacks;
+
+        // worktree_base_path: local wins if present
+        if local.worktree_base_path.is_some() {
+            self.worktree_base_path = local.worktree_base_path;
+        }
+
+        // Defaults: local wins entirely (since we serialize all fields,
+        // the local JSON will have explicit values for every field)
+        self.defaults = local.defaults;
     }
 
     /// Render the target worktree path for a stack.
@@ -623,5 +707,123 @@ mod tests {
         let config: Config =
             serde_json::from_str(r#"{"defaults":{"unstaged_action":"add"}}"#).unwrap();
         assert_eq!(config.get_unstaged_action(), UnstagedAction::Add);
+    }
+
+    // ============ Tests for sync_draft and sync_update_descriptions ============
+
+    #[test]
+    fn test_sync_draft_default_is_false() {
+        let config = Config::default();
+        assert!(!config.get_sync_draft());
+    }
+
+    #[test]
+    fn test_sync_draft_enabled() {
+        let mut config = Config::default();
+        config.defaults.sync_draft = true;
+        assert!(config.get_sync_draft());
+    }
+
+    #[test]
+    fn test_sync_draft_roundtrip() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_dir = temp_dir.path();
+
+        let mut config = Config::default();
+        config.defaults.sync_draft = true;
+
+        config.save(git_dir).unwrap();
+
+        let loaded = Config::load(git_dir).unwrap();
+        assert!(loaded.get_sync_draft());
+    }
+
+    #[test]
+    fn test_sync_update_descriptions_default_is_true() {
+        let config = Config::default();
+        assert!(config.get_sync_update_descriptions());
+    }
+
+    #[test]
+    fn test_sync_update_descriptions_disabled() {
+        let mut config = Config::default();
+        config.defaults.sync_update_descriptions = false;
+        assert!(!config.get_sync_update_descriptions());
+    }
+
+    #[test]
+    fn test_sync_update_descriptions_roundtrip() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_dir = temp_dir.path();
+
+        let mut config = Config::default();
+        config.defaults.sync_update_descriptions = false;
+
+        config.save(git_dir).unwrap();
+
+        let loaded = Config::load(git_dir).unwrap();
+        assert!(!loaded.get_sync_update_descriptions());
+    }
+
+    #[test]
+    fn test_sync_draft_deserializes_to_default_when_missing() {
+        let config: Config = serde_json::from_str(r#"{"defaults":{"base":"main"}}"#).unwrap();
+        assert!(!config.get_sync_draft());
+    }
+
+    #[test]
+    fn test_sync_update_descriptions_deserializes_to_default_when_missing() {
+        let config: Config = serde_json::from_str(r#"{"defaults":{"base":"main"}}"#).unwrap();
+        assert!(config.get_sync_update_descriptions());
+    }
+
+    // ============ Tests for global config loading ============
+
+    #[test]
+    fn test_global_config_path_returns_some() {
+        // Should return a path on any system with a home directory
+        let path = Config::global_config_path();
+        assert!(path.is_some());
+        let path = path.unwrap();
+        assert!(path.to_string_lossy().contains("gg"));
+        assert!(path.to_string_lossy().contains("config.json"));
+    }
+
+    #[test]
+    fn test_load_global_returns_none_when_no_file() {
+        // Just check that load_global handles missing file gracefully
+        // (The actual test would need to mock the home directory)
+        let result = Config::load_global();
+        // Should either return Ok(None) or Ok(Some(config)) - not an error
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_load_with_global_uses_local_when_present() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_dir = temp_dir.path();
+
+        // Create a local config
+        let mut config = Config::default();
+        config.defaults.base = Some("develop".to_string());
+        config.defaults.sync_draft = true;
+        config.save(git_dir).unwrap();
+
+        // Load with global should use local values
+        let loaded = Config::load_with_global(git_dir).unwrap();
+        assert_eq!(loaded.defaults.base, Some("develop".to_string()));
+        assert!(loaded.get_sync_draft());
+    }
+
+    #[test]
+    fn test_load_with_global_returns_default_when_no_configs() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_dir = temp_dir.path();
+
+        // No local config exists, global may or may not exist
+        let loaded = Config::load_with_global(git_dir).unwrap();
+        // Should at least have default values
+        assert!(!loaded.get_sync_draft()); // Default
+        assert!(loaded.get_sync_update_descriptions()); // Default is true
     }
 }

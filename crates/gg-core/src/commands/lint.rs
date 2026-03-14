@@ -20,7 +20,7 @@ use crate::stack::{Stack, StackEntry};
 /// `Ok(false)` when one or more commits had lint failures.
 pub fn run(until: Option<usize>, json: bool, emit_json_output: bool) -> Result<bool> {
     let repo = git::open_repo()?;
-    let config = Config::load(repo.commondir())?;
+    let config = Config::load_with_global(repo.commondir())?;
 
     // Require clean working directory
     git::require_clean_working_directory(&repo)?;

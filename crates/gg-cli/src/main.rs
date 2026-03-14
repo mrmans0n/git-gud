@@ -242,7 +242,11 @@ enum Commands {
 
     /// Set up git-gud config for this repository
     #[command(name = "setup")]
-    Setup,
+    Setup {
+        /// Configure all options (grouped by category)
+        #[arg(long)]
+        all: bool,
+    },
 
     /// Absorb staged changes into the appropriate commits
     #[command(name = "absorb")]
@@ -333,7 +337,7 @@ fn main() {
             } else {
                 // No explicit flag, use config default
                 match gg_core::git::open_repo()
-                    .and_then(|repo| gg_core::config::Config::load(repo.commondir()))
+                    .and_then(|repo| gg_core::config::Config::load_with_global(repo.commondir()))
                 {
                     Ok(cfg) => cfg.get_sync_auto_lint(),
                     Err(_) => false, // If we can't load config, default to false
@@ -404,7 +408,7 @@ fn main() {
             } else {
                 // No explicit flag, use config default
                 match gg_core::git::open_repo()
-                    .and_then(|repo| gg_core::config::Config::load(repo.commondir()))
+                    .and_then(|repo| gg_core::config::Config::load_with_global(repo.commondir()))
                 {
                     Ok(cfg) => cfg.get_land_auto_clean(),
                     Err(_) => false, // If we can't load config, default to false
@@ -426,7 +430,7 @@ fn main() {
             gg_core::commands::lint::run(until, json, json).map(|_| ()),
             json,
         ),
-        Some(Commands::Setup) => (gg_core::commands::setup::run(), false),
+        Some(Commands::Setup { all }) => (gg_core::commands::setup::run(all), false),
         Some(Commands::Absorb {
             dry_run,
             and_rebase,

@@ -159,7 +159,14 @@ pub fn run(
     let _lock = git::acquire_operation_lock(&repo, "sync")?;
 
     let git_dir = repo.commondir();
-    let mut config = Config::load(git_dir)?;
+    let mut config = Config::load_with_global(git_dir)?;
+
+    // Apply config defaults to CLI flags:
+    // - draft: CLI flag OR config setting (either one enables drafts)
+    // - update_descriptions: CLI flag OR config setting (either one enables updates;
+    //   set sync_update_descriptions: false in config to opt out)
+    let draft = draft || config.get_sync_draft();
+    let update_descriptions = update_descriptions || config.get_sync_update_descriptions();
 
     // Load stack early to validate --until
     let initial_stack = Stack::load(&repo, &config)?;

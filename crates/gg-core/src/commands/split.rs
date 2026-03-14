@@ -84,7 +84,7 @@ impl std::fmt::Display for ChangedFile {
 pub fn run(options: SplitOptions) -> Result<()> {
     let repo = git::open_repo()?;
     let _lock = git::acquire_operation_lock(&repo, "split")?;
-    let config = Config::load(repo.commondir())?;
+    let config = Config::load_with_global(repo.commondir())?;
 
     git::require_clean_working_directory(&repo)?;
 

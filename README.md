@@ -230,6 +230,15 @@ gg clean
 
 Configuration is stored in `.git/gg/config.json`. Run `gg setup` to generate it interactively:
 
+```bash
+gg setup        # Quick mode: essential settings (provider, base, username)
+gg setup --all  # Full mode: all settings organized by category
+```
+
+Global defaults can be stored in `~/.config/gg/config.json` and apply to all repos.
+
+Example config:
+
 ```json
 {
   "defaults": {
@@ -240,7 +249,9 @@ Configuration is stored in `.git/gg/config.json`. Run `gg setup` to generate it 
       "cargo fmt --check",
       "cargo clippy -- -D warnings"
     ],
-    "unstaged_action": "ask"
+    "unstaged_action": "ask",
+    "sync_draft": false,
+    "sync_update_descriptions": true
   },
   "stacks": {
     "my-feature": {

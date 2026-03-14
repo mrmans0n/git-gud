@@ -9,13 +9,25 @@ use crate::error::{GgError, Result};
 use crate::git;
 use crate::provider::Provider;
 
+/// Print a styled group header for full setup mode
+fn print_group_header(name: &str) {
+    println!();
+    println!("{}", style(format!("── {} ──", name)).cyan().bold());
+}
+
 /// Run the setup command
-pub fn run() -> Result<()> {
+///
+/// - Quick mode (all=false): Only essential settings (provider, base, username)
+/// - Full mode (all=true): All settings organized into groups
+pub fn run(all: bool) -> Result<()> {
     let repo = git::open_repo()?;
     let git_dir = repo.commondir();
     let config_path = Config::config_path(git_dir);
     let mut config = Config::load(git_dir)?;
     let theme = ColorfulTheme::default();
+
+    // Load global config to use as effective defaults
+    let global = Config::load_global()?.unwrap_or_default();
 
     if config_path.exists() {
         let proceed = Confirm::with_theme(&theme)
@@ -38,12 +50,30 @@ pub fn run() -> Result<()> {
         );
     }
 
-    let defaults = prompt_defaults(&repo, &config.defaults, &theme)?;
+    // Use global defaults as starting point when local config doesn't exist
+    let effective_defaults = if config_path.exists() {
+        &config.defaults
+    } else {
+        &global.defaults
+    };
+
+    let defaults = if all {
+        prompt_defaults_full(&repo, effective_defaults, &theme)?
+    } else {
+        prompt_defaults_quick(&repo, effective_defaults, &theme)?
+    };
     config.defaults = defaults;
 
     // worktree_base_path lives on Config, not Defaults
-    config.worktree_base_path =
-        prompt_worktree_base_path(config.worktree_base_path.as_deref(), &theme)?;
+    if all {
+        print_group_header("Worktrees");
+        let effective_worktree = if config_path.exists() {
+            config.worktree_base_path.as_deref()
+        } else {
+            global.worktree_base_path.as_deref()
+        };
+        config.worktree_base_path = prompt_worktree_base_path(effective_worktree, &theme)?;
+    }
 
     config.save(git_dir)?;
 
@@ -53,10 +83,22 @@ pub fn run() -> Result<()> {
         style(config_path.display()).cyan()
     );
 
+    if !all {
+        println!();
+        println!(
+            "{}",
+            style(
+                "Tip: Run 'gg setup --all' to configure advanced options (sync, land, lint, etc.)"
+            )
+            .dim()
+        );
+    }
+
     Ok(())
 }
 
-fn prompt_defaults(
+/// Quick mode: Only essential settings
+fn prompt_defaults_quick(
     repo: &git2::Repository,
     existing: &Defaults,
     theme: &ColorfulTheme,
@@ -70,39 +112,64 @@ fn prompt_defaults(
         defaults.provider.as_deref(),
         theme,
     )?;
-    defaults.lint = prompt_lint_commands(repo, &existing.lint, theme)?;
 
-    // Ask about auto-lint only if lint commands are configured
-    if !defaults.lint.is_empty() {
-        defaults.sync_auto_lint = prompt_sync_auto_lint(existing.sync_auto_lint, theme)?;
-    }
+    Ok(defaults)
+}
 
-    // --- Additional configuration fields ---
+/// Full mode: All settings organized into groups
+fn prompt_defaults_full(
+    repo: &git2::Repository,
+    existing: &Defaults,
+    theme: &ColorfulTheme,
+) -> Result<Defaults> {
+    let mut defaults = existing.clone();
 
+    // ── General ──
+    print_group_header("General");
+    defaults.provider = prompt_provider(repo, existing.provider.as_deref(), theme)?;
+    defaults.base = prompt_base_branch(repo, existing.base.as_deref(), theme)?;
+    defaults.branch_username = prompt_branch_username(
+        existing.branch_username.as_deref(),
+        defaults.provider.as_deref(),
+        theme,
+    )?;
     defaults.auto_add_gg_ids = Confirm::with_theme(theme)
         .with_prompt("Automatically add GG-IDs to commits? (tracks commit-to-PR mapping)")
         .default(existing.auto_add_gg_ids)
         .interact()
         .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?;
+    defaults.unstaged_action = prompt_unstaged_action(existing.unstaged_action, theme)?;
 
+    // ── Sync ──
+    print_group_header("Sync");
     defaults.sync_auto_rebase = Confirm::with_theme(theme)
         .with_prompt("Automatically rebase before sync when base is behind origin?")
         .default(existing.sync_auto_rebase)
         .interact()
         .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?;
-
     defaults.sync_behind_threshold = Input::with_theme(theme)
         .with_prompt("Number of commits behind origin before warning/rebase during sync")
         .default(existing.sync_behind_threshold)
         .interact_text()
         .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?;
+    defaults.sync_draft = Confirm::with_theme(theme)
+        .with_prompt("Create new PRs/MRs as drafts by default?")
+        .default(existing.sync_draft)
+        .interact()
+        .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?;
+    defaults.sync_update_descriptions = Confirm::with_theme(theme)
+        .with_prompt("Update PR/MR descriptions on re-sync?")
+        .default(existing.sync_update_descriptions)
+        .interact()
+        .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?;
 
+    // ── Land ──
+    print_group_header("Land");
     defaults.land_auto_clean = Confirm::with_theme(theme)
         .with_prompt("Automatically clean up stack after landing all PRs/MRs?")
         .default(existing.land_auto_clean)
         .interact()
         .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?;
-
     let effective_timeout = existing.land_wait_timeout_minutes.unwrap_or(30);
     let timeout: u64 = Input::with_theme(theme)
         .with_prompt("Timeout in minutes for `gg land --wait`")
@@ -111,10 +178,17 @@ fn prompt_defaults(
         .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?;
     defaults.land_wait_timeout_minutes = Some(timeout);
 
-    defaults.unstaged_action = prompt_unstaged_action(existing.unstaged_action, theme)?;
+    // ── Lint ──
+    print_group_header("Lint");
+    defaults.lint = prompt_lint_commands(repo, &existing.lint, theme)?;
+    // Ask about auto-lint only if lint commands are configured
+    if !defaults.lint.is_empty() {
+        defaults.sync_auto_lint = prompt_sync_auto_lint(existing.sync_auto_lint, theme)?;
+    }
 
-    // GitLab-specific options
+    // ── GitLab ── (only if provider is GitLab)
     if defaults.provider.as_deref() == Some("gitlab") {
+        print_group_header("GitLab");
         defaults.gitlab.auto_merge_on_land = Confirm::with_theme(theme)
             .with_prompt("Use GitLab auto-merge ('merge when pipeline succeeds') when landing?")
             .default(existing.gitlab.auto_merge_on_land)

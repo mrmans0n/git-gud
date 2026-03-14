@@ -38,6 +38,7 @@ regex = "1"
 ctrlc = "3"
 atty = "0.2"
 fs2 = "0.4"
+dirs = "6"
 
 # TUI (for split interactive mode)
 ratatui = "0.30"

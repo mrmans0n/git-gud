@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-03-17
+
+### Improved
+- `gg sync` auto-rebase UX: when `auto_rebase` is enabled, the warning now says "Auto-rebasing..." instead of the confusing "Run 'gg rebase' first to update." (#219)
+
 ## [0.6.2] - 2026-03-14
 
 ### Added
@@ -289,6 +294,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release with core stacked diffs functionality
 
 [Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.6.1...HEAD
+[0.6.3]: https://github.com/mrmans0n/git-gud/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/mrmans0n/git-gud/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/mrmans0n/git-gud/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/mrmans0n/git-gud/compare/v0.5.6...v0.6.0

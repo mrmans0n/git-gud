@@ -47,6 +47,20 @@ fn maybe_rebase_if_base_is_behind(
         .map(|provider| format!("{}s", provider.pr_label()))
         .unwrap_or_else(|| "PRs/MRs".to_string());
 
+    if config.get_sync_auto_rebase() {
+        if !json {
+            println!(
+                "{} Your stack is {} commits behind origin/{}. {} may show unrelated changes. Auto-rebasing...",
+                style("⚠").yellow().bold(),
+                behind,
+                base_branch,
+                prs_label
+            );
+        }
+        crate::commands::rebase::run_with_repo(repo, None, json)?;
+        return Ok(true);
+    }
+
     if !json {
         println!(
             "{} Your stack is {} commits behind origin/{}. {} may show unrelated changes. Run 'gg rebase' first to update.",
@@ -55,11 +69,6 @@ fn maybe_rebase_if_base_is_behind(
             base_branch,
             prs_label
         );
-    }
-
-    if config.get_sync_auto_rebase() {
-        crate::commands::rebase::run_with_repo(repo, None, json)?;
-        return Ok(true);
     }
 
     if json {

@@ -5012,6 +5012,62 @@ fn test_worktree_shared_lock() {
 }
 
 #[test]
+fn test_lint_resolves_git_paths_in_worktree() {
+    let (_parent_dir, repo_path) = create_test_repo_with_worktree_support();
+
+    // Create a lint script inside the main repo's .git/gg/ directory
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+
+    let lint_script = gg_dir.join("lint.sh");
+    fs::write(&lint_script, "#!/bin/sh\nexit 0\n").expect("Failed to write lint script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&lint_script, fs::Permissions::from_mode(0o755))
+            .expect("Failed to set script permissions");
+    }
+
+    // Configure lint to use ./.git/gg/lint.sh
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","lint":["./.git/gg/lint.sh"]}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a worktree
+    let worktree_path = create_worktree(&repo_path, "wt-lint-test");
+
+    // Create a stack and a commit in the worktree
+    let (success, _, stderr) = run_gg(&worktree_path, &["co", "lint-stack"]);
+    assert!(success, "checkout should succeed: {}", stderr);
+
+    run_git(
+        &worktree_path,
+        &[
+            "commit",
+            "--allow-empty",
+            "-m",
+            "test commit\n\nGG-ID: c-lint001",
+        ],
+    );
+
+    // Run lint from the worktree – this should resolve ./.git/gg/lint.sh
+    // to the main repo's .git/gg/lint.sh via commondir
+    let (success, stdout, stderr) = run_gg(&worktree_path, &["lint"]);
+    assert!(
+        success,
+        "lint should succeed in worktree: stdout={}, stderr={}",
+        stdout, stderr
+    );
+    assert!(
+        stdout.contains("OK") || stdout.contains("Linted"),
+        "Expected lint success output, got: {}",
+        stdout
+    );
+}
+
+#[test]
 fn test_gg_checkout_with_worktree_creates_worktree_and_preserves_main_repo_head() {
     let (_temp_dir, repo_path) = create_test_repo();
 

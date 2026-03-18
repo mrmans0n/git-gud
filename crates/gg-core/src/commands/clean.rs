@@ -430,24 +430,38 @@ fn check_stack_merged(
         if !stack_config.mrs.is_empty() {
             if let Some(provider) = provider {
                 let mut all_merged = true;
-                let mut provider_verified = true;
-                for mr_num in stack_config.mrs.values() {
+                let mut any_not_merged = false;
+                let mut any_provider_error = false;
+
+                for (gg_id, mr_num) in &stack_config.mrs {
                     match provider.get_pr_info(*mr_num) {
                         Ok(info) => {
                             if info.state != PrState::Merged {
+                                any_not_merged = true;
                                 all_merged = false;
                             }
                         }
-                        Err(_) => {
+                        Err(e) => {
                             // PR/MR might be deleted or inaccessible.
-                            provider_verified = false;
-                            all_merged = false;
-                            break;
+                            // Log the error for debugging but continue checking other MRs.
+                            eprintln!(
+                                "{} Could not fetch MR #{} ({}): {}",
+                                console::style("Debug:").dim(),
+                                mr_num,
+                                gg_id,
+                                e
+                            );
+                            any_provider_error = true;
                         }
                     }
-                    if !all_merged {
-                        break;
-                    }
+                }
+
+                // If we found any MR that is explicitly NOT merged, the stack is not merged
+                if any_not_merged {
+                    return Ok(MergeStatus {
+                        merged: false,
+                        verified: true,
+                    });
                 }
 
                 // Note: we intentionally do NOT call verify_commits_reachable here.
@@ -455,12 +469,16 @@ fn check_stack_merged(
                 // what's on the base branch, so a revwalk check would incorrectly report
                 // unmerged commits. The provider API confirmation is authoritative.
 
-                if all_merged {
+                // If all checked MRs are merged (and at least one was checked successfully)
+                if all_merged && !any_provider_error {
                     return Ok(MergeStatus {
                         merged: true,
-                        verified: provider_verified,
+                        verified: true,
                     });
                 }
+
+                // If some MRs had errors but none were explicitly not-merged,
+                // fall through to ancestor check for additional verification
             }
         }
     }
@@ -468,11 +486,26 @@ fn check_stack_merged(
     // Fallback: check if stack branch is ancestor of base.
     // This supports local/manual merge simulations even when provider checks are unavailable
     // or cannot be trusted.
-    let merged = is_stack_branch_ancestor_of_base(repo, config, stack_name, username)?;
+    let local_merged = is_stack_branch_ancestor_of_base(repo, config, stack_name, username)?;
+
+    if !local_merged {
+        return Ok(MergeStatus {
+            merged: false,
+            verified: false,
+        });
+    }
+
+    // Local check passed. If a provider exists, also verify against remote base branch.
+    // This provides confidence that the merge is complete on the server side.
+    let remote_verified = if provider.is_some() {
+        is_stack_branch_ancestor_of_remote_base(repo, config, stack_name, username).unwrap_or(false)
+    } else {
+        false
+    };
 
     Ok(MergeStatus {
-        merged,
-        verified: false,
+        merged: true,
+        verified: remote_verified,
     })
 }
 
@@ -501,6 +534,42 @@ fn is_stack_branch_ancestor_of_base(
     let base_oid = base_ref.id();
 
     Ok(repo.merge_base(stack_oid, base_oid)? == stack_oid)
+}
+
+/// Check if stack branch is an ancestor of the remote base branch (origin/<base>).
+/// This provides stronger verification that the merge is complete on the server.
+fn is_stack_branch_ancestor_of_remote_base(
+    repo: &git2::Repository,
+    config: &Config,
+    stack_name: &str,
+    username: &str,
+) -> Result<bool> {
+    let branch_name = git::format_stack_branch(username, stack_name);
+
+    // Get base branch
+    let base = config
+        .get_base_for_stack(stack_name)
+        .map(|s| s.to_string())
+        .or_else(|| git::find_base_branch(repo).ok())
+        .ok_or(GgError::NoBaseBranch)?;
+
+    // Get stack branch commit
+    let stack_ref = repo.revparse_single(&branch_name)?;
+    let stack_oid = stack_ref.id();
+
+    // Try to get origin/<base> - if it doesn't exist, we can't verify
+    let remote_base = format!("origin/{}", base);
+    let remote_ref = match repo.revparse_single(&remote_base) {
+        Ok(r) => r,
+        Err(_) => {
+            // Remote tracking branch doesn't exist - can't verify
+            return Ok(false);
+        }
+    };
+    let remote_oid = remote_ref.id();
+
+    // Check if stack branch is an ancestor of origin/<base>
+    Ok(repo.merge_base(stack_oid, remote_oid)? == stack_oid)
 }
 
 #[allow(dead_code)]

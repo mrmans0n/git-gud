@@ -428,20 +428,45 @@ fn check_stack_merged(
     // verification and must be conservative about remote branch deletion.
     let mut had_provider_error = false;
 
+    // Track whether we actually consulted the provider API. If we have a provider
+    // configured but never called it (e.g., no MRs tracked), we cannot claim
+    // verified=true based on provider existence alone.
+    let mut provider_was_consulted = false;
+
+    // Track MRs that are Closed (not Merged). These need ancestry fallback
+    // because the commits may have been landed manually/directly.
+    let mut any_explicitly_open = false;
+
     // Primary method: check if all MRs are merged.
     // This works correctly with squash and rebase merges.
     if let Some(stack_config) = config.get_stack(stack_name) {
         if !stack_config.mrs.is_empty() {
             if let Some(provider) = provider {
-                let mut all_merged = true;
-                let mut any_not_merged = false;
+                let mut all_provider_merged = true;
 
                 for (gg_id, mr_num) in &stack_config.mrs {
                     match provider.get_pr_info(*mr_num) {
                         Ok(info) => {
-                            if info.state != PrState::Merged {
-                                any_not_merged = true;
-                                all_merged = false;
+                            provider_was_consulted = true;
+                            match info.state {
+                                PrState::Merged => {
+                                    // Explicitly merged - good
+                                }
+                                PrState::Open | PrState::Draft => {
+                                    // Explicitly open/draft - NOT merged
+                                    any_explicitly_open = true;
+                                    all_provider_merged = false;
+                                }
+                                PrState::Closed => {
+                                    // Closed but not merged. This can happen when:
+                                    // - MR was closed without merging (genuinely unmerged)
+                                    // - Commits were landed manually (cherry-pick, direct push)
+                                    //   and MR was auto-closed or manually closed after.
+                                    //
+                                    // We cannot distinguish these cases from provider state alone.
+                                    // Mark as not-provider-merged but allow ancestry fallback.
+                                    all_provider_merged = false;
+                                }
                             }
                         }
                         Err(e) => {
@@ -455,12 +480,14 @@ fn check_stack_merged(
                                 e
                             );
                             had_provider_error = true;
+                            provider_was_consulted = true; // We tried, it failed
                         }
                     }
                 }
 
-                // If we found any MR that is explicitly NOT merged, the stack is not merged
-                if any_not_merged {
+                // If we found any MR that is explicitly Open/Draft, the stack is not merged.
+                // (Closed MRs are ambiguous and need ancestry check.)
+                if any_explicitly_open {
                     return Ok(MergeStatus {
                         merged: false,
                         verified: true,
@@ -472,24 +499,25 @@ fn check_stack_merged(
                 // what's on the base branch, so a revwalk check would incorrectly report
                 // unmerged commits. The provider API confirmation is authoritative.
 
-                // If all checked MRs are merged (and NO provider errors occurred)
-                if all_merged && !had_provider_error {
+                // If all checked MRs are Merged (and NO provider errors occurred)
+                if all_provider_merged && !had_provider_error {
                     return Ok(MergeStatus {
                         merged: true,
                         verified: true,
                     });
                 }
 
-                // If some MRs had errors but none were explicitly not-merged,
-                // fall through to ancestor check for merge determination.
-                // However, we will NOT allow verified=true due to the provider error.
+                // If some MRs are Closed or had errors, fall through to ancestor check.
+                // Closed MRs may have had their commits landed manually.
             }
         }
     }
 
     // Fallback: check if stack branch is ancestor of base.
-    // This supports local/manual merge simulations even when provider checks are unavailable
-    // or cannot be trusted.
+    // This supports:
+    // - Local/manual merge simulations when provider checks are unavailable
+    // - Closed MRs where commits were landed manually (cherry-pick, direct push)
+    // - Stacks with no tracked MRs
     let local_merged = is_stack_branch_ancestor_of_base(repo, config, stack_name, username)?;
 
     if !local_merged {
@@ -498,6 +526,8 @@ fn check_stack_merged(
             verified: false,
         });
     }
+
+    // Stack is locally merged (ancestor of base). Now determine verification status.
 
     // SAFETY: If we had ANY provider error while checking MRs, we must NOT
     // allow verified=true. This prevents remote branch deletion when the
@@ -509,12 +539,30 @@ fn check_stack_merged(
         });
     }
 
-    // Local check passed. If a provider exists, also verify against remote base branch.
+    // SAFETY: If provider exists but was never consulted (no MRs tracked),
+    // we cannot claim verification. The provider might have info we didn't check.
+    // Remote branch deletion requires explicit provider confirmation OR
+    // ancestry verification after successful provider consultation.
+    if provider.is_some() && !provider_was_consulted {
+        return Ok(MergeStatus {
+            merged: true,
+            verified: false,
+        });
+    }
+
+    // Local check passed and either:
+    // - No provider configured (local-only workflow)
+    // - Provider was consulted without errors (but some MRs were Closed, not Merged)
+    //
+    // For the Closed MR case: if ancestry check passed, the commits ARE in base,
+    // so they were landed somehow. Safe to clean up.
+    //
+    // For additional safety with a provider, also verify against remote base branch.
     // This provides confidence that the merge is complete on the server side.
     // IMPORTANT: For stacked PRs, we must verify that ALL entry branches are merged,
     // not just the stack tip. Otherwise we could delete remote branches for MRs that
     // are still open. This includes orphan entry branches discovered via pattern scan.
-    let remote_verified = if provider.is_some() {
+    let remote_verified = if provider.is_some() && provider_was_consulted {
         let stack_merged =
             is_stack_branch_ancestor_of_remote_base(repo, config, stack_name, username)
                 .unwrap_or(false);

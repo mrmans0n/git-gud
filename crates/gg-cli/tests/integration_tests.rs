@@ -18,9 +18,9 @@ fn create_test_repo() -> (TempDir, PathBuf) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let repo_path = temp_dir.path().to_path_buf();
 
-    // Initialize git repo
+    // Initialize git repo with explicit main branch (for CI compatibility)
     Command::new("git")
-        .args(["init"])
+        .args(["init", "--initial-branch=main"])
         .current_dir(&repo_path)
         .output()
         .expect("Failed to init git repo");
@@ -6153,5 +6153,64 @@ fn test_clean_local_branches_still_deleted_when_verification_fails() {
         stdout.contains("Deleted stack 'local-clean-test'"),
         "Stack should be cleaned. stdout: {}",
         stdout
+    );
+}
+
+#[test]
+fn test_clean_no_mrs_tracked_verified_false() {
+    // Test that when provider is configured but no MRs are tracked,
+    // verified=false (provider wasn't consulted).
+    // This ensures we don't claim verification without actually checking.
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+
+    // Set up config with provider but NO MRs tracked
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","base":"main","provider":"github"},"stacks":{"no-mr-test":{}}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create stack branch
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "no-mr-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("file.txt"), "content").expect("Failed to write");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "feat: feature"]);
+
+    // Push to remote so there's a remote branch to potentially delete
+    run_git(&repo_path, &["push", "-u", "origin", "testuser/no-mr-test"]);
+
+    // Merge into main
+    run_git(&repo_path, &["checkout", "main"]);
+    let (success, _) = run_git(&repo_path, &["merge", "--ff-only", "testuser/no-mr-test"]);
+    assert!(success, "Expected fast-forward merge to succeed");
+    run_git(&repo_path, &["push", "origin", "main"]);
+
+    // Run clean
+    let (success, stdout, stderr) = run_gg(&repo_path, &["clean", "--all"]);
+    assert!(
+        success,
+        "clean --all should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+
+    // Should show warning about skipping remote branch deletion
+    // because provider wasn't consulted (no MRs to check)
+    assert!(
+        stdout.contains("Skipping remote branch deletion"),
+        "Should skip remote deletion when provider not consulted. stdout: {}, stderr: {}",
+        stdout,
+        stderr
+    );
+
+    // Remote branch should still exist
+    let (_, remote_branches, _) = run_git_full(&repo_path, &["branch", "-r"]);
+    assert!(
+        remote_branches.contains("origin/testuser/no-mr-test"),
+        "Remote branch should NOT be deleted when verified=false. Branches: {}",
+        remote_branches
     );
 }

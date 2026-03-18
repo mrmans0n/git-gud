@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-03-18
+
+### Fixed
+- Resolve `.git/` paths via `commondir()` for worktree support — lint scripts in `.git/gg/` now work in linked worktrees (#221)
+- Allow remote branch deletion in `gg clean` when provider check fails but ancestor check passes (#220)
+
 ## [0.6.3] - 2026-03-17
 
 ### Improved
@@ -293,7 +299,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.6.4...HEAD
+[0.6.4]: https://github.com/mrmans0n/git-gud/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/mrmans0n/git-gud/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/mrmans0n/git-gud/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/mrmans0n/git-gud/compare/v0.6.0...v0.6.1

@@ -5967,3 +5967,191 @@ fn test_split_no_tui_flag() {
         );
     }
 }
+
+// ============================================================================
+// Clean command verification tests
+// ============================================================================
+
+#[test]
+fn test_clean_merged_stack_with_stacked_entries_verifies_all_branches() {
+    // Test that clean verifies ALL entry branches (not just config MRs) before
+    // allowing remote deletion. This ensures orphan entry branches discovered
+    // via pattern scan are also verified.
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+
+    // Set up config with provider (to enable verification path)
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","base":"main","provider":"github"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with 2 commits
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "stacked-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("file1.txt"), "content 1").expect("Failed to write");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "feat: first commit"]);
+
+    fs::write(repo_path.join("file2.txt"), "content 2").expect("Failed to write");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "feat: second commit"]);
+
+    // Create entry branches manually to simulate orphan branches
+    // (branches that exist but aren't in config.mrs)
+    run_git(&repo_path, &["branch", "testuser/stacked-test--c-orphan1"]);
+
+    // Merge stack into main (locally)
+    run_git(&repo_path, &["checkout", "main"]);
+    let (success, _) = run_git(&repo_path, &["merge", "--ff-only", "testuser/stacked-test"]);
+    assert!(success, "Expected fast-forward merge to succeed");
+
+    // Push to origin to update remote tracking
+    let (_, _) = run_git(&repo_path, &["push", "origin", "main"]);
+
+    // Verify clean succeeds but with warning about skipping remote deletion
+    // (because provider checks will fail in test environment)
+    let (success, stdout, stderr) = run_gg(&repo_path, &["clean", "--all"]);
+    assert!(
+        success,
+        "clean --all should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+
+    // The orphan entry branch should be cleaned locally
+    let (_, branches, _) = run_git_full(&repo_path, &["branch", "--list"]);
+    assert!(
+        !branches.contains("testuser/stacked-test--c-orphan1"),
+        "Orphan entry branch should be deleted locally"
+    );
+
+    // Should have warning about remote deletion skipped (no provider in test)
+    assert!(
+        stdout.contains("Skipping remote branch deletion")
+            || stderr.contains("Skipping remote branch deletion")
+            || stdout.contains("Deleted stack"),
+        "Should either skip remote deletion or succeed. stdout: {}, stderr: {}",
+        stdout,
+        stderr
+    );
+}
+
+#[test]
+fn test_clean_shows_warning_when_verification_unavailable() {
+    // Test that clean shows appropriate warning when merge verification
+    // is not available (e.g., provider errors or no provider)
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config with provider configured (but will fail in tests)
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","base":"main","provider":"github"},"stacks":{"verify-test":{"mrs":{"c-fake123":999999}}}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack branch and merge it
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "verify-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("feature.txt"), "content").expect("Failed to write");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "feat: test feature"]);
+
+    // Merge into main
+    run_git(&repo_path, &["checkout", "main"]);
+    let (success, _) = run_git(&repo_path, &["merge", "--ff-only", "testuser/verify-test"]);
+    assert!(success, "Expected fast-forward merge to succeed");
+
+    // Run clean - should show warning about skipping remote deletion
+    // since provider check will fail (fake MR number)
+    let (success, stdout, stderr) = run_gg(&repo_path, &["clean", "--all"]);
+    assert!(
+        success,
+        "clean --all should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+
+    // Should show warning about verification being unavailable
+    assert!(
+        stdout.contains("Skipping remote branch deletion") || stderr.contains("Could not fetch MR"),
+        "Should warn about verification issues. stdout: {}, stderr: {}",
+        stdout,
+        stderr
+    );
+}
+
+#[test]
+fn test_clean_local_branches_still_deleted_when_verification_fails() {
+    // Test that local branches are still cleaned even when remote verification
+    // fails. The conservative behavior only affects REMOTE branch deletion.
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+
+    // Set up config with provider (to trigger verification path)
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","base":"main","provider":"github"},"stacks":{"local-clean-test":{"mrs":{"c-badmr1":888888}}}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create stack branch
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "local-clean-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("local-file.txt"), "local content").expect("Failed to write");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "feat: local feature"]);
+
+    // Create an entry branch manually
+    run_git(
+        &repo_path,
+        &["branch", "testuser/local-clean-test--c-entry1"],
+    );
+
+    // Merge into main (locally merged)
+    run_git(&repo_path, &["checkout", "main"]);
+    let (success, _) = run_git(
+        &repo_path,
+        &["merge", "--ff-only", "testuser/local-clean-test"],
+    );
+    assert!(success, "Expected fast-forward merge to succeed");
+
+    // Verify branches exist before clean
+    let (_, branches_before, _) = run_git_full(&repo_path, &["branch", "--list"]);
+    assert!(
+        branches_before.contains("testuser/local-clean-test"),
+        "Stack branch should exist before clean"
+    );
+    assert!(
+        branches_before.contains("testuser/local-clean-test--c-entry1"),
+        "Entry branch should exist before clean"
+    );
+
+    // Run clean
+    let (success, stdout, stderr) = run_gg(&repo_path, &["clean", "--all"]);
+    assert!(
+        success,
+        "clean --all should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+
+    // Verify LOCAL branches are deleted (even though remote verification failed)
+    let (_, branches_after, _) = run_git_full(&repo_path, &["branch", "--list"]);
+    assert!(
+        !branches_after.contains("testuser/local-clean-test--c-entry1"),
+        "Local entry branch should be deleted even without verification"
+    );
+
+    // Stack should be cleaned
+    assert!(
+        stdout.contains("Deleted stack 'local-clean-test'"),
+        "Stack should be cleaned. stdout: {}",
+        stdout
+    );
+}

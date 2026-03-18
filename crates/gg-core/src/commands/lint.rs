@@ -1,6 +1,6 @@
 //! `gg lint` - Run lint commands on each commit in the stack
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use console::style;
@@ -164,7 +164,16 @@ fn run_lint_on_commits(
                 continue;
             }
 
-            let output = match Command::new(parts[0])
+            // Resolve .git/ paths to the real git common directory so that
+            // scripts like `./.git/gg/lint.sh` work in linked worktrees
+            // (where `.git` is a file, not a directory).
+            let resolved_cmd = resolve_git_path(parts[0], repo);
+            let cmd_str = resolved_cmd
+                .as_ref()
+                .map(|p| p.to_string_lossy())
+                .unwrap_or_else(|| parts[0].into());
+
+            let output = match Command::new(cmd_str.as_ref())
                 .args(&parts[1..])
                 .current_dir(repo_root)
                 .output()
@@ -432,6 +441,22 @@ fn restore_original_position(
     }
 }
 
+/// Resolve a command path that starts with `.git/` or `./.git/` to the real
+/// git common directory.  In a normal repo `commondir()` already points at
+/// `.git`, but in a linked worktree it points at the **main** repo's `.git`
+/// directory, so scripts stored there (e.g. `.git/gg/lint.sh`) are reachable.
+fn resolve_git_path(cmd: &str, repo: &git2::Repository) -> Option<PathBuf> {
+    let remainder = if let Some(rest) = cmd.strip_prefix("./.git/") {
+        rest
+    } else if let Some(rest) = cmd.strip_prefix(".git/") {
+        rest
+    } else {
+        return None;
+    };
+
+    Some(repo.commondir().join(remainder))
+}
+
 /// Get list of files with conflicts
 fn get_conflicted_files(repo_root: &Path) -> Vec<String> {
     let output = Command::new("git")
@@ -478,4 +503,55 @@ fn print_rebase_conflict_help(repo_root: &Path, json: bool) {
     println!();
     println!("To abort and undo lint changes:");
     println!("  {}", style("gg abort").cyan());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_repo() -> (tempfile::TempDir, git2::Repository) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        (dir, repo)
+    }
+
+    #[test]
+    fn test_resolve_git_path_with_dot_slash_prefix() {
+        let (_dir, repo) = temp_repo();
+        let result = resolve_git_path("./.git/gg/lint.sh", &repo);
+        assert!(result.is_some());
+        let resolved = result.unwrap();
+        assert!(
+            resolved.ends_with("gg/lint.sh"),
+            "Expected path ending with gg/lint.sh, got: {}",
+            resolved.display()
+        );
+        // Should point into the real .git directory
+        assert!(
+            resolved.starts_with(repo.commondir()),
+            "Should be under commondir: {}",
+            resolved.display()
+        );
+    }
+
+    #[test]
+    fn test_resolve_git_path_without_dot_slash_prefix() {
+        let (_dir, repo) = temp_repo();
+        let result = resolve_git_path(".git/gg/lint.sh", &repo);
+        assert!(result.is_some());
+        let resolved = result.unwrap();
+        assert!(
+            resolved.ends_with("gg/lint.sh"),
+            "Expected path ending with gg/lint.sh, got: {}",
+            resolved.display()
+        );
+    }
+
+    #[test]
+    fn test_resolve_git_path_non_git_path_returns_none() {
+        let (_dir, repo) = temp_repo();
+        assert!(resolve_git_path("cargo", &repo).is_none());
+        assert!(resolve_git_path("./scripts/lint.sh", &repo).is_none());
+        assert!(resolve_git_path("/usr/bin/lint", &repo).is_none());
+    }
 }

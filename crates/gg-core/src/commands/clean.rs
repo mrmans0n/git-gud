@@ -497,8 +497,17 @@ fn check_stack_merged(
 
     // Local check passed. If a provider exists, also verify against remote base branch.
     // This provides confidence that the merge is complete on the server side.
+    // IMPORTANT: For stacked PRs, we must verify that ALL entry branches are merged,
+    // not just the stack tip. Otherwise we could delete remote branches for MRs that
+    // are still open.
     let remote_verified = if provider.is_some() {
-        is_stack_branch_ancestor_of_remote_base(repo, config, stack_name, username).unwrap_or(false)
+        let stack_merged =
+            is_stack_branch_ancestor_of_remote_base(repo, config, stack_name, username)
+                .unwrap_or(false);
+        let all_entries_merged =
+            are_all_entry_branches_merged_to_remote_base(repo, config, stack_name, username)
+                .unwrap_or(false);
+        stack_merged && all_entries_merged
     } else {
         false
     };
@@ -570,6 +579,69 @@ fn is_stack_branch_ancestor_of_remote_base(
 
     // Check if stack branch is an ancestor of origin/<base>
     Ok(repo.merge_base(stack_oid, remote_oid)? == stack_oid)
+}
+
+/// Check if ALL entry branches in the stack are ancestors of the remote base branch.
+/// This is crucial for stacked PRs: the stack tip being merged doesn't mean all
+/// intermediate entry branches' MRs were merged. We must verify each one.
+fn are_all_entry_branches_merged_to_remote_base(
+    repo: &git2::Repository,
+    config: &Config,
+    stack_name: &str,
+    username: &str,
+) -> Result<bool> {
+    // Get base branch
+    let base = config
+        .get_base_for_stack(stack_name)
+        .map(|s| s.to_string())
+        .or_else(|| git::find_base_branch(repo).ok())
+        .ok_or(GgError::NoBaseBranch)?;
+
+    // Get remote base commit
+    let remote_base = format!("origin/{}", base);
+    let remote_ref = match repo.revparse_single(&remote_base) {
+        Ok(r) => r,
+        Err(_) => {
+            // Remote tracking branch doesn't exist - can't verify
+            return Ok(false);
+        }
+    };
+    let remote_oid = remote_ref.id();
+
+    // Check each entry branch in the stack
+    if let Some(stack_config) = config.get_stack(stack_name) {
+        for entry_id in stack_config.mrs.keys() {
+            let entry_id = match git::normalize_gg_id(entry_id) {
+                Some(id) => id,
+                None => {
+                    // Invalid entry ID - skip (will be handled elsewhere)
+                    continue;
+                }
+            };
+            let entry_branch = git::format_entry_branch(username, stack_name, &entry_id);
+
+            // Try to get the entry branch - if it doesn't exist locally, it's already been deleted
+            // (which is fine - it means it was already cleaned up)
+            let entry_ref = match repo.revparse_single(&entry_branch) {
+                Ok(r) => r,
+                Err(_) => {
+                    // Entry branch doesn't exist locally - skip (already deleted)
+                    continue;
+                }
+            };
+            let entry_oid = entry_ref.id();
+
+            // Check if this entry branch is an ancestor of remote base
+            let merge_base = repo.merge_base(entry_oid, remote_oid)?;
+            if merge_base != entry_oid {
+                // This entry branch is NOT merged to remote base - can't verify
+                return Ok(false);
+            }
+        }
+    }
+
+    // All entry branches are either merged or don't exist locally
+    Ok(true)
 }
 
 #[allow(dead_code)]

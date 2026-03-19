@@ -19,6 +19,7 @@
   - [Navigation (mv / first / last / prev / next)](./commands/navigation.md)
   - [sc (squash/amend)](./commands/sc.md)
   - [absorb](./commands/absorb.md)
+  - [drop (abandon)](./commands/drop.md)
   - [reorder](./commands/reorder.md)
   - [split](./commands/split.md)
   - [rebase](./commands/rebase.md)

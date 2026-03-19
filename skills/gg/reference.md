@@ -118,6 +118,14 @@ Auto-distribute staged changes to matching commits.
 
 #### `gg reorder [OPTIONS]` (alias: `gg arrange`)
 Reorder and/or drop stack entries. Opens an interactive TUI by default where you can move commits with `J`/`K` (or Shift+arrows) and mark commits for dropping with `d`.
+#### `gg drop <TARGET>...` *(alias: `gg abandon`)*
+Remove one or more commits from the stack. Targets can be positions (1-indexed), short SHAs, or GG-IDs.
+
+- `-f, --force` — skip confirmation
+- `--json`
+
+#### `gg reorder [OPTIONS]`
+Reorder stack entries. Opens an interactive TUI by default where you can move commits with `J`/`K` (or Shift+arrows).
 
 - `-o, --order <ORDER>` — reorder only (no dropping via CLI flag)
 - `--no-tui` — disable TUI, use text editor instead (delete lines to drop commits)
@@ -357,6 +365,24 @@ Field types:
 ```
 
 > On GitLab with `--auto-merge`, `action` may be `queued` or `already_queued`.
+
+### `gg drop --json`
+
+```json
+{
+  "version": 1,
+  "drop": {
+    "dropped": [
+      {
+        "position": 1,
+        "sha": "abc1234",
+        "title": "feat: add validation"
+      }
+    ],
+    "remaining": 2
+  }
+}
+```
 
 ### `gg clean -a --json`
 

@@ -1129,7 +1129,7 @@ dependencies = [
 
 [[package]]
 name = "gg-cli"
-version = "0.6.5"
+version = "0.7.0"
 dependencies = [
  "clap",
  "clap_complete",

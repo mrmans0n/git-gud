@@ -366,6 +366,24 @@ Field types:
 
 > On GitLab with `--auto-merge`, `action` may be `queued` or `already_queued`.
 
+### `gg drop --json`
+
+```json
+{
+  "version": 1,
+  "drop": {
+    "dropped": [
+      {
+        "position": 1,
+        "sha": "abc1234",
+        "title": "feat: add validation"
+      }
+    ],
+    "remaining": 2
+  }
+}
+```
+
 ### `gg clean -a --json`
 
 ```json

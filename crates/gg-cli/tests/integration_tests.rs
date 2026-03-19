@@ -6278,17 +6278,6 @@ fn test_arrange_is_alias_for_reorder() {
     // Set up config
     let gg_dir = repo_path.join(".git/gg");
     fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
-// ============================================================
-// gg drop tests
-// ============================================================
-
-#[test]
-fn test_drop_single_commit_by_position() {
-    let (_temp_dir, repo_path) = create_test_repo();
-
-    // Setup gg config
-    let gg_dir = repo_path.join(".git/gg");
-    fs::create_dir_all(&gg_dir).unwrap();
     fs::write(
         gg_dir.join("config.json"),
         r#"{"defaults":{"branch_username":"testuser"}}"#,
@@ -6328,6 +6317,22 @@ fn test_drop_single_commit_by_position() {
         log_after
     );
 }
+
+// ============================================================
+// gg drop tests
+// ============================================================
+
+#[test]
+fn test_drop_single_commit_by_position() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Setup gg config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
     .unwrap();
 
     // Create stack with 3 commits

@@ -167,9 +167,9 @@ pub fn run(options: DropOptions) -> Result<()> {
         if let Some(stack_entry) = stack_obj.get_entry_by_position(entry.position) {
             if let Some(branch_name) = stack_obj.entry_branch_name(stack_entry) {
                 // Delete local branch (ignore errors if it doesn't exist)
-                let _ = std::process::Command::new("git")
-                    .args(["branch", "-D", &branch_name])
-                    .output();
+                let _ = repo
+                    .find_branch(&branch_name, git2::BranchType::Local)
+                    .and_then(|mut b| b.delete());
             }
         }
     }

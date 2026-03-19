@@ -98,15 +98,16 @@ impl ReorderTuiState {
     fn swap_drop_state(&mut self, a: usize, b: usize) {
         let a_dropped = self.dropped.contains(&a);
         let b_dropped = self.dropped.contains(&b);
+        if a_dropped == b_dropped {
+            return;
+        }
         if a_dropped {
             self.dropped.remove(&a);
             self.dropped.insert(b);
-        }
-        if b_dropped {
+        } else {
             self.dropped.remove(&b);
             self.dropped.insert(a);
         }
-        // If both were dropped or neither was, the swap is a no-op on the set
     }
 
     /// Toggle drop mark on the commit at the current cursor position.

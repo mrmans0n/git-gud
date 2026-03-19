@@ -6270,3 +6270,50 @@ fn test_clean_no_mrs_tracked_verified_false() {
         remote_branches
     );
 }
+
+#[test]
+fn test_arrange_is_alias_for_reorder() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with 2 commits
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "test-arrange"]);
+    assert!(success, "Failed to checkout: {}", stderr);
+
+    fs::write(repo_path.join("a.txt"), "A").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Add A"]);
+
+    fs::write(repo_path.join("b.txt"), "B").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Add B"]);
+
+    // Use 'arrange' alias with --order to reorder commits
+    let (success, _, stderr) = run_gg(&repo_path, &["arrange", "--order", "2,1"]);
+    assert!(success, "Failed to arrange: {}", stderr);
+
+    // Verify new order in log (most recent first)
+    let (_, log_after) = run_git(&repo_path, &["log", "--oneline", "-2"]);
+    let lines: Vec<&str> = log_after.trim().lines().collect();
+
+    // After reorder "2,1": B becomes [1], A becomes [2]
+    // git log shows most recent first, so: A, B
+    assert!(
+        lines[0].contains("Add A"),
+        "Expected A on top, got: {}",
+        log_after
+    );
+    assert!(
+        lines[1].contains("Add B"),
+        "Expected B at bottom, got: {}",
+        log_after
+    );
+}

@@ -64,23 +64,45 @@ pub fn run(options: ReorderOptions) -> Result<()> {
         return Ok(());
     }
 
-    // Check if order actually changed
+    // Check if order actually changed (and no drops)
     let old_order: Vec<&str> = stack.entries.iter().map(|e| e.short_sha.as_str()).collect();
-    if new_order == old_order {
+    if new_order.len() == old_order.len() && new_order == old_order {
         println!("{}", style("Order unchanged.").dim());
         return Ok(());
     }
 
-    println!("{}", style("Reordering commits...").dim());
+    let dropped_count = stack.len() - new_order.len();
+    if dropped_count > 0 {
+        println!(
+            "{}",
+            style(format!(
+                "Reordering {} commits, dropping {}...",
+                new_order.len(),
+                dropped_count
+            ))
+            .dim()
+        );
+    } else {
+        println!("{}", style("Reordering commits...").dim());
+    }
 
     // Perform the rebase with the new order
     perform_reorder(&repo, &stack, &new_order)?;
 
-    println!(
-        "{} Reordered {} commits",
-        style("OK").green().bold(),
-        new_order.len()
-    );
+    if dropped_count > 0 {
+        println!(
+            "{} Arranged stack: {} commits kept, {} dropped",
+            style("OK").green().bold(),
+            new_order.len(),
+            dropped_count
+        );
+    } else {
+        println!(
+            "{} Reordered {} commits",
+            style("OK").green().bold(),
+            new_order.len()
+        );
+    }
 
     Ok(())
 }
@@ -217,6 +239,12 @@ fn get_order_from_editor(stack: &Stack) -> Result<Option<Vec<String>>> {
         .map(|s| s.to_string())
         .collect();
 
+    if new_order.is_empty() {
+        return Err(GgError::Other(
+            "Cannot drop all commits. At least one must remain.".to_string(),
+        ));
+    }
+
     // Validate all SHAs from editor match stack entries
     let valid_shas: Vec<&str> = stack.entries.iter().map(|e| e.short_sha.as_str()).collect();
     for sha in &new_order {
@@ -225,6 +253,17 @@ fn get_order_from_editor(stack: &Stack) -> Result<Option<Vec<String>>> {
             .any(|s| s.starts_with(sha.as_str()) || sha.starts_with(*s));
         if !is_valid {
             return Err(GgError::Other(format!("Unknown commit SHA: {}", sha)));
+        }
+    }
+
+    // Check for duplicates
+    let mut seen = std::collections::HashSet::new();
+    for sha in &new_order {
+        if !seen.insert(sha) {
+            return Err(GgError::Other(format!(
+                "Duplicate commit in order: {}",
+                sha
+            )));
         }
     }
 
@@ -322,5 +361,64 @@ mod tests {
             ..Default::default()
         };
         assert!(opts.no_tui);
+    }
+
+    fn make_test_stack() -> Stack {
+        use crate::stack::StackEntry;
+        let make_entry = |sha: &str, title: &str, gg_id: &str, pos: usize| StackEntry {
+            oid: git2::Oid::zero(),
+            short_sha: sha.to_string(),
+            title: title.to_string(),
+            gg_id: Some(gg_id.to_string()),
+            mr_number: None,
+            mr_state: None,
+            approved: false,
+            ci_status: None,
+            position: pos,
+            in_merge_train: false,
+            merge_train_position: None,
+        };
+        Stack {
+            name: "test".to_string(),
+            username: "testuser".to_string(),
+            base: "main".to_string(),
+            entries: vec![
+                make_entry("aaa1111", "commit 1", "c-0000001", 1),
+                make_entry("bbb2222", "commit 2", "c-0000002", 2),
+                make_entry("ccc3333", "commit 3", "c-0000003", 3),
+            ],
+            current_position: Some(1),
+        }
+    }
+
+    #[test]
+    fn test_parse_order_rejects_fewer_entries() {
+        let stack = make_test_stack();
+        // CLI --order must include all commits
+        let result = parse_order_from_string("1,2", &stack);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("must include all"));
+    }
+
+    #[test]
+    fn test_parse_order_rejects_duplicates() {
+        let stack = make_test_stack();
+        let result = parse_order_from_string("1,1,2", &stack);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Duplicate"));
+    }
+
+    #[test]
+    fn test_parse_order_valid() {
+        let stack = make_test_stack();
+        let result = parse_order_from_string("3,1,2", &stack).unwrap();
+        assert_eq!(
+            result,
+            Some(vec![
+                "ccc3333".to_string(),
+                "aaa1111".to_string(),
+                "bbb2222".to_string()
+            ])
+        );
     }
 }

@@ -116,11 +116,11 @@ Auto-distribute staged changes to matching commits.
 - `-n, --no-limit`
 - `-s, --squash`
 
-#### `gg reorder [OPTIONS]`
-Reorder stack entries. Opens an interactive TUI by default where you can move commits with `J`/`K` (or Shift+arrows).
+#### `gg reorder [OPTIONS]` (alias: `gg arrange`)
+Reorder and/or drop stack entries. Opens an interactive TUI by default where you can move commits with `J`/`K` (or Shift+arrows) and mark commits for dropping with `d`.
 
-- `-o, --order <ORDER>`
-- `--no-tui` — disable TUI, use text editor instead
+- `-o, --order <ORDER>` — reorder only (no dropping via CLI flag)
+- `--no-tui` — disable TUI, use text editor instead (delete lines to drop commits)
 
 #### `gg split [OPTIONS] [FILES...]`
 Split a commit into two. Selected files/hunks become a new commit inserted before the original.

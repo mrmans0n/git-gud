@@ -44,6 +44,8 @@ struct ReorderTuiState {
     aborted: bool,
     /// Whether the order has been modified
     modified: bool,
+    /// Indices of entries marked for dropping
+    dropped: std::collections::HashSet<usize>,
 }
 
 impl ReorderTuiState {
@@ -54,6 +56,7 @@ impl ReorderTuiState {
             confirmed: false,
             aborted: false,
             modified: false,
+            dropped: std::collections::HashSet::new(),
         }
     }
 
@@ -75,6 +78,7 @@ impl ReorderTuiState {
     fn move_up(&mut self) {
         if self.cursor > 0 {
             self.entries.swap(self.cursor, self.cursor - 1);
+            self.swap_drop_state(self.cursor, self.cursor - 1);
             self.cursor -= 1;
             self.modified = true;
         }
@@ -84,14 +88,52 @@ impl ReorderTuiState {
     fn move_down(&mut self) {
         if self.cursor + 1 < self.entries.len() {
             self.entries.swap(self.cursor, self.cursor + 1);
+            self.swap_drop_state(self.cursor, self.cursor + 1);
             self.cursor += 1;
             self.modified = true;
         }
     }
 
-    /// Get the new order as a list of short SHAs
+    /// Swap drop state between two indices so drop marks follow the entries
+    fn swap_drop_state(&mut self, a: usize, b: usize) {
+        let a_dropped = self.dropped.contains(&a);
+        let b_dropped = self.dropped.contains(&b);
+        if a_dropped == b_dropped {
+            return;
+        }
+        if a_dropped {
+            self.dropped.remove(&a);
+            self.dropped.insert(b);
+        } else {
+            self.dropped.remove(&b);
+            self.dropped.insert(a);
+        }
+    }
+
+    /// Toggle drop mark on the commit at the current cursor position.
+    /// At least one commit must remain (not all can be dropped).
+    fn toggle_drop(&mut self) {
+        if self.dropped.contains(&self.cursor) {
+            self.dropped.remove(&self.cursor);
+            self.modified = true;
+        } else {
+            // Don't allow dropping all commits
+            let kept = self.entries.len() - self.dropped.len();
+            if kept > 1 {
+                self.dropped.insert(self.cursor);
+                self.modified = true;
+            }
+        }
+    }
+
+    /// Get the new order as a list of short SHAs, excluding dropped entries
     fn get_order(&self) -> Vec<String> {
-        self.entries.iter().map(|e| e.short_sha.clone()).collect()
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| !self.dropped.contains(idx))
+            .map(|(_, e)| e.short_sha.clone())
+            .collect()
     }
 }
 
@@ -205,6 +247,11 @@ fn handle_key(state: &mut ReorderTuiState, code: KeyCode, modifiers: KeyModifier
             state.confirmed = true;
         }
 
+        // Drop/undrop
+        KeyCode::Char('d') | KeyCode::Delete => {
+            state.toggle_drop();
+        }
+
         // Cancel
         KeyCode::Char('q') | KeyCode::Esc => {
             state.aborted = true;
@@ -237,23 +284,38 @@ fn draw_commit_list(f: &mut Frame, state: &ReorderTuiState, area: ratatui::layou
         .map(|(idx, entry)| {
             let position = idx + 1;
             let is_current = idx == state.cursor;
+            let is_dropped = state.dropped.contains(&idx);
 
             let cursor_marker = if is_current { "▸" } else { " " };
 
             // Build the line
-            let mut spans = vec![
-                Span::raw(cursor_marker),
-                Span::raw(" "),
-                Span::styled(
-                    format!("{:<3}", position),
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Span::styled(
-                    format!("{} ", entry.short_sha),
-                    Style::default().fg(Color::Yellow),
-                ),
-                Span::raw(&entry.title),
-            ];
+            let mut spans = if is_dropped {
+                let drop_style = Style::default()
+                    .fg(Color::Red)
+                    .add_modifier(Modifier::CROSSED_OUT);
+                vec![
+                    Span::raw(cursor_marker),
+                    Span::raw(" "),
+                    Span::styled("[DROP] ", Style::default().fg(Color::Red)),
+                    Span::styled(format!("{:<3}", position), drop_style),
+                    Span::styled(format!("{} ", entry.short_sha), drop_style),
+                    Span::styled(entry.title.as_str(), drop_style),
+                ]
+            } else {
+                vec![
+                    Span::raw(cursor_marker),
+                    Span::raw(" "),
+                    Span::styled(
+                        format!("{:<3}", position),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled(
+                        format!("{} ", entry.short_sha),
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(&entry.title),
+                ]
+            };
 
             // Add move indicator for the selected commit
             if is_current {
@@ -275,14 +337,17 @@ fn draw_commit_list(f: &mut Frame, state: &ReorderTuiState, area: ratatui::layou
         })
         .collect();
 
-    let title = if state.modified {
-        " Reorder Stack (modified) "
+    let drop_count = state.dropped.len();
+    let title = if drop_count > 0 {
+        format!(" Arrange Stack (modified, {} to drop) ", drop_count)
+    } else if state.modified {
+        " Arrange Stack (modified) ".to_string()
     } else {
-        " Reorder Stack "
+        " Arrange Stack ".to_string()
     };
 
     let block = Block::default()
-        .title(title)
+        .title(title.as_str())
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Blue));
 
@@ -292,7 +357,8 @@ fn draw_commit_list(f: &mut Frame, state: &ReorderTuiState, area: ratatui::layou
 
 /// Draw the status bar
 fn draw_status_bar(f: &mut Frame, _state: &ReorderTuiState, area: ratatui::layout::Rect) {
-    let status_text = " j/k:navigate  J/K:move commit  Enter/s:confirm  q/Esc:cancel ";
+    let status_text =
+        " j/k:navigate  J/K:move commit  d:drop/undrop  Enter/s:confirm  q/Esc:cancel ";
 
     let paragraph = Paragraph::new(status_text)
         .style(Style::default().bg(Color::DarkGray).fg(Color::White))
@@ -571,5 +637,82 @@ mod tests {
         state.move_down(); // [2, 1], cursor=1
         state.move_up(); // [1, 2], cursor=0
         assert_eq!(state.get_order(), vec!["abc0001", "abc0002"]);
+    }
+
+    #[test]
+    fn test_toggle_drop() {
+        let mut state = ReorderTuiState::new(make_entries(3));
+        assert!(state.dropped.is_empty());
+
+        // Drop commit at cursor 0
+        state.toggle_drop();
+        assert!(state.dropped.contains(&0));
+        assert!(state.modified);
+
+        // Undrop it
+        state.toggle_drop();
+        assert!(!state.dropped.contains(&0));
+    }
+
+    #[test]
+    fn test_cannot_drop_all() {
+        let mut state = ReorderTuiState::new(make_entries(2));
+
+        // Drop first
+        state.cursor = 0;
+        state.toggle_drop();
+        assert!(state.dropped.contains(&0));
+
+        // Try to drop second — should be blocked
+        state.cursor = 1;
+        state.toggle_drop();
+        assert!(!state.dropped.contains(&1));
+        assert_eq!(state.dropped.len(), 1);
+    }
+
+    #[test]
+    fn test_get_order_excludes_dropped() {
+        let mut state = ReorderTuiState::new(make_entries(3));
+        // Drop the middle entry
+        state.cursor = 1;
+        state.toggle_drop();
+
+        assert_eq!(state.get_order(), vec!["abc0001", "abc0003"]);
+    }
+
+    #[test]
+    fn test_drop_key_d() {
+        let mut state = ReorderTuiState::new(make_entries(3));
+        handle_key(&mut state, KeyCode::Char('d'), KeyModifiers::NONE);
+        assert!(state.dropped.contains(&0));
+
+        // Press d again to undrop
+        handle_key(&mut state, KeyCode::Char('d'), KeyModifiers::NONE);
+        assert!(!state.dropped.contains(&0));
+    }
+
+    #[test]
+    fn test_drop_key_delete() {
+        let mut state = ReorderTuiState::new(make_entries(3));
+        handle_key(&mut state, KeyCode::Delete, KeyModifiers::NONE);
+        assert!(state.dropped.contains(&0));
+    }
+
+    #[test]
+    fn test_move_preserves_drop_state() {
+        let mut state = ReorderTuiState::new(make_entries(3));
+        // Drop entry at index 0 (commit 1)
+        state.cursor = 0;
+        state.toggle_drop();
+        assert!(state.dropped.contains(&0));
+
+        // Move it down — drop mark follows the entry to index 1
+        state.move_down();
+        assert!(!state.dropped.contains(&0));
+        assert!(state.dropped.contains(&1));
+        // cursor followed the entry to index 1
+        assert_eq!(state.cursor, 1);
+        // The dropped entry is commit 1, now at index 1
+        assert_eq!(state.entries[1].short_sha, "abc0001");
     }
 }

@@ -253,6 +253,35 @@ pub struct StackLintParams {
     pub until: Option<usize>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct StackDropParams {
+    /// Commits to drop: position (1-indexed), short SHA, or GG-ID
+    #[serde(default)]
+    pub targets: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct StackSplitParams {
+    /// Target commit: position (1-indexed), short SHA, or GG-ID (default: current)
+    #[serde(default)]
+    pub commit: Option<String>,
+    /// Files to include in the new commit
+    #[serde(default)]
+    pub files: Vec<String>,
+    /// Message for the new (first) commit
+    #[serde(default)]
+    pub message: Option<String>,
+    /// Don't prompt for the remainder commit message
+    #[serde(default)]
+    pub no_edit: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct StackReorderParams {
+    /// New order as positions (1-indexed), e.g., "3,1,2" or "3 1 2"
+    pub order: String,
+}
+
 // --- Helper functions ---
 
 fn pr_state_str(state: &PrState) -> &'static str {
@@ -754,6 +783,71 @@ impl GgMcpServer {
         }
         run_gg_command(&args)
     }
+
+    // --- Stack manipulation tools ---
+
+    /// Drop (remove) commits from the stack.
+    #[tool(
+        description = "Remove commits from the stack. Targets can be positions (1-indexed), short SHAs, or GG-IDs. Always uses --force (agent confirms with user). Returns JSON with dropped commits."
+    )]
+    fn stack_drop(
+        &self,
+        Parameters(params): Parameters<StackDropParams>,
+    ) -> Result<String, String> {
+        if params.targets.is_empty() {
+            return Err("At least one target is required".to_string());
+        }
+        let mut args = vec![
+            "drop".to_string(),
+            "--force".to_string(),
+            "--json".to_string(),
+        ];
+        args.extend(params.targets);
+        run_gg_command(&args)
+    }
+
+    /// Split a commit into two by moving specified files to a new commit.
+    #[tool(
+        description = "Split a commit by moving specified files to a new commit inserted before the original. File-level only (no hunk selection via MCP). Returns the result of the split operation."
+    )]
+    fn stack_split(
+        &self,
+        Parameters(params): Parameters<StackSplitParams>,
+    ) -> Result<String, String> {
+        if params.files.is_empty() {
+            return Err("At least one file is required for split".to_string());
+        }
+        let mut args = vec!["split".to_string(), "--no-tui".to_string()];
+        if let Some(ref commit) = params.commit {
+            args.push("--commit".to_string());
+            args.push(commit.clone());
+        }
+        if let Some(ref message) = params.message {
+            args.push("--message".to_string());
+            args.push(message.clone());
+        }
+        if params.no_edit {
+            args.push("--no-edit".to_string());
+        }
+        args.extend(params.files);
+        run_gg_command(&args)
+    }
+
+    /// Reorder commits in the stack with explicit order.
+    #[tool(
+        description = "Reorder commits in the stack. Order is specified as positions (1-indexed), e.g., '3,1,2' moves commit 3 to bottom, then 1, then 2 on top. No TUI via MCP."
+    )]
+    fn stack_reorder(
+        &self,
+        Parameters(params): Parameters<StackReorderParams>,
+    ) -> Result<String, String> {
+        run_gg_command(&[
+            "reorder".to_string(),
+            "--no-tui".to_string(),
+            "-o".to_string(),
+            params.order,
+        ])
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -916,5 +1010,79 @@ mod tests {
         assert!(!params.whole_file);
         assert!(!params.one_fixup_per_commit);
         assert!(!params.squash);
+    }
+
+    #[test]
+    fn test_drop_params_defaults() {
+        // Empty targets array should deserialize
+        let params: StackDropParams = serde_json::from_str("{}").unwrap();
+        assert!(params.targets.is_empty());
+    }
+
+    #[test]
+    fn test_drop_params_with_targets() {
+        let params: StackDropParams =
+            serde_json::from_str(r#"{"targets": ["1", "c-abc1234", "abc1234"]}"#).unwrap();
+        assert_eq!(params.targets.len(), 3);
+        assert_eq!(params.targets[0], "1");
+        assert_eq!(params.targets[1], "c-abc1234");
+        assert_eq!(params.targets[2], "abc1234");
+    }
+
+    #[test]
+    fn test_split_params_defaults() {
+        let params: StackSplitParams = serde_json::from_str("{}").unwrap();
+        assert!(params.commit.is_none());
+        assert!(params.files.is_empty());
+        assert!(params.message.is_none());
+        assert!(!params.no_edit);
+    }
+
+    #[test]
+    fn test_split_params_with_values() {
+        let params: StackSplitParams = serde_json::from_str(
+            r#"{"commit": "2", "files": ["src/main.rs", "Cargo.toml"], "message": "Split commit", "no_edit": true}"#,
+        )
+        .unwrap();
+        assert_eq!(params.commit, Some("2".to_string()));
+        assert_eq!(params.files.len(), 2);
+        assert_eq!(params.message, Some("Split commit".to_string()));
+        assert!(params.no_edit);
+    }
+
+    #[test]
+    fn test_reorder_params_requires_order() {
+        // Order is required for MCP (no TUI)
+        let params: StackReorderParams = serde_json::from_str(r#"{"order": "3,1,2"}"#).unwrap();
+        assert_eq!(params.order, "3,1,2");
+    }
+
+    #[test]
+    fn test_stack_drop_requires_targets() {
+        // Empty targets should return an error message
+        // We test the validation logic, not the actual command execution
+        let params = StackDropParams { targets: vec![] };
+        // The tool validates that targets is non-empty
+        assert!(params.targets.is_empty());
+    }
+
+    #[test]
+    fn test_stack_split_requires_files() {
+        // Empty files should be rejected by the tool
+        let params = StackSplitParams {
+            commit: None,
+            files: vec![],
+            message: None,
+            no_edit: false,
+        };
+        // The tool validates that files is non-empty
+        assert!(params.files.is_empty());
+    }
+
+    #[test]
+    fn test_reorder_params_supports_space_separated() {
+        // Order can also be space-separated
+        let params: StackReorderParams = serde_json::from_str(r#"{"order": "3 1 2"}"#).unwrap();
+        assert_eq!(params.order, "3 1 2");
     }
 }

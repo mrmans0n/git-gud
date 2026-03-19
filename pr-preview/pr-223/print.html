@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9a5ec0b8.js";
+            window.path_to_searchindex_js = "searchindex-0ca579df.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b32c07bc.js"></script>
@@ -871,9 +871,11 @@ gg abandon 2
 <li><strong>Rebase conflicts</strong> are handled the same as <code>gg reorder</code> — resolve with <code>gg continue</code> or <code>gg abort</code></li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="gg-reorder"><a class="header" href="#gg-reorder"><code>gg reorder</code></a></h1>
-<p>Reorder commits in your stack.</p>
+<h1 id="gg-reorder--gg-arrange"><a class="header" href="#gg-reorder--gg-arrange"><code>gg reorder</code> / <code>gg arrange</code></a></h1>
+<p>Reorder and/or drop commits in your stack.</p>
+<p><code>gg arrange</code> is an alias for <code>gg reorder</code> — they share the same implementation.</p>
 <pre><code class="language-bash">gg reorder [OPTIONS]
+gg arrange [OPTIONS]
 </code></pre>
 <h2 id="options-6"><a class="header" href="#options-6">Options</a></h2>
 <ul>
@@ -881,14 +883,14 @@ gg abandon 2
 <li><code>--no-tui</code>: Disable the interactive TUI and use a text editor instead</li>
 </ul>
 <h2 id="interactive-tui"><a class="header" href="#interactive-tui">Interactive TUI</a></h2>
-<p>When run without <code>--order</code>, <code>gg reorder</code> opens an interactive TUI where you can visually rearrange commits:</p>
-<pre><code>┌─ Reorder Stack ──────────────────────────────────┐
+<p>When run without <code>--order</code>, opens an interactive TUI where you can visually rearrange and drop commits:</p>
+<pre><code>┌─ Arrange Stack ──────────────────────────────────┐
 │  1  abc1234  feat: add login page                │
 │▸ 2  def5678  fix: handle empty input     ↕       │
-│  3  ghi9012  refactor: extract validator          │
+│  [DROP] 3  ghi9012  refactor: extract validator   │
 │  4  jkl3456  test: add integration tests          │
 └──────────────────────────────────────────────────┘
- j/k:navigate  J/K:move commit  Enter/s:confirm  q/Esc:cancel
+ j/k:navigate  J/K:move commit  d:drop/undrop  Enter/s:confirm  q/Esc:cancel
 </code></pre>
 <h3 id="keyboard-shortcuts"><a class="header" href="#keyboard-shortcuts">Keyboard shortcuts</a></h3>
 <div class="table-wrapper">
@@ -901,22 +903,32 @@ gg abandon 2
 <tr><td><code>k</code> / <code>↑</code></td><td>Move cursor up</td></tr>
 <tr><td><code>J</code> / <code>Shift+↓</code></td><td>Move commit down</td></tr>
 <tr><td><code>K</code> / <code>Shift+↑</code></td><td>Move commit up</td></tr>
+<tr><td><code>d</code> / <code>Delete</code></td><td>Toggle drop mark on commit</td></tr>
 <tr><td><code>Enter</code> / <code>s</code></td><td>Confirm new order</td></tr>
 <tr><td><code>q</code> / <code>Esc</code></td><td>Cancel (no changes)</td></tr>
 </tbody>
 </table>
 </div>
 <p>Position 1 is the bottom of the stack (closest to the base branch).</p>
+<p>Dropped commits appear in red with strikethrough and a <code>[DROP]</code> prefix. You can still move dropped commits (e.g., to undrop them later). At least one commit must remain — you cannot drop all commits.</p>
 <p>The TUI requires a TTY. In non-interactive environments (pipes, CI), <code>gg reorder</code> falls back to the text editor automatically. Use <code>--no-tui</code> to force the editor fallback.</p>
+<h2 id="editor-fallback"><a class="header" href="#editor-fallback">Editor Fallback</a></h2>
+<p>When using the editor fallback (<code>--no-tui</code> or non-TTY), you can:</p>
+<ul>
+<li><strong>Reorder</strong> commits by rearranging lines</li>
+<li><strong>Drop</strong> commits by deleting their lines</li>
+</ul>
+<p>At least one commit must remain.</p>
 <h2 id="examples-6"><a class="header" href="#examples-6">Examples</a></h2>
-<pre><code class="language-bash"># Interactive reorder with TUI
+<pre><code class="language-bash"># Interactive reorder/drop with TUI
 gg reorder
+gg arrange
 
-# Explicit reorder by position
+# Explicit reorder by position (no dropping)
 gg reorder --order "3,1,2"
 
 # Use text editor instead of TUI
-gg reorder --no-tui
+gg arrange --no-tui
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="gg-split"><a class="header" href="#gg-split"><code>gg split</code></a></h1>

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-03-19
+
+### Added
+- `gg drop` command — remove one or more commits from the stack by position, SHA, or GG-ID (#223)
+- `gg drop` alias: `gg abandon` (inspired by jj) (#223)
+- `gg arrange` alias for `gg reorder` (#222)
+- Drop support in `gg reorder` TUI — press `d` to mark commits for dropping (#222)
+- MCP tools: `stack_drop`, `stack_split`, `stack_reorder` — expose drop, split, and reorder via MCP server (#225)
+
 ## [0.6.4] - 2026-03-18
 
 ### Fixed
@@ -300,6 +309,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release with core stacked diffs functionality
 
 [Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.6.4...HEAD
+[0.7.0]: https://github.com/mrmans0n/git-gud/compare/v0.6.4...v0.7.0
 [0.6.4]: https://github.com/mrmans0n/git-gud/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/mrmans0n/git-gud/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/mrmans0n/git-gud/compare/v0.6.1...v0.6.2

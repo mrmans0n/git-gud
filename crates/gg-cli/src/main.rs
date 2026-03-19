@@ -124,6 +124,19 @@ enum Commands {
         all: bool,
     },
 
+    /// Drop (remove) commits from the stack
+    #[command(name = "drop", aliases = ["abandon"])]
+    Drop {
+        /// Commits to drop: position (1-indexed), short SHA, or GG-ID
+        targets: Vec<String>,
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        force: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Reorder commits in the stack
     #[command(name = "reorder")]
     Reorder {
@@ -376,6 +389,18 @@ fn main() {
         Some(Commands::Prev) => (gg_core::commands::nav::prev(), false),
         Some(Commands::Next) => (gg_core::commands::nav::next(), false),
         Some(Commands::Squash { all }) => (gg_core::commands::squash::run(all), false),
+        Some(Commands::Drop {
+            targets,
+            force,
+            json,
+        }) => (
+            gg_core::commands::drop_cmd::run(gg_core::commands::drop_cmd::DropOptions {
+                targets,
+                force,
+                json,
+            }),
+            json,
+        ),
         Some(Commands::Reorder { order, no_tui }) => (
             gg_core::commands::reorder::run(gg_core::commands::reorder::ReorderOptions {
                 order,

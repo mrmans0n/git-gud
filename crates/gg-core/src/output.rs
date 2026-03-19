@@ -227,3 +227,22 @@ pub struct CleanResultJson {
     pub cleaned: Vec<String>,
     pub skipped: Vec<String>,
 }
+
+#[derive(Serialize)]
+pub struct DropResponse {
+    pub version: u32,
+    pub drop: DropResultJson,
+}
+
+#[derive(Serialize)]
+pub struct DropResultJson {
+    pub dropped: Vec<DroppedEntryJson>,
+    pub remaining: usize,
+}
+
+#[derive(Serialize)]
+pub struct DroppedEntryJson {
+    pub position: usize,
+    pub sha: String,
+    pub title: String,
+}

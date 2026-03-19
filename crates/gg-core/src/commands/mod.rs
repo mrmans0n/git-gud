@@ -4,6 +4,7 @@ pub mod absorb;
 pub mod checkout;
 pub mod clean;
 pub mod completions;
+pub mod drop_cmd;
 pub mod land;
 pub mod lint;
 pub mod ls;

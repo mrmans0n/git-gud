@@ -593,7 +593,7 @@ git-gud includes an MCP (Model Context Protocol) server that lets AI assistants 
 }
 ```
 
-**16 tools** available: stack inspection, PR status, sync, land, rebase, navigation, and more. See the [MCP Server docs](https://mrmans0n.github.io/git-gud/mcp-server.html) for details.
+**19 tools** available: stack inspection, PR status, sync, land, rebase, navigation, and more. See the [MCP Server docs](https://mrmans0n.github.io/git-gud/mcp-server.html) for details.
 
 ### MCP vs Agent Skills
 

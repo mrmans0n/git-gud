@@ -501,3 +501,25 @@ Navigate within the stack.
 Run lint on stack commits.
 - **Params:** `until` (usize, optional) — lint up to this position
 - **Returns:** JSON with per-commit lint results
+
+#### `stack_drop`
+Remove commits from the stack.
+- **Params:** `targets` (string[], required) — commits to drop: positions (1-indexed), short SHAs, or GG-IDs
+- **Notes:** Always uses `--force` (no interactive confirmation). Agent should confirm with user before calling.
+- **Returns:** JSON with dropped commits and remaining count
+
+#### `stack_split`
+Split a commit by moving specified files to a new commit.
+- **Params:**
+  - `commit` (string, optional) — target commit: position, SHA, or GG-ID (default: current)
+  - `files` (string[], required) — files to include in the new commit
+  - `message` (string, optional) — message for the new commit
+  - `no_edit` (bool, default false) — skip prompt for remainder commit message
+- **Notes:** File-level only (`--no-tui` implicit). Hunk-level selection not available via MCP.
+- **Returns:** Result of the split operation
+
+#### `stack_reorder`
+Reorder commits in the stack.
+- **Params:** `order` (string, required) — new order as positions (1-indexed), e.g., "3,1,2" or "3 1 2". Position 1 = bottom (closest to base).
+- **Notes:** Direct mode only (`--no-tui` implicit). No interactive TUI via MCP.
+- **Returns:** Result of the reorder operation

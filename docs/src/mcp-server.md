@@ -172,6 +172,36 @@ Run configured lint commands on each commit.
 **Parameters:**
 - `until` (integer, optional): Only lint up to this position.
 
+### `stack_drop`
+
+Remove commits from the stack.
+
+**Parameters:**
+- `targets` (array of strings, required): Commits to drop—positions (1-indexed), short SHAs, or GG-IDs.
+
+**Notes:** Always uses `--force` (the agent is expected to confirm with the user before calling). Returns JSON with dropped commits.
+
+### `stack_split`
+
+Split a commit into two by moving specified files to a new commit.
+
+**Parameters:**
+- `commit` (string, optional): Target commit—position (1-indexed), short SHA, or GG-ID. Defaults to the current commit.
+- `files` (array of strings, required): Files to include in the new commit.
+- `message` (string, optional): Message for the new (first) commit.
+- `no_edit` (boolean, optional): Don't prompt for the remainder commit message.
+
+**Notes:** File-level only (no hunk selection via MCP). The new commit is inserted *before* the original.
+
+### `stack_reorder`
+
+Reorder commits in the stack with an explicit order.
+
+**Parameters:**
+- `order` (string, required): New order as positions (1-indexed), e.g., `"3,1,2"` or `"3 1 2"`.
+
+**Notes:** No TUI via MCP. The order specifies the new bottom-to-top arrangement of commits.
+
 ## Transport
 
 The MCP server uses **stdio** transport (JSON-RPC over stdin/stdout), which is the standard for local MCP tools. No network configuration is needed.

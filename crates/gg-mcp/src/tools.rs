@@ -1059,24 +1059,31 @@ mod tests {
 
     #[test]
     fn test_stack_drop_requires_targets() {
-        // Empty targets should return an error message
-        // We test the validation logic, not the actual command execution
+        let server = GgMcpServer::new();
         let params = StackDropParams { targets: vec![] };
-        // The tool validates that targets is non-empty
-        assert!(params.targets.is_empty());
+        let result = server.stack_drop(Parameters(params));
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            "At least one target is required".to_string()
+        );
     }
 
     #[test]
     fn test_stack_split_requires_files() {
-        // Empty files should be rejected by the tool
+        let server = GgMcpServer::new();
         let params = StackSplitParams {
             commit: None,
             files: vec![],
             message: None,
             no_edit: false,
         };
-        // The tool validates that files is non-empty
-        assert!(params.files.is_empty());
+        let result = server.stack_split(Parameters(params));
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            "At least one file is required for split".to_string()
+        );
     }
 
     #[test]

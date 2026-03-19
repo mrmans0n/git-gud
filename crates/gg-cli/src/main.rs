@@ -284,6 +284,19 @@ enum Commands {
         shell: clap_complete::Shell,
     },
 
+    /// Arrange commits in the stack: reorder and/or drop interactively (alias for reorder)
+    #[command(name = "arrange")]
+    Arrange {
+        /// New order as positions (1-indexed) or SHAs, e.g., "3,1,2" or "3 1 2"
+        /// Position 1 = bottom of stack (closest to base)
+        #[arg(short, long, value_name = "ORDER")]
+        order: Option<String>,
+
+        /// Disable TUI, use text editor instead
+        #[arg(long)]
+        no_tui: bool,
+    },
+
     /// Reconcile stacks that were pushed without using `gg sync`
     #[command(name = "reconcile")]
     Reconcile {
@@ -446,6 +459,13 @@ fn main() {
                 one_fixup_per_commit,
                 no_limit,
                 squash,
+            }),
+            false,
+        ),
+        Some(Commands::Arrange { order, no_tui }) => (
+            gg_core::commands::reorder::run(gg_core::commands::reorder::ReorderOptions {
+                order,
+                no_tui,
             }),
             false,
         ),

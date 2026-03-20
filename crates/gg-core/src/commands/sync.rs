@@ -163,6 +163,8 @@ pub fn run(
     until: Option<String>,
 ) -> Result<()> {
     let repo = git::open_repo()?;
+    let sync_start_branch = git::current_branch_name(&repo);
+    let sync_start_head = repo.head()?.peel_to_commit()?.id();
 
     // Acquire operation lock to prevent concurrent operations
     let _lock = git::acquire_operation_lock(&repo, "sync")?;
@@ -235,8 +237,17 @@ pub fn run(
             println!("{}", console::style("Running lint before sync...").dim());
         }
         let lint_passed = crate::commands::lint::run(Some(end_pos), json, false)?;
-        if json && !lint_passed {
-            warnings.push("Lint failed for one or more commits".to_string());
+        if !lint_passed {
+            restore_sync_start_position(
+                &repo,
+                sync_start_branch.as_deref(),
+                sync_start_head,
+                json,
+            )?;
+            return Err(GgError::Other(
+                "Lint failed for one or more commits. Sync aborted; repository restored to its original state."
+                    .to_string(),
+            ));
         }
         if !json {
             println!();
@@ -739,6 +750,36 @@ pub fn run(
             style("OK").green().bold(),
             entries_to_sync.len()
         );
+    }
+
+    Ok(())
+}
+
+fn restore_sync_start_position(
+    repo: &Repository,
+    start_branch: Option<&str>,
+    start_head: git2::Oid,
+    json: bool,
+) -> Result<()> {
+    if !json {
+        println!(
+            "{} Restoring repository to pre-sync state...",
+            style("→").cyan()
+        );
+    }
+
+    if let Some(branch) = start_branch {
+        let branch_ref = format!("refs/heads/{}", branch);
+        let mut reference = repo.find_reference(&branch_ref)?;
+        reference.set_target(start_head, "gg sync: restore after lint failure")?;
+        git::checkout_branch(repo, branch)?;
+    } else {
+        let commit = repo.find_commit(start_head)?;
+        git::checkout_commit(repo, &commit)?;
+    }
+
+    if !json {
+        println!("{} Repository restored", style("OK").green());
     }
 
     Ok(())

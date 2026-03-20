@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-03-20
+
+### Fixed
+- `gg sync --lint` now aborts and restores repository state on lint failure instead of continuing with sync side effects (#232)
+
 ## [0.7.0] - 2026-03-19
 
 ### Added
@@ -308,7 +313,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.6.4...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/mrmans0n/git-gud/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/mrmans0n/git-gud/compare/v0.6.4...v0.7.0
 [0.6.4]: https://github.com/mrmans0n/git-gud/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/mrmans0n/git-gud/compare/v0.6.2...v0.6.3

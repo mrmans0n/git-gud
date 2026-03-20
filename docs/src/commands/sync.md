@@ -11,13 +11,15 @@ gg sync [OPTIONS]
 - `-d, --draft`: Create new PRs/MRs as draft
 - `-f, --force`: Force push even if remote is ahead
 - `--update-descriptions`: Update PR/MR title/body from commit messages
-- `-l, --lint`: Run lint before sync
+- `-l, --lint`: Run lint before sync (aborts sync on lint failure and restores repository state to the pre-sync snapshot)
 - `--no-lint`: Disable lint before sync (overrides config default)
 - `--no-rebase-check`: Skip checking whether your stack base is behind `origin/<base>`
 - `-u, --until <UNTIL>`: Sync up to target commit (position, GG-ID, or SHA)
 - `--json`: Output structured JSON for automation (suppresses human/progress output)
 
 Before pushing, `gg sync` checks whether your stack base is behind `origin/<base>`. If it is behind by at least the configured threshold, git-gud warns and suggests rebasing first (`gg rebase`).
+
+When you run `gg sync --lint`, lint runs before any push/PR updates. If lint fails, sync aborts immediately and git-gud restores your repository to the pre-sync snapshot.
 
 You can control this behavior with config:
 

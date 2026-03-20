@@ -3905,6 +3905,98 @@ fn test_sync_lint_failure_restores_head_and_does_not_push() {
 }
 
 #[test]
+fn test_sync_lint_failure_restores_post_rebase_snapshot() {
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","provider":"github","lint":["./lint-fail.sh"],"sync_auto_rebase":true,"sync_behind_threshold":1}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "lint-sync-post-rebase"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+    let (_ok, stack_branch) = run_git(&repo_path, &["rev-parse", "--abbrev-ref", "HEAD"]);
+
+    fs::write(
+        repo_path.join("lint-fail.sh"),
+        "#!/bin/sh\necho 'lint-failure' >&2\nexit 1\n",
+    )
+    .expect("Failed to write lint script");
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(repo_path.join("lint-fail.sh"))
+            .expect("Failed to stat lint script")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(repo_path.join("lint-fail.sh"), perms)
+            .expect("Failed to chmod lint script");
+    }
+
+    fs::write(repo_path.join("stack.txt"), "stack\n").expect("Failed to write stack file");
+    run_git(&repo_path, &["add", "lint-fail.sh", "stack.txt"]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Stack commit\n\nGG-ID: c-postrb1"],
+    );
+
+    let (_ok, pre_sync_head) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+
+    // Move origin/main ahead so sync's behind-base check triggers auto-rebase.
+    run_git(&repo_path, &["checkout", "main"]);
+    fs::write(repo_path.join("base.txt"), "base update\n").expect("Failed to write base file");
+    run_git(&repo_path, &["add", "base.txt"]);
+    run_git(&repo_path, &["commit", "-m", "Base moved"]);
+    run_git(&repo_path, &["push", "origin", "main"]);
+    run_git(&repo_path, &["checkout", stack_branch.trim()]);
+
+    let fake_bin = repo_path.join("fake-bin");
+    fs::create_dir_all(&fake_bin).expect("Failed to create fake bin dir");
+    fs::write(
+        fake_bin.join("gh"),
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo 'gh version 2.0.0'\n  exit 0\nfi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then\n  exit 0\nfi\necho 'unexpected gh invocation' >&2\nexit 1\n",
+    )
+    .expect("Failed to write fake gh");
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(fake_bin.join("gh"))
+            .expect("Failed to stat fake gh")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(fake_bin.join("gh"), perms).expect("Failed to chmod fake gh");
+    }
+
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut new_path = std::ffi::OsString::from(fake_bin.as_os_str());
+    new_path.push(":");
+    new_path.push(old_path);
+
+    let (success, _stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["sync", "--lint"],
+        &[("PATH", new_path.as_os_str())],
+    );
+    assert!(!success, "sync --lint should fail when lint fails");
+    assert!(
+        stderr.contains("Lint failed") || stderr.contains("lint failed"),
+        "expected lint failure output, got: {}",
+        stderr
+    );
+
+    let (_ok, end_head) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    assert_ne!(
+        pre_sync_head.trim(),
+        end_head.trim(),
+        "HEAD should stay at post-rebase snapshot, not pre-rebase commit"
+    );
+
+    let (_ok, current_branch) = run_git(&repo_path, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    assert_eq!(current_branch.trim(), stack_branch.trim());
+}
+
+#[test]
 fn test_sync_detects_uncommitted_changes() {
     let (_temp_dir, repo_path) = create_test_repo();
 

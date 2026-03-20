@@ -72,7 +72,7 @@ Push and create/update PRs/MRs.
 - `-d, --draft`
 - `-f, --force`
 - `--update-descriptions`
-- `-l, --lint`
+- `-l, --lint` *(aborts sync on lint failure and restores repository state to the pre-sync snapshot)*
 - `--no-lint`
 - `--no-rebase-check`
 - `-u, --until <UNTIL>`

@@ -163,8 +163,6 @@ pub fn run(
     until: Option<String>,
 ) -> Result<()> {
     let repo = git::open_repo()?;
-    let sync_start_branch = git::current_branch_name(&repo);
-    let sync_start_head = repo.head()?.peel_to_commit()?.id();
 
     // Acquire operation lock to prevent concurrent operations
     let _lock = git::acquire_operation_lock(&repo, "sync")?;
@@ -219,6 +217,11 @@ pub fn run(
         rebased_before_sync =
             maybe_rebase_if_base_is_behind(&repo, &config, initial_stack.base.as_str(), json)?;
     }
+
+    // Capture restore snapshot after optional pre-sync rebase. If lint fails,
+    // we restore to this post-rebase state rather than silently undoing rebase.
+    let sync_start_branch = git::current_branch_name(&repo);
+    let sync_start_head = repo.head()?.peel_to_commit()?.id();
 
     let mut warnings: Vec<String> = Vec::new();
 

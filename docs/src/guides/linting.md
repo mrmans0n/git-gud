@@ -35,6 +35,8 @@ gg lint --until 2
 gg sync --lint
 ```
 
+If lint fails during `gg sync --lint`, sync is aborted and git-gud restores repository state to the pre-sync snapshot.
+
 Skip lint for one sync (even if enabled by default):
 
 ```bash

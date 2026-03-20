@@ -218,6 +218,11 @@ pub fn run(
             maybe_rebase_if_base_is_behind(&repo, &config, initial_stack.base.as_str(), json)?;
     }
 
+    // Capture restore snapshot after optional pre-sync rebase. If lint fails,
+    // we restore to this post-rebase state rather than silently undoing rebase.
+    let sync_start_branch = git::current_branch_name(&repo);
+    let sync_start_head = repo.head()?.peel_to_commit()?.id();
+
     let mut warnings: Vec<String> = Vec::new();
 
     // Run lint ONCE if requested (before GG-ID addition loop)
@@ -235,8 +240,17 @@ pub fn run(
             println!("{}", console::style("Running lint before sync...").dim());
         }
         let lint_passed = crate::commands::lint::run(Some(end_pos), json, false)?;
-        if json && !lint_passed {
-            warnings.push("Lint failed for one or more commits".to_string());
+        if !lint_passed {
+            restore_sync_start_position(
+                &repo,
+                sync_start_branch.as_deref(),
+                sync_start_head,
+                json,
+            )?;
+            return Err(GgError::Other(
+                "Lint failed for one or more commits. Sync aborted; repository restored to its original state."
+                    .to_string(),
+            ));
         }
         if !json {
             println!();
@@ -739,6 +753,36 @@ pub fn run(
             style("OK").green().bold(),
             entries_to_sync.len()
         );
+    }
+
+    Ok(())
+}
+
+fn restore_sync_start_position(
+    repo: &Repository,
+    start_branch: Option<&str>,
+    start_head: git2::Oid,
+    json: bool,
+) -> Result<()> {
+    if !json {
+        println!(
+            "{} Restoring repository to pre-sync state...",
+            style("→").cyan()
+        );
+    }
+
+    if let Some(branch) = start_branch {
+        let branch_ref = format!("refs/heads/{}", branch);
+        let mut reference = repo.find_reference(&branch_ref)?;
+        reference.set_target(start_head, "gg sync: restore after lint failure")?;
+        git::checkout_branch(repo, branch)?;
+    } else {
+        let commit = repo.find_commit(start_head)?;
+        git::checkout_commit(repo, &commit)?;
+    }
+
+    if !json {
+        println!("{} Repository restored", style("OK").green());
     }
 
     Ok(())

@@ -72,6 +72,27 @@ fn run_gg(repo_path: &std::path::Path, args: &[&str]) -> (bool, String, String) 
     (output.status.success(), stdout, stderr)
 }
 
+fn run_gg_with_env(
+    repo_path: &std::path::Path,
+    args: &[&str],
+    envs: &[(&str, &std::ffi::OsStr)],
+) -> (bool, String, String) {
+    let gg_path = env!("CARGO_BIN_EXE_gg");
+
+    let mut cmd = Command::new(gg_path);
+    cmd.args(args).current_dir(repo_path);
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+
+    let output = cmd.output().expect("Failed to run gg");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    (output.status.success(), stdout, stderr)
+}
+
 /// Helper to run git command
 fn run_git(repo_path: &std::path::Path, args: &[&str]) -> (bool, String) {
     let output = Command::new("git")
@@ -3772,6 +3793,116 @@ fn test_reconcile_not_on_stack() {
 // Note: Full end-to-end sync testing requires a configured provider (glab/gh)
 // which is not available in the integration test environment. These tests
 // verify the auto-stashing logic works correctly when it's triggered.
+
+#[test]
+fn test_sync_lint_failure_restores_head_and_does_not_push() {
+    let (_temp_dir, repo_path, remote_path) = create_test_repo_with_remote();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","provider":"github","lint":["./lint-fail.sh"]}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "lint-sync-rollback"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(
+        repo_path.join("lint-fail.sh"),
+        "#!/bin/sh\necho 'lint-touched' >> data.txt\nexit 1\n",
+    )
+    .expect("Failed to write lint script");
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(repo_path.join("lint-fail.sh"))
+            .expect("Failed to stat lint script")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(repo_path.join("lint-fail.sh"), perms)
+            .expect("Failed to chmod lint script");
+    }
+
+    fs::write(repo_path.join("data.txt"), "original\n").expect("Failed to write data file");
+    run_git(&repo_path, &["add", "lint-fail.sh", "data.txt"]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Stack commit\n\nGG-ID: c-sync001"],
+    );
+
+    let (_ok, start_branch) = run_git(&repo_path, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    let (_ok, start_head) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+
+    let fake_bin = repo_path.join("fake-bin");
+    fs::create_dir_all(&fake_bin).expect("Failed to create fake bin dir");
+    fs::write(
+        fake_bin.join("gh"),
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo 'gh version 2.0.0'\n  exit 0\nfi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then\n  exit 0\nfi\necho 'unexpected gh invocation' >&2\nexit 1\n",
+    )
+    .expect("Failed to write fake gh");
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(fake_bin.join("gh"))
+            .expect("Failed to stat fake gh")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(fake_bin.join("gh"), perms).expect("Failed to chmod fake gh");
+    }
+
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut new_path = std::ffi::OsString::from(fake_bin.as_os_str());
+    new_path.push(":");
+    new_path.push(old_path);
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["sync", "--lint"],
+        &[("PATH", new_path.as_os_str())],
+    );
+    assert!(!success, "sync --lint should fail when lint fails");
+    let combined = format!("{}{}", stdout, stderr);
+    assert!(
+        combined.contains("Lint failed") && combined.contains("restored"),
+        "expected lint failure + restore message, got: {}",
+        combined
+    );
+
+    let (_ok, end_branch) = run_git(&repo_path, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    let (_ok, end_head) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        start_branch.trim(),
+        end_branch.trim(),
+        "branch should be restored"
+    );
+    assert_eq!(
+        start_head.trim(),
+        end_head.trim(),
+        "HEAD should be restored"
+    );
+
+    let (_ok, symbolic) = run_git(&repo_path, &["symbolic-ref", "--short", "HEAD"]);
+    assert_eq!(
+        symbolic.trim(),
+        start_branch.trim(),
+        "HEAD should stay attached to original branch"
+    );
+
+    let remote_branch = "refs/heads/testuser/lint-sync-rollback--c-sync001";
+    let output = Command::new("git")
+        .args([
+            "--git-dir",
+            remote_path.to_str().unwrap(),
+            "show-ref",
+            remote_branch,
+        ])
+        .output()
+        .expect("Failed to inspect remote refs");
+    assert!(
+        !output.status.success(),
+        "entry branch should not be pushed when lint fails"
+    );
+}
 
 #[test]
 fn test_sync_detects_uncommitted_changes() {

@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-eaad4386.js";
+            window.path_to_searchindex_js = "searchindex-59282b49.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b32c07bc.js"></script>
@@ -695,7 +695,7 @@ gg ls --remote --json
 </ul>
 <p>Before pushing, <code>gg sync</code> checks whether your stack base is behind <code>origin/&lt;base&gt;</code>. If it is behind by at least the configured threshold, git-gud warns and suggests rebasing first (<code>gg rebase</code>).</p>
 <p>When you run <code>gg sync --lint</code>, lint runs before any push/PR updates. If lint fails, sync aborts immediately and git-gud restores your repository to the pre-sync snapshot.</p>
-<p>Before pushing, <code>gg sync</code> also normalizes commit metadata (<code>GG-ID</code> and <code>GG-Parent</code>) for the whole stack.</p>
+<p>Before pushing, <code>gg sync</code> also normalizes commit metadata (<code>GG-ID</code> and <code>GG-Parent</code>) for the whole stack. This normalization is always enforced during sync (including adding missing <code>GG-ID</code> trailers) to keep stack identity and PR/MR mappings stable.</p>
 <p>You can control this behavior with config:</p>
 <ul>
 <li><code>defaults.sync_auto_rebase</code> (<code>sync.auto_rebase</code>): automatically run <code>gg rebase</code> before sync when behind threshold is reached</li>

@@ -80,6 +80,10 @@ enum Commands {
         #[arg(long)]
         update_descriptions: bool,
 
+        /// Add or update stack breadcrumbs in PR/MR descriptions
+        #[arg(long)]
+        update_breadcrumbs: bool,
+
         /// Run lint before sync
         #[arg(short, long, conflicts_with = "no_lint")]
         lint: bool,
@@ -349,6 +353,7 @@ fn main() {
             no_rebase_check,
             force,
             update_descriptions,
+            update_breadcrumbs,
             lint,
             no_lint,
             until,
@@ -377,6 +382,7 @@ fn main() {
                     no_rebase_check,
                     force,
                     update_descriptions,
+                    update_breadcrumbs,
                     run_lint,
                     until,
                 ),

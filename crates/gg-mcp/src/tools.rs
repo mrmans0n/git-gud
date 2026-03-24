@@ -160,6 +160,9 @@ pub struct StackSyncParams {
     /// Update PR descriptions from commit messages
     #[serde(default)]
     pub update_descriptions: bool,
+    /// Add or update stack breadcrumbs in PR/MR descriptions
+    #[serde(default)]
+    pub update_breadcrumbs: bool,
     /// Skip rebase-needed check
     #[serde(default)]
     pub no_rebase_check: bool,
@@ -610,6 +613,9 @@ impl GgMcpServer {
         if params.update_descriptions {
             args.push("--update-descriptions".to_string());
         }
+        if params.update_breadcrumbs {
+            args.push("--update-breadcrumbs".to_string());
+        }
         if params.no_rebase_check {
             args.push("--no-rebase-check".to_string());
         }
@@ -988,6 +994,7 @@ mod tests {
         assert!(!params.draft);
         assert!(!params.force);
         assert!(!params.update_descriptions);
+        assert!(!params.update_breadcrumbs);
         assert!(!params.no_rebase_check);
         assert!(!params.lint);
         assert!(params.until.is_none());

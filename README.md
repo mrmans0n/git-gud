@@ -167,6 +167,7 @@ gg clean
 | `gg sync --draft` | Create new PRs/MRs as drafts |
 | `gg sync --force` | Force push even if remote diverged |
 | `gg sync --update-descriptions` | Update PR/MR titles and descriptions to match commit messages |
+| `gg sync --update-breadcrumbs` | Add/update stack navigation breadcrumbs in PR/MR descriptions |
 | `gg sync --until <target>` | Sync only up to a specific commit (by position, GG-ID, or SHA) |
 | `gg sync --no-rebase-check` | Skip checking whether the stack base is behind `origin/<base>` |
 

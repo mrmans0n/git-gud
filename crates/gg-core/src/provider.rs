@@ -212,6 +212,14 @@ impl Provider {
         }
     }
 
+    /// Get PR/MR description body
+    pub fn get_pr_body(&self, number: u64) -> Result<String> {
+        match self {
+            Provider::GitHub => gh::get_pr_body(number),
+            Provider::GitLab => glab::get_mr_body(number),
+        }
+    }
+
     /// Update PR/MR description/body
     pub fn update_pr_description(&self, number: u64, description: &str) -> Result<()> {
         match self {

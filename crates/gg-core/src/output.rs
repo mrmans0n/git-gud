@@ -107,6 +107,15 @@ pub struct SyncResultJson {
     pub rebased_before_sync: bool,
     pub warnings: Vec<String>,
     pub entries: Vec<SyncEntryResultJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub breadcrumbs: Option<SyncBreadcrumbsJson>,
+}
+
+#[derive(Serialize)]
+pub struct SyncBreadcrumbsJson {
+    pub enabled: bool,
+    pub updated: usize,
+    pub unchanged: usize,
 }
 
 #[derive(Serialize)]

@@ -130,6 +130,7 @@ gg land -a -c --json
 - Reorder/drop stack (TUI): `gg reorder` (or `gg arrange`) — opens interactive TUI for visual reordering and dropping commits. Press `d` to mark a commit for dropping. Use `--no-tui` to fall back to text editor (delete lines to drop).
 - Reorder stack (direct): `gg reorder -o "3,1,2"`
 - Sync subset: `gg sync -u <position|gg-id|sha> --json`
+- Update stack breadcrumbs in PR/MR descriptions: `gg sync --update-breadcrumbs --json`
 - Lint stack: `gg lint --json`
 - Clean merged stacks: `gg clean -a --json`
 

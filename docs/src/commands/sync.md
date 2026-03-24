@@ -11,6 +11,7 @@ gg sync [OPTIONS]
 - `-d, --draft`: Create new PRs/MRs as draft
 - `-f, --force`: Force push even if remote is ahead
 - `--update-descriptions`: Update PR/MR title/body from commit messages
+- `--update-breadcrumbs`: Add or update stack breadcrumbs in PR/MR descriptions
 - `-l, --lint`: Run lint before sync (aborts sync on lint failure and restores repository state to the pre-sync snapshot)
 - `--no-lint`: Disable lint before sync (overrides config default)
 - `--no-rebase-check`: Skip checking whether your stack base is behind `origin/<base>`
@@ -26,6 +27,24 @@ You can control this behavior with config:
 - `defaults.sync_auto_rebase` (`sync.auto_rebase`): automatically run `gg rebase` before sync when behind threshold is reached
 - `defaults.sync_behind_threshold` (`sync.behind_threshold`): minimum number of commits behind before warning/rebase logic applies (`0` disables the check)
 
+## Stack breadcrumbs
+
+When you pass `--update-breadcrumbs`, each PR/MR description gets a navigation block showing where it sits in the stack:
+
+```markdown
+<!-- gg:breadcrumbs:start -->
+**Stack:** `auth-feature` — 2/3
+
+PR #10 ← THIS → PR #12
+
+1. Add auth module — #10
+2. Add login page — #11 **⮜**
+3. Add logout button — #12
+<!-- gg:breadcrumbs:end -->
+```
+
+Breadcrumbs are **idempotent**: re-running `gg sync --update-breadcrumbs` replaces only the managed block between the HTML comment markers. Any text you write outside the markers is preserved.
+
 ## Examples
 
 ```bash
@@ -37,6 +56,9 @@ gg sync --until 2
 
 # Refresh PR/MR descriptions after commit message edits
 gg sync --update-descriptions
+
+# Add stack navigation breadcrumbs to all PRs/MRs
+gg sync --update-breadcrumbs
 
 # Run lint as part of sync
 gg sync --lint
@@ -72,7 +94,14 @@ Example JSON (shape):
         "pushed": true,
         "error": null
       }
-    ]
+    ],
+    "breadcrumbs": {
+      "enabled": true,
+      "updated": 1,
+      "unchanged": 0
+    }
   }
 }
 ```
+
+The `breadcrumbs` field is present only when `--update-breadcrumbs` is used.

@@ -72,6 +72,7 @@ Push and create/update PRs/MRs.
 - `-d, --draft`
 - `-f, --force`
 - `--update-descriptions`
+- `--update-breadcrumbs` — add/update stack navigation breadcrumbs in PR/MR descriptions (idempotent, replaces only the managed block)
 - `-l, --lint` *(aborts sync on lint failure and restores repository state to the pre-sync snapshot)*
 - `--no-lint`
 - `--no-rebase-check`
@@ -306,10 +307,17 @@ Field types:
         "pushed": true,
         "error": null
       }
-    ]
+    ],
+    "breadcrumbs": {
+      "enabled": true,
+      "updated": 1,
+      "unchanged": 0
+    }
   }
 }
 ```
+
+The `breadcrumbs` field is only present when `--update-breadcrumbs` is used. It reports how many PR/MR descriptions were updated vs already current.
 
 ### `gg lint --json`
 
@@ -460,8 +468,8 @@ Create or switch to a stack.
 
 #### `stack_sync`
 Push branches and create/update PRs.
-- **Params:** `draft` (bool), `force` (bool), `update_descriptions` (bool), `no_rebase_check` (bool), `lint` (bool), `until` (string)
-- **Returns:** JSON sync results with PR URLs
+- **Params:** `draft` (bool), `force` (bool), `update_descriptions` (bool), `update_breadcrumbs` (bool), `no_rebase_check` (bool), `lint` (bool), `until` (string)
+- **Returns:** JSON sync results with PR URLs (includes `breadcrumbs` summary when `update_breadcrumbs` is true)
 
 #### `stack_land`
 Merge approved PRs.

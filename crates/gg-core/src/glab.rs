@@ -368,6 +368,28 @@ pub fn update_mr_target(mr_number: u64, target_branch: &str) -> Result<()> {
 }
 
 /// Update MR description/body
+/// Get MR description body
+pub fn get_mr_body(mr_number: u64) -> Result<String> {
+    let output = Command::new("glab")
+        .args([
+            "api",
+            &format!("projects/:id/merge_requests/{}", mr_number),
+            "-q",
+            ".description",
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::GlabError(format!(
+            "Failed to get MR !{} body: {}",
+            mr_number, stderr
+        )));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 pub fn update_mr_description(mr_number: u64, description: &str) -> Result<()> {
     let output = Command::new("glab")
         .args([

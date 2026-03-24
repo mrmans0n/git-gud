@@ -11,7 +11,8 @@ use crate::git::{
     self, generate_gg_id, get_commit_description, set_gg_id_in_message, strip_gg_id_from_message,
 };
 use crate::output::{
-    print_json, SyncEntryResultJson, SyncResponse, SyncResultJson, OUTPUT_VERSION,
+    print_json, SyncBreadcrumbsJson, SyncEntryResultJson, SyncResponse, SyncResultJson,
+    OUTPUT_VERSION,
 };
 use crate::provider::Provider;
 use crate::stack::{resolve_target, Stack};
@@ -153,12 +154,14 @@ fn format_push_error(error: &GgError, branch_name: &str) {
 }
 
 /// Run the sync command
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     draft: bool,
     json: bool,
     no_rebase_check: bool,
     force: bool,
     update_descriptions: bool,
+    update_breadcrumbs: bool,
     run_lint: bool,
     until: Option<String>,
 ) -> Result<()> {
@@ -189,6 +192,7 @@ pub fn run(
                     rebased_before_sync: false,
                     warnings: vec![],
                     entries: vec![],
+                    breadcrumbs: None,
                 },
             });
         } else {
@@ -272,6 +276,7 @@ pub fn run(
                         rebased_before_sync,
                         warnings: warnings.clone(),
                         entries: vec![],
+                        breadcrumbs: None,
                     },
                 });
             } else {
@@ -429,6 +434,14 @@ pub fn run(
     // that PR and all subsequent PRs should be drafts.
     let mut force_draft = draft;
     let mut json_entries: Vec<SyncEntryResultJson> = Vec::new();
+
+    // Collect per-entry PR info for breadcrumb pass
+    struct EntrySyncInfo {
+        title: String,
+        pr_number: Option<u64>,
+        pr_url: Option<String>,
+    }
+    let mut entry_sync_infos: Vec<EntrySyncInfo> = Vec::new();
 
     for (i, entry) in entries_to_sync.iter().enumerate() {
         let gg_id = entry.gg_id.as_ref().unwrap();
@@ -709,6 +722,12 @@ pub fn run(
             }
         }
 
+        entry_sync_infos.push(EntrySyncInfo {
+            title: title.clone(),
+            pr_number,
+            pr_url: pr_url.clone(),
+        });
+
         if json {
             json_entries.push(SyncEntryResultJson {
                 position: entry.position,
@@ -735,6 +754,77 @@ pub fn run(
     // Save updated config
     config.save(git_dir)?;
 
+    // Breadcrumb update pass: update PR/MR descriptions with stack navigation
+    let breadcrumbs_json = if update_breadcrumbs {
+        use crate::template::{render_breadcrumbs, splice_breadcrumbs, BreadcrumbEntry};
+
+        let breadcrumb_entries: Vec<BreadcrumbEntry> = entry_sync_infos
+            .iter()
+            .map(|info| BreadcrumbEntry {
+                title: info.title.clone(),
+                pr_number: info.pr_number,
+                pr_url: info.pr_url.clone(),
+            })
+            .collect();
+
+        let pr_label = provider.pr_label();
+        let pr_prefix = provider.pr_number_prefix();
+        let mut updated = 0usize;
+        let mut unchanged = 0usize;
+
+        for (i, info) in entry_sync_infos.iter().enumerate() {
+            let Some(pr_num) = info.pr_number else {
+                continue;
+            };
+
+            let block =
+                render_breadcrumbs(&stack.name, &breadcrumb_entries, i, pr_label, pr_prefix);
+
+            // Fetch current description from the provider for idempotent replacement
+            let current_body = provider.get_pr_body(pr_num).unwrap_or_default();
+            let (new_body, changed) = splice_breadcrumbs(&current_body, &block);
+
+            if changed {
+                match provider.update_pr_description(pr_num, &new_body) {
+                    Ok(()) => {
+                        updated += 1;
+                        if !json {
+                            println!(
+                                "  {} Updated breadcrumbs for {} {}{}",
+                                style("↻").cyan(),
+                                pr_label,
+                                pr_prefix,
+                                pr_num,
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        if !json {
+                            eprintln!(
+                                "  {} Could not update breadcrumbs for {} {}{}: {}",
+                                style("Warning:").yellow(),
+                                pr_label,
+                                pr_prefix,
+                                pr_num,
+                                e
+                            );
+                        }
+                    }
+                }
+            } else {
+                unchanged += 1;
+            }
+        }
+
+        Some(SyncBreadcrumbsJson {
+            enabled: true,
+            updated,
+            unchanged,
+        })
+    } else {
+        None
+    };
+
     if json {
         print_json(&SyncResponse {
             version: OUTPUT_VERSION,
@@ -744,6 +834,7 @@ pub fn run(
                 rebased_before_sync,
                 warnings,
                 entries: json_entries,
+                breadcrumbs: breadcrumbs_json,
             },
         });
     } else {
@@ -1140,6 +1231,7 @@ mod tests {
                     pushed: true,
                     error: None,
                 }],
+                breadcrumbs: None,
             },
         };
 
@@ -1152,6 +1244,8 @@ mod tests {
         assert_eq!(parsed["sync"]["rebased_before_sync"], false);
         assert!(parsed["sync"]["warnings"].is_array());
         assert!(parsed["sync"]["entries"].is_array());
+        // breadcrumbs should be absent when None (skip_serializing_if)
+        assert!(parsed["sync"]["breadcrumbs"].is_null());
 
         let entry = &parsed["sync"]["entries"][0];
         assert_eq!(entry["position"], 1);
@@ -1159,5 +1253,33 @@ mod tests {
         assert_eq!(entry["pr_number"], 42);
         assert_eq!(entry["pushed"], true);
         assert!(entry["error"].is_null());
+    }
+
+    #[test]
+    fn test_sync_json_response_with_breadcrumbs() {
+        use crate::output::SyncBreadcrumbsJson;
+
+        let response = SyncResponse {
+            version: OUTPUT_VERSION,
+            sync: SyncResultJson {
+                stack: "test-stack".to_string(),
+                base: "main".to_string(),
+                rebased_before_sync: false,
+                warnings: vec![],
+                entries: vec![],
+                breadcrumbs: Some(SyncBreadcrumbsJson {
+                    enabled: true,
+                    updated: 3,
+                    unchanged: 2,
+                }),
+            },
+        };
+
+        let json_str = serde_json::to_string_pretty(&response).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(parsed["sync"]["breadcrumbs"]["enabled"], true);
+        assert_eq!(parsed["sync"]["breadcrumbs"]["updated"], 3);
+        assert_eq!(parsed["sync"]["breadcrumbs"]["unchanged"], 2);
     }
 }

@@ -6886,3 +6886,207 @@ fn test_drop_last_commit() {
     assert!(stdout.contains("Commit 2"));
     assert!(!stdout.contains("Commit 3"));
 }
+
+// ── GG-Parent trailer integration tests ──────────────────────────────
+
+#[test]
+fn test_gg_parent_trailers_in_ls_json() {
+    // After a sync (which triggers metadata normalization), ls --json
+    // should expose gg_parent fields on stack entries.
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack with two commits
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "parent-test"]);
+    assert!(success, "checkout failed: {}", stderr);
+
+    fs::write(repo_path.join("a.txt"), "a").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "First commit"]);
+
+    fs::write(repo_path.join("b.txt"), "b").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Second commit"]);
+
+    // ls --json to see entries — before sync they won't have GG-IDs/Parents
+    let (success, stdout, _) = run_gg(&repo_path, &["ls", "--json"]);
+    assert!(success);
+    let parsed: Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    let entries = &parsed["stack"]["entries"];
+
+    // Before normalization, commits should NOT have gg_parent or gg_id
+    assert!(entries[0]["gg_id"].is_null());
+    assert!(entries[0]["gg_parent"].is_null());
+}
+
+#[test]
+fn test_reorder_normalizes_gg_parent() {
+    // After reorder, GG-Parent chain should be updated
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "reorder-parent"]);
+    assert!(success, "checkout failed: {}", stderr);
+
+    // Create 3 commits with GG-IDs manually (simulating prior sync)
+    fs::write(repo_path.join("a.txt"), "a").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Commit A\n\nGG-ID: c-aaa0001"],
+    );
+
+    fs::write(repo_path.join("b.txt"), "b").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &[
+            "commit",
+            "-m",
+            "Commit B\n\nGG-Parent: c-aaa0001\nGG-ID: c-bbb0002",
+        ],
+    );
+
+    fs::write(repo_path.join("c.txt"), "c").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &[
+            "commit",
+            "-m",
+            "Commit C\n\nGG-Parent: c-bbb0002\nGG-ID: c-ccc0003",
+        ],
+    );
+
+    // Reorder: reverse to C, B, A (positions: 3, 2, 1)
+    let (success, _, stderr) = run_gg(&repo_path, &["reorder", "--order", "3,2,1"]);
+    assert!(success, "reorder failed: {}", stderr);
+
+    // Check that GG-Parent chain was re-normalized via git log
+    let (_, log_output) = run_git(
+        &repo_path,
+        &["log", "--format=---COMMIT---%n%B", "--reverse"],
+    );
+    let commits: Vec<&str> = log_output
+        .split("---COMMIT---")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty() && !s.starts_with("Initial commit"))
+        .collect();
+
+    assert!(
+        commits.len() >= 2,
+        "Expected at least 2 commits after reorder, got {}",
+        commits.len()
+    );
+
+    // After reorder, first stack entry should have no GG-Parent
+    assert!(
+        !commits[0].contains("GG-Parent:"),
+        "First commit after reorder should have no GG-Parent. Got: {}",
+        commits[0]
+    );
+    // Should still have its GG-ID
+    assert!(
+        commits[0].contains("GG-ID:"),
+        "First commit should have GG-ID. Got: {}",
+        commits[0]
+    );
+}
+
+#[test]
+fn test_drop_normalizes_gg_parent() {
+    // After drop, GG-Parent chain should be updated
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "drop-parent"]);
+    assert!(success, "checkout failed: {}", stderr);
+
+    // Create 3 commits with GG-IDs
+    fs::write(repo_path.join("a.txt"), "a").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Commit A\n\nGG-ID: c-aaa0001"],
+    );
+
+    fs::write(repo_path.join("b.txt"), "b").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &[
+            "commit",
+            "-m",
+            "Commit B\n\nGG-Parent: c-aaa0001\nGG-ID: c-bbb0002",
+        ],
+    );
+
+    fs::write(repo_path.join("c.txt"), "c").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &[
+            "commit",
+            "-m",
+            "Commit C\n\nGG-Parent: c-bbb0002\nGG-ID: c-ccc0003",
+        ],
+    );
+
+    // Drop commit B (position 2)
+    let (success, _, stderr) = run_gg(&repo_path, &["drop", "2", "--force"]);
+    assert!(success, "drop failed: {}", stderr);
+
+    // Check that GG-Parent chain was re-normalized
+    // Use --format=%s%n%b to get subject + body per commit
+    let (_, log_output) = run_git(
+        &repo_path,
+        &["log", "--format=---COMMIT---%n%B", "--reverse"],
+    );
+    let commits: Vec<&str> = log_output
+        .split("---COMMIT---")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty() && !s.starts_with("Initial commit"))
+        .collect();
+
+    assert!(
+        commits.len() >= 2,
+        "Expected at least 2 commits after drop, got {}. Log:\n{}",
+        commits.len(),
+        log_output
+    );
+
+    // A should have no GG-Parent (it's the first)
+    assert!(
+        !commits[0].contains("GG-Parent:"),
+        "First commit should have no GG-Parent. Got: {}",
+        commits[0]
+    );
+
+    // C should now have GG-Parent pointing to A's GG-ID
+    assert!(
+        commits[1].contains("GG-Parent: c-aaa0001"),
+        "Second commit should point to first commit's GG-ID. Got: {}",
+        commits[1]
+    );
+}

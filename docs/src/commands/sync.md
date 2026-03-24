@@ -49,6 +49,16 @@ gg sync --no-rebase-check
 gg sync --json
 ```
 
+## Metadata normalization
+
+Before pushing, `gg sync` normalizes stack metadata trailers on every commit:
+
+- Adds missing `GG-ID` trailers automatically
+- Sets/fixes `GG-Parent` trailers to match the current stack order
+- The first entry has no `GG-Parent`; subsequent entries point to the previous entry's `GG-ID`
+
+This normalization is fully automatic — no flags or prompts. If no trailers need updating, no commits are rewritten.
+
 Example JSON (shape):
 
 ```json
@@ -58,6 +68,11 @@ Example JSON (shape):
     "stack": "my-stack",
     "base": "main",
     "rebased_before_sync": false,
+    "metadata": {
+      "gg_ids_added": 1,
+      "gg_parents_updated": 2,
+      "gg_parents_removed": 0
+    },
     "entries": [
       {
         "position": 1,
@@ -76,3 +91,5 @@ Example JSON (shape):
   }
 }
 ```
+
+The `metadata` field is `null` when no normalization was needed.

@@ -4,7 +4,7 @@
 //! someone does `gg co mystack` → commit → `git push` (skipping `gg sync`).
 //!
 //! It will:
-//! 1. Add GG-IDs to commits that don't have them (via rebase)
+//! 1. Normalize GG-ID and GG-Parent trailers on all commits
 //! 2. Search for existing PRs/MRs for the stack's entry branches and map them
 
 use console::style;
@@ -12,8 +12,8 @@ use dialoguer::Confirm;
 use git2::Repository;
 
 use crate::config::Config;
-use crate::error::Result;
-use crate::git::{self, generate_gg_id, get_gg_id, set_gg_id_in_message};
+use crate::error::{GgError, Result};
+use crate::git;
 use crate::provider::Provider;
 use crate::stack::Stack;
 
@@ -125,25 +125,27 @@ pub fn run(dry_run: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Confirm before proceeding
+    // Normalize stack metadata (GG-IDs + GG-Parents) automatically
     if !actions.commits_needing_ids.is_empty() {
         let should_add_ids = Confirm::new()
-            .with_prompt("Add GG-IDs to commits? (requires rebase)")
+            .with_prompt("Normalize stack metadata? (adds GG-IDs and GG-Parents via rewrite)")
             .default(true)
             .interact()
             .unwrap_or(false);
 
         if should_add_ids {
-            add_gg_ids_to_commits(&repo, &stack)?;
-            // Reload stack after rebase to get updated GG-IDs
+            normalize_stack_trailers(&repo, &stack)?;
+            // Reload stack after rewrite to get updated GG-IDs
             let stack = Stack::load(&repo, &config)?;
             // Re-search for PRs with the new stack
             let prs_to_map = find_unmapped_prs(&repo, &stack, &config, &provider)?;
             map_prs(&mut config, &stack.name, &prs_to_map, &provider)?;
         } else {
-            println!("{}", style("Skipping GG-ID addition.").dim());
+            println!("{}", style("Skipping metadata normalization.").dim());
         }
     } else {
+        // Even when all commits have GG-IDs, normalize GG-Parent chain
+        normalize_stack_trailers(&repo, &stack)?;
         // Just map the PRs
         map_prs(&mut config, &stack.name, &actions.prs_to_map, &provider)?;
     }
@@ -273,44 +275,58 @@ fn map_prs(
     Ok(())
 }
 
-/// Add GG-IDs to commits that are missing them via interactive rebase
-fn add_gg_ids_to_commits(repo: &Repository, stack: &Stack) -> Result<()> {
-    println!("{}", style("Adding GG-IDs via rebase...").dim());
+/// Normalize GG-ID and GG-Parent trailers for all commits in the stack.
+fn normalize_stack_trailers(repo: &Repository, stack: &Stack) -> Result<()> {
+    println!(
+        "{}",
+        style("Normalizing stack metadata (GG-IDs + GG-Parents)...").dim()
+    );
 
     let base_ref = repo
         .revparse_single(&stack.base)
         .or_else(|_| repo.revparse_single(&format!("origin/{}", stack.base)))?;
 
-    use git2::RebaseOptions;
+    let entry_oids: Vec<git2::Oid> = stack.entries.iter().map(|e| e.oid).collect();
 
-    let base_commit = repo.find_annotated_commit(base_ref.id())?;
+    let (new_tip, counts) = git::normalize_stack_metadata(repo, base_ref.id(), &entry_oids)?;
 
-    let mut rebase_opts = RebaseOptions::new();
-    let mut rebase = repo.rebase(None, Some(&base_commit), None, Some(&mut rebase_opts))?;
-
-    let sig = git::get_signature(repo)?;
-
-    while let Some(op) = rebase.next() {
-        let op = op?;
-        let commit = repo.find_commit(op.id())?;
-
-        // Check if this commit needs a GG-ID
-        let needs_id = get_gg_id(&commit).is_none();
-
-        let message = commit.message().unwrap_or("");
-        let new_message = if needs_id {
-            let new_id = generate_gg_id();
-            set_gg_id_in_message(message, &new_id)
-        } else {
-            message.to_string()
-        };
-
-        rebase.commit(None, &sig, Some(&new_message))?;
+    // Update the branch reference
+    let head = repo.head()?;
+    if let Some(branch_name) = head.shorthand() {
+        repo.reference(
+            &format!("refs/heads/{}", branch_name),
+            new_tip,
+            true,
+            "gg reconcile: normalized stack metadata",
+        )?;
+    } else {
+        return Err(GgError::Other(
+            "Cannot normalize metadata: HEAD is detached".to_string(),
+        ));
     }
 
-    rebase.finish(None)?;
-
-    println!("{} Added GG-IDs to commits", style("OK").green().bold());
+    let mut parts = Vec::new();
+    if counts.gg_ids_added > 0 {
+        parts.push(format!("{} GG-IDs added", counts.gg_ids_added));
+    }
+    if counts.gg_parents_updated > 0 {
+        parts.push(format!("{} GG-Parents updated", counts.gg_parents_updated));
+    }
+    if counts.gg_parents_removed > 0 {
+        parts.push(format!("{} GG-Parents removed", counts.gg_parents_removed));
+    }
+    if parts.is_empty() {
+        println!(
+            "{} Stack metadata already normalized",
+            style("OK").green().bold()
+        );
+    } else {
+        println!(
+            "{} Stack metadata normalized ({})",
+            style("OK").green().bold(),
+            parts.join(", ")
+        );
+    }
 
     Ok(())
 }

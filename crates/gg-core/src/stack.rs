@@ -10,7 +10,7 @@ use git2::{Commit, Repository};
 
 use crate::config::Config;
 use crate::error::{GgError, Result};
-use crate::git::{self, get_gg_id, short_sha};
+use crate::git::{self, get_gg_id, get_gg_parent, short_sha};
 use crate::provider::{CiStatus, PrState, Provider};
 
 /// File to store the current stack when in detached HEAD mode
@@ -27,6 +27,8 @@ pub struct StackEntry {
     pub title: String,
     /// GG-ID (stable identifier)
     pub gg_id: Option<String>,
+    /// GG-Parent (previous entry's GG-ID in stack order)
+    pub gg_parent: Option<String>,
     /// PR number if synced
     pub mr_number: Option<u64>,
     /// PR state if synced
@@ -51,6 +53,7 @@ impl StackEntry {
             short_sha: short_sha(commit),
             title: git::get_commit_title(commit),
             gg_id: get_gg_id(commit),
+            gg_parent: get_gg_parent(commit),
             mr_number: None,
             mr_state: None,
             approved: false,

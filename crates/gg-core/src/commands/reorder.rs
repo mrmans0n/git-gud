@@ -89,6 +89,9 @@ pub fn run(options: ReorderOptions) -> Result<()> {
     // Perform the rebase with the new order
     perform_reorder(&repo, &stack, &new_order)?;
 
+    // Normalize GG-Parent trailers after reorder
+    let _ = git::normalize_current_stack_metadata(&repo, &config);
+
     if dropped_count > 0 {
         println!(
             "{} Arranged stack: {} commits kept, {} dropped",
@@ -370,6 +373,7 @@ mod tests {
             short_sha: sha.to_string(),
             title: title.to_string(),
             gg_id: Some(gg_id.to_string()),
+            gg_parent: None,
             mr_number: None,
             mr_state: None,
             approved: false,

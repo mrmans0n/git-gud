@@ -307,6 +307,9 @@ pub fn run(options: SplitOptions) -> Result<()> {
         );
     }
 
+    // Normalize GG-Parent trailers after split
+    let _ = git::normalize_current_stack_metadata(&repo, &config);
+
     Ok(())
 }
 

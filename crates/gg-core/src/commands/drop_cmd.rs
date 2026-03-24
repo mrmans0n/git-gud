@@ -161,6 +161,9 @@ pub fn run(options: DropOptions) -> Result<()> {
         return Err(GgError::Other(format!("Rebase failed: {}", stderr)));
     }
 
+    // Normalize GG-Parent trailers after drop
+    let _ = git::normalize_current_stack_metadata(&repo, &config);
+
     // Clean up per-commit branches for dropped commits
     for entry in &dropped_entries {
         // Find the matching stack entry to get the GG-ID for branch name

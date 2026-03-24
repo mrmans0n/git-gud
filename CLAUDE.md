@@ -85,11 +85,11 @@ skills/
 
 ## Key Concepts
 
-### GG-ID System
+### GG-ID and GG-Parent System
 - Stable identifier format: `c-` + 7 UUID chars (e.g., `c-abc1234`)
-- Stored as trailer in commit messages: `GG-ID: c-abc1234`
-- Persists through rebases/reorders
-- Used to track commit-to-MR mappings
+- `GG-ID: c-abc1234` — identifies the commit; persists through rebases/reorders; used to track commit-to-MR mappings
+- `GG-Parent: c-1234567` — points to the previous entry's GG-ID; encodes stack topology in commit metadata
+- First entry has no GG-Parent; managed automatically by sync, reconcile, reorder, drop, split
 
 ### Branch Naming Convention
 - Stack branch: `<username>/<stack-name>` (e.g., `nacho/my-feature`)

@@ -47,6 +47,7 @@ pub struct StackEntryJson {
     pub sha: String,
     pub title: String,
     pub gg_id: Option<String>,
+    pub gg_parent: Option<String>,
     pub pr_number: Option<u64>,
     pub pr_state: Option<String>,
     pub approved: bool,
@@ -105,8 +106,16 @@ pub struct SyncResultJson {
     pub stack: String,
     pub base: String,
     pub rebased_before_sync: bool,
+    pub metadata: Option<SyncMetadataJson>,
     pub warnings: Vec<String>,
     pub entries: Vec<SyncEntryResultJson>,
+}
+
+#[derive(Serialize)]
+pub struct SyncMetadataJson {
+    pub gg_ids_added: usize,
+    pub gg_parents_updated: usize,
+    pub gg_parents_removed: usize,
 }
 
 #[derive(Serialize)]

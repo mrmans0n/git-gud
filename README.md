@@ -353,19 +353,23 @@ If no template file exists, git-gud uses the commit description directly, or a d
 - **Stack branch**: `<username>/<stack-name>` (e.g., `nacho/my-feature`)
 - **Per-commit branches**: `<username>/<stack-name>--<entry-id>` (e.g., `nacho/my-feature--c-abc1234`)
 
-### GG-ID Trailers
+### GG-ID and GG-Parent Trailers
 
-Each commit gets a stable `GG-ID` trailer that persists across rebases:
+Each commit gets stable trailers that persist across rebases:
 
 ```
 Add user authentication
 
 Implement JWT-based auth with refresh tokens.
 
+GG-Parent: c-1234567
 GG-ID: c-abc1234
 ```
 
-This ID is used to track which PR/MR corresponds to which commit, even after reordering or amending.
+- **GG-ID** tracks which PR/MR corresponds to which commit, even after reordering or amending.
+- **GG-Parent** records the previous entry's GG-ID, encoding stack topology directly in commit metadata. The first entry has no `GG-Parent`.
+
+Both trailers are managed automatically by `gg sync`, `gg reconcile`, `gg reorder`, `gg drop`, and `gg split`.
 
 ### PR/MR Dependencies
 
@@ -496,6 +500,7 @@ $ gg reconcile --dry-run
 → 2 commits need GG-IDs:
   • abc1234 Add data model
   • def5678 Add API endpoint
+→ GG-Parent chain needs normalization
 
 → 1 existing PRs found to map:
   • nacho/my-feature--c-9a8b7c6 → PR #42
@@ -506,14 +511,14 @@ $ gg reconcile --dry-run
 $ gg reconcile
 → Analyzing stack my-feature (3 commits)...
 → 2 commits need GG-IDs
-Add GG-IDs to commits? (requires rebase) [y/n]: y
-OK Added GG-IDs to commits
+Normalize stack metadata? (adds GG-IDs and GG-Parents via rewrite) [y/n]: y
+OK Stack metadata normalized (2 GG-IDs added, 2 GG-Parents updated)
 OK Mapped c-9a8b7c6 → PR #42
 OK Reconciliation complete!
 ```
 
 **What reconcile does:**
-1. **Adds GG-IDs to commits** that don't have them (via rebase)
+1. **Normalizes stack metadata** — adds missing GG-IDs and fixes GG-Parent chains
 2. **Finds existing PRs/MRs** for your entry branches and maps them in config
 
 **When to use:**

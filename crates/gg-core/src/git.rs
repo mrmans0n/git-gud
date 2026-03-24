@@ -21,6 +21,9 @@ use crate::error::{GgError, Result};
 /// Prefix for GG-ID trailers in commit messages
 pub const GG_ID_PREFIX: &str = "GG-ID:";
 
+/// Prefix for GG-Parent trailers in commit messages
+pub const GG_PARENT_PREFIX: &str = "GG-Parent:";
+
 /// Open the repository at the current directory or its parents
 pub fn open_repo() -> Result<Repository> {
     Repository::discover(".").map_err(|_| GgError::NotInRepo)
@@ -389,8 +392,106 @@ pub fn strip_gg_id_from_message(message: &str) -> String {
     result.trim_end().to_string()
 }
 
+/// Extract the GG-Parent trailer value from a commit message
+pub fn get_gg_parent_from_message(message: &str) -> Option<String> {
+    let re = Regex::new(r"(?i)^GG-Parent:\s*(.+)$").ok()?;
+    for line in message.lines() {
+        if let Some(captures) = re.captures(line.trim()) {
+            let raw = captures.get(1).map(|m| m.as_str().trim())?;
+            return normalize_gg_id(raw);
+        }
+    }
+    None
+}
+
+/// Extract the GG-Parent from a commit object
+pub fn get_gg_parent(commit: &Commit) -> Option<String> {
+    let message = commit.message()?;
+    get_gg_parent_from_message(message)
+}
+
+/// Add or update GG-Parent trailer in a message
+pub fn set_gg_parent_in_message(message: &str, parent: &str) -> String {
+    let re = Regex::new(r"(?im)^GG-Parent:\s*.+$").unwrap();
+
+    if re.is_match(message) {
+        re.replace(message, format!("{} {}", GG_PARENT_PREFIX, parent))
+            .to_string()
+    } else {
+        // Insert GG-Parent before GG-ID if present, otherwise append
+        let gg_id_re = Regex::new(r"(?im)^GG-ID:\s*.+$").unwrap();
+        if let Some(m) = gg_id_re.find(message) {
+            let before = message[..m.start()].trim_end_matches('\n');
+            let gg_id_line = &message[m.start()..m.end()];
+            let after = &message[m.end()..];
+            let sep = if before.is_empty() { "" } else { "\n" };
+            format!(
+                "{}{}{} {}\n{}{}",
+                before, sep, GG_PARENT_PREFIX, parent, gg_id_line, after
+            )
+        } else {
+            let trimmed = message.trim_end();
+            format!("{}\n\n{} {}", trimmed, GG_PARENT_PREFIX, parent)
+        }
+    }
+}
+
+/// Remove GG-Parent trailer from a message
+pub fn strip_gg_parent_from_message(message: &str) -> String {
+    let re = Regex::new(r"(?im)^GG-Parent:\s*.+\n?").unwrap();
+    let result = re.replace_all(message, "");
+    result.trim_end().to_string()
+}
+
+/// Strip all GG trailers (GG-ID and GG-Parent) from a message
+pub fn strip_gg_trailers_from_message(message: &str) -> String {
+    let re = Regex::new(r"(?im)^GG-(ID|Parent):\s*.+\n?").unwrap();
+    let result = re.replace_all(message, "");
+    result.trim_end().to_string()
+}
+
+/// Normalize both GG-ID and GG-Parent trailers in a commit message.
+///
+/// - Ensures a GG-ID is present (uses `gg_id` param).
+/// - Sets/removes GG-Parent based on `parent_gg_id`.
+/// - Preserves all non-GG content.
+///
+/// Returns the normalized message.
+pub fn normalize_gg_trailers(message: &str, gg_id: &str, parent_gg_id: Option<&str>) -> String {
+    // Strip existing GG trailers
+    let clean = strip_gg_trailers_from_message(message);
+    let trimmed = clean.trim_end();
+
+    // Build trailer block
+    let mut trailers = String::new();
+    if let Some(parent) = parent_gg_id {
+        trailers.push_str(&format!("{} {}\n", GG_PARENT_PREFIX, parent));
+    }
+    trailers.push_str(&format!("{} {}", GG_ID_PREFIX, gg_id));
+
+    if trimmed.is_empty() {
+        trailers
+    } else {
+        format!("{}\n\n{}", trimmed, trailers)
+    }
+}
+
+/// Counts of metadata changes made during normalization
+#[derive(Debug, Default, Clone)]
+pub struct MetadataNormalizationCounts {
+    pub gg_ids_added: usize,
+    pub gg_parents_updated: usize,
+    pub gg_parents_removed: usize,
+}
+
+impl MetadataNormalizationCounts {
+    pub fn has_changes(&self) -> bool {
+        self.gg_ids_added > 0 || self.gg_parents_updated > 0 || self.gg_parents_removed > 0
+    }
+}
+
 fn extract_description_from_message(message: &str) -> Option<String> {
-    let stripped = strip_gg_id_from_message(message);
+    let stripped = strip_gg_trailers_from_message(message);
     let newline_idx = stripped.find('\n')?;
     let description = stripped[newline_idx + 1..].trim();
     if description.is_empty() {
@@ -411,6 +512,76 @@ pub fn get_commit_description(commit: &Commit) -> Option<String> {
     extract_description_from_message(message)
 }
 
+/// Normalize GG-ID and GG-Parent trailers for all commits in a stack.
+///
+/// Walks the commits from base to HEAD, ensuring each has a GG-ID and
+/// the correct GG-Parent pointing to the previous entry's GG-ID.
+/// The first entry has no GG-Parent. Returns the new tip OID and counts.
+///
+/// `entry_oids` must be ordered from base to HEAD.
+pub fn normalize_stack_metadata(
+    repo: &Repository,
+    base_oid: Oid,
+    entry_oids: &[Oid],
+) -> Result<(Oid, MetadataNormalizationCounts)> {
+    let mut counts = MetadataNormalizationCounts::default();
+    let mut parent_oid = base_oid;
+    let mut prev_gg_id: Option<String> = None;
+
+    for (i, &oid) in entry_oids.iter().enumerate() {
+        let original_commit = repo.find_commit(oid)?;
+        let original_message = original_commit.message().unwrap_or("");
+
+        // Determine the GG-ID for this commit
+        let existing_gg_id = get_gg_id(&original_commit);
+        let gg_id = match &existing_gg_id {
+            Some(id) => id.clone(),
+            None => {
+                counts.gg_ids_added += 1;
+                generate_gg_id()
+            }
+        };
+
+        // Determine expected parent
+        let expected_parent = if i == 0 { None } else { prev_gg_id.as_deref() };
+
+        // Check current parent
+        let current_parent = get_gg_parent_from_message(original_message);
+
+        // Detect if parent needs updating
+        let parent_changed = current_parent.as_deref() != expected_parent;
+        if parent_changed {
+            if expected_parent.is_none() && current_parent.is_some() {
+                counts.gg_parents_removed += 1;
+            } else if expected_parent.is_some() {
+                counts.gg_parents_updated += 1;
+            }
+        }
+
+        // Build the normalized message (always rewrite because git parent chain changes)
+        let new_message = if existing_gg_id.is_none() || parent_changed {
+            normalize_gg_trailers(original_message, &gg_id, expected_parent)
+        } else {
+            original_message.to_string()
+        };
+
+        // Create a new commit with updated parent and message
+        let new_oid = repo.commit(
+            None,
+            &original_commit.author(),
+            &original_commit.committer(),
+            &new_message,
+            &original_commit.tree()?,
+            &[&repo.find_commit(parent_oid)?],
+        )?;
+
+        prev_gg_id = Some(gg_id);
+        parent_oid = new_oid;
+    }
+
+    Ok((parent_oid, counts))
+}
+
 /// Checkout a branch by name
 pub fn checkout_branch(repo: &Repository, branch_name: &str) -> Result<()> {
     let refname = format!("refs/heads/{}", branch_name);
@@ -419,6 +590,41 @@ pub fn checkout_branch(repo: &Repository, branch_name: &str) -> Result<()> {
     repo.checkout_tree(&obj, None)?;
     repo.set_head(&refname)?;
     Ok(())
+}
+
+/// Normalize GG-ID and GG-Parent trailers for the current branch's stack.
+///
+/// Loads the stack, runs the normalization pass, and updates the branch ref.
+/// Designed to be called after structural operations (reorder, drop, split).
+pub fn normalize_current_stack_metadata(
+    repo: &Repository,
+    config: &crate::config::Config,
+) -> Result<MetadataNormalizationCounts> {
+    let stack = crate::stack::Stack::load(repo, config)?;
+    if stack.is_empty() {
+        return Ok(MetadataNormalizationCounts::default());
+    }
+
+    let base_ref = repo
+        .revparse_single(&stack.base)
+        .or_else(|_| repo.revparse_single(&format!("origin/{}", stack.base)))?;
+
+    let entry_oids: Vec<Oid> = stack.entries.iter().map(|e| e.oid).collect();
+    let (new_tip, counts) = normalize_stack_metadata(repo, base_ref.id(), &entry_oids)?;
+
+    if counts.has_changes() {
+        let head = repo.head()?;
+        if let Some(branch_name) = head.shorthand() {
+            repo.reference(
+                &format!("refs/heads/{}", branch_name),
+                new_tip,
+                true,
+                "gg: normalized stack metadata",
+            )?;
+        }
+    }
+
+    Ok(counts)
 }
 
 /// Ensure HEAD is attached to the given branch.
@@ -1616,6 +1822,290 @@ mod tests {
 
         // Clean up
         std::fs::remove_file(&index_lock).ok();
+    }
+
+    // ── GG-Parent trailer tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_get_gg_parent_from_message_present() {
+        let msg = "Title\n\nBody\n\nGG-Parent: c-abc1234\nGG-ID: c-def5678";
+        assert_eq!(
+            get_gg_parent_from_message(msg),
+            Some("c-abc1234".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_gg_parent_from_message_absent() {
+        let msg = "Title\n\nGG-ID: c-def5678";
+        assert_eq!(get_gg_parent_from_message(msg), None);
+    }
+
+    #[test]
+    fn test_get_gg_parent_from_message_case_insensitive() {
+        let msg = "Title\n\ngg-parent: c-abc1234\nGG-ID: c-def5678";
+        assert_eq!(
+            get_gg_parent_from_message(msg),
+            Some("c-abc1234".to_string())
+        );
+    }
+
+    #[test]
+    fn test_set_gg_parent_in_message_new() {
+        let msg = "Title\n\nBody\n\nGG-ID: c-def5678";
+        let result = set_gg_parent_in_message(msg, "c-abc1234");
+        assert!(result.contains("GG-Parent: c-abc1234"));
+        assert!(result.contains("GG-ID: c-def5678"));
+        // GG-Parent should appear before GG-ID
+        let parent_pos = result.find("GG-Parent:").unwrap();
+        let id_pos = result.find("GG-ID:").unwrap();
+        assert!(parent_pos < id_pos);
+    }
+
+    #[test]
+    fn test_set_gg_parent_in_message_replace() {
+        let msg = "Title\n\nGG-Parent: c-old1234\nGG-ID: c-def5678";
+        let result = set_gg_parent_in_message(msg, "c-new5678");
+        assert!(result.contains("GG-Parent: c-new5678"));
+        assert!(!result.contains("c-old1234"));
+        assert!(result.contains("GG-ID: c-def5678"));
+    }
+
+    #[test]
+    fn test_set_gg_parent_in_message_no_gg_id() {
+        let msg = "Title\n\nBody text";
+        let result = set_gg_parent_in_message(msg, "c-abc1234");
+        assert!(result.contains("GG-Parent: c-abc1234"));
+        assert!(result.contains("Title"));
+        assert!(result.contains("Body text"));
+    }
+
+    #[test]
+    fn test_strip_gg_parent_from_message() {
+        let msg = "Title\n\nBody\n\nGG-Parent: c-abc1234\nGG-ID: c-def5678";
+        let result = strip_gg_parent_from_message(msg);
+        assert!(!result.contains("GG-Parent"));
+        assert!(result.contains("GG-ID: c-def5678"));
+        assert!(result.contains("Title"));
+        assert!(result.contains("Body"));
+    }
+
+    #[test]
+    fn test_strip_gg_trailers_from_message() {
+        let msg = "Title\n\nBody\n\nGG-Parent: c-abc1234\nGG-ID: c-def5678";
+        let result = strip_gg_trailers_from_message(msg);
+        assert!(!result.contains("GG-Parent"));
+        assert!(!result.contains("GG-ID"));
+        assert!(result.contains("Title"));
+        assert!(result.contains("Body"));
+    }
+
+    #[test]
+    fn test_strip_gg_trailers_preserves_non_gg_trailers() {
+        let msg = "Title\n\nBody\n\nSigned-off-by: Dev <dev@example.com>\nGG-Parent: c-abc1234\nGG-ID: c-def5678";
+        let result = strip_gg_trailers_from_message(msg);
+        assert!(!result.contains("GG-Parent"));
+        assert!(!result.contains("GG-ID"));
+        assert!(result.contains("Signed-off-by: Dev <dev@example.com>"));
+    }
+
+    #[test]
+    fn test_normalize_gg_trailers_first_entry() {
+        let msg = "Title\n\nBody text";
+        let result = normalize_gg_trailers(msg, "c-abc1234", None);
+        assert!(result.contains("GG-ID: c-abc1234"));
+        assert!(!result.contains("GG-Parent"));
+        assert!(result.contains("Title"));
+        assert!(result.contains("Body text"));
+    }
+
+    #[test]
+    fn test_normalize_gg_trailers_with_parent() {
+        let msg = "Title\n\nBody text";
+        let result = normalize_gg_trailers(msg, "c-def5678", Some("c-abc1234"));
+        assert!(result.contains("GG-Parent: c-abc1234"));
+        assert!(result.contains("GG-ID: c-def5678"));
+        // Parent before ID
+        let parent_pos = result.find("GG-Parent:").unwrap();
+        let id_pos = result.find("GG-ID:").unwrap();
+        assert!(parent_pos < id_pos);
+    }
+
+    #[test]
+    fn test_normalize_gg_trailers_replaces_existing() {
+        let msg = "Title\n\nBody\n\nGG-Parent: c-old0000\nGG-ID: c-old1111";
+        let result = normalize_gg_trailers(msg, "c-new2222", Some("c-new1111"));
+        assert!(result.contains("GG-Parent: c-new1111"));
+        assert!(result.contains("GG-ID: c-new2222"));
+        assert!(!result.contains("c-old0000"));
+        assert!(!result.contains("c-old1111"));
+    }
+
+    #[test]
+    fn test_normalize_gg_trailers_preserves_body() {
+        let msg = "feat: add thing\n\nThis is a detailed description.\n\n- Point 1\n- Point 2\n\nSigned-off-by: Dev <dev@example.com>";
+        let result = normalize_gg_trailers(msg, "c-abc1234", Some("c-parent0"));
+        assert!(result.contains("This is a detailed description."));
+        assert!(result.contains("- Point 1"));
+        assert!(result.contains("Signed-off-by: Dev <dev@example.com>"));
+        assert!(result.contains("GG-Parent: c-parent0"));
+        assert!(result.contains("GG-ID: c-abc1234"));
+    }
+
+    #[test]
+    fn test_metadata_normalization_counts_default() {
+        let counts = MetadataNormalizationCounts::default();
+        assert!(!counts.has_changes());
+        assert_eq!(counts.gg_ids_added, 0);
+        assert_eq!(counts.gg_parents_updated, 0);
+        assert_eq!(counts.gg_parents_removed, 0);
+    }
+
+    #[test]
+    fn test_metadata_normalization_counts_has_changes() {
+        let counts = MetadataNormalizationCounts {
+            gg_ids_added: 1,
+            ..Default::default()
+        };
+        assert!(counts.has_changes());
+    }
+
+    #[test]
+    fn test_normalize_stack_metadata_basic() {
+        // Create a temp repo with commits, run normalization, verify trailers
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(temp_dir.path()).unwrap();
+
+        // Create initial commit (base)
+        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+        let tree_id = {
+            let mut index = repo.index().unwrap();
+            std::fs::write(temp_dir.path().join("file.txt"), "base").unwrap();
+            index.add_path(std::path::Path::new("file.txt")).unwrap();
+            index.write_tree().unwrap()
+        };
+        let tree = repo.find_tree(tree_id).unwrap();
+        let base_oid = repo
+            .commit(
+                Some("refs/heads/main"),
+                &sig,
+                &sig,
+                "Initial commit",
+                &tree,
+                &[],
+            )
+            .unwrap();
+
+        // Create two stack commits without GG trailers
+        let base_commit = repo.find_commit(base_oid).unwrap();
+
+        let tree_id2 = {
+            let mut index = repo.index().unwrap();
+            std::fs::write(temp_dir.path().join("a.txt"), "a").unwrap();
+            index.add_path(std::path::Path::new("a.txt")).unwrap();
+            index.write_tree().unwrap()
+        };
+        let tree2 = repo.find_tree(tree_id2).unwrap();
+        let commit1_oid = repo
+            .commit(None, &sig, &sig, "First commit", &tree2, &[&base_commit])
+            .unwrap();
+
+        let commit1 = repo.find_commit(commit1_oid).unwrap();
+        let tree_id3 = {
+            let mut index = repo.index().unwrap();
+            std::fs::write(temp_dir.path().join("b.txt"), "b").unwrap();
+            index.add_path(std::path::Path::new("b.txt")).unwrap();
+            index.write_tree().unwrap()
+        };
+        let tree3 = repo.find_tree(tree_id3).unwrap();
+        let commit2_oid = repo
+            .commit(None, &sig, &sig, "Second commit", &tree3, &[&commit1])
+            .unwrap();
+
+        // Run normalization
+        let (new_tip, counts) =
+            normalize_stack_metadata(&repo, base_oid, &[commit1_oid, commit2_oid]).unwrap();
+
+        // Verify counts
+        assert_eq!(counts.gg_ids_added, 2);
+        assert!(counts.gg_parents_updated > 0); // Second commit gets a parent
+
+        // Verify the new commits have correct trailers
+        let new_tip_commit = repo.find_commit(new_tip).unwrap();
+        let tip_msg = new_tip_commit.message().unwrap();
+        assert!(tip_msg.contains("GG-ID:"));
+        assert!(tip_msg.contains("GG-Parent:"));
+
+        // First commit should have GG-ID but no GG-Parent
+        let first_new_oid = new_tip_commit.parent_id(0).unwrap();
+        let first_new_commit = repo.find_commit(first_new_oid).unwrap();
+        let first_msg = first_new_commit.message().unwrap();
+        assert!(first_msg.contains("GG-ID:"));
+        assert!(!first_msg.contains("GG-Parent:"));
+
+        // The second commit's GG-Parent should match the first commit's GG-ID
+        let first_gg_id = get_gg_id(&first_new_commit).unwrap();
+        let second_parent = get_gg_parent(&new_tip_commit).unwrap();
+        assert_eq!(first_gg_id, second_parent);
+    }
+
+    #[test]
+    fn test_normalize_stack_metadata_preserves_existing_gg_ids() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(temp_dir.path()).unwrap();
+
+        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+        let tree_id = {
+            let mut index = repo.index().unwrap();
+            std::fs::write(temp_dir.path().join("file.txt"), "base").unwrap();
+            index.add_path(std::path::Path::new("file.txt")).unwrap();
+            index.write_tree().unwrap()
+        };
+        let tree = repo.find_tree(tree_id).unwrap();
+        let base_oid = repo
+            .commit(
+                Some("refs/heads/main"),
+                &sig,
+                &sig,
+                "Initial commit",
+                &tree,
+                &[],
+            )
+            .unwrap();
+
+        // Create a commit WITH a GG-ID already
+        let base_commit = repo.find_commit(base_oid).unwrap();
+        let commit1_oid = repo
+            .commit(
+                None,
+                &sig,
+                &sig,
+                "First commit\n\nGG-ID: c-abc1234",
+                &tree,
+                &[&base_commit],
+            )
+            .unwrap();
+
+        let (new_tip, counts) = normalize_stack_metadata(&repo, base_oid, &[commit1_oid]).unwrap();
+
+        // GG-ID should be preserved
+        assert_eq!(counts.gg_ids_added, 0);
+        let new_commit = repo.find_commit(new_tip).unwrap();
+        assert_eq!(get_gg_id(&new_commit), Some("c-abc1234".to_string()));
+        // First entry, no parent
+        assert_eq!(get_gg_parent(&new_commit), None);
+    }
+
+    #[test]
+    fn test_extract_description_strips_gg_parent() {
+        // Ensure GG-Parent trailer is also stripped from descriptions
+        let msg = "Title\n\nBody text\n\nGG-Parent: c-abc1234\nGG-ID: c-def5678";
+        let desc = extract_description_from_message(msg);
+        assert!(desc.is_some());
+        let desc = desc.unwrap();
+        assert!(!desc.contains("GG-Parent"));
+        assert!(!desc.contains("GG-ID"));
+        assert!(desc.contains("Body text"));
     }
 }
 

@@ -275,7 +275,7 @@ All configuration options are in the `defaults` section (with provider-specific 
 | `base` | `string` | Default base branch for new stacks | Auto-detect (main/master/trunk) |
 | `branch_username` | `string` | Username prefix for branch naming | Auto-detect via `gh whoami`/`glab whoami` |
 | `lint` | `array` | Lint commands to run on each commit with `gg lint` | `[]` |
-| `auto_add_gg_ids` | `boolean` | Automatically add GG-IDs to commits without prompting | `true` |
+| `auto_add_gg_ids` | `boolean` | **Deprecated**. Kept for config compatibility; gg always auto-adds/normalizes GG metadata regardless of this value. | `true` |
 | `unstaged_action` | `string` | Default behavior for `gg sc`/`gg amend` when unstaged changes exist: `"ask"` (prompt), `"add"` (stage all changes), `"stash"` (auto-stash), `"continue"` (ignore unstaged), `"abort"` (fail) | `"ask"` |
 | `land_wait_timeout_minutes` | `number` | Timeout in minutes for `gg land --wait` | `30` |
 | `land_auto_clean` | `boolean` | Automatically clean up stack after landing all PRs/MRs | `false` |

@@ -35,7 +35,8 @@ pub struct Defaults {
     #[serde(default)]
     pub lint: Vec<String>,
 
-    /// Automatically add GG-IDs to commits without prompting (default: true)
+    /// Deprecated: kept for backward compatibility with existing config files.
+    /// Runtime behavior always enforces GG-ID metadata normalization.
     #[serde(default = "default_true")]
     pub auto_add_gg_ids: bool,
 
@@ -306,6 +307,11 @@ impl Config {
         self.stacks.keys().map(|s| s.as_str()).collect()
     }
 
+    /// Deprecated compatibility flag: always true at runtime.
+    pub fn get_auto_add_gg_ids(&self) -> bool {
+        true
+    }
+
     /// Get the land wait timeout in minutes (default: 30)
     pub fn get_land_wait_timeout_minutes(&self) -> u64 {
         self.defaults.land_wait_timeout_minutes.unwrap_or(30)
@@ -476,6 +482,16 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let config = Config::load(temp_dir.path()).unwrap();
         assert!(config.stacks.is_empty());
+    }
+
+    #[test]
+    fn test_auto_add_gg_ids_is_always_true_runtime() {
+        let config: Config =
+            serde_json::from_str(r#"{"defaults":{"auto_add_gg_ids":false}}"#).unwrap();
+
+        // Keep deserialization compatibility, but runtime behavior is always enabled.
+        assert!(!config.defaults.auto_add_gg_ids);
+        assert!(config.get_auto_add_gg_ids());
     }
 
     #[test]

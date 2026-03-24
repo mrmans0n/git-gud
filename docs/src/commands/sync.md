@@ -21,7 +21,7 @@ Before pushing, `gg sync` checks whether your stack base is behind `origin/<base
 
 When you run `gg sync --lint`, lint runs before any push/PR updates. If lint fails, sync aborts immediately and git-gud restores your repository to the pre-sync snapshot.
 
-Before pushing, `gg sync` also normalizes commit metadata (`GG-ID` and `GG-Parent`) for the whole stack.
+Before pushing, `gg sync` also normalizes commit metadata (`GG-ID` and `GG-Parent`) for the whole stack. This normalization is always enforced during sync (including adding missing `GG-ID` trailers) to keep stack identity and PR/MR mappings stable.
 
 You can control this behavior with config:
 

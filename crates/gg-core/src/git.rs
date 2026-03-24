@@ -469,6 +469,14 @@ pub fn normalize_stack_metadata(
         return Ok(MetadataRewriteCounts::default());
     }
 
+    // In detached-HEAD mode, remember the original OID so we can remap HEAD to
+    // the rewritten commit when that commit is part of this stack rewrite.
+    let detached_head_oid = if repo.head_detached()? {
+        Some(repo.head()?.peel_to_commit()?.id())
+    } else {
+        None
+    };
+
     let mut rewritten_oids = std::collections::HashMap::<Oid, Oid>::new();
     let mut previous_gg_id: Option<String> = None;
     let mut counts = MetadataRewriteCounts::default();
@@ -553,6 +561,12 @@ pub fn normalize_stack_metadata(
 
     if let Some(tip_oid) = tip_oid {
         repo.reference(&target_refname, tip_oid, true, "gg: normalize GG metadata")?;
+    }
+
+    if let Some(remapped_head_oid) = detached_head_oid
+        .and_then(|original_head_oid| rewritten_oids.get(&original_head_oid).copied())
+    {
+        repo.set_head_detached(remapped_head_oid)?;
     }
 
     Ok(counts)
@@ -1316,7 +1330,7 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_stack_metadata_uses_stack_branch_when_head_detached() {
+    fn test_normalize_stack_metadata_uses_stack_branch_and_remaps_detached_head() {
         let temp_dir = tempfile::tempdir().unwrap();
         let repo_path = temp_dir.path();
 
@@ -1391,13 +1405,15 @@ mod tests {
         );
 
         let detached_head_after = repo.head().unwrap().peel_to_commit().unwrap();
-        assert_eq!(detached_head_after.id(), stack_tip_before);
 
         let updated_stack_tip = repo
             .find_reference("refs/heads/nacho/stack")
             .unwrap()
             .peel_to_commit()
             .unwrap();
+
+        assert_eq!(detached_head_after.id(), updated_stack_tip.id());
+        assert_ne!(detached_head_after.id(), stack_tip_before);
 
         let updated_message = updated_stack_tip.message().unwrap();
         assert!(updated_message.contains("GG-ID: c-2222222"));

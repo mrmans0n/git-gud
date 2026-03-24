@@ -285,6 +285,8 @@ pub fn run(
     if !json {
         println!("{}", style("Normalizing GG metadata...").dim());
     }
+    // Intentional: sync always enforces GG-ID / GG-Parent invariants for the
+    // stack so branch/PR mappings stay stable, even if auto_add_gg_ids is false.
     let metadata_counts = git::normalize_stack_metadata(&repo, &stack)?;
     stack = Stack::load(&repo, &config)?;
 

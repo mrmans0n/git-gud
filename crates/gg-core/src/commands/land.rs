@@ -105,8 +105,14 @@ fn should_fail_idle_not_in_train(idle_count: u32, seen_in_train: bool) -> bool {
     !seen_in_train && idle_count > IDLE_STILL_WAITING_POLLS
 }
 
-fn should_count_merge_train_status_as_api_error(status: &crate::glab::MergeTrainStatus) -> bool {
-    matches!(status, crate::glab::MergeTrainStatus::Unknown)
+fn should_count_merge_train_status_as_api_error(train_info: &crate::glab::MergeTrainInfo) -> bool {
+    // `Unknown` can mean either:
+    // - an API/endpoint/listing failure (represented as Unknown + no position), or
+    // - a successful response with an unrecognized merge-train status string.
+    //
+    // Only the former should consume the API error budget.
+    matches!(train_info.status, crate::glab::MergeTrainStatus::Unknown)
+        && train_info.position.is_none()
 }
 
 /// Cleanup after successfully merging a PR/MR:
@@ -1407,7 +1413,7 @@ fn wait_for_merge_train_completion(
                         new_state = merge_train_idle_state_message(idle_count).to_string();
                     }
                     MergeTrainStatus::Unknown => {
-                        if should_count_merge_train_status_as_api_error(&train_info.status) {
+                        if should_count_merge_train_status_as_api_error(&train_info) {
                             api_calls_succeeded = false;
                             consecutive_errors += 1;
                             if consecutive_errors >= MAX_CONSECUTIVE_API_ERRORS {
@@ -1419,11 +1425,13 @@ fn wait_for_merge_train_completion(
                                     consecutive_errors
                                 )));
                             }
+                            new_state = format!(
+                                "Merge train status unavailable (attempt {}/{}), retrying...",
+                                consecutive_errors, MAX_CONSECUTIVE_API_ERRORS
+                            );
+                        } else {
+                            new_state = "Merge train returned an unrecognized status; waiting conservatively...".to_string();
                         }
-                        new_state = format!(
-                            "Merge train status unavailable (attempt {}/{}), retrying...",
-                            consecutive_errors, MAX_CONSECUTIVE_API_ERRORS
-                        );
                     }
                 }
 
@@ -2538,27 +2546,37 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_train_unknown_counts_as_api_error_signal() {
-        use crate::glab::MergeTrainStatus;
+    fn test_merge_train_unknown_without_position_counts_as_api_error_signal() {
+        let train_info = crate::glab::MergeTrainInfo {
+            status: crate::glab::MergeTrainStatus::Unknown,
+            position: None,
+            pipeline_running: false,
+        };
 
-        assert!(should_count_merge_train_status_as_api_error(
-            &MergeTrainStatus::Unknown
-        ));
-        assert!(!should_count_merge_train_status_as_api_error(
-            &MergeTrainStatus::Idle
-        ));
-        assert!(!should_count_merge_train_status_as_api_error(
-            &MergeTrainStatus::Fresh
-        ));
+        assert!(should_count_merge_train_status_as_api_error(&train_info));
     }
 
     #[test]
-    fn test_repeated_unknown_reaches_api_error_threshold() {
-        use crate::glab::MergeTrainStatus;
+    fn test_merge_train_unknown_with_position_does_not_count_as_api_error_signal() {
+        let train_info = crate::glab::MergeTrainInfo {
+            status: crate::glab::MergeTrainStatus::Unknown,
+            position: Some(2),
+            pipeline_running: true,
+        };
 
+        assert!(!should_count_merge_train_status_as_api_error(&train_info));
+    }
+
+    #[test]
+    fn test_repeated_transport_failures_reach_api_error_threshold() {
         let mut consecutive_errors = 0;
         for _ in 0..MAX_CONSECUTIVE_API_ERRORS {
-            if should_count_merge_train_status_as_api_error(&MergeTrainStatus::Unknown) {
+            let train_info = crate::glab::MergeTrainInfo {
+                status: crate::glab::MergeTrainStatus::Unknown,
+                position: None,
+                pipeline_running: false,
+            };
+            if should_count_merge_train_status_as_api_error(&train_info) {
                 consecutive_errors += 1;
             }
         }

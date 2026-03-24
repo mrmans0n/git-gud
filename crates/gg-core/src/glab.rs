@@ -794,13 +794,12 @@ pub fn get_merge_train_status(mr_number: u64, target_branch: &str) -> Result<Mer
         .output()?;
 
     if !output.status.success() {
-        // API/listing failure is different from "MR not found in train".
-        // Keep this distinction so callers can retry/fail fast appropriately.
-        return Ok(MergeTrainInfo {
-            status: MergeTrainStatus::Unknown,
-            position: None,
-            pipeline_running: false,
-        });
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::GlabError(format!(
+            "Failed to query merge train for target branch {}: {}",
+            target_branch,
+            stderr.trim()
+        )));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);

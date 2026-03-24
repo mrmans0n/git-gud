@@ -97,6 +97,10 @@ fn merge_train_idle_state_message(idle_count: u32) -> &'static str {
     }
 }
 
+fn should_fail_idle_not_in_train(idle_count: u32, seen_in_train: bool) -> bool {
+    !seen_in_train && idle_count > IDLE_STILL_WAITING_POLLS
+}
+
 /// Cleanup after successfully merging a PR/MR:
 /// - Remove the PR/MR mapping from config
 /// - Update the base of remaining PRs/MRs if landing all
@@ -1221,8 +1225,9 @@ fn wait_for_merge_train_completion(
 
     // Grace period: after adding to merge train, the MR may not appear in the
     // train list immediately. Allow some polls with Idle status before treating
-    // it as an error.
+    // it as a terminal "not in train" condition when we've never seen it there.
     let mut idle_count: u32 = 0;
+    let mut seen_in_train = false;
 
     if !json {
         println!(
@@ -1333,70 +1338,112 @@ fn wait_for_merge_train_completion(
         let mut new_state = String::new();
 
         // Check merge train status
-        if let Ok(Some(train_info)) = provider.get_merge_train_status(pr_num, target_branch) {
-            use crate::glab::MergeTrainStatus;
-            match train_info.status {
-                MergeTrainStatus::Merged => {
-                    if let Some(ref spinner) = current_spinner {
-                        finish_spinner(
-                            spinner,
-                            &format!(
-                                "{} {}{} merged via merge train",
+        let mut api_calls_succeeded = true;
+        match provider.get_merge_train_status(pr_num, target_branch) {
+            Ok(Some(train_info)) => {
+                use crate::glab::MergeTrainStatus;
+                match train_info.status {
+                    MergeTrainStatus::Merged => {
+                        if let Some(ref spinner) = current_spinner {
+                            finish_spinner(
+                                spinner,
+                                &format!(
+                                    "{} {}{} merged via merge train",
+                                    provider.pr_label(),
+                                    provider.pr_number_prefix(),
+                                    pr_num
+                                ),
+                                state_start_time,
+                            );
+                        }
+                        return Ok(());
+                    }
+                    MergeTrainStatus::Merging => {
+                        seen_in_train = true;
+                        idle_count = 0; // MR is in train, reset grace counter
+                        new_state = "Merge train: merging now...".to_string();
+                    }
+                    MergeTrainStatus::Fresh => {
+                        seen_in_train = true;
+                        idle_count = 0;
+                        if let Some(pos) = train_info.position {
+                            new_state = format!("Merge train: position {} (fresh, ready)", pos);
+                        }
+                    }
+                    MergeTrainStatus::Stale => {
+                        seen_in_train = true;
+                        idle_count = 0;
+                        new_state = "Merge train: stale (waiting for rebase/pipeline)".to_string();
+                    }
+                    MergeTrainStatus::SkipMerged => {
+                        if let Some(ref spinner) = current_spinner {
+                            spinner.finish_and_clear();
+                        }
+                        return Err(GgError::Other(format!(
+                            "{} {}{} was skipped from the merge train",
+                            provider.pr_label(),
+                            provider.pr_number_prefix(),
+                            pr_num
+                        )));
+                    }
+                    MergeTrainStatus::Idle => {
+                        idle_count += 1;
+                        if should_fail_idle_not_in_train(idle_count, seen_in_train) {
+                            if let Some(ref spinner) = current_spinner {
+                                spinner.finish_and_clear();
+                            }
+                            return Err(GgError::Other(format!(
+                                "{} {}{} is not in the merge train (waited {}s). If it was removed, check GitLab and re-queue it.",
                                 provider.pr_label(),
                                 provider.pr_number_prefix(),
-                                pr_num
-                            ),
-                            state_start_time,
-                        );
+                                pr_num,
+                                IDLE_STILL_WAITING_POLLS as u64 * POLL_INTERVAL_SECS
+                            )));
+                        }
+                        new_state = merge_train_idle_state_message(idle_count).to_string();
                     }
-                    return Ok(());
-                }
-                MergeTrainStatus::Merging => {
-                    idle_count = 0; // MR is in train, reset grace counter
-                    new_state = "Merge train: merging now...".to_string();
-                }
-                MergeTrainStatus::Fresh => {
-                    idle_count = 0;
-                    if let Some(pos) = train_info.position {
-                        new_state = format!("Merge train: position {} (fresh, ready)", pos);
+                    MergeTrainStatus::Unknown => {
+                        idle_count = 0;
+                        new_state =
+                            "Merge train status unavailable (API/error), retrying...".to_string();
                     }
                 }
-                MergeTrainStatus::Stale => {
-                    idle_count = 0;
-                    new_state = "Merge train: stale (waiting for rebase/pipeline)".to_string();
+
+                if train_info.position.is_some() {
+                    seen_in_train = true;
                 }
-                MergeTrainStatus::SkipMerged => {
+
+                if train_info.pipeline_running {
+                    new_state = format!("{} (pipeline running)", new_state);
+                }
+            }
+            Ok(None) => {
+                // If provider doesn't support merge train status, keep polling merge state.
+                new_state = "Checking merge status...".to_string();
+            }
+            Err(e) => {
+                api_calls_succeeded = false;
+                consecutive_errors += 1;
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
                     if let Some(ref spinner) = current_spinner {
                         spinner.finish_and_clear();
                     }
                     return Err(GgError::Other(format!(
-                        "{} {}{} was skipped from the merge train",
-                        provider.pr_label(),
-                        provider.pr_number_prefix(),
-                        pr_num
+                        "Too many consecutive API errors ({}) while checking merge train status: {}",
+                        consecutive_errors, e
                     )));
                 }
-                MergeTrainStatus::Idle => {
-                    idle_count += 1;
-                    new_state = merge_train_idle_state_message(idle_count).to_string();
-                }
-                _ => {
-                    if let Some(pos) = train_info.position {
-                        new_state = format!("Merge train: position {}", pos);
-                    }
-                }
+                new_state = format!(
+                    "Merge train API error (attempt {}/{}): {}",
+                    consecutive_errors, MAX_CONSECUTIVE_ERRORS, e
+                );
             }
-
-            if train_info.pipeline_running {
-                new_state = format!("{} (pipeline running)", new_state);
-            }
-        } else {
-            // If we can't get train status, check if it's been merged directly
-            new_state = "Checking merge status...".to_string();
         }
 
         // All API calls succeeded this iteration — reset retry counter
-        consecutive_errors = 0;
+        if api_calls_succeeded {
+            consecutive_errors = 0;
+        }
 
         // Update spinner if state changed
         if current_state.as_ref() != Some(&new_state) {
@@ -2427,6 +2474,36 @@ mod tests {
                     || state == "Merge train status temporarily unavailable; still waiting..."
             );
         }
+    }
+
+    #[test]
+    fn test_idle_does_not_fail_when_mr_was_seen_in_train() {
+        // Once we've observed the MR in train, temporary Idle transitions should
+        // continue waiting (GitLab recalculation window).
+        for idle_count in 1..=(IDLE_STILL_WAITING_POLLS + 3) {
+            assert!(
+                !should_fail_idle_not_in_train(idle_count, true),
+                "should not fail when MR was previously seen in train"
+            );
+        }
+    }
+
+    #[test]
+    fn test_persistent_idle_without_seen_train_fails_after_grace_period() {
+        // If we've never seen the MR in train and Idle persists past the grace
+        // window, fail with a specific not-in-train signal instead of waiting
+        // until global timeout.
+        for idle_count in 1..=IDLE_STILL_WAITING_POLLS {
+            assert!(
+                !should_fail_idle_not_in_train(idle_count, false),
+                "should keep waiting during grace period"
+            );
+        }
+
+        assert!(should_fail_idle_not_in_train(
+            IDLE_STILL_WAITING_POLLS + 1,
+            false
+        ));
     }
 
     // ==========================================================================

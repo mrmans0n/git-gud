@@ -794,9 +794,10 @@ pub fn get_merge_train_status(mr_number: u64, target_branch: &str) -> Result<Mer
         .output()?;
 
     if !output.status.success() {
-        // If the call fails, assume MR is not in train
+        // API/listing failure is different from "MR not found in train".
+        // Keep this distinction so callers can retry/fail fast appropriately.
         return Ok(MergeTrainInfo {
-            status: MergeTrainStatus::Idle,
+            status: MergeTrainStatus::Unknown,
             position: None,
             pipeline_running: false,
         });
@@ -1100,6 +1101,18 @@ mod tests {
             pipeline_running: false,
         };
         assert_eq!(info.status, MergeTrainStatus::Idle);
+        assert_eq!(info.position, None);
+        assert!(!info.pipeline_running);
+    }
+
+    #[test]
+    fn test_merge_train_info_unknown_for_api_or_status_errors() {
+        let info = MergeTrainInfo {
+            status: MergeTrainStatus::Unknown,
+            position: None,
+            pipeline_running: false,
+        };
+        assert_eq!(info.status, MergeTrainStatus::Unknown);
         assert_eq!(info.position, None);
         assert!(!info.pipeline_running);
     }

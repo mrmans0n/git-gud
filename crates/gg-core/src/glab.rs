@@ -794,12 +794,12 @@ pub fn get_merge_train_status(mr_number: u64, target_branch: &str) -> Result<Mer
         .output()?;
 
     if !output.status.success() {
-        // If the call fails, assume MR is not in train
-        return Ok(MergeTrainInfo {
-            status: MergeTrainStatus::Idle,
-            position: None,
-            pipeline_running: false,
-        });
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::GlabError(format!(
+            "Failed to query merge train for target branch {}: {}",
+            target_branch,
+            stderr.trim()
+        )));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1100,6 +1100,18 @@ mod tests {
             pipeline_running: false,
         };
         assert_eq!(info.status, MergeTrainStatus::Idle);
+        assert_eq!(info.position, None);
+        assert!(!info.pipeline_running);
+    }
+
+    #[test]
+    fn test_merge_train_info_unknown_for_api_or_status_errors() {
+        let info = MergeTrainInfo {
+            status: MergeTrainStatus::Unknown,
+            position: None,
+            pipeline_running: false,
+        };
+        assert_eq!(info.status, MergeTrainStatus::Unknown);
         assert_eq!(info.position, None);
         assert!(!info.pipeline_running);
     }

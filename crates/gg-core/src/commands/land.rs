@@ -80,6 +80,10 @@ fn interruptible_sleep(
 /// Polling interval (10 seconds)
 const POLL_INTERVAL_SECS: u64 = 10;
 
+/// Maximum number of consecutive API-like failures (hard API errors or
+/// `MergeTrainStatus::Unknown` status responses caused by endpoint failures).
+const MAX_CONSECUTIVE_API_ERRORS: u32 = 5;
+
 /// Number of consecutive Idle polls after which we show an explicit
 /// "still waiting" state message while continuing to poll.
 ///
@@ -99,6 +103,10 @@ fn merge_train_idle_state_message(idle_count: u32) -> &'static str {
 
 fn should_fail_idle_not_in_train(idle_count: u32, seen_in_train: bool) -> bool {
     !seen_in_train && idle_count > IDLE_STILL_WAITING_POLLS
+}
+
+fn should_count_merge_train_status_as_api_error(status: &crate::glab::MergeTrainStatus) -> bool {
+    matches!(status, crate::glab::MergeTrainStatus::Unknown)
 }
 
 /// Cleanup after successfully merging a PR/MR:
@@ -932,8 +940,6 @@ fn wait_for_pr_ready(
     target_branch: &str,
     json: bool,
 ) -> Result<()> {
-    const MAX_CONSECUTIVE_ERRORS: u32 = 5;
-
     let start_time = Instant::now();
     let timeout = Duration::from_secs(timeout_minutes * 60);
     let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
@@ -1036,7 +1042,7 @@ fn wait_for_pr_ready(
             Ok(status) => status,
             Err(e) => {
                 consecutive_errors += 1;
-                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                if consecutive_errors >= MAX_CONSECUTIVE_API_ERRORS {
                     if let Some(ref spinner) = current_spinner {
                         spinner.finish_and_clear();
                     }
@@ -1048,7 +1054,7 @@ fn wait_for_pr_ready(
                 // Transient error — update spinner and retry on next poll
                 let error_state = format!(
                     "API error (attempt {}/{}): {}",
-                    consecutive_errors, MAX_CONSECUTIVE_ERRORS, e
+                    consecutive_errors, MAX_CONSECUTIVE_API_ERRORS, e
                 );
                 if !json && current_state.as_ref() != Some(&error_state) {
                     if let Some(ref spinner) = current_spinner {
@@ -1127,7 +1133,7 @@ fn wait_for_pr_ready(
                 Ok(approved) => approved,
                 Err(e) => {
                     consecutive_errors += 1;
-                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                    if consecutive_errors >= MAX_CONSECUTIVE_API_ERRORS {
                         if let Some(ref spinner) = current_spinner {
                             spinner.finish_and_clear();
                         }
@@ -1139,7 +1145,7 @@ fn wait_for_pr_ready(
                     // Transient error — update spinner and retry on next poll
                     let error_state = format!(
                         "API error (attempt {}/{}): {}",
-                        consecutive_errors, MAX_CONSECUTIVE_ERRORS, e
+                        consecutive_errors, MAX_CONSECUTIVE_API_ERRORS, e
                     );
                     if !json && current_state.as_ref() != Some(&error_state) {
                         if let Some(ref spinner) = current_spinner {
@@ -1216,8 +1222,6 @@ fn wait_for_merge_train_completion(
     target_branch: &str,
     json: bool,
 ) -> Result<()> {
-    const MAX_CONSECUTIVE_ERRORS: u32 = 5;
-
     let start_time = Instant::now();
     let timeout = Duration::from_secs(timeout_minutes * 60);
     let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
@@ -1276,7 +1280,7 @@ fn wait_for_merge_train_completion(
             Ok(info) => info,
             Err(e) => {
                 consecutive_errors += 1;
-                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                if consecutive_errors >= MAX_CONSECUTIVE_API_ERRORS {
                     if let Some(ref spinner) = current_spinner {
                         spinner.finish_and_clear();
                     }
@@ -1288,7 +1292,7 @@ fn wait_for_merge_train_completion(
                 // Transient error — update spinner and retry on next poll
                 let error_state = format!(
                     "API error (attempt {}/{}): {}",
-                    consecutive_errors, MAX_CONSECUTIVE_ERRORS, e
+                    consecutive_errors, MAX_CONSECUTIVE_API_ERRORS, e
                 );
                 if !json && current_state.as_ref() != Some(&error_state) {
                     if let Some(ref spinner) = current_spinner {
@@ -1403,9 +1407,23 @@ fn wait_for_merge_train_completion(
                         new_state = merge_train_idle_state_message(idle_count).to_string();
                     }
                     MergeTrainStatus::Unknown => {
-                        idle_count = 0;
-                        new_state =
-                            "Merge train status unavailable (API/error), retrying...".to_string();
+                        if should_count_merge_train_status_as_api_error(&train_info.status) {
+                            api_calls_succeeded = false;
+                            consecutive_errors += 1;
+                            if consecutive_errors >= MAX_CONSECUTIVE_API_ERRORS {
+                                if let Some(ref spinner) = current_spinner {
+                                    spinner.finish_and_clear();
+                                }
+                                return Err(GgError::Other(format!(
+                                    "Too many consecutive API errors ({}) while checking merge train status",
+                                    consecutive_errors
+                                )));
+                            }
+                        }
+                        new_state = format!(
+                            "Merge train status unavailable (attempt {}/{}), retrying...",
+                            consecutive_errors, MAX_CONSECUTIVE_API_ERRORS
+                        );
                     }
                 }
 
@@ -1424,7 +1442,7 @@ fn wait_for_merge_train_completion(
             Err(e) => {
                 api_calls_succeeded = false;
                 consecutive_errors += 1;
-                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                if consecutive_errors >= MAX_CONSECUTIVE_API_ERRORS {
                     if let Some(ref spinner) = current_spinner {
                         spinner.finish_and_clear();
                     }
@@ -1435,7 +1453,7 @@ fn wait_for_merge_train_completion(
                 }
                 new_state = format!(
                     "Merge train API error (attempt {}/{}): {}",
-                    consecutive_errors, MAX_CONSECUTIVE_ERRORS, e
+                    consecutive_errors, MAX_CONSECUTIVE_API_ERRORS, e
                 );
             }
         }
@@ -2504,6 +2522,49 @@ mod tests {
             IDLE_STILL_WAITING_POLLS + 1,
             false
         ));
+    }
+
+    #[test]
+    fn test_temporary_idle_after_seen_in_train_is_tolerated() {
+        // Seen in train first (e.g. Fresh), then temporary Idle during train
+        // recalculation should not trigger a hard "not in train" failure.
+        let seen_in_train = true;
+        for idle_count in 1..=(IDLE_STILL_WAITING_POLLS + 5) {
+            assert!(
+                !should_fail_idle_not_in_train(idle_count, seen_in_train),
+                "temporary Idle must be tolerated after MR was seen in train"
+            );
+        }
+    }
+
+    #[test]
+    fn test_merge_train_unknown_counts_as_api_error_signal() {
+        use crate::glab::MergeTrainStatus;
+
+        assert!(should_count_merge_train_status_as_api_error(
+            &MergeTrainStatus::Unknown
+        ));
+        assert!(!should_count_merge_train_status_as_api_error(
+            &MergeTrainStatus::Idle
+        ));
+        assert!(!should_count_merge_train_status_as_api_error(
+            &MergeTrainStatus::Fresh
+        ));
+    }
+
+    #[test]
+    fn test_repeated_unknown_reaches_api_error_threshold() {
+        use crate::glab::MergeTrainStatus;
+
+        let mut consecutive_errors = 0;
+        for _ in 0..MAX_CONSECUTIVE_API_ERRORS {
+            if should_count_merge_train_status_as_api_error(&MergeTrainStatus::Unknown) {
+                consecutive_errors += 1;
+            }
+        }
+
+        assert_eq!(consecutive_errors, MAX_CONSECUTIVE_API_ERRORS);
+        assert!(consecutive_errors >= MAX_CONSECUTIVE_API_ERRORS);
     }
 
     // ==========================================================================

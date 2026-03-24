@@ -10,7 +10,7 @@ use git2::{Commit, Repository};
 
 use crate::config::Config;
 use crate::error::{GgError, Result};
-use crate::git::{self, get_gg_id, short_sha};
+use crate::git::{self, get_gg_id, get_gg_parent, short_sha};
 use crate::provider::{CiStatus, PrState, Provider};
 
 /// File to store the current stack when in detached HEAD mode
@@ -27,6 +27,8 @@ pub struct StackEntry {
     pub title: String,
     /// GG-ID (stable identifier)
     pub gg_id: Option<String>,
+    /// GG-ID of the previous stack entry
+    pub gg_parent: Option<String>,
     /// PR number if synced
     pub mr_number: Option<u64>,
     /// PR state if synced
@@ -51,6 +53,7 @@ impl StackEntry {
             short_sha: short_sha(commit),
             title: git::get_commit_title(commit),
             gg_id: get_gg_id(commit),
+            gg_parent: get_gg_parent(commit),
             mr_number: None,
             mr_state: None,
             approved: false,
@@ -173,6 +176,15 @@ impl Stack {
     /// Get entries that need GG-IDs
     pub fn entries_needing_gg_ids(&self) -> Vec<&StackEntry> {
         self.entries.iter().filter(|e| e.needs_gg_id()).collect()
+    }
+
+    /// Get the expected GG-Parent for an entry position (1-indexed)
+    pub fn expected_parent_gg_id(&self, position: usize) -> Option<&str> {
+        if position <= 1 || position > self.entries.len() {
+            None
+        } else {
+            self.entries[position - 2].gg_id.as_deref()
+        }
     }
 
     /// Get entry by position (1-indexed)
@@ -422,4 +434,52 @@ pub fn list_all_stacks(repo: &Repository, config: &Config, username: &str) -> Re
     stacks.sort();
     stacks.dedup();
     Ok(stacks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mk_entry(pos: usize, gg_id: Option<&str>) -> StackEntry {
+        StackEntry {
+            oid: git2::Oid::zero(),
+            short_sha: format!("sha{}", pos),
+            title: format!("commit {}", pos),
+            gg_id: gg_id.map(ToString::to_string),
+            gg_parent: None,
+            mr_number: None,
+            mr_state: None,
+            approved: false,
+            ci_status: None,
+            position: pos,
+            in_merge_train: false,
+            merge_train_position: None,
+        }
+    }
+
+    #[test]
+    fn expected_parent_first_entry_is_none() {
+        let stack = Stack {
+            name: "s".to_string(),
+            username: "u".to_string(),
+            base: "main".to_string(),
+            entries: vec![mk_entry(1, Some("c-a"))],
+            current_position: Some(0),
+        };
+
+        assert_eq!(stack.expected_parent_gg_id(1), None);
+    }
+
+    #[test]
+    fn expected_parent_uses_previous_entry_gg_id() {
+        let stack = Stack {
+            name: "s".to_string(),
+            username: "u".to_string(),
+            base: "main".to_string(),
+            entries: vec![mk_entry(1, Some("c-a")), mk_entry(2, Some("c-b"))],
+            current_position: Some(1),
+        };
+
+        assert_eq!(stack.expected_parent_gg_id(2), Some("c-a"));
+    }
 }

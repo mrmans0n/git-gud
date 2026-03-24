@@ -13,7 +13,7 @@ use git2::Repository;
 
 use crate::config::Config;
 use crate::error::Result;
-use crate::git::{self, generate_gg_id, get_gg_id, set_gg_id_in_message};
+use crate::git;
 use crate::provider::Provider;
 use crate::stack::Stack;
 
@@ -76,11 +76,17 @@ pub fn run(dry_run: bool) -> Result<()> {
         stack.len()
     );
 
-    // Phase 1: Find commits needing GG-IDs
+    // Phase 1: Find commits needing metadata normalization (GG-ID / GG-Parent)
     let commits_needing_ids: Vec<CommitInfo> = stack
         .entries
         .iter()
-        .filter(|e| e.gg_id.is_none())
+        .filter(|e| {
+            e.gg_id.is_none()
+                || stack
+                    .expected_parent_gg_id(e.position)
+                    .map(|p| Some(p) != e.gg_parent.as_deref())
+                    .unwrap_or(e.gg_parent.is_some())
+        })
         .map(|e| CommitInfo {
             short_sha: e.short_sha.clone(),
             title: e.title.clone(),
@@ -128,13 +134,13 @@ pub fn run(dry_run: bool) -> Result<()> {
     // Confirm before proceeding
     if !actions.commits_needing_ids.is_empty() {
         let should_add_ids = Confirm::new()
-            .with_prompt("Add GG-IDs to commits? (requires rebase)")
+            .with_prompt("Normalize GG metadata on commits? (requires rebase)")
             .default(true)
             .interact()
             .unwrap_or(false);
 
         if should_add_ids {
-            add_gg_ids_to_commits(&repo, &stack)?;
+            git::normalize_stack_metadata(&repo, &stack)?;
             // Reload stack after rebase to get updated GG-IDs
             let stack = Stack::load(&repo, &config)?;
             // Re-search for PRs with the new stack
@@ -270,48 +276,6 @@ fn map_prs(
             mapping.pr_number
         );
     }
-    Ok(())
-}
-
-/// Add GG-IDs to commits that are missing them via interactive rebase
-fn add_gg_ids_to_commits(repo: &Repository, stack: &Stack) -> Result<()> {
-    println!("{}", style("Adding GG-IDs via rebase...").dim());
-
-    let base_ref = repo
-        .revparse_single(&stack.base)
-        .or_else(|_| repo.revparse_single(&format!("origin/{}", stack.base)))?;
-
-    use git2::RebaseOptions;
-
-    let base_commit = repo.find_annotated_commit(base_ref.id())?;
-
-    let mut rebase_opts = RebaseOptions::new();
-    let mut rebase = repo.rebase(None, Some(&base_commit), None, Some(&mut rebase_opts))?;
-
-    let sig = git::get_signature(repo)?;
-
-    while let Some(op) = rebase.next() {
-        let op = op?;
-        let commit = repo.find_commit(op.id())?;
-
-        // Check if this commit needs a GG-ID
-        let needs_id = get_gg_id(&commit).is_none();
-
-        let message = commit.message().unwrap_or("");
-        let new_message = if needs_id {
-            let new_id = generate_gg_id();
-            set_gg_id_in_message(message, &new_id)
-        } else {
-            message.to_string()
-        };
-
-        rebase.commit(None, &sig, Some(&new_message))?;
-    }
-
-    rebase.finish(None)?;
-
-    println!("{} Added GG-IDs to commits", style("OK").green().bold());
-
     Ok(())
 }
 

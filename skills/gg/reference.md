@@ -154,6 +154,7 @@ Run configured lint checks.
 #### `gg reconcile [OPTIONS]`
 Repair metadata after external branch/PR/MR manipulation.
 
+- Normalizes `GG-ID` and `GG-Parent` trailers across the stack
 - `-n, --dry-run`
 
 #### `gg continue` / `gg abort`
@@ -222,6 +223,7 @@ All JSON payloads include `version` (`u32`, current value: `1`).
         "sha": "string",
         "title": "string",
         "gg_id": "c-...",
+        "gg_parent": "c-...",
         "pr_number": 123,
         "pr_state": "open",
         "approved": false,
@@ -239,6 +241,7 @@ Field types:
 - `current_position`: `number | null`
 - `behind_base`: `number | null`
 - `gg_id`: `string | null`
+- `gg_parent`: `string | null`
 - `pr_number`: `number | null`
 - `pr_state`: `"open" | "merged" | "closed" | "draft" | null`
 - `ci_status`: `string | null`
@@ -292,6 +295,11 @@ Field types:
     "base": "main",
     "rebased_before_sync": false,
     "warnings": [],
+    "metadata": {
+      "gg_ids_added": 0,
+      "gg_parents_updated": 0,
+      "gg_parents_removed": 0
+    },
     "entries": [
       {
         "position": 1,
@@ -426,7 +434,7 @@ Transport: stdio (JSON-RPC over stdin/stdout).
 #### `stack_list`
 List the current stack with commit entries and PR/MR status.
 - **Params:** `refresh` (bool, default false) — refresh PR status from remote
-- **Returns:** `{ name, base, total_commits, synced_commits, current_position, entries: [{ position, sha, title, gg_id, pr_number, pr_state, approved, ci_status, is_current }] }`
+- **Returns:** `{ name, base, total_commits, synced_commits, current_position, entries: [{ position, sha, title, gg_id, gg_parent, pr_number, pr_state, approved, ci_status, is_current }] }`
 
 #### `stack_list_all`
 List all stacks in the repository.

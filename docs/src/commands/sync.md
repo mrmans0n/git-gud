@@ -21,6 +21,8 @@ Before pushing, `gg sync` checks whether your stack base is behind `origin/<base
 
 When you run `gg sync --lint`, lint runs before any push/PR updates. If lint fails, sync aborts immediately and git-gud restores your repository to the pre-sync snapshot.
 
+Before pushing, `gg sync` also normalizes commit metadata (`GG-ID` and `GG-Parent`) for the whole stack.
+
 You can control this behavior with config:
 
 - `defaults.sync_auto_rebase` (`sync.auto_rebase`): automatically run `gg rebase` before sync when behind threshold is reached
@@ -58,6 +60,11 @@ Example JSON (shape):
     "stack": "my-stack",
     "base": "main",
     "rebased_before_sync": false,
+    "metadata": {
+      "gg_ids_added": 0,
+      "gg_parents_updated": 1,
+      "gg_parents_removed": 0
+    },
     "entries": [
       {
         "position": 1,

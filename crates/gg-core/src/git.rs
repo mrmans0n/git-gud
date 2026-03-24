@@ -534,22 +534,28 @@ pub fn normalize_stack_metadata(
         tip_oid = Some(new_oid);
     }
 
-    let head = repo.head()?;
-    if let Some(branch_name) = head.shorthand() {
-        if let Some(tip_oid) = tip_oid {
-            repo.reference(
-                &format!("refs/heads/{}", branch_name),
-                tip_oid,
-                true,
-                "gg: normalize GG metadata",
-            )?;
+    let target_refname = {
+        let stack_refname = format!("refs/heads/{}/{}", stack.username, stack.name);
+        if repo.find_reference(&stack_refname).is_ok() {
+            stack_refname
+        } else {
+            let head = repo.head()?;
+            if let Some(branch_name) = head.shorthand() {
+                format!("refs/heads/{}", branch_name)
+            } else {
+                return Err(GgError::Other(format!(
+                    "Cannot normalize metadata: missing stack branch ref {} while HEAD is detached",
+                    stack_refname
+                )));
+            }
         }
-        Ok(counts)
-    } else {
-        Err(GgError::Other(
-            "Cannot normalize metadata: HEAD is detached".to_string(),
-        ))
+    };
+
+    if let Some(tip_oid) = tip_oid {
+        repo.reference(&target_refname, tip_oid, true, "gg: normalize GG metadata")?;
     }
+
+    Ok(counts)
 }
 
 fn extract_description_from_message(message: &str) -> Option<String> {
@@ -1307,6 +1313,97 @@ mod tests {
         assert!(new_head_message.contains("GG-ID: c-2222222"));
         assert!(new_head_message.contains("GG-Parent: c-1111111"));
         assert!(!new_head_message.contains("c-deadbee"));
+    }
+
+    #[test]
+    fn test_normalize_stack_metadata_uses_stack_branch_when_head_detached() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_path = temp_dir.path();
+
+        run_git(repo_path, &["init", "--initial-branch=main"]);
+        run_git(repo_path, &["config", "user.email", "test@example.com"]);
+        run_git(repo_path, &["config", "user.name", "Test User"]);
+
+        std::fs::write(repo_path.join("base.txt"), "base\n").unwrap();
+        run_git(repo_path, &["add", "."]);
+        run_git(repo_path, &["commit", "-m", "base"]);
+
+        run_git(repo_path, &["checkout", "-b", "nacho/stack"]);
+
+        std::fs::write(repo_path.join("stack.txt"), "stack-1\n").unwrap();
+        run_git(repo_path, &["add", "."]);
+        run_git(
+            repo_path,
+            &["commit", "-m", "stack 1\n\nBody\n\nGG-ID: c-1111111"],
+        );
+
+        std::fs::write(repo_path.join("stack.txt"), "stack-2\n").unwrap();
+        run_git(repo_path, &["add", "."]);
+        run_git(
+            repo_path,
+            &[
+                "commit",
+                "-m",
+                "stack 2\n\nBody\n\nGG-ID: c-2222222\nGG-Parent: c-deadbee",
+            ],
+        );
+
+        let stack_tip_before = Oid::from_str(
+            String::from_utf8_lossy(
+                &Command::new("git")
+                    .args(["rev-parse", "nacho/stack"])
+                    .current_dir(repo_path)
+                    .output()
+                    .unwrap()
+                    .stdout,
+            )
+            .trim(),
+        )
+        .unwrap();
+
+        run_git(repo_path, &["checkout", "--detach", "HEAD"]);
+
+        let repo = Repository::open(repo_path).unwrap();
+        assert!(repo.head_detached().unwrap());
+
+        let stack_tip_commit = repo.find_commit(stack_tip_before).unwrap();
+        let stack_parent_commit = stack_tip_commit.parent(0).unwrap();
+
+        let stack = Stack {
+            name: "stack".to_string(),
+            username: "nacho".to_string(),
+            base: "main".to_string(),
+            entries: vec![
+                StackEntry::from_commit(&stack_parent_commit, 1),
+                StackEntry::from_commit(&stack_tip_commit, 2),
+            ],
+            current_position: Some(1),
+        };
+
+        let counts = normalize_stack_metadata(&repo, &stack).unwrap();
+        assert_eq!(
+            counts,
+            MetadataRewriteCounts {
+                gg_ids_added: 0,
+                gg_parents_updated: 1,
+                gg_parents_removed: 0,
+            }
+        );
+
+        let detached_head_after = repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(detached_head_after.id(), stack_tip_before);
+
+        let updated_stack_tip = repo
+            .find_reference("refs/heads/nacho/stack")
+            .unwrap()
+            .peel_to_commit()
+            .unwrap();
+
+        let updated_message = updated_stack_tip.message().unwrap();
+        assert!(updated_message.contains("GG-ID: c-2222222"));
+        assert!(updated_message.contains("GG-Parent: c-1111111"));
+        assert!(!updated_message.contains("c-deadbee"));
+        assert_ne!(updated_stack_tip.id(), stack_tip_before);
     }
 
     #[test]

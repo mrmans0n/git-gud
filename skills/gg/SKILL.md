@@ -76,6 +76,8 @@ Store shared defaults in `~/.config/gg/config.json` that apply to all repos. Loc
 }
 ```
 
+`auto_add_gg_ids` is deprecated and kept only for compatibility with existing configs; runtime behavior always treats it as enabled.
+
 ## Core workflow
 
 1. Create/switch stack (prefer worktree):

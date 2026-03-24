@@ -77,7 +77,7 @@ Show the current git-gud configuration for this repository.
 
 **Parameters:** None.
 
-**Returns:** Provider, base branch, branch username, lint commands, and all boolean settings (auto_add_gg_ids, land_auto_clean, sync_auto_lint, sync_auto_rebase).
+**Returns:** Provider, base branch, branch username, lint commands, and boolean settings (including compatibility field `auto_add_gg_ids`, which is always returned as `true`).
 
 ## Write Tools
 

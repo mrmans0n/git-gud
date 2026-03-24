@@ -112,6 +112,8 @@ fn prompt_defaults_quick(
         defaults.provider.as_deref(),
         theme,
     )?;
+    // Deprecated: behavior is always-on for metadata stability.
+    defaults.auto_add_gg_ids = true;
 
     Ok(defaults)
 }
@@ -133,11 +135,8 @@ fn prompt_defaults_full(
         defaults.provider.as_deref(),
         theme,
     )?;
-    defaults.auto_add_gg_ids = Confirm::with_theme(theme)
-        .with_prompt("Automatically add GG-IDs to commits? (tracks commit-to-PR mapping)")
-        .default(existing.auto_add_gg_ids)
-        .interact()
-        .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?;
+    // Deprecated: behavior is always-on for metadata stability.
+    defaults.auto_add_gg_ids = true;
     defaults.unstaged_action = prompt_unstaged_action(existing.unstaged_action, theme)?;
 
     // ── Sync ──

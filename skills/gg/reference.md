@@ -454,7 +454,7 @@ Get detailed PR/MR information by number.
 #### `config_show`
 Show repository git-gud configuration.
 - **Params:** none
-- **Returns:** `{ provider, base_branch, branch_username, lint_commands, auto_add_gg_ids, land_auto_clean, sync_auto_lint, sync_auto_rebase }`
+- **Returns:** `{ provider, base_branch, branch_username, lint_commands, auto_add_gg_ids, land_auto_clean, sync_auto_lint, sync_auto_rebase }` (`auto_add_gg_ids` is a compatibility field and is always `true`).
 
 ### Environment Variables
 

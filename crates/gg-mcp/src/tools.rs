@@ -558,7 +558,7 @@ impl GgMcpServer {
             base_branch: config.defaults.base.clone(),
             branch_username: config.defaults.branch_username.clone(),
             lint_commands: config.defaults.lint.clone(),
-            auto_add_gg_ids: config.defaults.auto_add_gg_ids,
+            auto_add_gg_ids: config.get_auto_add_gg_ids(),
             land_auto_clean: config.defaults.land_auto_clean,
             sync_auto_lint: config.defaults.sync_auto_lint,
             sync_auto_rebase: config.defaults.sync_auto_rebase,

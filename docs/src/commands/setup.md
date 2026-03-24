@@ -38,7 +38,6 @@ Full mode organizes all settings into logical groups:
 | `provider` | select | auto-detect | GitHub or GitLab |
 | `base` | string | auto-detect | Default base branch (main/master/trunk) |
 | `branch_username` | string | from CLI auth | Username for branch naming |
-| `auto_add_gg_ids` | bool | true | Auto-add GG-IDs to commits |
 | `unstaged_action` | select | ask | Action for `gg amend` with unstaged changes |
 
 ### Sync
@@ -86,3 +85,5 @@ git-gud supports global configuration at `~/.config/gg/config.json`. When runnin
 This allows you to set organization-wide defaults while allowing per-repo overrides.
 
 All fields are written to `config.json` after setup, making it easy to review and edit configuration manually.
+
+> Note: `auto_add_gg_ids` is deprecated. Existing configs that include it are still read, but setup no longer prompts for it and runtime behavior always treats it as enabled.

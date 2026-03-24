@@ -55,7 +55,7 @@ For global config, manually create `~/.config/gg/config.json` with your preferre
 | `base` | `string` | Default base branch for new stacks | Auto-detected |
 | `branch_username` | `string` | Username prefix in stack/entry branch names | Auto-detected |
 | `lint` | `string[]` | Commands used by `gg lint` / `gg sync --lint` | `[]` |
-| `auto_add_gg_ids` | `boolean` | Auto-add GG-ID trailers when missing | `true` |
+| `auto_add_gg_ids` | `boolean` | **Deprecated** compatibility field. gg always enforces GG metadata normalization, regardless of this value. | `true` |
 | `unstaged_action` | `string` | Default behavior for `gg sc`/`gg amend` when unstaged changes exist: `ask`, `add`, `stash`, `continue`, or `abort` | `ask` |
 | `land_wait_timeout_minutes` | `number` | Timeout for `gg land --wait` polling | `30` |
 | `land_auto_clean` | `boolean` | Auto-run cleanup after full landing | `false` |

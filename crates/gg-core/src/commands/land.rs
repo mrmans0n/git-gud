@@ -2195,6 +2195,7 @@ mod tests {
             short_sha: "abc1234".to_string(),
             title: "New commit without MR".to_string(),
             gg_id: Some("c-abc1234".to_string()),
+            gg_parent: None,
             mr_number: None, // No MR = unsynced
             mr_state: None,
             approved: false,
@@ -2213,6 +2214,7 @@ mod tests {
             short_sha: "def5678".to_string(),
             title: "Merged commit".to_string(),
             gg_id: Some("c-def5678".to_string()),
+            gg_parent: None,
             mr_number: Some(123), // Has MR = synced
             mr_state: Some(crate::provider::PrState::Merged),
             approved: true,
@@ -2249,6 +2251,7 @@ mod tests {
                 short_sha: "a1".to_string(),
                 title: "Merged".to_string(),
                 gg_id: Some("c-aaa".to_string()),
+                gg_parent: None,
                 mr_number: Some(1),
                 mr_state: Some(crate::provider::PrState::Merged),
                 approved: true,
@@ -2262,6 +2265,7 @@ mod tests {
                 short_sha: "b2".to_string(),
                 title: "Also merged".to_string(),
                 gg_id: Some("c-bbb".to_string()),
+                gg_parent: None,
                 mr_number: Some(2),
                 mr_state: Some(crate::provider::PrState::Merged),
                 approved: true,
@@ -2275,6 +2279,7 @@ mod tests {
                 short_sha: "c3".to_string(),
                 title: "New unsynced commit".to_string(),
                 gg_id: Some("c-ccc".to_string()),
+                gg_parent: None,
                 mr_number: None, // No MR
                 mr_state: None,
                 approved: false,
@@ -2288,6 +2293,7 @@ mod tests {
                 short_sha: "d4".to_string(),
                 title: "Another new commit".to_string(),
                 gg_id: Some("c-ddd".to_string()),
+                gg_parent: None,
                 mr_number: None, // No MR
                 mr_state: None,
                 approved: false,

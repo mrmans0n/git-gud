@@ -527,6 +527,7 @@ fn show_stack(stack: &Stack, json: bool) -> Result<()> {
                     sha: entry.short_sha.clone(),
                     title: entry.title.clone(),
                     gg_id: entry.gg_id.clone(),
+                    gg_parent: entry.gg_parent.clone(),
                     pr_number: entry.mr_number,
                     pr_state: entry.mr_state.as_ref().map(pr_state_to_json),
                     approved: entry.approved,

@@ -10,7 +10,7 @@ Use this skill to operate **git-gud (`gg`) as a CLI tool** for day-to-day stacke
 ## When to use
 
 - You need multiple PRs/MRs that depend on each other
-- You need to sync stack changes and keep review metadata updated
+- You need to sync stack changes and keep review metadata updated (including GG-ID/GG-Parent normalization)
 - You need machine-readable command output for automation (`--json`)
 
 ## Prerequisites

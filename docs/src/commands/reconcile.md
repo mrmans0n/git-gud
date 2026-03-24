@@ -12,7 +12,7 @@ gg reconcile [OPTIONS]
 
 ## What it does
 
-- Adds missing GG-ID trailers to stack commits
+- Normalizes GG metadata trailers on stack commits (`GG-ID` + `GG-Parent`)
 - Maps existing remote PRs/MRs back to local stack entries
 
 ## Examples

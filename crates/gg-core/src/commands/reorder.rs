@@ -89,6 +89,10 @@ pub fn run(options: ReorderOptions) -> Result<()> {
     // Perform the rebase with the new order
     perform_reorder(&repo, &stack, &new_order)?;
 
+    // Ensure GG metadata reflects the new stack order
+    let rewritten_stack = Stack::load(&repo, &config)?;
+    git::normalize_stack_metadata(&repo, &rewritten_stack)?;
+
     if dropped_count > 0 {
         println!(
             "{} Arranged stack: {} commits kept, {} dropped",
@@ -370,6 +374,7 @@ mod tests {
             short_sha: sha.to_string(),
             title: title.to_string(),
             gg_id: Some(gg_id.to_string()),
+            gg_parent: None,
             mr_number: None,
             mr_state: None,
             approved: false,

@@ -584,6 +584,8 @@ fn rebase_descendants(
     if remaining == 0 {
         // Target was the stack head — just update branch pointer
         update_branch_after_split(repo, stack, second_commit)?;
+        let rewritten_stack = Stack::load(repo, config)?;
+        git::normalize_stack_metadata(repo, &rewritten_stack)?;
         return Ok(0);
     }
 
@@ -615,6 +617,10 @@ fn rebase_descendants(
 
     // Re-attach HEAD if needed
     git::ensure_branch_attached(repo, &branch_name)?;
+
+    // Normalize GG metadata while we're still on the branch
+    let rewritten_stack = Stack::load(repo, config)?;
+    git::normalize_stack_metadata(repo, &rewritten_stack)?;
 
     // Navigate back to the position of the remainder commit (target_pos + 1 in new stack)
     let new_stack = Stack::load(repo, config)?;

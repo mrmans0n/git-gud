@@ -7,11 +7,9 @@ use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::config::Config;
 use crate::error::{GgError, Result};
-use crate::git::{
-    self, generate_gg_id, get_commit_description, set_gg_id_in_message, strip_gg_id_from_message,
-};
+use crate::git::{self, get_commit_description, strip_gg_id_from_message};
 use crate::output::{
-    print_json, SyncEntryResultJson, SyncResponse, SyncResultJson, OUTPUT_VERSION,
+    print_json, SyncEntryResultJson, SyncMetadataJson, SyncResponse, SyncResultJson, OUTPUT_VERSION,
 };
 use crate::provider::Provider;
 use crate::stack::{resolve_target, Stack};
@@ -188,6 +186,7 @@ pub fn run(
                     base: initial_stack.base.clone(),
                     rebased_before_sync: false,
                     warnings: vec![],
+                    metadata: SyncMetadataJson::default(),
                     entries: vec![],
                 },
             });
@@ -223,7 +222,7 @@ pub fn run(
     let sync_start_branch = git::current_branch_name(&repo);
     let sync_start_head = repo.head()?.peel_to_commit()?.id();
 
-    let mut warnings: Vec<String> = Vec::new();
+    let warnings: Vec<String> = Vec::new();
 
     // Run lint ONCE if requested (before GG-ID addition loop)
     if run_lint {
@@ -257,140 +256,39 @@ pub fn run(
         }
     }
 
-    // Now handle GG-ID addition in a loop (lint may have changed commits)
-    // This loop ensures the operation lock is held for the entire operation
-    let stack = loop {
-        let stack = Stack::load(&repo, &config)?;
+    let mut stack = Stack::load(&repo, &config)?;
 
-        if stack.is_empty() {
-            if json {
-                print_json(&SyncResponse {
-                    version: OUTPUT_VERSION,
-                    sync: SyncResultJson {
-                        stack: stack.name.clone(),
-                        base: stack.base.clone(),
-                        rebased_before_sync,
-                        warnings: warnings.clone(),
-                        entries: vec![],
-                    },
-                });
-            } else {
-                println!("{}", style("Stack is empty. Nothing to sync.").dim());
-            }
-            return Ok(());
-        }
-
-        // Re-validate --until against potentially updated stack
-        if let Some(ref target) = until {
-            resolve_target(&stack, target)?;
-        }
-
-        // Check for missing GG-IDs
-        let missing_ids = stack.entries_needing_gg_ids();
-        if missing_ids.is_empty() {
-            // All commits have GG-IDs, proceed with sync
-            break stack;
-        }
-
-        if !json {
-            println!(
-                "{} {} commits are missing GG-IDs:",
-                style("→").cyan(),
-                missing_ids.len()
-            );
-            for entry in &missing_ids {
-                println!("  [{}] {} {}", entry.position, entry.short_sha, entry.title);
-            }
-        }
-
-        // Check config for auto_add_gg_ids (default: true)
-        let should_add = if config.defaults.auto_add_gg_ids || json {
-            true
+    if stack.is_empty() {
+        if json {
+            print_json(&SyncResponse {
+                version: OUTPUT_VERSION,
+                sync: SyncResultJson {
+                    stack: stack.name.clone(),
+                    base: stack.base.clone(),
+                    rebased_before_sync,
+                    warnings: warnings.clone(),
+                    metadata: SyncMetadataJson::default(),
+                    entries: vec![],
+                },
+            });
         } else {
-            Confirm::new()
-                .with_prompt("Add GG-IDs to these commits? (requires rebase)")
-                .default(true)
-                .interact()
-                .unwrap_or(true)
-        };
-
-        if !should_add {
-            return Err(GgError::Other(
-                "Cannot sync without GG-IDs. Aborting.".to_string(),
-            ));
+            println!("{}", style("Stack is empty. Nothing to sync.").dim());
         }
+        return Ok(());
+    }
 
-        let needs_stash = !git::is_working_directory_clean(&repo)?;
-        if needs_stash {
-            if !json {
-                println!("{}", style("Auto-stashing uncommitted changes...").dim());
-            }
-            git::run_git_command(&["stash", "push", "-m", "gg-sync-autostash"])?;
-        }
+    // Re-validate --until against potentially updated stack
+    if let Some(ref target) = until {
+        resolve_target(&stack, target)?;
+    }
 
-        if let Err(err) = add_gg_ids_to_commits(&repo, &stack, json) {
-            if needs_stash && !git::is_rebase_in_progress(&repo) {
-                if !json {
-                    println!(
-                        "{}",
-                        style("Attempting to restore stashed changes...").dim()
-                    );
-                }
-                let _ = git::run_git_command(&["stash", "pop"]);
-            }
-            return Err(err);
-        }
-
-        // Check if rebase completed successfully
-        if git::is_rebase_in_progress(&repo) {
-            let note = if needs_stash {
-                "\nNote: Your uncommitted changes are stashed and will be restored after the rebase completes."
-            } else {
-                ""
-            };
-            return Err(GgError::Other(format!(
-                "Rebase in progress after adding GG-IDs.\n\
-                 Please resolve any conflicts, then run:\n\
-                 - 'git rebase --continue' (or 'gg continue') to finish the rebase\n\
-                 - 'gg sync' again once the rebase is complete{}",
-                note
-            )));
-        }
-
-        if needs_stash {
-            if !json {
-                println!("{}", style("Restoring stashed changes...").dim());
-            }
-            match git::run_git_command(&["stash", "pop"]) {
-                Ok(_) => {
-                    if !json {
-                        println!("{}", style("Changes restored").cyan());
-                    }
-                }
-                Err(e) => {
-                    let warning = format!(
-                        "Could not restore stashed changes: {}. Your changes are in the stash. Run 'git stash pop' manually.",
-                        e
-                    );
-                    if json {
-                        warnings.push(warning);
-                    } else {
-                        println!("{} {}", style("Warning:").yellow(), warning);
-                    }
-                }
-            }
-        }
-
-        if !json {
-            println!(
-                "{}",
-                console::style("GG-IDs added successfully. Re-syncing...").dim()
-            );
-        }
-
-        // Loop continues: reload stack and check for any remaining missing GG-IDs
-        // (or proceed to sync if all commits now have GG-IDs)
-    };
+    if !json {
+        println!("{}", style("Normalizing GG metadata...").dim());
+    }
+    // Intentional: sync always enforces GG-ID / GG-Parent invariants for the
+    // stack so branch/PR mappings stay stable, even if auto_add_gg_ids is false.
+    let metadata_counts = git::normalize_stack_metadata(&repo, &stack)?;
+    stack = Stack::load(&repo, &config)?;
 
     // Determine sync range based on --until flag
     let sync_until = if let Some(ref target) = until {
@@ -743,6 +641,11 @@ pub fn run(
                 base: stack.base,
                 rebased_before_sync,
                 warnings,
+                metadata: SyncMetadataJson {
+                    gg_ids_added: metadata_counts.gg_ids_added,
+                    gg_parents_updated: metadata_counts.gg_parents_updated,
+                    gg_parents_removed: metadata_counts.gg_parents_removed,
+                },
                 entries: json_entries,
             },
         });
@@ -870,79 +773,15 @@ fn create_entry_branch(
     Ok(())
 }
 
-/// Add GG-IDs to commits that are missing them by rewriting commit messages
-/// This preserves the exact tree (including any lint changes) while only updating messages
-fn add_gg_ids_to_commits(repo: &Repository, stack: &Stack, json: bool) -> Result<()> {
-    if !json {
-        println!("{}", style("Adding GG-IDs...").dim());
-    }
-
-    let base_ref = repo
-        .revparse_single(&stack.base)
-        .or_else(|_| repo.revparse_single(&format!("origin/{}", stack.base)))?;
-    let base_commit = repo.find_commit(base_ref.id())?;
-
-    let mut parent_oid = base_commit.id();
-
-    // Walk through all entries in order, rewriting each commit
-    for entry in &stack.entries {
-        let original_commit = repo.find_commit(entry.oid)?;
-        let original_message = original_commit.message().unwrap_or("");
-
-        // Determine if we need a new GG-ID for this commit
-        let new_message = if entry.gg_id.is_none() {
-            let new_id = generate_gg_id();
-            set_gg_id_in_message(original_message, &new_id)
-        } else {
-            // Even if this commit already has a GG-ID, we still need to rewrite it
-            // because the parent has changed (due to previous rewrites in the stack)
-            original_message.to_string()
-        };
-
-        // Create a new commit with the same tree but updated parent and message
-        let new_oid = repo.commit(
-            None, // Don't update any reference yet
-            &original_commit.author(),
-            &original_commit.committer(),
-            &new_message,
-            &original_commit.tree()?,
-            &[&repo.find_commit(parent_oid)?],
-        )?;
-
-        // This new commit becomes the parent for the next one
-        parent_oid = new_oid;
-    }
-
-    // Update the current branch to point to the last rewritten commit
-    let head = repo.head()?;
-    if let Some(branch_name) = head.shorthand() {
-        // Update the branch reference
-        repo.reference(
-            &format!("refs/heads/{}", branch_name),
-            parent_oid,
-            true,
-            "gg sync: added GG-IDs",
-        )?;
-    } else {
-        return Err(GgError::Other(
-            "Cannot add GG-IDs: HEAD is detached".to_string(),
-        ));
-    }
-
-    if !json {
-        println!("{} Added GG-IDs to commits", style("OK").green().bold());
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         build_pr_payload, clean_title, ensure_draft_prefix_for_gitlab, is_wip_or_draft_prefix,
     };
     use crate::git;
-    use crate::output::{SyncEntryResultJson, SyncResponse, SyncResultJson, OUTPUT_VERSION};
+    use crate::output::{
+        SyncEntryResultJson, SyncMetadataJson, SyncResponse, SyncResultJson, OUTPUT_VERSION,
+    };
 
     #[test]
     fn test_get_remote_branch_oid() {
@@ -1127,6 +966,7 @@ mod tests {
                 base: "main".to_string(),
                 rebased_before_sync: false,
                 warnings: vec![],
+                metadata: SyncMetadataJson::default(),
                 entries: vec![SyncEntryResultJson {
                     position: 1,
                     sha: "abc1234".to_string(),

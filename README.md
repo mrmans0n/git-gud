@@ -353,9 +353,9 @@ If no template file exists, git-gud uses the commit description directly, or a d
 - **Stack branch**: `<username>/<stack-name>` (e.g., `nacho/my-feature`)
 - **Per-commit branches**: `<username>/<stack-name>--<entry-id>` (e.g., `nacho/my-feature--c-abc1234`)
 
-### GG-ID Trailers
+### GG Metadata Trailers
 
-Each commit gets a stable `GG-ID` trailer that persists across rebases:
+Each commit gets stable metadata trailers that persist across rebases:
 
 ```
 Add user authentication
@@ -363,9 +363,14 @@ Add user authentication
 Implement JWT-based auth with refresh tokens.
 
 GG-ID: c-abc1234
+GG-Parent: c-1234567
 ```
 
-This ID is used to track which PR/MR corresponds to which commit, even after reordering or amending.
+- `GG-ID` identifies the commit itself.
+- `GG-Parent` points to the previous stack entry's `GG-ID`.
+- The first stack entry has no `GG-Parent` trailer.
+
+`gg sync` and `gg reconcile` normalize these trailers automatically.
 
 ### PR/MR Dependencies
 
@@ -513,7 +518,7 @@ OK Reconciliation complete!
 ```
 
 **What reconcile does:**
-1. **Adds GG-IDs to commits** that don't have them (via rebase)
+1. **Normalizes GG metadata** (`GG-ID` + `GG-Parent`) on commits (via rebase)
 2. **Finds existing PRs/MRs** for your entry branches and maps them in config
 
 **When to use:**

@@ -15,19 +15,24 @@ In git-gud, each commit is an "entry" in the stack:
 
 That gives reviewers small units, while preserving execution order.
 
-## GG-IDs
+## GG metadata trailers
 
-Each stack commit carries a stable trailer, for example:
+Each stack commit carries stable trailers, for example:
 
 ```text
 GG-ID: c-abc1234
+GG-Parent: c-1234567
 ```
 
-Why GG-IDs matter:
+- `GG-ID` identifies the commit itself.
+- `GG-Parent` points to the previous stack entry's `GG-ID`.
+- The first stack entry has no `GG-Parent`.
 
-- They keep commit-to-PR/MR mappings stable across rebases
-- They let git-gud identify entries by a durable ID (not just SHA)
-- They make reconcile and navigation safer after history edits
+Why this matters:
+
+- Commit-to-PR/MR mappings stay stable across rebases
+- Stack topology is recoverable from commit-local metadata
+- `gg sync` and `gg reconcile` can auto-heal metadata drift after history edits
 
 ## Branch naming convention
 

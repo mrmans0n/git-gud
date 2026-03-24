@@ -161,6 +161,10 @@ pub fn run(options: DropOptions) -> Result<()> {
         return Err(GgError::Other(format!("Rebase failed: {}", stderr)));
     }
 
+    // Normalize GG metadata after stack shape change
+    let rewritten_stack = Stack::load(&repo, &config)?;
+    git::normalize_stack_metadata(&repo, &rewritten_stack)?;
+
     // Clean up per-commit branches for dropped commits
     for entry in &dropped_entries {
         // Find the matching stack entry to get the GG-ID for branch name

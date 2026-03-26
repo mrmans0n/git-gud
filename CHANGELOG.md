@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-03-26
+
+### Added
+- GG-Parent trailers and normalized stack metadata for stack-aware workflows (#237)
+
+### Improved
+- Stack workflow roadmap planning updates (#233, #235)
+
 ## [0.7.1] - 2026-03-20
 
 ### Fixed

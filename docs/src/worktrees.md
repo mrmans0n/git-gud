@@ -1,9 +1,6 @@
 # Worktrees
 
 `gg co` supports managed worktrees.
-Repo-local configuration stays shared in `.git/gg/config.json`, so `gg ls` and
-other stack-aware commands see the same stack metadata from the main checkout
-and any linked worktree.
 
 ## Create a stack worktree
 

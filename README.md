@@ -100,8 +100,6 @@ gg co my-feature --worktree
 ```
 
 This creates (or reuses) a managed worktree for the stack and checks it out there.
-Repo-local config remains shared at `.git/gg/config.json`, so commands like `gg ls`
-see the same stack metadata from the main checkout and any linked worktree.
 
 ### Default worktree location
 

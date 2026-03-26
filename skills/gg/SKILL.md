@@ -39,6 +39,8 @@ gg setup --all  # Full mode: all settings organized by category
 ### Global config
 
 Store shared defaults in `~/.config/gg/config.json` that apply to all repos. Local config (`gg setup`) takes precedence.
+Repo-local config lives in `.git/gg/config.json` and is shared across linked
+worktrees in the same repository.
 
 ### Manual setup (`.git/gg/config.json`)
 

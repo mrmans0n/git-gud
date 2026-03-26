@@ -16,6 +16,8 @@ gg setup --all  # Full mode: all settings organized by category
 > **Note:** Network errors during auth check are non-fatal — gg prints a warning and continues. The operation may fail later if authentication is actually required.
 
 Global config (`~/.config/gg/config.json`) provides defaults for all repos. Local config (`.git/gg/config.json`) overrides global.
+That repo-local `.git/gg/config.json` is shared across linked worktrees in the
+same repository.
 
 Example local config:
 

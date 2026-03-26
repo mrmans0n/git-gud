@@ -15,7 +15,7 @@ use crate::stack::{self, Stack};
 /// Run the list command
 pub fn run(all: bool, refresh: bool, remote: bool, json: bool) -> Result<()> {
     let repo = git::open_repo()?;
-    let git_dir = repo.path();
+    let git_dir = repo.commondir();
     let config = Config::load_with_global(git_dir)?;
 
     // Handle --remote flag

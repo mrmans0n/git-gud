@@ -5154,6 +5154,52 @@ fn test_worktree_shares_config() {
 }
 
 #[test]
+fn test_gg_ls_reads_shared_repo_config_from_worktree() {
+    let (_parent_dir, repo_path) = create_test_repo_with_worktree_support();
+
+    let fake_home = repo_path.parent().unwrap().join("fake-home");
+    fs::create_dir_all(&fake_home).expect("Failed to create fake home");
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let home = fake_home.as_os_str();
+    let (success, _, stderr) = run_gg_with_env(
+        &repo_path,
+        &["co", "shared-config-stack"],
+        &[("HOME", home)],
+    );
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    let worktree_path = create_worktree(&repo_path, "wt-shared-config-stack");
+
+    let (success, stdout, stderr) =
+        run_gg_with_env(&worktree_path, &["ls", "-a"], &[("HOME", home)]);
+
+    assert!(
+        success,
+        "gg ls -a from worktree should succeed. stdout: {}, stderr: {}",
+        stdout, stderr
+    );
+    assert!(
+        stdout.contains("shared-config-stack"),
+        "gg ls -a from worktree should use shared repo config and list the stack. stdout: {}",
+        stdout
+    );
+
+    let worktree_git_dir = repo_path.join(".git/worktrees/wt-shared-config-stack/gg/config.json");
+    assert!(
+        !worktree_git_dir.exists(),
+        "Worktree should NOT have its own config - should use shared config"
+    );
+}
+
+#[test]
 fn test_worktree_independent_nav_state() {
     let (_parent_dir, repo_path) = create_test_repo_with_worktree_support();
 

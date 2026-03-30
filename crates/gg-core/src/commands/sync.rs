@@ -483,30 +483,6 @@ pub fn run(
                         }
                     }
 
-                    // Best-effort: if we want draft and the existing PR isn't a draft (GitHub only),
-                    // convert it to draft.
-                    if entry_draft && matches!(provider, Provider::GitHub) {
-                        if let Some(info) = pr_info.as_ref() {
-                            if !info.draft {
-                                if let Err(e) = crate::gh::convert_pr_to_draft(pr_num) {
-                                    if !json {
-                                        pb.println(format!(
-                                            "{} Could not convert {} {}{} to draft: {}",
-                                            style("Warning:").yellow(),
-                                            provider.pr_label(),
-                                            provider.pr_number_prefix(),
-                                            pr_num,
-                                            e
-                                        ));
-                                    }
-                                    if entry_error.is_none() {
-                                        entry_error =
-                                            Some(format!("Could not convert to draft: {e}"));
-                                    }
-                                }
-                            }
-                        }
-                    }
                     // Update PR/MR base if needed
                     if let Err(e) = provider.update_pr_base(pr_num, &target_branch) {
                         if !json {

@@ -440,15 +440,10 @@ pub fn run(
                         ));
                     }
                 } else {
-                    // If we're forcing draft on GitLab, we may need to update the title
-                    // even if --update-descriptions wasn't provided.
-                    if update_descriptions || (entry_draft && matches!(provider, Provider::GitLab))
-                    {
-                        // For GitLab with draft=true, ensure the title has "Draft: " prefix
-                        let final_title =
-                            ensure_draft_prefix_for_gitlab(&title, &provider, entry_draft);
-
-                        if let Err(e) = provider.update_pr_title(pr_num, &final_title) {
+                    if update_descriptions {
+                        // Existing PRs keep their current draft/ready state.
+                        // --draft only applies when creating NEW PRs/MRs.
+                        if let Err(e) = provider.update_pr_title(pr_num, &title) {
                             if !json {
                                 pb.println(format!(
                                     "{} Could not update {} {}{} title: {}",
@@ -463,22 +458,19 @@ pub fn run(
                                 entry_error = Some(format!("Could not update title: {e}"));
                             }
                         }
-                        if update_descriptions {
-                            if let Err(e) = provider.update_pr_description(pr_num, &description) {
-                                if !json {
-                                    pb.println(format!(
-                                        "{} Could not update {} {}{} description: {}",
-                                        style("Warning:").yellow(),
-                                        provider.pr_label(),
-                                        provider.pr_number_prefix(),
-                                        pr_num,
-                                        e
-                                    ));
-                                }
-                                if entry_error.is_none() {
-                                    entry_error =
-                                        Some(format!("Could not update description: {e}"));
-                                }
+                        if let Err(e) = provider.update_pr_description(pr_num, &description) {
+                            if !json {
+                                pb.println(format!(
+                                    "{} Could not update {} {}{} description: {}",
+                                    style("Warning:").yellow(),
+                                    provider.pr_label(),
+                                    provider.pr_number_prefix(),
+                                    pr_num,
+                                    e
+                                ));
+                            }
+                            if entry_error.is_none() {
+                                entry_error = Some(format!("Could not update description: {e}"));
                             }
                         }
                     }
@@ -517,10 +509,7 @@ pub fn run(
                             pr_num
                         ));
                     }
-                    if needs_push
-                        || update_descriptions
-                        || (entry_draft && matches!(provider, Provider::GitLab))
-                    {
+                    if needs_push || update_descriptions {
                         action = "updated".to_string();
                     }
                 }

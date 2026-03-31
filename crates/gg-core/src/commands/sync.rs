@@ -440,15 +440,10 @@ pub fn run(
                         ));
                     }
                 } else {
-                    // If we're forcing draft on GitLab, we may need to update the title
-                    // even if --update-descriptions wasn't provided.
-                    if update_descriptions || (entry_draft && matches!(provider, Provider::GitLab))
-                    {
-                        // For GitLab with draft=true, ensure the title has "Draft: " prefix
-                        let final_title =
-                            ensure_draft_prefix_for_gitlab(&title, &provider, entry_draft);
-
-                        if let Err(e) = provider.update_pr_title(pr_num, &final_title) {
+                    if update_descriptions {
+                        // Existing PRs keep their current draft/ready state.
+                        // --draft only applies when creating NEW PRs/MRs.
+                        if let Err(e) = provider.update_pr_title(pr_num, &title) {
                             if !json {
                                 pb.println(format!(
                                     "{} Could not update {} {}{} title: {}",
@@ -463,50 +458,23 @@ pub fn run(
                                 entry_error = Some(format!("Could not update title: {e}"));
                             }
                         }
-                        if update_descriptions {
-                            if let Err(e) = provider.update_pr_description(pr_num, &description) {
-                                if !json {
-                                    pb.println(format!(
-                                        "{} Could not update {} {}{} description: {}",
-                                        style("Warning:").yellow(),
-                                        provider.pr_label(),
-                                        provider.pr_number_prefix(),
-                                        pr_num,
-                                        e
-                                    ));
-                                }
-                                if entry_error.is_none() {
-                                    entry_error =
-                                        Some(format!("Could not update description: {e}"));
-                                }
+                        if let Err(e) = provider.update_pr_description(pr_num, &description) {
+                            if !json {
+                                pb.println(format!(
+                                    "{} Could not update {} {}{} description: {}",
+                                    style("Warning:").yellow(),
+                                    provider.pr_label(),
+                                    provider.pr_number_prefix(),
+                                    pr_num,
+                                    e
+                                ));
+                            }
+                            if entry_error.is_none() {
+                                entry_error = Some(format!("Could not update description: {e}"));
                             }
                         }
                     }
 
-                    // Best-effort: if we want draft and the existing PR isn't a draft (GitHub only),
-                    // convert it to draft.
-                    if entry_draft && matches!(provider, Provider::GitHub) {
-                        if let Some(info) = pr_info.as_ref() {
-                            if !info.draft {
-                                if let Err(e) = crate::gh::convert_pr_to_draft(pr_num) {
-                                    if !json {
-                                        pb.println(format!(
-                                            "{} Could not convert {} {}{} to draft: {}",
-                                            style("Warning:").yellow(),
-                                            provider.pr_label(),
-                                            provider.pr_number_prefix(),
-                                            pr_num,
-                                            e
-                                        ));
-                                    }
-                                    if entry_error.is_none() {
-                                        entry_error =
-                                            Some(format!("Could not convert to draft: {e}"));
-                                    }
-                                }
-                            }
-                        }
-                    }
                     // Update PR/MR base if needed
                     if let Err(e) = provider.update_pr_base(pr_num, &target_branch) {
                         if !json {
@@ -541,10 +509,7 @@ pub fn run(
                             pr_num
                         ));
                     }
-                    if needs_push
-                        || update_descriptions
-                        || (entry_draft && matches!(provider, Provider::GitLab))
-                    {
+                    if needs_push || update_descriptions {
                         action = "updated".to_string();
                     }
                 }
@@ -736,6 +701,7 @@ fn clean_title(title: &str) -> String {
 /// - The provider is GitLab
 /// - is_draft is true
 /// - The title doesn't already have the prefix (case-insensitive check)
+#[allow(dead_code)]
 fn ensure_draft_prefix_for_gitlab(title: &str, provider: &Provider, is_draft: bool) -> String {
     // Only add prefix for GitLab when draft is true
     if !is_draft || !matches!(provider, Provider::GitLab) {

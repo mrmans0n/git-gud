@@ -187,7 +187,7 @@ The `gg-mcp` binary exposes git-gud as an MCP server (stdio transport). Set `GG_
 
 ### Agent guidelines for MCP
 - Prefer read-only tools to understand state before writing.
-- Use `stack_sync` with `draft: true` unless the user asks for non-draft PRs.
+- Use `stack_sync` with `draft: true` for new PRs unless the user asks for non-draft. Note: `draft: true` only affects newly created PRs, not existing ones.
 - **Never call `stack_land` without explicit user approval.**
 - Parse JSON output from `stack_sync`, `stack_land`, `stack_clean`, and `stack_lint`.
 - If `stack_status` shows `behind_base > 0`, run `stack_rebase` before syncing.

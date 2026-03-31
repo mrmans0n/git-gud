@@ -701,6 +701,7 @@ fn clean_title(title: &str) -> String {
 /// - The provider is GitLab
 /// - is_draft is true
 /// - The title doesn't already have the prefix (case-insensitive check)
+#[allow(dead_code)]
 fn ensure_draft_prefix_for_gitlab(title: &str, provider: &Provider, is_draft: bool) -> String {
     // Only add prefix for GitLab when draft is true
     if !is_draft || !matches!(provider, Provider::GitLab) {

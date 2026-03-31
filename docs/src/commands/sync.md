@@ -8,7 +8,7 @@ gg sync [OPTIONS]
 
 ## Options
 
-- `-d, --draft`: Create new PRs/MRs as draft
+- `-d, --draft`: Create new PRs/MRs as draft (does not affect existing PRs/MRs)
 - `-f, --force`: Force push even if remote is ahead
 - `--update-descriptions`: Update PR/MR title/body from commit messages
 - `-l, --lint`: Run lint before sync (aborts sync on lint failure and restores repository state to the pre-sync snapshot)

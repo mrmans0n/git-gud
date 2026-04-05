@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-04-05
+
+### Fixed
+- `gg sync --draft` no longer converts existing GitHub pull requests to draft unexpectedly
+
 ## [0.7.2] - 2026-03-26
 
 ### Added
@@ -354,3 +359,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.7]: https://github.com/mrmans0n/git-gud/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/mrmans0n/git-gud/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/mrmans0n/git-gud/releases/tag/v0.1.5
+
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.7.3...HEAD
+[0.7.3]: https://github.com/mrmans0n/git-gud/compare/v0.7.2...v0.7.3

@@ -6976,7 +6976,10 @@ fn test_gg_clean_current_branch_with_main_in_linked_worktree() {
     );
 
     // Merge the stack onto main so gg clean considers it cleaned
-    run_git(&linked_path, &["merge", "--ff-only", "testuser/broken-windows"]);
+    run_git(
+        &linked_path,
+        &["merge", "--ff-only", "testuser/broken-windows"],
+    );
 
     // Now: main worktree is on testuser/broken-windows, linked worktree has main.
     // gg clean must handle checking out main (the base) gracefully.
@@ -6984,8 +6987,7 @@ fn test_gg_clean_current_branch_with_main_in_linked_worktree() {
     assert!(
         success,
         "gg clean should succeed even when main is in a linked worktree.\nstdout={}\nstderr={}",
-        stdout,
-        stderr
+        stdout, stderr
     );
 
     // Stack branch must be gone
@@ -7003,7 +7005,12 @@ fn test_gg_clean_current_branch_with_main_in_linked_worktree() {
 
     // Clean up linked worktree
     let _ = Command::new("git")
-        .args(["worktree", "remove", "--force", linked_path.to_str().unwrap()])
+        .args([
+            "worktree",
+            "remove",
+            "--force",
+            linked_path.to_str().unwrap(),
+        ])
         .current_dir(&repo_path)
         .output();
 }

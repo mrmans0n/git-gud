@@ -68,7 +68,27 @@ pub fn run_for_stack_with_repo(repo: &Repository, stack_name: &str, force: bool)
                 .or_else(|| git::find_base_branch(repo).ok())
                 .unwrap_or_else(|| "main".to_string());
 
-            git::checkout_branch(repo, &base)?;
+            // The pre-detection above can miss worktrees if
+            // Repository::open_from_worktree fails on them. Add a
+            // defensive fallback: if checkout fails because the branch is
+            // in a linked worktree, detach HEAD instead.
+            if let Err(e) = git::checkout_branch(repo, &base) {
+                let msg = e.to_string();
+                if msg.contains("current HEAD of a linked") {
+                    println!(
+                        "{} '{}' is checked out in another worktree; detaching HEAD before branch deletion.",
+                        style("Note:").cyan(),
+                        base
+                    );
+                    if let Ok(head) = repo.head() {
+                        if let Some(oid) = head.target() {
+                            repo.set_head_detached(oid)?;
+                        }
+                    }
+                } else {
+                    return Err(e);
+                }
+            }
         }
 
         // Check if branch is HEAD of a worktree
@@ -235,7 +255,26 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
                         .or_else(|| git::find_base_branch(&repo).ok())
                         .unwrap_or_else(|| "main".to_string());
 
-                    git::checkout_branch(&repo, &base)?;
+                    // Defensive fallback for the same linked-worktree case.
+                    if let Err(e) = git::checkout_branch(&repo, &base) {
+                        let msg = e.to_string();
+                        if msg.contains("current HEAD of a linked") {
+                            if !json {
+                                println!(
+                                    "{} '{}' is checked out in another worktree; detaching HEAD before branch deletion.",
+                                    style("Note:").cyan(),
+                                    base
+                                );
+                            }
+                            if let Ok(head) = repo.head() {
+                                if let Some(oid) = head.target() {
+                                    repo.set_head_detached(oid)?;
+                                }
+                            }
+                        } else {
+                            return Err(e);
+                        }
+                    }
                 }
 
                 // Check if branch is HEAD of a worktree

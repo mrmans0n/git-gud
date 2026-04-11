@@ -220,6 +220,7 @@ gg clean
 |---------|-------------|
 | `gg setup` | Generate or update `.git/gg/config.json` interactively |
 | `gg lint` | Run lint commands on each commit |
+| `gg run [OPTIONS] -- <CMD>...` | Run an arbitrary command on each commit (read-only, `--amend`, `--discard`, `--jobs N`) |
 | `gg reconcile` | Reconcile stacks that were pushed without using `gg sync` |
 | `gg reconcile --dry-run` | Show what reconcile would do without making changes |
 | `gg continue` | Continue after resolving conflicts |

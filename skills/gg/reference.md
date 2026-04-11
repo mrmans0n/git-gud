@@ -151,6 +151,19 @@ Run configured lint checks.
 - `-u, --until <UNTIL>`
 - `--json`
 
+#### `gg run [OPTIONS] -- <COMMAND>...`
+Run an arbitrary shell command on each commit in the stack (like `jj run`).
+
+- `--amend`: fold working-tree changes into each commit (formatters, codemods).
+- `--discard`: revert working-tree changes after each commit.
+- Default (no flag): read-only — fail the run if the command modifies tracked files.
+- `--keep-going`: continue past failing commits.
+- `-u, --until <UNTIL>`: stop at this commit position.
+- `-j, --jobs <N>`: parallel workers for read-only mode (0 = auto, 1 = sequential). Parallel mode uses isolated worktrees per commit.
+- `--json`: emit `RunResponse` (see JSON schemas below).
+
+Argv boundaries are preserved across the CLI — `gg run -- git commit -m "msg with spaces"` is passed to the subprocess as five argv elements, not whitespace-split.
+
 #### `gg reconcile [OPTIONS]`
 Repair metadata after external branch/PR/MR manipulation.
 

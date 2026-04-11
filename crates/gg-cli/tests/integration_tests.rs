@@ -7275,6 +7275,99 @@ fn test_gg_run_parallel_json_output() {
     assert_eq!(results[1]["position"], 2);
 }
 
+/// Locate the `test` binary on this OS. Linux has `/usr/bin/test`;
+/// macOS only ships `/bin/test`. Both exit 0 when the comparison holds.
+#[cfg(unix)]
+fn locate_test_binary() -> &'static str {
+    if std::path::Path::new("/usr/bin/test").exists() {
+        "/usr/bin/test"
+    } else if std::path::Path::new("/bin/test").exists() {
+        "/bin/test"
+    } else {
+        panic!("no `test` binary found on this system");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_gg_run_preserves_quoted_arguments() {
+    // Regression test for Bug #1: `gg run` used to join argv with spaces
+    // and re-split on whitespace, destroying argument boundaries. Using
+    // the `test` binary surfaces the bug as a non-zero exit when its args
+    // get mangled (usage error → exit 2).
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "run-quoted-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("file.txt"), "content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "c1"]);
+
+    // `test "a b" = "a b"` exits 0 when args are preserved, ≠0 otherwise.
+    let test_bin = locate_test_binary();
+    let (success, stdout, stderr) = run_gg(&repo_path, &["run", test_bin, "a b", "=", "a b"]);
+    assert!(
+        success,
+        "gg run must preserve argument boundaries with whitespace.\nstdout={}\nstderr={}",
+        stdout, stderr
+    );
+
+    // Negative case: inequality → exit 1 → gg run reports failure.
+    let (success, _, _) = run_gg(&repo_path, &["run", test_bin, "a b", "=", "a c"]);
+    assert!(
+        !success,
+        "gg run should report failure when the command's comparison is false"
+    );
+}
+
+#[test]
+fn test_gg_run_json_command_display_escapes_spaces() {
+    // Regression test for Bug #1 display path: the `command` field in JSON
+    // output should be a copy-pasteable shell form that single-quotes args
+    // containing whitespace, not a naive whitespace-joined string.
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "run-json-display-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("file.txt"), "content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "c1"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["run", "--json", "echo", "hello world"]);
+    assert!(
+        success,
+        "gg run --json should succeed: {} / {}",
+        stdout, stderr
+    );
+
+    let parsed: Value = serde_json::from_str(&stdout).expect("JSON parse failed");
+    let cmd = parsed["run"]["results"][0]["commands"][0]["command"]
+        .as_str()
+        .expect("missing command field");
+    assert_eq!(
+        cmd, "echo 'hello world'",
+        "displayed command must single-quote whitespace args"
+    );
+}
+
 #[test]
 fn test_gg_clean_current_branch_with_main_in_linked_worktree() {
     // Regression: gg clean crashed when user is on the stack branch and

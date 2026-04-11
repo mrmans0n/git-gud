@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-04-08
+
+### Fixed
+- `gg clean` now falls back to a detached `HEAD` strategy when branch checkout fails because the branch is checked out in a linked worktree (#255)
+
+### Changed
+- Updated `skim` to v4.5.1 (#253, #254)
+
 ## [0.7.3] - 2026-04-05
 
 ### Fixed
@@ -326,7 +334,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.7.4...HEAD
+[0.7.4]: https://github.com/mrmans0n/git-gud/compare/v0.7.3...v0.7.4
+[0.7.3]: https://github.com/mrmans0n/git-gud/compare/v0.7.2...v0.7.3
+[0.7.2]: https://github.com/mrmans0n/git-gud/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/mrmans0n/git-gud/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/mrmans0n/git-gud/compare/v0.6.4...v0.7.0
 [0.6.4]: https://github.com/mrmans0n/git-gud/compare/v0.6.3...v0.6.4
@@ -359,6 +370,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.7]: https://github.com/mrmans0n/git-gud/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/mrmans0n/git-gud/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/mrmans0n/git-gud/releases/tag/v0.1.5
-
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.7.3...HEAD
-[0.7.3]: https://github.com/mrmans0n/git-gud/compare/v0.7.2...v0.7.3

@@ -7161,7 +7161,9 @@ fn test_gg_run_readonly_fails_on_dirty_tree() {
     );
     let combined = format!("{}{}", stdout, stderr);
     assert!(
-        combined.contains("modified files") || combined.contains("--amend") || combined.contains("--discard"),
+        combined.contains("modified files")
+            || combined.contains("--amend")
+            || combined.contains("--discard"),
         "Error should mention the file modification and suggest --amend/--discard: {}",
         combined
     );
@@ -7271,4 +7273,86 @@ fn test_gg_run_parallel_json_output() {
     // Results should be in commit position order
     assert_eq!(results[0]["position"], 1);
     assert_eq!(results[1]["position"], 2);
+}
+
+#[test]
+fn test_gg_clean_current_branch_with_main_in_linked_worktree() {
+    // Regression: gg clean crashed when user is on the stack branch and
+    // main is checked out in a linked worktree.
+    // Error was: "cannot set HEAD to reference 'refs/heads/main' as it is
+    // the current HEAD of a linked repository"
+    let (temp_dir, repo_path) = create_test_repo();
+
+    // Set up gg config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create the stack and add a commit on it
+    let stack_name = "broken-windows";
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", stack_name]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("feat.txt"), "feature\n").expect("Failed to write feat.txt");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "feat: add feature"]);
+
+    // Move HEAD back to the stack branch explicitly
+    run_git(&repo_path, &["checkout", "testuser/broken-windows"]);
+
+    // Create a linked worktree that checks out main — this is the trigger for the bug
+    let linked_path = temp_dir.path().join("linked-main");
+    let output = Command::new("git")
+        .args(["worktree", "add", linked_path.to_str().unwrap(), "main"])
+        .current_dir(&repo_path)
+        .output()
+        .expect("Failed to run git worktree add");
+    assert!(
+        output.status.success(),
+        "git worktree add failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Merge the stack onto main so gg clean considers it cleaned
+    run_git(
+        &linked_path,
+        &["merge", "--ff-only", "testuser/broken-windows"],
+    );
+
+    // Now: main worktree is on testuser/broken-windows, linked worktree has main.
+    // gg clean must handle checking out main (the base) gracefully.
+    let (success, stdout, stderr) = run_gg(&repo_path, &["clean", "--json", "--all"]);
+    assert!(
+        success,
+        "gg clean should succeed even when main is in a linked worktree.\nstdout={}\nstderr={}",
+        stdout, stderr
+    );
+
+    // Stack branch must be gone
+    let branch_output = Command::new("git")
+        .args(["branch", "--list", "testuser/broken-windows"])
+        .current_dir(&repo_path)
+        .output()
+        .expect("Failed to list branches");
+    assert!(
+        String::from_utf8_lossy(&branch_output.stdout)
+            .trim()
+            .is_empty(),
+        "Stack branch should have been deleted"
+    );
+
+    // Clean up linked worktree
+    let _ = Command::new("git")
+        .args([
+            "worktree",
+            "remove",
+            "--force",
+            linked_path.to_str().unwrap(),
+        ])
+        .current_dir(&repo_path)
+        .output();
 }

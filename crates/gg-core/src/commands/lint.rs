@@ -44,7 +44,10 @@ pub fn run(until: Option<usize>, json: bool, emit_json_output: bool) -> Result<b
     }
 
     let result = run::execute_raw(RunOptions {
-        commands: lint_commands.clone(),
+        commands: lint_commands
+            .iter()
+            .map(|s| run::RunCommand::Shell(s.clone()))
+            .collect(),
         change_mode: ChangeMode::Amend,
         until,
         stop_on_error: false,

@@ -519,7 +519,7 @@ fn main() {
 
             (
                 gg_core::commands::run::execute(gg_core::commands::run::RunOptions {
-                    commands: vec![command.join(" ")],
+                    commands: vec![gg_core::commands::run::RunCommand::Argv(command)],
                     change_mode,
                     until,
                     stop_on_error: !keep_going,

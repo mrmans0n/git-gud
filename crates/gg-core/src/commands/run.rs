@@ -27,10 +27,63 @@ pub enum ChangeMode {
     Discard,
 }
 
+/// One command to execute on a commit.
+///
+/// Distinguishes pre-parsed argv (from the CLI, where clap has already done
+/// word-splitting) from raw shell strings (from config, where users may rely
+/// on shell metacharacters like `&&`, `|`, redirects). Keeping them distinct
+/// at the type level prevents `gg run git commit -m "hello world"` from being
+/// joined-and-resplit on whitespace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunCommand {
+    /// Pre-parsed argv. Executed directly without any shell involvement.
+    Argv(Vec<String>),
+    /// Shell command string. Executed via `sh -c` if it contains shell
+    /// metacharacters, otherwise split on whitespace and exec'd directly.
+    Shell(String),
+}
+
+impl RunCommand {
+    /// Human-readable display form. For `Shell`, returns the string verbatim.
+    /// For `Argv`, shell-escapes each argument so the result is safe to copy
+    /// into a terminal. This is the string that ends up in
+    /// `RunCommandResult.command` and in non-JSON output.
+    pub fn display(&self) -> String {
+        match self {
+            RunCommand::Shell(s) => s.clone(),
+            RunCommand::Argv(v) => display_argv(v),
+        }
+    }
+}
+
+/// Render an argv as a single copy-pasteable shell command string.
+/// Arguments containing whitespace or shell-special chars get single-quoted;
+/// embedded single quotes are escaped as `'\''`. Plain arguments pass through.
+///
+/// This is for **display only**. Do not round-trip it back into execution —
+/// use the original `RunCommand::Argv` variant for that.
+fn display_argv(argv: &[String]) -> String {
+    argv.iter()
+        .map(|arg| {
+            if arg.is_empty() {
+                "''".to_string()
+            } else if arg
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_./=:".contains(c))
+            {
+                arg.clone()
+            } else {
+                format!("'{}'", arg.replace('\'', "'\\''"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Options for `run::execute()`.
 pub struct RunOptions {
     /// Commands to execute on each commit.
-    pub commands: Vec<String>,
+    pub commands: Vec<RunCommand>,
     /// How to handle file modifications.
     pub change_mode: ChangeMode,
     /// Stop at this commit position (1-indexed). None = current position or full stack.
@@ -226,8 +279,9 @@ fn run_on_commits(
         let mut command_results = Vec::with_capacity(options.commands.len());
 
         for cmd in &options.commands {
+            let cmd_display = cmd.display();
             if !options.json {
-                print!("  Running: {} ... ", style(cmd).dim());
+                print!("  Running: {} ... ", style(&cmd_display).dim());
             }
 
             let output = match execute_command(cmd, repo_root, repo) {
@@ -240,10 +294,10 @@ fn run_on_commits(
                         format!(
                             "Command '{}' not found. Make sure it's installed and in your PATH.\n\
                              Note: Shell aliases don't work here. Use the full command (e.g., './gradlew' instead of 'gw').",
-                            cmd
+                            cmd_display
                         )
                     } else {
-                        format!("Failed to run '{}': {}", cmd, e)
+                        format!("Failed to run '{}': {}", cmd_display, e)
                     };
                     return Err(GgError::Other(error_msg));
                 }
@@ -291,7 +345,7 @@ fn run_on_commits(
             };
 
             command_results.push(RunCommandResult {
-                command: cmd.clone(),
+                command: cmd_display.clone(),
                 passed,
                 output: combined_output,
             });
@@ -570,52 +624,78 @@ impl Drop for WorktreeGuard {
 }
 
 /// Pre-resolve commands that reference `.git/` paths to the repo's commondir.
-fn pre_resolve_commands(commands: &[String], repo: &git2::Repository) -> Vec<String> {
+/// Both `Argv(v)` and `Shell(s)` variants get their first program token
+/// rewritten if it starts with `.git/` or `./.git/`.
+fn pre_resolve_commands(commands: &[RunCommand], repo: &git2::Repository) -> Vec<RunCommand> {
     commands
         .iter()
-        .map(|cmd| {
-            let parts: Vec<&str> = cmd.split_whitespace().collect();
-            if parts.is_empty() {
-                return cmd.clone();
-            }
-            match resolve_git_path(parts[0], repo) {
-                Some(resolved) => {
-                    let mut new_cmd = resolved.to_string_lossy().to_string();
-                    for part in &parts[1..] {
-                        new_cmd.push(' ');
-                        new_cmd.push_str(part);
-                    }
-                    new_cmd
+        .map(|cmd| match cmd {
+            RunCommand::Argv(v) => {
+                if v.is_empty() {
+                    return cmd.clone();
                 }
-                None => cmd.clone(),
+                match resolve_git_path(&v[0], repo) {
+                    Some(resolved) => {
+                        let mut new_v = Vec::with_capacity(v.len());
+                        new_v.push(resolved.to_string_lossy().into_owned());
+                        new_v.extend(v.iter().skip(1).cloned());
+                        RunCommand::Argv(new_v)
+                    }
+                    None => cmd.clone(),
+                }
+            }
+            RunCommand::Shell(s) => {
+                let parts: Vec<&str> = s.split_whitespace().collect();
+                if parts.is_empty() {
+                    return cmd.clone();
+                }
+                match resolve_git_path(parts[0], repo) {
+                    Some(resolved) => {
+                        let mut new_s = resolved.to_string_lossy().into_owned();
+                        for part in &parts[1..] {
+                            new_s.push(' ');
+                            new_s.push_str(part);
+                        }
+                        RunCommand::Shell(new_s)
+                    }
+                    None => cmd.clone(),
+                }
             }
         })
         .collect()
 }
 
 /// Execute a command in a specific directory, without repo-aware path resolution.
-/// Used by parallel execution where commands run in isolated worktrees.
-fn execute_command_in_dir(cmd: &str, dir: &Path) -> std::io::Result<Output> {
-    if cmd.contains("&&")
-        || cmd.contains("||")
-        || cmd.contains('|')
-        || cmd.contains('>')
-        || cmd.contains('<')
-        || cmd.contains(';')
-    {
-        Command::new("sh")
-            .args(["-c", cmd])
-            .current_dir(dir)
-            .output()
-    } else {
-        let parts: Vec<&str> = cmd.split_whitespace().collect();
-        if parts.is_empty() {
-            return Command::new("true").output();
+/// Used by parallel execution where commands run in isolated worktrees and any
+/// `.git/...` path has already been resolved by `pre_resolve_commands`.
+fn execute_command_in_dir(cmd: &RunCommand, dir: &Path) -> std::io::Result<Output> {
+    match cmd {
+        RunCommand::Shell(s) => {
+            if s.contains("&&")
+                || s.contains("||")
+                || s.contains('|')
+                || s.contains('>')
+                || s.contains('<')
+                || s.contains(';')
+            {
+                Command::new("sh").args(["-c", s]).current_dir(dir).output()
+            } else {
+                let parts: Vec<&str> = s.split_whitespace().collect();
+                if parts.is_empty() {
+                    return Command::new("true").output();
+                }
+                Command::new(parts[0])
+                    .args(&parts[1..])
+                    .current_dir(dir)
+                    .output()
+            }
         }
-        Command::new(parts[0])
-            .args(&parts[1..])
-            .current_dir(dir)
-            .output()
+        RunCommand::Argv(v) => {
+            if v.is_empty() {
+                return Command::new("true").output();
+            }
+            Command::new(&v[0]).args(&v[1..]).current_dir(dir).output()
+        }
     }
 }
 
@@ -631,8 +711,8 @@ fn execute_command_in_dir(cmd: &str, dir: &Path) -> std::io::Result<Output> {
 /// if the worktree is dirty, the commit is marked failed with an error message
 /// matching the sequential path's behavior.
 fn run_commands_in_worktree(
-    commands: &[String],
-    original_commands: &[String],
+    commands: &[RunCommand],
+    original_commands: &[RunCommand],
     wt_path: &Path,
     entry: &StackEntry,
     read_only: bool,
@@ -676,7 +756,7 @@ fn run_commands_in_worktree(
         };
 
         command_results.push(RunCommandResult {
-            command: orig.clone(),
+            command: orig.display(),
             passed,
             output: combined_output,
         });
@@ -740,7 +820,7 @@ fn run_on_commits_parallel(
     let entries = &stack.entries[..end_pos];
 
     let resolved_commands = pre_resolve_commands(&options.commands, repo);
-    let original_commands: &[String] = &options.commands;
+    let original_commands: &[RunCommand] = &options.commands;
     // Parallelism is only valid for ReadOnly; we enforce the read-only contract
     // (post-command dirty check) inside each worker just like the sequential path.
     let is_read_only = options.change_mode == ChangeMode::ReadOnly;
@@ -784,7 +864,7 @@ fn run_on_commits_parallel(
     // original_commands is threaded through so the resulting RunCommandResult.command
     // reflects the user's input (e.g. `.git/gg/lint.sh`), not the pre-resolved
     // absolute path used for execution inside the detached worktree.
-    let work_items: Vec<(usize, &StackEntry, &Path, &[String])> = entries
+    let work_items: Vec<(usize, &StackEntry, &Path, &[RunCommand])> = entries
         .iter()
         .zip(worktree_paths.iter())
         .enumerate()
@@ -937,39 +1017,64 @@ fn effective_jobs(jobs: usize) -> usize {
     }
 }
 
-/// Execute a command string, using `sh -c` if it contains shell metacharacters.
+/// Execute a command on the given repo root.
+///
+/// - `RunCommand::Shell(s)`: uses `sh -c` when `s` contains shell metacharacters,
+///   otherwise splits on whitespace and execs directly. `.git/...` paths get
+///   rewritten to the real commondir for linked-worktree support.
+/// - `RunCommand::Argv(v)`: execs `v[0]` directly with `v[1..]` as arguments,
+///   preserving whitespace and quoting inside each element. `.git/...` on
+///   `v[0]` is rewritten the same way.
 fn execute_command(
-    cmd: &str,
+    cmd: &RunCommand,
     repo_root: &Path,
     repo: &git2::Repository,
 ) -> std::io::Result<Output> {
-    if cmd.contains("&&")
-        || cmd.contains("||")
-        || cmd.contains('|')
-        || cmd.contains('>')
-        || cmd.contains('<')
-        || cmd.contains(';')
-    {
-        Command::new("sh")
-            .args(["-c", cmd])
-            .current_dir(repo_root)
-            .output()
-    } else {
-        let parts: Vec<&str> = cmd.split_whitespace().collect();
-        if parts.is_empty() {
-            return Command::new("true").output();
+    match cmd {
+        RunCommand::Shell(s) => {
+            if s.contains("&&")
+                || s.contains("||")
+                || s.contains('|')
+                || s.contains('>')
+                || s.contains('<')
+                || s.contains(';')
+            {
+                Command::new("sh")
+                    .args(["-c", s])
+                    .current_dir(repo_root)
+                    .output()
+            } else {
+                let parts: Vec<&str> = s.split_whitespace().collect();
+                if parts.is_empty() {
+                    return Command::new("true").output();
+                }
+
+                let resolved_cmd = resolve_git_path(parts[0], repo);
+                let cmd_str = resolved_cmd
+                    .as_ref()
+                    .map(|p| p.to_string_lossy())
+                    .unwrap_or_else(|| parts[0].into());
+
+                Command::new(cmd_str.as_ref())
+                    .args(&parts[1..])
+                    .current_dir(repo_root)
+                    .output()
+            }
         }
-
-        let resolved_cmd = resolve_git_path(parts[0], repo);
-        let cmd_str = resolved_cmd
-            .as_ref()
-            .map(|p| p.to_string_lossy())
-            .unwrap_or_else(|| parts[0].into());
-
-        Command::new(cmd_str.as_ref())
-            .args(&parts[1..])
-            .current_dir(repo_root)
-            .output()
+        RunCommand::Argv(v) => {
+            if v.is_empty() {
+                return Command::new("true").output();
+            }
+            let resolved = resolve_git_path(&v[0], repo);
+            let program = resolved
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| v[0].clone());
+            Command::new(program)
+                .args(&v[1..])
+                .current_dir(repo_root)
+                .output()
+        }
     }
 }
 
@@ -1127,9 +1232,10 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_command_in_dir_simple() {
+    fn test_execute_command_in_dir_simple_shell() {
         let dir = tempfile::tempdir().unwrap();
-        let output = execute_command_in_dir("echo hello", dir.path()).unwrap();
+        let cmd = RunCommand::Shell("echo hello".to_string());
+        let output = execute_command_in_dir(&cmd, dir.path()).unwrap();
         assert!(output.status.success());
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "hello");
     }
@@ -1137,10 +1243,59 @@ mod tests {
     #[test]
     fn test_execute_command_in_dir_shell_metacharacters() {
         let dir = tempfile::tempdir().unwrap();
-        let output = execute_command_in_dir("echo a && echo b", dir.path()).unwrap();
+        let cmd = RunCommand::Shell("echo a && echo b".to_string());
+        let output = execute_command_in_dir(&cmd, dir.path()).unwrap();
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("a"));
         assert!(stdout.contains("b"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_execute_command_in_dir_argv_preserves_quoted_args() {
+        // Regression for Bug #1: argv variant must not split on whitespace.
+        // `test "a b" = "a b"` exits 0 when args are preserved, 2 (usage
+        // error) otherwise. We pick whichever of `test` lives on this OS.
+        let test_bin = if std::path::Path::new("/usr/bin/test").exists() {
+            "/usr/bin/test"
+        } else {
+            "/bin/test"
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let cmd = RunCommand::Argv(vec![
+            test_bin.to_string(),
+            "a b".to_string(),
+            "=".to_string(),
+            "a b".to_string(),
+        ]);
+        let output = execute_command_in_dir(&cmd, dir.path()).unwrap();
+        assert!(
+            output.status.success(),
+            "{} should treat 'a b' as one argument",
+            test_bin
+        );
+    }
+
+    #[test]
+    fn test_display_argv_single_quotes_whitespace() {
+        let argv = vec!["echo".to_string(), "hello world".to_string()];
+        assert_eq!(display_argv(&argv), "echo 'hello world'");
+    }
+
+    #[test]
+    fn test_display_argv_passes_plain_args_through() {
+        let argv = vec![
+            "git".to_string(),
+            "commit".to_string(),
+            "--no-edit".to_string(),
+        ];
+        assert_eq!(display_argv(&argv), "git commit --no-edit");
+    }
+
+    #[test]
+    fn test_display_argv_escapes_embedded_single_quote() {
+        let argv = vec!["echo".to_string(), "it's".to_string()];
+        assert_eq!(display_argv(&argv), r#"echo 'it'\''s'"#);
     }
 }

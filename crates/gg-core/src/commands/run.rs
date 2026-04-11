@@ -172,7 +172,12 @@ pub fn execute_raw(options: RunOptions) -> Result<RunResult> {
     let result = run_on_commits(&repo, stack, &options, end_pos);
 
     if result.is_err() && !git::is_rebase_in_progress(&repo) {
-        restore_original_position(&repo, original_branch.as_deref(), original_head, options.json);
+        restore_original_position(
+            &repo,
+            original_branch.as_deref(),
+            original_head,
+            options.json,
+        );
     }
 
     result
@@ -556,12 +561,7 @@ impl Drop for WorktreeGuard {
     fn drop(&mut self) {
         for path in &self.paths {
             let _ = Command::new("git")
-                .args([
-                    "worktree",
-                    "remove",
-                    "--force",
-                    &path.to_string_lossy(),
-                ])
+                .args(["worktree", "remove", "--force", &path.to_string_lossy()])
                 .current_dir(&self.repo_root)
                 .output();
         }
@@ -620,15 +620,27 @@ fn execute_command_in_dir(cmd: &str, dir: &Path) -> std::io::Result<Output> {
 }
 
 /// Run all commands on a single commit in its isolated worktree directory.
+///
+/// `commands` is the pre-resolved form used for execution (e.g. `.git/gg/lint.sh`
+/// rewritten to an absolute path so it resolves inside the detached worktree).
+/// `original_commands` is the user's input as typed on the CLI / from config,
+/// and is the string that gets reported in the JSON output so that `--jobs 1`
+/// and `--jobs N` produce byte-for-byte identical `command` fields.
+///
+/// When `read_only` is true, we enforce the read-only contract after running:
+/// if the worktree is dirty, the commit is marked failed with an error message
+/// matching the sequential path's behavior.
 fn run_commands_in_worktree(
     commands: &[String],
+    original_commands: &[String],
     wt_path: &Path,
     entry: &StackEntry,
+    read_only: bool,
 ) -> RunCommitResult {
     let mut commit_passed = true;
     let mut command_results = Vec::with_capacity(commands.len());
 
-    for cmd in commands {
+    for (cmd, orig) in commands.iter().zip(original_commands.iter()) {
         let output = execute_command_in_dir(cmd, wt_path);
 
         let passed = output.as_ref().map(|o| o.status.success()).unwrap_or(false);
@@ -664,10 +676,28 @@ fn run_commands_in_worktree(
         };
 
         command_results.push(RunCommandResult {
-            command: cmd.clone(),
+            command: orig.clone(),
             passed,
             output: combined_output,
         });
+    }
+
+    // Enforce read-only contract in parallel mode: if any command passed exit-code
+    // but dirtied the worktree, mark this commit as failed so we match the
+    // sequential path's behavior (which errors out on dirty trees in ReadOnly mode).
+    if read_only && commit_passed && is_worktree_dirty(wt_path) {
+        commit_passed = false;
+        let msg = format!(
+            "Command modified files on commit [{}] {}. Use --amend to fold changes, or --discard to ignore them.",
+            entry.position, entry.short_sha
+        );
+        if let Some(last) = command_results.last_mut() {
+            last.passed = false;
+            last.output = Some(match last.output.take() {
+                Some(existing) => format!("{existing}\n{msg}"),
+                None => msg,
+            });
+        }
     }
 
     RunCommitResult {
@@ -676,6 +706,22 @@ fn run_commands_in_worktree(
         title: entry.title.clone(),
         passed: commit_passed,
         commands: command_results,
+    }
+}
+
+/// Check whether a worktree has any uncommitted/untracked changes via
+/// `git status --porcelain`. Used to enforce the read-only contract in
+/// parallel mode after commands finish running.
+fn is_worktree_dirty(wt_path: &Path) -> bool {
+    match Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(wt_path)
+        .output()
+    {
+        Ok(out) if out.status.success() => !out.stdout.is_empty(),
+        // If the status check itself failed, err on the safe side and treat as dirty
+        // so the caller surfaces a failure rather than falsely reporting success.
+        _ => true,
     }
 }
 
@@ -694,6 +740,10 @@ fn run_on_commits_parallel(
     let entries = &stack.entries[..end_pos];
 
     let resolved_commands = pre_resolve_commands(&options.commands, repo);
+    let original_commands: &[String] = &options.commands;
+    // Parallelism is only valid for ReadOnly; we enforce the read-only contract
+    // (post-command dirty check) inside each worker just like the sequential path.
+    let is_read_only = options.change_mode == ChangeMode::ReadOnly;
 
     // Create worktrees (sequential — git requires this)
     let mut guard = WorktreeGuard::new(repo_root)?;
@@ -730,12 +780,15 @@ fn run_on_commits_parallel(
         None
     };
 
-    // Build work items: (index, entry, worktree_path)
-    let work_items: Vec<(usize, &StackEntry, &Path)> = entries
+    // Build work items: (index, entry, worktree_path, original_commands)
+    // original_commands is threaded through so the resulting RunCommandResult.command
+    // reflects the user's input (e.g. `.git/gg/lint.sh`), not the pre-resolved
+    // absolute path used for execution inside the detached worktree.
+    let work_items: Vec<(usize, &StackEntry, &Path, &[String])> = entries
         .iter()
         .zip(worktree_paths.iter())
         .enumerate()
-        .map(|(i, (entry, path))| (i, entry, path.as_path()))
+        .map(|(i, (entry, path))| (i, entry, path.as_path(), original_commands))
         .collect();
 
     // Run in parallel with bounded concurrency
@@ -748,12 +801,28 @@ fn run_on_commits_parallel(
         for _ in 0..num_workers {
             s.spawn(|| {
                 loop {
-                    let item = { work.lock().unwrap().next() };
+                    // Use into_inner on PoisonError so a sibling panic doesn't
+                    // cascade into a double-panic abort (which would leak worktrees
+                    // by skipping WorktreeGuard::drop).
+                    let item = {
+                        let mut guard = work
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        guard.next()
+                    };
                     match item {
-                        Some((idx, entry, wt_path)) => {
-                            let result =
-                                run_commands_in_worktree(&resolved_commands, wt_path, entry);
-                            collected.lock().unwrap().push((idx, result));
+                        Some((idx, entry, wt_path, orig_cmds)) => {
+                            let result = run_commands_in_worktree(
+                                &resolved_commands,
+                                orig_cmds,
+                                wt_path,
+                                entry,
+                                is_read_only,
+                            );
+                            collected
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .push((idx, result));
                             if let Some(ref pb) = pb {
                                 pb.inc(1);
                             }
@@ -766,7 +835,9 @@ fn run_on_commits_parallel(
         // Threads join here when scope exits
     });
 
-    let results = collected.into_inner().unwrap();
+    let results = collected
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     if let Some(ref pb) = pb {
         pb.finish_and_clear();
@@ -799,7 +870,8 @@ fn run_on_commits_parallel(
             };
             println!(
                 "{} [{}] {} {}",
-                status_icon, result.position,
+                status_icon,
+                result.position,
                 style(&result.sha).yellow(),
                 result.title,
             );
@@ -866,7 +938,11 @@ fn effective_jobs(jobs: usize) -> usize {
 }
 
 /// Execute a command string, using `sh -c` if it contains shell metacharacters.
-fn execute_command(cmd: &str, repo_root: &Path, repo: &git2::Repository) -> std::io::Result<Output> {
+fn execute_command(
+    cmd: &str,
+    repo_root: &Path,
+    repo: &git2::Repository,
+) -> std::io::Result<Output> {
     if cmd.contains("&&")
         || cmd.contains("||")
         || cmd.contains('|')
@@ -1055,10 +1131,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let output = execute_command_in_dir("echo hello", dir.path()).unwrap();
         assert!(output.status.success());
-        assert_eq!(
-            String::from_utf8_lossy(&output.stdout).trim(),
-            "hello"
-        );
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "hello");
     }
 
     #[test]

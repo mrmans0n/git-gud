@@ -413,8 +413,16 @@ fn run_on_commits(
                         println!("  {} Changes squashed", style("OK").green());
                     }
 
-                    // Rebase remaining commits onto the amended commit
+                    // Maintain the invariant "branch tip is always correct
+                    // after any amend" locally, so the restoration block
+                    // doesn't need a global move_branch_to_head call that
+                    // would be unsafe after an early break on `stop_on_error`
+                    // (see Bug #4).
                     if i + 1 < end_pos {
+                        // Commits remain in the run range above this one:
+                        // rebase them onto the amended commit. The rebase
+                        // leaves the branch at the new replayed tip
+                        // automatically.
                         let new_commit_oid = new_head;
                         let old_tip_oid = entries[end_pos - 1].oid;
 
@@ -446,6 +454,23 @@ fn run_on_commits(
                         }
 
                         entries = refresh_stack_entries(repo, &base_branch, None)?;
+                    } else {
+                        // Last commit in the run range was amended — no
+                        // rebase needed, but the branch still points at the
+                        // pre-amend tip while HEAD is detached at the new
+                        // commit. Explicitly forward the branch so the
+                        // invariant holds without relying on a global
+                        // move_branch_to_head step (which, on an early break
+                        // from stop_on_error, would point the branch at the
+                        // failing commit and silently discard commits above).
+                        let target_branch =
+                            original_branch.as_deref().unwrap_or(stack_branch.as_str());
+                        git::run_git_command(&[
+                            "branch",
+                            "-f",
+                            target_branch,
+                            &new_head.to_string(),
+                        ])?;
                     }
                 }
                 ChangeMode::Discard => {
@@ -524,32 +549,32 @@ fn run_on_commits(
         i += 1;
     }
 
-    // Return to original position
+    // Return to original position.
+    //
+    // Post-condition maintained by the amend arm above: if any commit was
+    // amended, the branch tip already points at the correct new commit.
+    // We must NOT force-move it here based on HEAD — on a `stop_on_error`
+    // break, HEAD is detached at the failing commit, which would silently
+    // discard any commits above it (Bug #4).
     if !options.json {
         println!();
     }
     if let Some(branch) = original_branch {
-        if had_changes {
-            git::move_branch_to_head(repo, &branch)?;
-            git::checkout_branch(repo, &branch)?;
-
-            if !options.json {
-                if end_pos < stack.len() {
-                    println!(
-                        "{}",
-                        style("Changes were made. Run `gg rebase` to update remaining commits, then `gg sync`.")
-                            .dim()
-                    );
-                } else {
-                    println!(
-                        "{}",
-                        style("Changes were made. Review with `gg ls` and sync with `gg sync`.")
-                            .dim()
-                    );
-                }
+        git::checkout_branch(repo, &branch)?;
+        if had_changes && !options.json {
+            if end_pos < stack.len() {
+                println!(
+                    "{}",
+                    style("Changes were made. Run `gg rebase` to update remaining commits, then `gg sync`.")
+                        .dim()
+                );
+            } else {
+                println!(
+                    "{}",
+                    style("Changes were made. Review with `gg ls` and sync with `gg sync`.")
+                        .dim()
+                );
             }
-        } else {
-            git::checkout_branch(repo, &branch)?;
         }
     } else if !had_changes {
         let commit = repo.find_commit(original_head)?;

@@ -7478,6 +7478,168 @@ fn test_gg_run_amend_mid_stack_reports_correct_final_sha() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn test_gg_run_amend_stop_on_error_preserves_commits_above_failure() {
+    // Regression test for Bug #4 (data loss): when `gg run --amend` stops
+    // on failure mid-stack, the restoration code must NOT force-reset the
+    // branch to the currently-detached HEAD. Commits above the failure
+    // point must remain reachable.
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Seed a tracked `marker.txt` in the base so the script's append shows
+    // up as a dirty tracked file (untracked files wouldn't trigger gg's
+    // dirty check — see is_working_directory_clean).
+    fs::write(repo_path.join("marker.txt"), "").expect("seed marker.txt");
+
+    // Script: succeed + modify tree on commit 1 and tip, fail on middle.
+    // Detects which commit we're on via the presence of f1/f2/f3 files.
+    fs::write(
+        repo_path.join("cond.sh"),
+        "#!/bin/sh\n\
+         if [ -f f2.txt ] && [ ! -f f3.txt ]; then\n\
+           # Commit 2 (middle): fail loudly\n\
+           exit 17\n\
+         fi\n\
+         echo marker >> marker.txt\n\
+         exit 0\n",
+    )
+    .expect("write script");
+    let mut perms = fs::metadata(repo_path.join("cond.sh"))
+        .unwrap()
+        .permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(repo_path.join("cond.sh"), perms).unwrap();
+    run_git(&repo_path, &["add", "marker.txt", "cond.sh"]);
+    run_git(&repo_path, &["commit", "-m", "add script and marker baseline"]);
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "run-data-loss-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    // Build 3-commit stack: A, B, C
+    for i in 1..=3 {
+        fs::write(repo_path.join(format!("f{}.txt", i)), format!("v{}", i))
+            .expect("write");
+        run_git(&repo_path, &["add", "."]);
+        run_git(&repo_path, &["commit", "-m", &format!("Commit {}", i)]);
+    }
+
+    // Count of commits on the branch BEFORE the run.
+    let (_, log_before) = run_git(&repo_path, &["rev-list", "--count", "HEAD"]);
+    let count_before: usize = log_before.trim().parse().expect("parse count");
+
+    // Run with default stop_on_error. Expected: succeeds on 1, fails on 2.
+    // Before the fix: branch gets force-reset to commit 2, commit 3 vanishes.
+    // After the fix: branch retains all commits.
+    let (success, _, _) = run_gg(&repo_path, &["run", "--amend", "./cond.sh"]);
+    assert!(
+        !success,
+        "gg run should report failure because commit 2 exits non-zero"
+    );
+
+    // Count commits on the branch AFTER the run.
+    let (_, log_after) = run_git(&repo_path, &["rev-list", "--count", "HEAD"]);
+    let count_after: usize = log_after.trim().parse().expect("parse count");
+    assert_eq!(
+        count_after, count_before,
+        "Bug #4: commits above the failing commit were silently discarded. \
+         expected {} commits, got {}",
+        count_before, count_after
+    );
+
+    // And: commit 3 must still exist with its original content reachable.
+    let (_, show_output) = run_git(&repo_path, &["show", "HEAD", "--name-only"]);
+    assert!(
+        show_output.contains("f3.txt"),
+        "commit 3's f3.txt should still be reachable at HEAD after failed run, show: {}",
+        show_output
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_gg_run_amend_last_commit_sets_branch_tip_correctly() {
+    // Regression test for Task 4 invariant: when --amend runs on the last
+    // commit (no rebase needed), the branch must still be forwarded to the
+    // new amended OID. Previously this happened by accident via the global
+    // move_branch_to_head call which this task deletes.
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Seed a tracked `marker.txt` in the base so the script has something
+    // to dirty (untracked files are ignored by gg's dirty check).
+    fs::write(repo_path.join("marker.txt"), "").expect("seed marker.txt");
+    fs::write(
+        repo_path.join("touch_marker.sh"),
+        "#!/bin/sh\necho marker >> marker.txt\n",
+    )
+    .expect("write script");
+    let mut perms = fs::metadata(repo_path.join("touch_marker.sh"))
+        .unwrap()
+        .permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(repo_path.join("touch_marker.sh"), perms).unwrap();
+    run_git(&repo_path, &["add", "marker.txt", "touch_marker.sh"]);
+    run_git(&repo_path, &["commit", "-m", "seed marker baseline"]);
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "run-amend-last-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("f1.txt"), "v1").expect("write");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "C1"]);
+
+    // Record tip SHA before the amend
+    let (_, head_before) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    let head_before = head_before.trim().to_string();
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["run", "--amend", "./touch_marker.sh"]);
+    assert!(
+        success,
+        "gg run --amend on last commit should succeed: {} / {}",
+        stdout, stderr
+    );
+
+    // Tip SHA must have changed (amended)
+    let (_, head_after) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    let head_after = head_after.trim().to_string();
+    assert_ne!(
+        head_before, head_after,
+        "HEAD SHA should have changed after amend"
+    );
+
+    // HEAD must be on a branch, not detached
+    let (_, symref) = run_git(&repo_path, &["symbolic-ref", "HEAD"]);
+    assert!(
+        symref.trim().starts_with("refs/heads/"),
+        "HEAD should be a branch after gg run, got: {}",
+        symref
+    );
+
+    // marker.txt must contain the appended marker (amend folded it in)
+    let (_, marker_content) = run_git(&repo_path, &["show", "HEAD:marker.txt"]);
+    assert!(
+        marker_content.contains("marker"),
+        "amend should have folded the marker append into the commit, marker.txt={:?}",
+        marker_content
+    );
+}
+
 #[test]
 fn test_gg_clean_current_branch_with_main_in_linked_worktree() {
     // Regression: gg clean crashed when user is on the stack branch and

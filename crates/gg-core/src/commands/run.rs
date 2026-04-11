@@ -571,8 +571,7 @@ fn run_on_commits(
             } else {
                 println!(
                     "{}",
-                    style("Changes were made. Review with `gg ls` and sync with `gg sync`.")
-                        .dim()
+                    style("Changes were made. Review with `gg ls` and sync with `gg sync`.").dim()
                 );
             }
         }

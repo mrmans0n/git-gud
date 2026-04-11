@@ -7413,15 +7413,17 @@ fn test_gg_run_amend_mid_stack_reports_correct_final_sha() {
     perms.set_mode(0o755);
     fs::set_permissions(repo_path.join("touch_one.sh"), perms).unwrap();
     run_git(&repo_path, &["add", "touched.txt", "touch_one.sh"]);
-    run_git(&repo_path, &["commit", "-m", "add script and touched baseline"]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "add script and touched baseline"],
+    );
 
     let (success, _, stderr) = run_gg(&repo_path, &["co", "run-amend-midstack"]);
     assert!(success, "Failed to create stack: {}", stderr);
 
     // Stack: 3 commits (Commit 1, 2, 3) on top of the base.
     for i in 1..=3 {
-        fs::write(repo_path.join(format!("f{}.txt", i)), format!("v{}", i))
-            .expect("write");
+        fs::write(repo_path.join(format!("f{}.txt", i)), format!("v{}", i)).expect("write");
         run_git(&repo_path, &["add", "."]);
         run_git(&repo_path, &["commit", "-m", &format!("Commit {}", i)]);
     }
@@ -7519,15 +7521,17 @@ fn test_gg_run_amend_stop_on_error_preserves_commits_above_failure() {
     perms.set_mode(0o755);
     fs::set_permissions(repo_path.join("cond.sh"), perms).unwrap();
     run_git(&repo_path, &["add", "marker.txt", "cond.sh"]);
-    run_git(&repo_path, &["commit", "-m", "add script and marker baseline"]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "add script and marker baseline"],
+    );
 
     let (success, _, stderr) = run_gg(&repo_path, &["co", "run-data-loss-test"]);
     assert!(success, "Failed to create stack: {}", stderr);
 
     // Build 3-commit stack: A, B, C
     for i in 1..=3 {
-        fs::write(repo_path.join(format!("f{}.txt", i)), format!("v{}", i))
-            .expect("write");
+        fs::write(repo_path.join(format!("f{}.txt", i)), format!("v{}", i)).expect("write");
         run_git(&repo_path, &["add", "."]);
         run_git(&repo_path, &["commit", "-m", &format!("Commit {}", i)]);
     }

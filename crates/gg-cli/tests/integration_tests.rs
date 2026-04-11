@@ -7640,6 +7640,96 @@ fn test_gg_run_amend_last_commit_sets_branch_tip_correctly() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn test_gg_run_parallel_enforces_read_only_contract() {
+    // Regression test for Bug #2: the parallel path used to mark commits as
+    // passed based purely on command exit status, ignoring whether the
+    // command dirtied the worktree. The sequential path rejects dirty trees
+    // in ReadOnly mode; the parallel path must now do the same so `-j N`
+    // and `-j 1` are equivalent in terms of what they accept.
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Baseline a TRACKED poison.txt file in the base commit. Both parallel
+    // (git status --porcelain) and sequential (is_working_directory_clean,
+    // which ignores untracked) code paths must agree that modifying this
+    // tracked file counts as "dirty".
+    fs::write(repo_path.join("poison.txt"), "").expect("seed poison.txt");
+    fs::write(
+        repo_path.join("dirty.sh"),
+        "#!/bin/sh\n# Command exits 0 but dirties the worktree by modifying a tracked file\n\
+         echo poison >> poison.txt\n\
+         exit 0\n",
+    )
+    .expect("write dirty.sh");
+    let mut perms = fs::metadata(repo_path.join("dirty.sh"))
+        .unwrap()
+        .permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(repo_path.join("dirty.sh"), perms).unwrap();
+    run_git(&repo_path, &["add", "poison.txt", "dirty.sh"]);
+    run_git(&repo_path, &["commit", "-m", "seed poison baseline"]);
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "run-parallel-dirty-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    // Two-commit stack so the parallel path actually has work to parallelize.
+    fs::write(repo_path.join("f1.txt"), "v1").expect("write f1");
+    run_git(&repo_path, &["add", "f1.txt"]);
+    run_git(&repo_path, &["commit", "-m", "Commit 1"]);
+
+    fs::write(repo_path.join("f2.txt"), "v2").expect("write f2");
+    run_git(&repo_path, &["add", "f2.txt"]);
+    run_git(&repo_path, &["commit", "-m", "Commit 2"]);
+
+    // Parallel run in ReadOnly mode must FAIL because dirty.sh dirties the
+    // worktree even though it exits 0.
+    let (success_parallel, stdout_p, stderr_p) =
+        run_gg(&repo_path, &["run", "-j", "2", "--json", "./dirty.sh"]);
+    assert!(
+        !success_parallel,
+        "gg run -j 2 should fail when a command dirties the worktree: {} / {}",
+        stdout_p, stderr_p
+    );
+
+    // Parse only the first JSON value — gg prints a second error-object
+    // on non-zero exit which would confuse a whole-string parse.
+    let mut stream = serde_json::Deserializer::from_str(&stdout_p).into_iter::<Value>();
+    let parsed: Value = stream
+        .next()
+        .expect("expected at least one json object")
+        .expect("first json object parse");
+    let all_passed = parsed["run"]["all_passed"].as_bool().expect("all_passed");
+    assert!(!all_passed, "all_passed should be false");
+
+    let results = parsed["run"]["results"].as_array().expect("results");
+    assert!(!results.is_empty(), "results should not be empty");
+    for (idx, r) in results.iter().enumerate() {
+        assert_eq!(
+            r["passed"].as_bool(),
+            Some(false),
+            "commit at index {} should be marked failed (dirty worktree)",
+            idx
+        );
+    }
+
+    // Sequential parity check: `-j 1` must produce the same verdict so the
+    // user can't get conflicting behavior by tweaking --jobs.
+    let (success_seq, _, _) = run_gg(&repo_path, &["run", "-j", "1", "./dirty.sh"]);
+    assert!(
+        !success_seq,
+        "sequential gg run must also fail — parallel should match sequential"
+    );
+}
+
 #[test]
 fn test_gg_clean_current_branch_with_main_in_linked_worktree() {
     // Regression: gg clean crashed when user is on the stack branch and

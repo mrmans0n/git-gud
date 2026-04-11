@@ -26,6 +26,7 @@
   - [land](./commands/land.md)
   - [clean](./commands/clean.md)
   - [lint](./commands/lint.md)
+  - [run](./commands/run.md)
   - [setup](./commands/setup.md)
   - [continue / abort](./commands/continue-abort.md)
   - [reconcile](./commands/reconcile.md)

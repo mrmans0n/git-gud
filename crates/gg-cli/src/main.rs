@@ -253,6 +253,38 @@ enum Commands {
         json: bool,
     },
 
+    /// Run a command on each commit in the stack
+    #[command(name = "run")]
+    Run {
+        /// Command to run on each commit (use quotes for commands with args)
+        #[arg(trailing_var_arg = true, required = true)]
+        command: Vec<String>,
+
+        /// Stage and amend file changes into each commit
+        #[arg(long, group = "mode")]
+        amend: bool,
+
+        /// Discard file changes after each commit
+        #[arg(long, group = "mode")]
+        discard: bool,
+
+        /// Continue running on remaining commits after a failure
+        #[arg(long)]
+        keep_going: bool,
+
+        /// Stop at this commit position (default: current)
+        #[arg(short, long)]
+        until: Option<usize>,
+
+        /// Number of parallel jobs (0 = auto, 1 = sequential, default: 1)
+        #[arg(short, long, default_value = "1")]
+        jobs: usize,
+
+        /// Output structured JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Set up git-gud config for this repository
     #[command(name = "setup")]
     Setup {
@@ -468,6 +500,43 @@ fn main() {
             gg_core::commands::lint::run(until, json, json).map(|_| ()),
             json,
         ),
+        Some(Commands::Run {
+            command,
+            amend,
+            discard,
+            keep_going,
+            until,
+            jobs,
+            json,
+        }) => {
+            let change_mode = if amend {
+                gg_core::commands::run::ChangeMode::Amend
+            } else if discard {
+                gg_core::commands::run::ChangeMode::Discard
+            } else {
+                gg_core::commands::run::ChangeMode::ReadOnly
+            };
+
+            match gg_core::commands::run::execute(gg_core::commands::run::RunOptions {
+                commands: vec![gg_core::commands::run::RunCommand::Argv(command)],
+                change_mode,
+                until,
+                stop_on_error: !keep_going,
+                json,
+                emit_json_output: json,
+                header_label: None,
+                jobs,
+            }) {
+                Ok(true) => (Ok(()), json),
+                // `execute` has already emitted the JSON run payload (when
+                // `json` is true) and/or the terminal output (when not).
+                // Exiting directly with code 1 avoids the generic error path
+                // appending a second `{"error":...}` document to stdout,
+                // which would break JSON consumers expecting one object.
+                Ok(false) => exit(1),
+                Err(e) => (Err(e), json),
+            }
+        }
         Some(Commands::Setup { all }) => (gg_core::commands::setup::run(all), false),
         Some(Commands::Absorb {
             dry_run,

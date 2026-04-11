@@ -7368,6 +7368,116 @@ fn test_gg_run_json_command_display_escapes_spaces() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn test_gg_run_amend_mid_stack_reports_correct_final_sha() {
+    // Regression test for Bug #3: after `--amend` on a non-tail commit the
+    // code used to read HEAD (which, post rebase-onto, points at the stack
+    // tip) and reported the tip SHA as the amended commit's final_sha. The
+    // fix captures the amended OID locally before the rebase-onto runs.
+    //
+    // Strategy: run `gg run --amend` across positions 1 and 2. For each
+    // reported sha, resolve its commit subject via `git show`. The
+    // invariant is that position N's reported sha MUST point to a commit
+    // whose subject is "Commit N" — if the bug is present, position 1
+    // reports the post-rebase HEAD (which is the rebased commit 2, subject
+    // "Commit 2") instead of the amended commit 1.
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Seed a TRACKED file `touched.txt` in the base commit. The script
+    // below appends to it — gg's dirty-check only considers tracked file
+    // modifications (untracked files are ignored), so the baseline file
+    // must exist before we create the stack.
+    fs::write(repo_path.join("touched.txt"), "").expect("write touched.txt");
+
+    // Script appends the current commit's subject line to `touched.txt`.
+    // This guarantees each amended commit introduces a *distinct* diff
+    // against its parent, so `git rebase --onto` never drops commits as
+    // "patch already upstream".
+    fs::write(
+        repo_path.join("touch_one.sh"),
+        "#!/bin/sh\ngit log -1 --format=%s >> touched.txt\n",
+    )
+    .expect("write script");
+    let mut perms = fs::metadata(repo_path.join("touch_one.sh"))
+        .unwrap()
+        .permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(repo_path.join("touch_one.sh"), perms).unwrap();
+    run_git(&repo_path, &["add", "touched.txt", "touch_one.sh"]);
+    run_git(&repo_path, &["commit", "-m", "add script and touched baseline"]);
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "run-amend-midstack"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    // Stack: 3 commits (Commit 1, 2, 3) on top of the base.
+    for i in 1..=3 {
+        fs::write(repo_path.join(format!("f{}.txt", i)), format!("v{}", i))
+            .expect("write");
+        run_git(&repo_path, &["add", "."]);
+        run_git(&repo_path, &["commit", "-m", &format!("Commit {}", i)]);
+    }
+
+    // Move to position 2 (the middle commit) so `gg run` only touches
+    // commits at positions 1 and 2, not 3.
+    let (success, _, stderr) = run_gg(&repo_path, &["mv", "2"]);
+    assert!(success, "mv failed: {}", stderr);
+
+    let (success, stdout, stderr) =
+        run_gg(&repo_path, &["run", "--amend", "--json", "./touch_one.sh"]);
+    assert!(
+        success,
+        "gg run --amend should succeed: {} / {}",
+        stdout, stderr
+    );
+
+    let parsed: Value = serde_json::from_str(&stdout).expect("json parse");
+    let results = parsed["run"]["results"].as_array().expect("results array");
+    assert_eq!(results.len(), 2, "should have run on commits 1 and 2");
+
+    let sha0 = results[0]["sha"].as_str().unwrap().to_string();
+    let sha1 = results[1]["sha"].as_str().unwrap().to_string();
+
+    // Resolve each reported sha to its actual commit subject. Orphan
+    // commits are fine — `git show` looks them up in the object store.
+    let (ok0, subject0) = run_git(&repo_path, &["show", "-s", "--format=%s", &sha0]);
+    assert!(ok0, "failed to show sha0={}", sha0);
+    let (ok1, subject1) = run_git(&repo_path, &["show", "-s", "--format=%s", &sha1]);
+    assert!(ok1, "failed to show sha1={}", sha1);
+
+    assert_eq!(
+        subject0.trim(),
+        "Commit 1",
+        "Bug #3: position 1's reported sha ({}) must resolve to the amended \
+         commit 1 but resolved to a commit with subject {:?}. \
+         (Before the fix, the code read HEAD after the rebase-onto which \
+         moved HEAD off commit1'.)",
+        sha0,
+        subject0.trim()
+    );
+    assert_eq!(
+        subject1.trim(),
+        "Commit 2",
+        "Position 2's reported sha ({}) should resolve to 'Commit 2' but \
+         resolved to {:?}",
+        sha1,
+        subject1.trim()
+    );
+
+    assert_ne!(
+        sha0, sha1,
+        "commit 1 and commit 2 must have distinct reported shas"
+    );
+}
+
 #[test]
 fn test_gg_clean_current_branch_with_main_in_linked_worktree() {
     // Regression: gg clean crashed when user is on the stack branch and

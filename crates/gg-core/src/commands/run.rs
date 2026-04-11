@@ -258,6 +258,11 @@ fn run_on_commits(
     while i < end_pos {
         let entry = entries[i].clone();
         let mut had_changes_this_commit = false;
+        // Captured right after `git commit --amend` succeeds so `final_sha`
+        // reports the amended commit's OID rather than whatever HEAD is at
+        // after a subsequent rebase-onto (which moves HEAD to the stack tip).
+        // See Bug #3.
+        let mut amended_oid: Option<Oid> = None;
 
         if !options.json {
             println!();
@@ -396,6 +401,12 @@ fn run_on_commits(
                         )));
                     }
 
+                    // Capture the new OID BEFORE any rebase-onto can move HEAD.
+                    // This is the authoritative final_sha for the current commit
+                    // (Bug #3 fix).
+                    let new_head = repo.head()?.peel_to_commit()?.id();
+                    amended_oid = Some(new_head);
+
                     had_changes = true;
                     had_changes_this_commit = true;
                     if !options.json {
@@ -404,7 +415,7 @@ fn run_on_commits(
 
                     // Rebase remaining commits onto the amended commit
                     if i + 1 < end_pos {
-                        let new_commit_oid = repo.head()?.peel_to_commit()?.id();
+                        let new_commit_oid = new_head;
                         let old_tip_oid = entries[end_pos - 1].oid;
 
                         let new_commit = new_commit_oid.to_string();
@@ -475,8 +486,16 @@ fn run_on_commits(
         }
 
         let final_sha = if had_changes_this_commit {
-            let head = repo.head()?.peel_to_commit()?;
-            git::short_sha(&head)
+            // Use the OID captured right after `git commit --amend` rather
+            // than reading HEAD — after the subsequent rebase-onto, HEAD
+            // points at the rebased tip, not the amended commit. See Bug #3.
+            if let Some(oid) = amended_oid {
+                let commit = repo.find_commit(oid)?;
+                git::short_sha(&commit)
+            } else {
+                let head = repo.head()?.peel_to_commit()?;
+                git::short_sha(&head)
+            }
         } else {
             entry.short_sha.clone()
         };

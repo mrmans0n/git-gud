@@ -6932,3 +6932,343 @@ fn test_drop_last_commit() {
     assert!(stdout.contains("Commit 2"));
     assert!(!stdout.contains("Commit 3"));
 }
+
+// ==========================================================================
+// gg run tests
+// ==========================================================================
+
+#[test]
+fn test_gg_run_readonly_passing() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "run-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("test.txt"), "content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Test commit"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["run", "git", "--version"]);
+    assert!(
+        success,
+        "gg run should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+    assert!(
+        stdout.contains("all passed") || stdout.contains("OK"),
+        "Expected success message in: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_gg_run_readonly_failing() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "run-fail-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("test.txt"), "content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Test commit"]);
+
+    let (success, _stdout, _stderr) = run_gg(&repo_path, &["run", "false"]);
+    assert!(!success, "gg run with 'false' should fail");
+}
+
+#[test]
+fn test_gg_run_json_output() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "run-json-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("test.txt"), "content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Test commit"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["run", "--json", "git", "--version"]);
+    assert!(success, "gg run --json failed: {}", stderr);
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout must be valid JSON");
+    assert_eq!(parsed["version"], 1);
+    assert_eq!(parsed["run"]["all_passed"], true);
+
+    let results = parsed["run"]["results"]
+        .as_array()
+        .expect("run.results must be an array");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["position"], 1);
+    assert_eq!(results[0]["commands"][0]["command"], "git --version");
+    assert_eq!(results[0]["commands"][0]["passed"], true);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_gg_run_amend_mode() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "run-amend-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("test.txt"), "content").expect("Failed to write file");
+    fs::write(
+        repo_path.join("modify.sh"),
+        "#!/bin/sh\necho \"modified\" >> test.txt\n",
+    )
+    .expect("Failed to write script");
+    let mut perms = fs::metadata(repo_path.join("modify.sh"))
+        .unwrap()
+        .permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(repo_path.join("modify.sh"), perms).unwrap();
+
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Test commit"]);
+
+    let original = fs::read_to_string(repo_path.join("test.txt")).unwrap();
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["run", "--amend", "./modify.sh"]);
+    assert!(
+        success,
+        "gg run --amend should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+
+    let modified = fs::read_to_string(repo_path.join("test.txt")).unwrap();
+    assert_ne!(
+        original, modified,
+        "File should have been modified and amended"
+    );
+    assert!(
+        modified.contains("modified"),
+        "File should contain 'modified'"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_gg_run_discard_mode() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "run-discard-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("test.txt"), "content").expect("Failed to write file");
+    fs::write(
+        repo_path.join("modify.sh"),
+        "#!/bin/sh\necho \"modified\" >> test.txt\n",
+    )
+    .expect("Failed to write script");
+    let mut perms = fs::metadata(repo_path.join("modify.sh"))
+        .unwrap()
+        .permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(repo_path.join("modify.sh"), perms).unwrap();
+
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Test commit"]);
+
+    let original = fs::read_to_string(repo_path.join("test.txt")).unwrap();
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["run", "--discard", "./modify.sh"]);
+    assert!(
+        success,
+        "gg run --discard should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+
+    let after = fs::read_to_string(repo_path.join("test.txt")).unwrap();
+    assert_eq!(original, after, "File should be unchanged after --discard");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_gg_run_readonly_fails_on_dirty_tree() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "run-readonly-dirty-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("test.txt"), "content").expect("Failed to write file");
+    fs::write(
+        repo_path.join("modify.sh"),
+        "#!/bin/sh\necho \"modified\" >> test.txt\n",
+    )
+    .expect("Failed to write script");
+    let mut perms = fs::metadata(repo_path.join("modify.sh"))
+        .unwrap()
+        .permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(repo_path.join("modify.sh"), perms).unwrap();
+
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Test commit"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["run", "./modify.sh"]);
+    assert!(
+        !success,
+        "gg run (read-only) should fail when command modifies files"
+    );
+    let combined = format!("{}{}", stdout, stderr);
+    assert!(
+        combined.contains("modified files") || combined.contains("--amend") || combined.contains("--discard"),
+        "Error should mention the file modification and suggest --amend/--discard: {}",
+        combined
+    );
+}
+
+#[test]
+fn test_gg_run_parallel_passing() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "parallel-pass"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("file1.txt"), "content1").expect("write");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "First commit"]);
+
+    fs::write(repo_path.join("file2.txt"), "content2").expect("write");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Second commit"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["run", "-j", "2", "git", "--version"]);
+    assert!(
+        success,
+        "gg run --jobs should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+    assert!(
+        stdout.contains("all passed") || stdout.contains("OK"),
+        "Expected success message in: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_gg_run_parallel_failing() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "parallel-fail"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("file1.txt"), "content1").expect("write");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "First commit"]);
+
+    fs::write(repo_path.join("file2.txt"), "content2").expect("write");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Second commit"]);
+
+    let (success, _stdout, _stderr) = run_gg(&repo_path, &["run", "-j", "2", "false"]);
+    assert!(!success, "gg run parallel with 'false' should fail");
+}
+
+#[test]
+fn test_gg_run_parallel_json_output() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "parallel-json"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("file1.txt"), "content1").expect("write");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "First commit"]);
+
+    fs::write(repo_path.join("file2.txt"), "content2").expect("write");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Second commit"]);
+
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &["run", "-j", "2", "--json", "git", "--version"],
+    );
+    assert!(
+        success,
+        "gg run parallel --json should succeed: stderr={}",
+        stderr
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("should be valid JSON");
+    assert_eq!(json["run"]["all_passed"], true);
+    let results = json["run"]["results"].as_array().expect("results array");
+    assert_eq!(results.len(), 2);
+    // Results should be in commit position order
+    assert_eq!(results[0]["position"], 1);
+    assert_eq!(results[1]["position"], 2);
+}

@@ -162,6 +162,34 @@ pub struct LintCommandResult {
 }
 
 #[derive(Serialize)]
+pub struct RunResponse {
+    pub version: u32,
+    pub run: RunResultJson,
+}
+
+#[derive(Serialize)]
+pub struct RunResultJson {
+    pub results: Vec<RunCommitResult>,
+    pub all_passed: bool,
+}
+
+#[derive(Serialize)]
+pub struct RunCommitResult {
+    pub position: usize,
+    pub sha: String,
+    pub title: String,
+    pub passed: bool,
+    pub commands: Vec<RunCommandResult>,
+}
+
+#[derive(Serialize)]
+pub struct RunCommandResult {
+    pub command: String,
+    pub passed: bool,
+    pub output: Option<String>,
+}
+
+#[derive(Serialize)]
 pub struct LandResponse {
     pub version: u32,
     pub land: LandResultJson,
@@ -192,6 +220,37 @@ pub struct LandedEntryJson {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_response_serializes() {
+        let response = RunResponse {
+            version: OUTPUT_VERSION,
+            run: RunResultJson {
+                all_passed: false,
+                results: vec![RunCommitResult {
+                    position: 1,
+                    sha: "abc1234".to_string(),
+                    title: "Test commit".to_string(),
+                    passed: false,
+                    commands: vec![RunCommandResult {
+                        command: "cargo test".to_string(),
+                        passed: false,
+                        output: Some("test failed".to_string()),
+                    }],
+                }],
+            },
+        };
+
+        let value = serde_json::to_value(&response).expect("should serialize");
+        assert_eq!(value["version"], OUTPUT_VERSION);
+        assert_eq!(value["run"]["all_passed"], false);
+        assert_eq!(value["run"]["results"][0]["position"], 1);
+        assert_eq!(value["run"]["results"][0]["commands"][0]["passed"], false);
+        assert_eq!(
+            value["run"]["results"][0]["commands"][0]["output"],
+            "test failed"
+        );
+    }
 
     #[test]
     fn lint_response_serializes() {

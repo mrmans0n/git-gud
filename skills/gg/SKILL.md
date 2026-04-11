@@ -133,7 +133,51 @@ gg land -a -c --json
 - Reorder stack (direct): `gg reorder -o "3,1,2"`
 - Sync subset: `gg sync -u <position|gg-id|sha> --json`
 - Lint stack: `gg lint --json`
+- Run a command across the stack: `gg run -- <cmd...>` (see below)
 - Clean merged stacks: `gg clean -a --json`
+
+## Running commands across the stack (`gg run`)
+
+`gg run` walks every commit in the current stack (oldest → newest) and
+executes a command at each one. Use it for things that don't fit the
+`lint` config — ad-hoc verifications, formatters, single-shot scripts,
+etc.
+
+- **Read-only (default)**: `gg run -- cargo test -p mycrate`
+  Each commit is checked out, the command runs, and the tree must stay
+  clean. Any modification fails that commit (same contract as `gg lint`
+  without `--amend`).
+- **Amend mode**: `gg run --amend -- cargo fmt`
+  Changes the command makes are folded into each commit via
+  `git commit --amend`, then the rest of the stack is rebased on top.
+  This is the same engine `gg lint` uses.
+- **Discard mode**: `gg run --discard -- ./mutating-check.sh`
+  Runs the command and throws away any changes (working tree + index +
+  untracked). Useful when you only care about the exit code of a
+  command that happens to mutate state.
+- **Stop on first failure (default)** vs **keep going**:
+  Add `--keep-going` / `-k` to continue through failing commits instead
+  of aborting at the first one.
+- **Limit how far you go**: `--until <position|gg-id|sha>` stops after
+  the named commit. Everything above it is left untouched.
+- **Parallelize read-only runs**: `-j N` / `--jobs N` spawns isolated
+  worktrees per commit. Valid only with the default (read-only) mode.
+  The dirty-tree check in each worker matches the sequential path
+  (untracked files are ignored, tracked modifications fail).
+- **JSON output**: `gg run --json -- <cmd...>` emits a single
+  `RunResponse` document on stdout (see `reference.md`). Failures set
+  `run.all_passed = false`; the process still exits non-zero, but only
+  the run payload is printed — no trailing `{"error":...}` object.
+
+Argument boundaries are preserved: `gg run -- git commit -m "multi word"`
+passes exactly those argv elements to `git` without shell splitting, so
+quoted args with spaces, globs, or shell metacharacters go through
+intact. Use `--` before the command (as shown) so clap treats
+subsequent tokens as the command, not as `gg run` flags.
+
+For repeatable linter runs with commands configured in `.git/gg/config.json`,
+prefer `gg lint` — it's `gg run --amend` with the command list coming from
+config.
 
 ## GitLab-specific
 

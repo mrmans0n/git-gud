@@ -478,15 +478,21 @@ fn run_on_commits(
                         println!("  {} Discarding changes...", style("!").yellow());
                     }
 
-                    let checkout_output = Command::new("git")
-                        .args(["checkout", "."])
+                    // `git reset --hard HEAD` (rather than `git checkout .`)
+                    // so that staged index entries created by the command
+                    // (e.g. `git add`) are also cleared. A plain
+                    // `git checkout .` only reverts the working tree from
+                    // the index, leaving any staged changes behind to
+                    // contaminate the next iteration or fail its checkout.
+                    let reset_output = Command::new("git")
+                        .args(["reset", "--hard", "HEAD"])
                         .current_dir(repo_root)
                         .output()?;
 
-                    if !checkout_output.status.success() {
+                    if !reset_output.status.success() {
                         return Err(GgError::Other(format!(
                             "Failed to discard changes: {}",
-                            String::from_utf8_lossy(&checkout_output.stderr).trim()
+                            String::from_utf8_lossy(&reset_output.stderr).trim()
                         )));
                     }
 
@@ -832,12 +838,18 @@ fn run_commands_in_worktree(
     }
 }
 
-/// Check whether a worktree has any uncommitted/untracked changes via
-/// `git status --porcelain`. Used to enforce the read-only contract in
-/// parallel mode after commands finish running.
+/// Check whether a worktree has any tracked-file modifications via
+/// `git status --porcelain --untracked-files=no`. Used to enforce the
+/// read-only contract in parallel mode after commands finish running.
+///
+/// Untracked files are intentionally ignored so this matches the sequential
+/// path's check (`git::is_working_directory_clean`, which calls
+/// `StatusOptions::include_untracked(false)`). Without this, a command that
+/// creates a new file would pass with `--jobs 1` but fail with `--jobs N`,
+/// making parallelism change pass/fail semantics for the same command.
 fn is_worktree_dirty(wt_path: &Path) -> bool {
     match Command::new("git")
-        .args(["status", "--porcelain"])
+        .args(["status", "--porcelain", "--untracked-files=no"])
         .current_dir(wt_path)
         .output()
     {

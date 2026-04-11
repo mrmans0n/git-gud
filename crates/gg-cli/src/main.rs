@@ -517,28 +517,25 @@ fn main() {
                 gg_core::commands::run::ChangeMode::ReadOnly
             };
 
-            (
-                gg_core::commands::run::execute(gg_core::commands::run::RunOptions {
-                    commands: vec![gg_core::commands::run::RunCommand::Argv(command)],
-                    change_mode,
-                    until,
-                    stop_on_error: !keep_going,
-                    json,
-                    emit_json_output: json,
-                    header_label: None,
-                    jobs,
-                })
-                .and_then(|all_passed| {
-                    if all_passed {
-                        Ok(())
-                    } else {
-                        Err(gg_core::error::GgError::Other(
-                            "Some commands failed".to_string(),
-                        ))
-                    }
-                }),
+            match gg_core::commands::run::execute(gg_core::commands::run::RunOptions {
+                commands: vec![gg_core::commands::run::RunCommand::Argv(command)],
+                change_mode,
+                until,
+                stop_on_error: !keep_going,
                 json,
-            )
+                emit_json_output: json,
+                header_label: None,
+                jobs,
+            }) {
+                Ok(true) => (Ok(()), json),
+                // `execute` has already emitted the JSON run payload (when
+                // `json` is true) and/or the terminal output (when not).
+                // Exiting directly with code 1 avoids the generic error path
+                // appending a second `{"error":...}` document to stdout,
+                // which would break JSON consumers expecting one object.
+                Ok(false) => exit(1),
+                Err(e) => (Err(e), json),
+            }
         }
         Some(Commands::Setup { all }) => (gg_core::commands::setup::run(all), false),
         Some(Commands::Absorb {

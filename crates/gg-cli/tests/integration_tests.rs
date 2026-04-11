@@ -7734,6 +7734,218 @@ fn test_gg_run_parallel_enforces_read_only_contract() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn test_gg_run_json_failure_emits_single_object() {
+    // Regression: `gg run --json` used to print two JSON documents on failure
+    // — first the {"run": ...} payload from execute(), then a
+    // {"error": "Some commands failed"} payload from the generic main.rs
+    // error path (because the handler converted Ok(false) into Err(...)).
+    // Consumers expect a single parseable JSON document, so a failing
+    // `gg run --json` must now emit exactly one object.
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "run-json-failure-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("a.txt"), "a").expect("write a.txt");
+    run_git(&repo_path, &["add", "a.txt"]);
+    run_git(&repo_path, &["commit", "-m", "Commit 1"]);
+
+    // `false` exits non-zero on every unix, so the run will fail and we hit
+    // the not-all-passed path.
+    let (success_run, stdout, stderr) = run_gg(&repo_path, &["run", "--json", "false"]);
+    assert!(
+        !success_run,
+        "gg run --json false should fail (exit 1): stdout={} stderr={}",
+        stdout, stderr
+    );
+
+    // The critical assertion: exactly one JSON object in stdout.
+    let mut stream = serde_json::Deserializer::from_str(&stdout).into_iter::<Value>();
+    let first = stream
+        .next()
+        .expect("expected one json object")
+        .expect("first json object must parse");
+    assert!(
+        first.get("run").is_some(),
+        "first (and only) object must be the run payload, got: {}",
+        first
+    );
+    let extra = stream.next();
+    assert!(
+        extra.is_none(),
+        "expected exactly one JSON document in stdout, but got a second: {:?}",
+        extra
+    );
+
+    // And the run payload itself should report the failure so consumers
+    // can still distinguish success from failure without the second doc.
+    assert_eq!(
+        first["run"]["all_passed"].as_bool(),
+        Some(false),
+        "run.all_passed should be false on failure"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_gg_run_discard_resets_staged_index() {
+    // Regression: `--discard` used to run `git checkout .` + `git clean -fd`,
+    // which reverts tracked files and removes untracked files but does NOT
+    // unstage anything the command added to the index. If a command ran
+    // `git add`, those staged changes would persist into the next iteration
+    // and could contaminate later commits or cause checkout failures.
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Seed a tracked `tracked.txt` plus a script that modifies it AND stages
+    // the modification — exercising the index path the old code missed.
+    fs::write(repo_path.join("tracked.txt"), "original\n").expect("seed tracked.txt");
+    fs::write(
+        repo_path.join("stage.sh"),
+        "#!/bin/sh\n\
+         # Dirty the tree AND stage the change so the index carries it.\n\
+         echo dirty >> tracked.txt\n\
+         git add tracked.txt\n",
+    )
+    .expect("write stage.sh");
+    let mut perms = fs::metadata(repo_path.join("stage.sh"))
+        .unwrap()
+        .permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(repo_path.join("stage.sh"), perms).unwrap();
+    run_git(&repo_path, &["add", "tracked.txt", "stage.sh"]);
+    run_git(&repo_path, &["commit", "-m", "seed tracked + stage script"]);
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "run-discard-index-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    // Two commits so the discard happens at least once mid-stack, not just
+    // at the final commit.
+    fs::write(repo_path.join("f1.txt"), "v1").expect("write f1");
+    run_git(&repo_path, &["add", "f1.txt"]);
+    run_git(&repo_path, &["commit", "-m", "Commit 1"]);
+
+    fs::write(repo_path.join("f2.txt"), "v2").expect("write f2");
+    run_git(&repo_path, &["add", "f2.txt"]);
+    run_git(&repo_path, &["commit", "-m", "Commit 2"]);
+
+    let (success_run, stdout, stderr) = run_gg(&repo_path, &["run", "--discard", "./stage.sh"]);
+    assert!(
+        success_run,
+        "gg run --discard should succeed: stdout={} stderr={}",
+        stdout, stderr
+    );
+
+    // After discard, the working tree and index must both be clean —
+    // `git status --porcelain` (which includes staged entries) should emit
+    // nothing. Previously, the staged `tracked.txt` entry would still show.
+    let status_out = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&repo_path)
+        .output()
+        .expect("git status");
+    assert!(
+        status_out.status.success(),
+        "git status failed: {}",
+        String::from_utf8_lossy(&status_out.stderr)
+    );
+    assert!(
+        status_out.stdout.is_empty(),
+        "working tree + index must be clean after --discard, but got:\n{}",
+        String::from_utf8_lossy(&status_out.stdout)
+    );
+
+    // And tracked.txt content should be back to the committed version.
+    let tracked = fs::read_to_string(repo_path.join("tracked.txt")).unwrap();
+    assert_eq!(
+        tracked, "original\n",
+        "tracked.txt must be restored to the committed state after --discard"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_gg_run_parallel_dirty_check_ignores_untracked() {
+    // Regression: the parallel path used raw `git status --porcelain` which
+    // includes untracked files, while the sequential path uses
+    // `git::is_working_directory_clean` (include_untracked=false). A command
+    // that created untracked files passed under `-j 1` but failed under
+    // `-j N`, so `--jobs` could flip pass/fail for the same command.
+    // The fix is to run `git status --porcelain --untracked-files=no` in the
+    // parallel worker, matching the sequential semantics.
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Script only creates an untracked file — sequential accepts, parallel
+    // must also accept (with the fix), and reject otherwise.
+    fs::write(
+        repo_path.join("make_untracked.sh"),
+        "#!/bin/sh\necho hi > scratch.tmp\nexit 0\n",
+    )
+    .expect("write make_untracked.sh");
+    let mut perms = fs::metadata(repo_path.join("make_untracked.sh"))
+        .unwrap()
+        .permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(repo_path.join("make_untracked.sh"), perms).unwrap();
+    run_git(&repo_path, &["add", "make_untracked.sh"]);
+    run_git(&repo_path, &["commit", "-m", "seed script"]);
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "run-untracked-parity-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    // Two-commit stack so -j 2 has real work.
+    fs::write(repo_path.join("f1.txt"), "v1").expect("write f1");
+    run_git(&repo_path, &["add", "f1.txt"]);
+    run_git(&repo_path, &["commit", "-m", "Commit 1"]);
+    fs::write(repo_path.join("f2.txt"), "v2").expect("write f2");
+    run_git(&repo_path, &["add", "f2.txt"]);
+    run_git(&repo_path, &["commit", "-m", "Commit 2"]);
+
+    // Sequential first: must succeed because the sequential dirty check
+    // ignores untracked files.
+    let (success_seq, stdout_s, stderr_s) =
+        run_gg(&repo_path, &["run", "-j", "1", "./make_untracked.sh"]);
+    assert!(
+        success_seq,
+        "sequential gg run must accept untracked-only dirtying: stdout={} stderr={}",
+        stdout_s, stderr_s
+    );
+
+    // Parallel must match: also succeed.
+    let (success_par, stdout_p, stderr_p) =
+        run_gg(&repo_path, &["run", "-j", "2", "./make_untracked.sh"]);
+    assert!(
+        success_par,
+        "parallel gg run must match sequential (accept untracked-only dirtying): stdout={} stderr={}",
+        stdout_p, stderr_p
+    );
+}
+
 #[test]
 fn test_gg_clean_current_branch_with_main_in_linked_worktree() {
     // Regression: gg clean crashed when user is on the stack branch and

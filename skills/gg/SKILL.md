@@ -221,7 +221,7 @@ The `gg-mcp` binary exposes git-gud as an MCP server (stdio transport). Set `GG_
 - `stack_squash` / `stack_absorb` — amend commits
 - `stack_reconcile` — fix out-of-sync remote branches
 - `stack_drop` — remove commits from the stack (always uses `--force`; agent confirms with user)
-- `stack_split` — split a commit by moving specified files to a new commit (file-level only, no hunk selection)
+- `stack_split` — split a commit using interactive hunk selection (TUI opens by default; pass FILES... to auto-select all hunks for those files)
 - `stack_reorder` — reorder commits with explicit order string (no TUI)
 
 ### Navigation tools

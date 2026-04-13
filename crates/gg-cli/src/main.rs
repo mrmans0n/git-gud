@@ -165,10 +165,6 @@ enum Commands {
         #[arg(long)]
         no_edit: bool,
 
-        /// Select hunks interactively (like git add -p)
-        #[arg(short, long)]
-        interactive: bool,
-
         /// Disable TUI, use sequential prompt instead
         #[arg(long)]
         no_tui: bool,
@@ -448,7 +444,6 @@ fn main() {
             commit,
             message,
             no_edit,
-            interactive,
             no_tui,
             files,
         }) => (
@@ -457,7 +452,6 @@ fn main() {
                 files,
                 message,
                 no_edit,
-                interactive,
                 no_tui,
             }),
             false,

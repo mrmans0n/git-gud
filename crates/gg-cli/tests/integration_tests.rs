@@ -6004,9 +6004,8 @@ fn test_split_single_file_commit_errors() {
     run_git(&repo_path, &["add", "-A"]);
     run_git(&repo_path, &["commit", "-m", "Single file commit"]);
 
-    // Single-file commits now auto-enter hunk mode (-i), but without a TTY
-    // the interactive prompt will fail. The important thing is we no longer
-    // get the old "only has 1 file" error.
+    // Hunk mode is the default, but without a TTY the interactive prompt will
+    // fail. The important thing is we no longer get the old "only has 1 file" error.
     let (_success, stdout, stderr) = run_gg(&repo_path, &["split", "-m", "test", "--no-edit"]);
 
     // Should NOT contain the old "only has 1 file" message
@@ -6022,15 +6021,15 @@ fn test_split_single_file_commit_errors() {
 }
 
 #[test]
-fn test_split_interactive_flag_exists() {
+fn test_split_help_no_interactive_flag() {
     let (_temp_dir, repo_path) = create_test_repo();
 
-    // Verify -i/--interactive flag is documented in help
+    // Verify -i/--interactive flag has been removed (hunk mode is now the default)
     let (success, stdout, _stderr) = run_gg(&repo_path, &["split", "--help"]);
     assert!(success, "split --help should succeed");
     assert!(
-        stdout.contains("-i") || stdout.contains("--interactive"),
-        "split help should mention -i/--interactive flag: {}",
+        !stdout.contains("--interactive"),
+        "split help should NOT mention --interactive flag (hunk mode is default): {}",
         stdout
     );
 }
@@ -6142,7 +6141,7 @@ line 20
     let (_, log_before, _) = run_git_full(&repo_path, &["log", "--oneline"]);
     let commit_count_before = log_before.lines().count();
 
-    // Try to split with interactive mode
+    // Try to split (hunk mode is now the default)
     // When stdin is piped (not TTY), the terminal library typically returns an error
     // or reads from stdin directly. We send "y\nn\n" to select first hunk, skip second.
     //
@@ -6150,7 +6149,7 @@ line 20
     // The test validates the command doesn't crash and exercises the code path.
     let (success, stdout, stderr) = run_gg_with_stdin(
         &repo_path,
-        &["split", "-i", "-m", "First hunk only", "--no-edit"],
+        &["split", "-m", "First hunk only", "--no-edit"],
         "y\nn\n",
     );
 
@@ -6181,9 +6180,8 @@ line 20
 }
 
 #[test]
-fn test_split_hunk_sub_selection_logic() {
-    // Unit-style integration test: verify the split command parses correctly
-    // and the -i flag is accepted
+fn test_split_hunk_mode_is_default() {
+    // Verify that hunk mode is the default split behavior (no -i flag needed)
     let (_temp_dir, repo_path) = create_test_repo();
 
     // Set up minimal gg config
@@ -6203,24 +6201,13 @@ fn test_split_hunk_sub_selection_logic() {
     run_git(&repo_path, &["add", "-A"]);
     run_git(&repo_path, &["commit", "-m", "Test commit"]);
 
-    // Verify split -i doesn't error on flag parsing (may error on no changes/TTY)
-    let (_success, stdout, _stderr) = run_gg(&repo_path, &["split", "-i", "--help"]);
-
-    // Help should show -i
-    assert!(
-        stdout.contains("-i") || stdout.contains("--interactive"),
-        "Help should mention -i flag: {}",
-        stdout
-    );
-
-    // Now try split -i on the commit (will fail due to no TTY, but flag is valid)
-    let (_success, _stdout, stderr) =
-        run_gg(&repo_path, &["split", "-i", "-m", "test", "--no-edit"]);
+    // split without -i should work (hunk mode is default)
+    let (_success, _stdout, stderr) = run_gg(&repo_path, &["split", "-m", "test", "--no-edit"]);
 
     // Should NOT say "unrecognized" or "unknown" flag
     assert!(
         !stderr.contains("unrecognized") && !stderr.contains("unknown option"),
-        "The -i flag should be recognized: {}",
+        "split command should work without -i: {}",
         stderr
     );
 }
@@ -6257,12 +6244,11 @@ fn test_split_no_tui_flag() {
     run_git(&repo_path, &["add", "file_a.txt", "file_b.txt"]);
     run_git(&repo_path, &["commit", "-m", "Two files"]);
 
-    // Use --no-tui with -i and file args to bypass interactive prompts entirely
+    // Use --no-tui with file args to bypass interactive prompts entirely
     let (success, stdout, stderr) = run_gg(
         &repo_path,
         &[
             "split",
-            "-i",
             "--no-tui",
             "-m",
             "Split file A",
@@ -6279,18 +6265,173 @@ fn test_split_no_tui_flag() {
         stderr
     );
 
-    // When file args are provided with -i, it may skip interactive selection.
-    // Either way, the --no-tui path was exercised (no TUI attempted).
-    // If it succeeded, verify the split happened.
-    if success {
-        let (_, log_output, _) = run_git_full(&repo_path, &["log", "--oneline"]);
-        let commit_count = log_output.lines().count();
-        assert!(
-            commit_count >= 3,
-            "Should have at least 3 commits after split: {}",
-            log_output
-        );
-    }
+    // --no-tui with file args bypasses the interactive picker (no TTY needed),
+    // so the command must succeed reliably in CI.
+    assert!(
+        success,
+        "split --no-tui with file args should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+
+    // When file args are provided, all hunks from those files are auto-selected.
+    let (_, log_output, _) = run_git_full(&repo_path, &["log", "--oneline"]);
+    let commit_count = log_output.lines().count();
+    assert!(
+        commit_count >= 3,
+        "Should have at least 3 commits after split: {}",
+        log_output
+    );
+}
+
+#[test]
+fn test_split_file_args_auto_selects_hunks() {
+    // Verify that `gg split <file>` auto-selects all hunks for that file
+    // without prompting, and leaves the other file in the remainder commit.
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "test-auto-select"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    // Create a commit with two text files, each with multiple lines
+    fs::write(repo_path.join("alpha.txt"), "line1\nline2\nline3\n").expect("write");
+    fs::write(repo_path.join("beta.txt"), "lineA\nlineB\nlineC\n").expect("write");
+    run_git(&repo_path, &["add", "alpha.txt", "beta.txt"]);
+    run_git(&repo_path, &["commit", "-m", "Add alpha and beta"]);
+
+    // Split out alpha.txt only — no TTY needed since file args auto-select
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &["split", "-m", "Split alpha", "--no-edit", "alpha.txt"],
+    );
+    assert!(
+        success,
+        "split should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+    assert!(
+        stdout.contains("Split complete"),
+        "Expected 'Split complete': {}",
+        stdout
+    );
+
+    // Verify the remainder commit (HEAD) only contains beta.txt
+    let (_, diff_output, _) = run_git_full(&repo_path, &["diff", "HEAD~1", "HEAD", "--name-only"]);
+    assert!(
+        diff_output.contains("beta.txt"),
+        "Remainder commit should contain beta.txt: {}",
+        diff_output
+    );
+    assert!(
+        !diff_output.contains("alpha.txt"),
+        "Remainder commit should NOT contain alpha.txt: {}",
+        diff_output
+    );
+}
+
+#[test]
+fn test_split_binary_file_with_file_args() {
+    // Verify that `gg split <binary_file>` succeeds for a commit containing
+    // both a binary file and a text file, exercising the non_hunk_files path.
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "test-binary-split"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    // Create a commit with a text file and a binary file
+    fs::write(repo_path.join("readme.txt"), "hello\n").expect("write");
+    // Write a small PNG-like binary blob so git treats it as binary
+    let binary_content: Vec<u8> = vec![
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG header
+        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, // IHDR chunk
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+    ];
+    fs::write(repo_path.join("image.png"), &binary_content).expect("write binary");
+    run_git(&repo_path, &["add", "readme.txt", "image.png"]);
+    run_git(&repo_path, &["commit", "-m", "Add readme and image"]);
+
+    // Split out the binary file
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &["split", "-m", "Split binary", "--no-edit", "image.png"],
+    );
+    assert!(
+        success,
+        "split of binary file should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+    assert!(
+        stdout.contains("Split complete"),
+        "Expected 'Split complete': {}",
+        stdout
+    );
+
+    // Verify the stack now has 3 commits (initial + split commit + remainder)
+    let (_, log_output, _) = run_git_full(&repo_path, &["log", "--oneline"]);
+    let commit_count = log_output.lines().count();
+    assert!(
+        commit_count >= 3,
+        "Should have at least 3 commits after split: {}",
+        log_output
+    );
+}
+
+#[test]
+fn test_split_non_textual_only_commit_shows_guidance() {
+    // Verify that splitting a commit with only binary changes (no FILES args)
+    // shows a helpful error message guiding the user to specify files explicitly.
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "test-binary-only"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    // Create a commit with only binary files
+    let binary_a: Vec<u8> = vec![
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+    ];
+    let binary_b: Vec<u8> = vec![
+        0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00,
+    ];
+    fs::write(repo_path.join("a.png"), &binary_a).expect("write");
+    fs::write(repo_path.join("b.gif"), &binary_b).expect("write");
+    run_git(&repo_path, &["add", "a.png", "b.gif"]);
+    run_git(&repo_path, &["commit", "-m", "Add two binary files"]);
+
+    // Try to split without file args — should fail with guidance
+    let (success, _stdout, stderr) =
+        run_gg(&repo_path, &["split", "-m", "Split attempt", "--no-edit"]);
+    assert!(
+        !success,
+        "split of binary-only commit without file args should fail"
+    );
+    assert!(
+        stderr.contains("non-textual") || stderr.contains("gg split"),
+        "Error should mention non-textual changes or suggest gg split with files: {}",
+        stderr
+    );
 }
 
 // ============================================================================

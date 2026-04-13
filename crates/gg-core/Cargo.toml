@@ -40,7 +40,7 @@ atty = "0.2"
 fs2 = "0.4"
 dirs = "6"
 
-# TUI (for split interactive mode)
+# TUI (for split and reorder)
 ratatui = "0.30"
 crossterm = "0.29"
 

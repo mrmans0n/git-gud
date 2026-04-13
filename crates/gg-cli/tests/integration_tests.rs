@@ -6056,7 +6056,7 @@ fn run_gg_with_stdin(
 fn test_split_hunk_mode_with_multiple_hunks() {
     // This test verifies that hunk-level splitting works correctly.
     // We create a file with multiple disjoint changes (multiple hunks),
-    // then use split -i to select only the first hunk.
+    // then use split to select only the first hunk.
     let (_temp_dir, repo_path) = create_test_repo();
 
     // Set up minimal gg config

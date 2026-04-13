@@ -140,13 +140,27 @@ pub fn run(options: SplitOptions) -> Result<()> {
     // === Hunk-level splitting (always) ===
     let mut hunks = get_hunks(&repo, &parent_commit, &target_commit)?;
 
+    // Track files specified via CLI that have no textual hunks (binary, mode-only, etc.)
+    // These need to be handled at the tree level since they have no patch hunks to select.
+    let mut no_hunk_files: Vec<String> = Vec::new();
+
     // Filter hunks to specified files if any
     if !options.files.is_empty() {
         validate_file_selection(&options.files, &changed_files)?;
         hunks.retain(|h| options.files.contains(&h.file_path));
+
+        // Identify specified files that have no hunks (binary, mode-only, renames, etc.)
+        let files_with_hunks: std::collections::HashSet<&str> =
+            hunks.iter().map(|h| h.file_path.as_str()).collect();
+        no_hunk_files = options
+            .files
+            .iter()
+            .filter(|f| !files_with_hunks.contains(f.as_str()))
+            .cloned()
+            .collect();
     }
 
-    if hunks.is_empty() {
+    if hunks.is_empty() && no_hunk_files.is_empty() {
         return Err(GgError::Other("No hunks found to split".to_string()));
     }
 
@@ -188,7 +202,7 @@ pub fn run(options: SplitOptions) -> Result<()> {
         ));
     }
 
-    let all_selected = selected_indices.len() == hunks.len();
+    let all_selected = options.files.is_empty() && selected_indices.len() == hunks.len();
     if all_selected {
         println!(
             "{}",
@@ -196,8 +210,18 @@ pub fn run(options: SplitOptions) -> Result<()> {
         );
     }
 
-    let first_tree =
+    let mut first_tree =
         build_tree_from_hunks(&repo, &parent_tree, &target_tree, &hunks, &selected_indices)?;
+
+    // For FILES without textual hunks (binary, mode-only, renames), copy tree entries directly
+    if !no_hunk_files.is_empty() {
+        let mut builder = repo.treebuilder(Some(&first_tree))?;
+        for file_path in &no_hunk_files {
+            update_tree_entry(&repo, &mut builder, &parent_tree, &target_tree, file_path)?;
+        }
+        let tree_oid = builder.write()?;
+        first_tree = repo.find_tree(tree_oid)?;
+    }
 
     // Get commit messages
     // Priority: -m flag > TUI inline message > editor prompt

@@ -206,6 +206,7 @@ gg clean
 | `gg land --auto-merge` | *(GitLab only)* Queue MR auto-merge ("merge when pipeline succeeds") instead of merging immediately |
 | `gg land --until <target>` | Land only up to a specific commit (by position, GG-ID, or SHA) |
 | `gg land --clean` | Automatically clean up stack after landing all PRs/MRs |
+| `gg land --admin` | *(GitHub only)* Bypass branch protection approval requirements via admin merge |
 | `gg land --no-clean` | Disable automatic cleanup (overrides config default) |
 | `gg rebase` | Rebase stack onto updated base branch |
 
@@ -213,6 +214,7 @@ gg clean
 - The `--wait` flag polls for CI status and approvals with a configurable timeout (default: 30 minutes). Configure with `land_wait_timeout_minutes` in `.git/gg/config.json`.
 - The `--auto-merge` flag is GitLab-only and requests "merge when pipeline succeeds" instead of an immediate merge. You can enable this behavior by default with `defaults.gitlab.auto_merge_on_land` in `.git/gg/config.json`.
 - The `--clean` and `--no-clean` flags control automatic stack cleanup after landing all PRs/MRs. If neither is specified, the behavior is controlled by the `land_auto_clean` config option (default: `false`). Use `--clean` to enable cleanup for a single command, or `--no-clean` to override a `true` config default.
+- The `--admin` flag is GitHub-only and uses `gh pr merge --admin` to bypass branch protection rules. Use `--wait --admin` to still wait for CI while skipping approval requirements. On GitLab, the flag is a no-op (a warning is printed). Enable by default with `land_admin` in `.git/gg/config.json`.
 
 ### Utilities
 
@@ -279,6 +281,7 @@ All configuration options are in the `defaults` section (with provider-specific 
 | `auto_add_gg_ids` | `boolean` | **Deprecated**. Kept for config compatibility; gg always auto-adds/normalizes GG metadata regardless of this value. | `true` |
 | `unstaged_action` | `string` | Default behavior for `gg sc`/`gg amend` when unstaged changes exist: `"ask"` (prompt), `"add"` (stage all changes), `"stash"` (auto-stash), `"continue"` (ignore unstaged), `"abort"` (fail) | `"ask"` |
 | `land_wait_timeout_minutes` | `number` | Timeout in minutes for `gg land --wait` | `30` |
+| `land_admin` | `boolean` | *(GitHub only)* Use admin privileges to bypass approval requirements on `gg land` | `false` |
 | `land_auto_clean` | `boolean` | Automatically clean up stack after landing all PRs/MRs | `false` |
 | `sync_auto_lint` | `boolean` | Automatically run `gg lint` before `gg sync` | `false` |
 | `sync_auto_rebase` (`sync.auto_rebase`) | `boolean` | Automatically run `gg rebase` before `gg sync` when base is behind threshold | `false` |

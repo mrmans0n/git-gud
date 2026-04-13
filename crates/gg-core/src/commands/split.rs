@@ -143,6 +143,7 @@ pub fn run(options: SplitOptions) -> Result<()> {
     // Filter hunks to specified files if any.
     // Track files that have no textual hunks (binary, rename-only, mode-only)
     // so they can be included wholesale from the target tree.
+    let total_hunks_before_filter = hunks.len();
     let mut non_hunk_files: Vec<String> = Vec::new();
     if !options.files.is_empty() {
         validate_file_selection(&options.files, &changed_files)?;
@@ -198,8 +199,9 @@ pub fn run(options: SplitOptions) -> Result<()> {
         ));
     }
 
-    let all_selected = selected_indices.len() == hunks.len();
-    if all_selected && options.files.is_empty() {
+    let all_selected = selected_indices.len() == total_hunks_before_filter
+        && non_hunk_files.len() + options.files.len() >= changed_files.len();
+    if all_selected {
         println!(
             "{}",
             style("⚠ All hunks selected — the original commit will become empty.").yellow()
@@ -1021,7 +1023,13 @@ fn build_tree_from_hunks<'a>(
 
     // Include non-hunk files (binary, rename-only, mode-only) wholesale from target tree
     for file_path in non_hunk_files {
-        update_tree_entry(repo, &mut builder, parent_tree, target_tree, file_path)?;
+        let path = std::path::Path::new(file_path.as_str());
+        if target_tree.get_path(path).is_ok() {
+            update_tree_entry(repo, &mut builder, parent_tree, target_tree, file_path)?;
+        } else {
+            // File was deleted in target - apply deletion
+            remove_tree_entry(repo, &mut builder, parent_tree, file_path)?;
+        }
     }
 
     let tree_oid = builder.write()?;

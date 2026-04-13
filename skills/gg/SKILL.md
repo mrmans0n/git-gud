@@ -116,7 +116,7 @@ gg land -a -c --json
 1. **Never run `gg land` without explicit user confirmation.**
 2. **Always use `--json`** for `gg ls`, `gg sync`, `gg land`, `gg clean -a`, and `gg lint`.
 3. **Prefer worktrees** for isolation (`gg co -w <stack>`).
-4. Verify `approved: true` and `ci_status` success before landing.
+4. Verify `approved: true` and `ci_status` success before landing. If the user requests `--admin`, skip the approval check (GitHub only — GitLab ignores the flag).
 5. If sync warns stack is behind base, run `gg rebase` first.
 6. Prefer `gg absorb -s` for multi-commit edits.
 7. **Never use `git add -A` blindly.** Review `git status` first and only stage intended files. Use `git add <specific-files>` to avoid leaking secrets, env files, or unrelated changes.

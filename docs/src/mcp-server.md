@@ -191,7 +191,7 @@ Split a commit into two by moving specified files to a new commit.
 - `message` (string, optional): Message for the new (first) commit.
 - `no_edit` (boolean, optional): Don't prompt for the remainder commit message.
 
-**Notes:** File-level only (no hunk selection via MCP). The new commit is inserted *before* the original.
+**Notes:** Auto-selects all hunks for the specified files. The new commit is inserted *before* the original.
 
 ### `stack_reorder`
 

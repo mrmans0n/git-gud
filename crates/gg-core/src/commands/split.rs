@@ -140,13 +140,23 @@ pub fn run(options: SplitOptions) -> Result<()> {
     // === Hunk-level splitting (always) ===
     let mut hunks = get_hunks(&repo, &parent_commit, &target_commit)?;
 
-    // Filter hunks to specified files if any
+    // Filter hunks to specified files if any.
+    // Track files that have no textual hunks (binary, rename-only, mode-only)
+    // so they can be included wholesale from the target tree.
+    let mut non_hunk_files: Vec<String> = Vec::new();
     if !options.files.is_empty() {
         validate_file_selection(&options.files, &changed_files)?;
+        let hunk_file_paths: std::collections::HashSet<&str> =
+            hunks.iter().map(|h| h.file_path.as_str()).collect();
+        for file in &options.files {
+            if !hunk_file_paths.contains(file.as_str()) {
+                non_hunk_files.push(file.clone());
+            }
+        }
         hunks.retain(|h| options.files.contains(&h.file_path));
     }
 
-    if hunks.is_empty() {
+    if hunks.is_empty() && non_hunk_files.is_empty() {
         return Err(GgError::Other("No hunks found to split".to_string()));
     }
 
@@ -183,7 +193,7 @@ pub fn run(options: SplitOptions) -> Result<()> {
         }
     };
 
-    if selected_indices.is_empty() {
+    if selected_indices.is_empty() && non_hunk_files.is_empty() {
         return Err(GgError::Other(
             "No hunks selected, nothing to split".to_string(),
         ));
@@ -197,8 +207,14 @@ pub fn run(options: SplitOptions) -> Result<()> {
         );
     }
 
-    let first_tree =
-        build_tree_from_hunks(&repo, &parent_tree, &target_tree, &hunks, &selected_indices)?;
+    let first_tree = build_tree_from_hunks(
+        &repo,
+        &parent_tree,
+        &target_tree,
+        &hunks,
+        &selected_indices,
+        &non_hunk_files,
+    )?;
 
     // Get commit messages
     // Priority: -m flag > TUI inline message > editor prompt
@@ -953,6 +969,7 @@ fn build_tree_from_hunks<'a>(
     target_tree: &git2::Tree,
     hunks: &[DiffHunk],
     selected_indices: &[usize],
+    non_hunk_files: &[String],
 ) -> Result<git2::Tree<'a>> {
     // Group hunks by file
     let mut file_hunks: HashMap<String, Vec<(usize, &DiffHunk)>> = HashMap::new();
@@ -1001,6 +1018,11 @@ fn build_tree_from_hunks<'a>(
 
             apply_hunks_to_tree(repo, &mut builder, parent_tree, file_path, &selected_hunks)?;
         }
+    }
+
+    // Include non-hunk files (binary, rename-only, mode-only) wholesale from target tree
+    for file_path in non_hunk_files {
+        update_tree_entry(repo, &mut builder, parent_tree, target_tree, file_path)?;
     }
 
     let tree_oid = builder.write()?;

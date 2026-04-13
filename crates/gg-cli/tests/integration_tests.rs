@@ -6266,17 +6266,22 @@ fn test_split_no_tui_flag() {
         stderr
     );
 
+    // --no-tui with file args bypasses the interactive picker (no TTY needed),
+    // so the command must succeed reliably in CI.
+    assert!(
+        success,
+        "split --no-tui with file args should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+
     // When file args are provided, all hunks from those files are auto-selected.
-    // If it succeeded, verify the split happened.
-    if success {
-        let (_, log_output, _) = run_git_full(&repo_path, &["log", "--oneline"]);
-        let commit_count = log_output.lines().count();
-        assert!(
-            commit_count >= 3,
-            "Should have at least 3 commits after split: {}",
-            log_output
-        );
-    }
+    let (_, log_output, _) = run_git_full(&repo_path, &["log", "--oneline"]);
+    let commit_count = log_output.lines().count();
+    assert!(
+        commit_count >= 3,
+        "Should have at least 3 commits after split: {}",
+        log_output
+    );
 }
 
 // ============================================================================

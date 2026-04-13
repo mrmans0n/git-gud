@@ -185,6 +185,9 @@ pub struct StackLandParams {
     /// Only land up to this position, GG-ID, or SHA
     #[serde(default)]
     pub until: Option<String>,
+    /// Use admin privileges to bypass approval requirements (GitHub only)
+    #[serde(default)]
+    pub admin: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -645,6 +648,9 @@ impl GgMcpServer {
             args.push("--until".to_string());
             args.push(until.clone());
         }
+        if params.admin {
+            args.push("--admin".to_string());
+        }
         run_gg_command(&args)
     }
 
@@ -1000,6 +1006,7 @@ mod tests {
         assert!(!params.squash);
         assert!(!params.auto_clean);
         assert!(params.until.is_none());
+        assert!(!params.admin);
     }
 
     #[test]

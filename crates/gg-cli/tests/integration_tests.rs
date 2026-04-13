@@ -3251,6 +3251,75 @@ fn test_land_clean_and_no_clean_conflict() {
 }
 
 // ============================================================
+// Tests for --admin flag
+// ============================================================
+
+#[test]
+fn test_land_admin_flag_accepted() {
+    // Test that the --admin flag is recognized
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "test-stack"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    let (_, _stdout, stderr) = run_gg(&repo_path, &["land", "--admin"]);
+
+    assert!(
+        !stderr.contains("unexpected argument") && !stderr.contains("invalid value"),
+        "The --admin flag should be recognized, stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_land_admin_config_default() {
+    // Test that land_admin config setting defaults to false
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(gg_dir.join("config.json"), r#"{"defaults":{}}"#).expect("Failed to write config");
+
+    let config_path = gg_dir.join("config.json");
+    let content = fs::read_to_string(config_path).expect("Failed to read config");
+
+    assert!(
+        !content.contains("land_admin"),
+        "Default config should not contain land_admin when false"
+    );
+}
+
+#[test]
+fn test_land_admin_config_enabled() {
+    // Test that land_admin can be set to true in config
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"land_admin":true}}"#,
+    )
+    .expect("Failed to write config");
+
+    let config_path = gg_dir.join("config.json");
+    let content = fs::read_to_string(config_path).expect("Failed to read config");
+
+    assert!(
+        content.contains("\"land_admin\":true"),
+        "Config should contain land_admin when enabled"
+    );
+}
+
+// ============================================================
 // Tests for PR #57 - rebase state handling fix
 // ============================================================
 

@@ -6021,20 +6021,6 @@ fn test_split_single_file_commit_errors() {
     // Either way, we're testing that the behavior changed
 }
 
-#[test]
-fn test_split_interactive_flag_exists() {
-    let (_temp_dir, repo_path) = create_test_repo();
-
-    // Verify -i/--interactive flag is documented in help
-    let (success, stdout, _stderr) = run_gg(&repo_path, &["split", "--help"]);
-    assert!(success, "split --help should succeed");
-    assert!(
-        stdout.contains("-i") || stdout.contains("--interactive"),
-        "split help should mention -i/--interactive flag: {}",
-        stdout
-    );
-}
-
 /// Helper to run gg with stdin input
 fn run_gg_with_stdin(
     repo_path: &std::path::Path,
@@ -6142,7 +6128,7 @@ line 20
     let (_, log_before, _) = run_git_full(&repo_path, &["log", "--oneline"]);
     let commit_count_before = log_before.lines().count();
 
-    // Try to split with interactive mode
+    // Try to split with hunk mode (now the default).
     // When stdin is piped (not TTY), the terminal library typically returns an error
     // or reads from stdin directly. We send "y\nn\n" to select first hunk, skip second.
     //
@@ -6150,7 +6136,7 @@ line 20
     // The test validates the command doesn't crash and exercises the code path.
     let (success, stdout, stderr) = run_gg_with_stdin(
         &repo_path,
-        &["split", "-i", "-m", "First hunk only", "--no-edit"],
+        &["split", "-m", "First hunk only", "--no-edit"],
         "y\nn\n",
     );
 
@@ -6178,51 +6164,6 @@ line 20
             stderr
         );
     }
-}
-
-#[test]
-fn test_split_hunk_sub_selection_logic() {
-    // Unit-style integration test: verify the split command parses correctly
-    // and the -i flag is accepted
-    let (_temp_dir, repo_path) = create_test_repo();
-
-    // Set up minimal gg config
-    let gg_dir = repo_path.join(".git").join("gg");
-    fs::create_dir_all(&gg_dir).expect("Failed to create .git/gg");
-    fs::write(
-        gg_dir.join("config.json"),
-        r#"{"defaults":{"branch_username":"testuser"}}"#,
-    )
-    .expect("Failed to write config");
-
-    // Create stack with a commit
-    let (success, _, stderr) = run_gg(&repo_path, &["co", "test-sub-select"]);
-    assert!(success, "Failed to create stack: {}", stderr);
-
-    fs::write(repo_path.join("test.txt"), "content").expect("Failed to write");
-    run_git(&repo_path, &["add", "-A"]);
-    run_git(&repo_path, &["commit", "-m", "Test commit"]);
-
-    // Verify split -i doesn't error on flag parsing (may error on no changes/TTY)
-    let (_success, stdout, _stderr) = run_gg(&repo_path, &["split", "-i", "--help"]);
-
-    // Help should show -i
-    assert!(
-        stdout.contains("-i") || stdout.contains("--interactive"),
-        "Help should mention -i flag: {}",
-        stdout
-    );
-
-    // Now try split -i on the commit (will fail due to no TTY, but flag is valid)
-    let (_success, _stdout, stderr) =
-        run_gg(&repo_path, &["split", "-i", "-m", "test", "--no-edit"]);
-
-    // Should NOT say "unrecognized" or "unknown" flag
-    assert!(
-        !stderr.contains("unrecognized") && !stderr.contains("unknown option"),
-        "The -i flag should be recognized: {}",
-        stderr
-    );
 }
 
 #[test]
@@ -6257,12 +6198,11 @@ fn test_split_no_tui_flag() {
     run_git(&repo_path, &["add", "file_a.txt", "file_b.txt"]);
     run_git(&repo_path, &["commit", "-m", "Two files"]);
 
-    // Use --no-tui with -i and file args to bypass interactive prompts entirely
+    // Use --no-tui with file args to bypass interactive prompts entirely
     let (success, stdout, stderr) = run_gg(
         &repo_path,
         &[
             "split",
-            "-i",
             "--no-tui",
             "-m",
             "Split file A",
@@ -6279,8 +6219,7 @@ fn test_split_no_tui_flag() {
         stderr
     );
 
-    // When file args are provided with -i, it may skip interactive selection.
-    // Either way, the --no-tui path was exercised (no TUI attempted).
+    // When file args are provided, all hunks for those files are auto-selected.
     // If it succeeded, verify the split happened.
     if success {
         let (_, log_output, _) = run_git_full(&repo_path, &["log", "--oneline"]);

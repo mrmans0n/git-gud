@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use std::process::Command;
 
 use console::{style, Term};
-use dialoguer::{Editor, MultiSelect};
+use dialoguer::Editor;
 
 use crate::config::Config;
 use crate::error::{GgError, Result};
@@ -23,8 +23,6 @@ pub struct SplitOptions {
     pub message: Option<String>,
     /// If true, don't prompt for the remainder commit message (keep original).
     pub no_edit: bool,
-    /// If true, enter interactive hunk selection mode (like git add -p).
-    pub interactive: bool,
     /// If true, disable TUI and use sequential prompt instead.
     pub no_tui: bool,
 }
@@ -135,35 +133,32 @@ pub fn run(options: SplitOptions) -> Result<()> {
     let parent_tree = parent_commit.tree()?;
     let target_tree = target_commit.tree()?;
 
-    // Determine if we should use hunk mode:
-    // 1. Explicitly requested with -i
-    // 2. Single-file commit without file args (auto-enter hunk mode)
-    let use_hunk_mode =
-        options.interactive || (changed_files.len() < 2 && options.files.is_empty());
-
     // If the TUI provides commit messages inline, they're stored here to skip the editor
     let mut tui_commit_message: Option<String> = None;
     let mut tui_remainder_message: Option<String> = None;
 
-    let first_tree = if use_hunk_mode {
-        // === Hunk-level splitting ===
-        let mut hunks = get_hunks(&repo, &parent_commit, &target_commit)?;
+    // === Hunk-level splitting (always) ===
+    let mut hunks = get_hunks(&repo, &parent_commit, &target_commit)?;
 
-        // Filter hunks to specified files if any
-        if !options.files.is_empty() {
-            validate_file_selection(&options.files, &changed_files)?;
-            hunks.retain(|h| options.files.contains(&h.file_path));
-        }
+    // Filter hunks to specified files if any
+    if !options.files.is_empty() {
+        validate_file_selection(&options.files, &changed_files)?;
+        hunks.retain(|h| options.files.contains(&h.file_path));
+    }
 
-        if hunks.is_empty() {
-            return Err(GgError::Other("No hunks found to split".to_string()));
-        }
+    if hunks.is_empty() {
+        return Err(GgError::Other("No hunks found to split".to_string()));
+    }
 
+    // When FILES are specified, auto-select all hunks for those files (no interactive prompt needed)
+    let selected_indices = if !options.files.is_empty() {
+        (0..hunks.len()).collect()
+    } else {
         // Determine whether to use TUI or sequential prompt
         let is_tty = atty::is(atty::Stream::Stdin) && atty::is(atty::Stream::Stdout);
         let use_tui = !options.no_tui && is_tty;
 
-        let selected_indices = if use_tui {
+        if use_tui {
             let commit_title = git::get_commit_title(&target_commit);
             let original_msg = git::strip_gg_id_from_message(target_commit.message().unwrap_or(""));
             match super::split_tui::select_hunks_tui(
@@ -184,48 +179,25 @@ pub fn run(options: SplitOptions) -> Result<()> {
             }
         } else {
             select_hunks_interactive(&mut hunks)?
-        };
-
-        if selected_indices.is_empty() {
-            return Err(GgError::Other(
-                "No hunks selected, nothing to split".to_string(),
-            ));
         }
-
-        let all_selected = selected_indices.len() == hunks.len();
-        if all_selected {
-            println!(
-                "{}",
-                style("⚠ All hunks selected — the original commit will become empty.").yellow()
-            );
-        }
-
-        build_tree_from_hunks(&repo, &parent_tree, &target_tree, &hunks, &selected_indices)?
-    } else {
-        // === File-level splitting ===
-        // Determine which files go to the new (first/lower) commit
-        let selected_files = if options.files.is_empty() {
-            select_files_interactive(&changed_files)?
-        } else {
-            validate_file_selection(&options.files, &changed_files)?
-        };
-
-        if selected_files.is_empty() {
-            return Err(GgError::Other(
-                "No files selected, nothing to split".to_string(),
-            ));
-        }
-
-        let all_selected = selected_files.len() == changed_files.len();
-        if all_selected {
-            println!(
-                "{}",
-                style("⚠ All files selected — the original commit will become empty.").yellow()
-            );
-        }
-
-        build_partial_tree(&repo, &parent_tree, &target_tree, &selected_files)?
     };
+
+    if selected_indices.is_empty() {
+        return Err(GgError::Other(
+            "No hunks selected, nothing to split".to_string(),
+        ));
+    }
+
+    let all_selected = selected_indices.len() == hunks.len();
+    if all_selected {
+        println!(
+            "{}",
+            style("⚠ All hunks selected — the original commit will become empty.").yellow()
+        );
+    }
+
+    let first_tree =
+        build_tree_from_hunks(&repo, &parent_tree, &target_tree, &hunks, &selected_indices)?;
 
     // Get commit messages
     // Priority: -m flag > TUI inline message > editor prompt
@@ -365,31 +337,6 @@ fn get_changed_files(
     Ok(files)
 }
 
-/// Interactive file selection using dialoguer MultiSelect
-fn select_files_interactive(changed_files: &[ChangedFile]) -> Result<Vec<String>> {
-    let items: Vec<String> = changed_files.iter().map(|f| f.to_string()).collect();
-
-    println!();
-    println!(
-        "Select files for the {} (the rest stays in the original):",
-        style("new commit (inserted BEFORE the original in the stack)").bold()
-    );
-
-    let selections = MultiSelect::new()
-        .items(&items)
-        .interact()
-        .map_err(|e| GgError::Other(format!("Selection failed: {}", e)))?;
-
-    if selections.is_empty() {
-        return Ok(vec![]);
-    }
-
-    Ok(selections
-        .iter()
-        .map(|&i| changed_files[i].path.clone())
-        .collect())
-}
-
 /// Validate that CLI-provided file paths match changed files
 fn validate_file_selection(files: &[String], changed_files: &[ChangedFile]) -> Result<Vec<String>> {
     let mut selected = Vec::new();
@@ -404,53 +351,6 @@ fn validate_file_selection(files: &[String], changed_files: &[ChangedFile]) -> R
         selected.push(file.clone());
     }
     Ok(selected)
-}
-
-/// Build a tree that has the parent tree as base, with selected files replaced from target tree
-fn build_partial_tree<'a>(
-    repo: &'a git2::Repository,
-    parent_tree: &git2::Tree,
-    target_tree: &git2::Tree,
-    selected_files: &[String],
-) -> Result<git2::Tree<'a>> {
-    // We need to build a tree that contains:
-    // - All files from parent_tree EXCEPT selected files
-    // - Selected files from target_tree
-    //
-    // Since we want the FIRST commit to contain the SELECTED changes,
-    // we start with parent and add/modify the selected files from target.
-
-    let mut builder = repo.treebuilder(Some(parent_tree))?;
-
-    for file_path in selected_files {
-        let path = std::path::Path::new(file_path);
-
-        // Check if the file exists in target (added or modified)
-        if let Ok(entry) = target_tree.get_path(path) {
-            // File exists in target - add/update it
-            if path.parent().is_some() && path.parent() != Some(std::path::Path::new("")) {
-                // Nested path - need to handle directory structure
-                insert_nested_entry(repo, &mut builder, parent_tree, target_tree, file_path)?;
-            } else {
-                // Top-level file
-                let name = path.file_name().unwrap().to_string_lossy();
-                builder.insert(&*name, entry.id(), entry.filemode())?;
-            }
-        } else {
-            // File doesn't exist in target - it was deleted
-            // For the first commit, we want to include the deletion
-            let name = path.file_name().unwrap().to_string_lossy();
-            if path.parent().is_none() || path.parent() == Some(std::path::Path::new("")) {
-                let _ = builder.remove(&*name);
-            } else {
-                insert_nested_entry(repo, &mut builder, parent_tree, target_tree, file_path)?;
-            }
-        }
-    }
-
-    let tree_oid = builder.write()?;
-    let tree = repo.find_tree(tree_oid)?;
-    Ok(tree)
 }
 
 /// Insert a nested file entry by reconstructing intermediate directory trees
@@ -1347,7 +1247,6 @@ mod tests {
         assert!(opts.files.is_empty());
         assert!(opts.message.is_none());
         assert!(!opts.no_edit);
-        assert!(!opts.interactive);
     }
 
     #[test]

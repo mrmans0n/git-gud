@@ -6004,9 +6004,8 @@ fn test_split_single_file_commit_errors() {
     run_git(&repo_path, &["add", "-A"]);
     run_git(&repo_path, &["commit", "-m", "Single file commit"]);
 
-    // Single-file commits now auto-enter hunk mode (-i), but without a TTY
-    // the interactive prompt will fail. The important thing is we no longer
-    // get the old "only has 1 file" error.
+    // Hunk mode is the default, but without a TTY the interactive prompt will
+    // fail. The important thing is we no longer get the old "only has 1 file" error.
     let (_success, stdout, stderr) = run_gg(&repo_path, &["split", "-m", "test", "--no-edit"]);
 
     // Should NOT contain the old "only has 1 file" message
@@ -6022,15 +6021,15 @@ fn test_split_single_file_commit_errors() {
 }
 
 #[test]
-fn test_split_interactive_flag_exists() {
+fn test_split_help_no_interactive_flag() {
     let (_temp_dir, repo_path) = create_test_repo();
 
-    // Verify -i/--interactive flag is documented in help
+    // Verify -i/--interactive flag has been removed (hunk mode is now the default)
     let (success, stdout, _stderr) = run_gg(&repo_path, &["split", "--help"]);
     assert!(success, "split --help should succeed");
     assert!(
-        stdout.contains("-i") || stdout.contains("--interactive"),
-        "split help should mention -i/--interactive flag: {}",
+        !stdout.contains("--interactive"),
+        "split help should NOT mention --interactive flag (hunk mode is default): {}",
         stdout
     );
 }
@@ -6142,7 +6141,7 @@ line 20
     let (_, log_before, _) = run_git_full(&repo_path, &["log", "--oneline"]);
     let commit_count_before = log_before.lines().count();
 
-    // Try to split with interactive mode
+    // Try to split (hunk mode is now the default)
     // When stdin is piped (not TTY), the terminal library typically returns an error
     // or reads from stdin directly. We send "y\nn\n" to select first hunk, skip second.
     //
@@ -6150,7 +6149,7 @@ line 20
     // The test validates the command doesn't crash and exercises the code path.
     let (success, stdout, stderr) = run_gg_with_stdin(
         &repo_path,
-        &["split", "-i", "-m", "First hunk only", "--no-edit"],
+        &["split", "-m", "First hunk only", "--no-edit"],
         "y\nn\n",
     );
 
@@ -6181,9 +6180,8 @@ line 20
 }
 
 #[test]
-fn test_split_hunk_sub_selection_logic() {
-    // Unit-style integration test: verify the split command parses correctly
-    // and the -i flag is accepted
+fn test_split_hunk_mode_is_default() {
+    // Verify that hunk mode is the default split behavior (no -i flag needed)
     let (_temp_dir, repo_path) = create_test_repo();
 
     // Set up minimal gg config
@@ -6203,24 +6201,14 @@ fn test_split_hunk_sub_selection_logic() {
     run_git(&repo_path, &["add", "-A"]);
     run_git(&repo_path, &["commit", "-m", "Test commit"]);
 
-    // Verify split -i doesn't error on flag parsing (may error on no changes/TTY)
-    let (_success, stdout, _stderr) = run_gg(&repo_path, &["split", "-i", "--help"]);
-
-    // Help should show -i
-    assert!(
-        stdout.contains("-i") || stdout.contains("--interactive"),
-        "Help should mention -i flag: {}",
-        stdout
-    );
-
-    // Now try split -i on the commit (will fail due to no TTY, but flag is valid)
+    // split without -i should work (hunk mode is default)
     let (_success, _stdout, stderr) =
-        run_gg(&repo_path, &["split", "-i", "-m", "test", "--no-edit"]);
+        run_gg(&repo_path, &["split", "-m", "test", "--no-edit"]);
 
     // Should NOT say "unrecognized" or "unknown" flag
     assert!(
         !stderr.contains("unrecognized") && !stderr.contains("unknown option"),
-        "The -i flag should be recognized: {}",
+        "split command should work without -i: {}",
         stderr
     );
 }
@@ -6257,12 +6245,11 @@ fn test_split_no_tui_flag() {
     run_git(&repo_path, &["add", "file_a.txt", "file_b.txt"]);
     run_git(&repo_path, &["commit", "-m", "Two files"]);
 
-    // Use --no-tui with -i and file args to bypass interactive prompts entirely
+    // Use --no-tui with file args to bypass interactive prompts entirely
     let (success, stdout, stderr) = run_gg(
         &repo_path,
         &[
             "split",
-            "-i",
             "--no-tui",
             "-m",
             "Split file A",
@@ -6279,8 +6266,7 @@ fn test_split_no_tui_flag() {
         stderr
     );
 
-    // When file args are provided with -i, it may skip interactive selection.
-    // Either way, the --no-tui path was exercised (no TUI attempted).
+    // When file args are provided, all hunks from those files are auto-selected.
     // If it succeeded, verify the split happened.
     if success {
         let (_, log_output, _) = run_git_full(&repo_path, &["log", "--oneline"]);

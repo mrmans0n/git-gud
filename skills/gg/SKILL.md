@@ -126,8 +126,7 @@ gg land -a -c --json
 - Navigate: `gg mv`, `gg first`, `gg last`, `gg prev`, `gg next`
 - Amend current commit: `gg sc` / `gg sc -a`
 - Auto-distribute staged hunks: `gg absorb -s`
-- Split a commit into two (file-level): `gg split -c 3 file1.rs file2.rs`
-- Split a commit into two (hunk-level): `gg split -i` — opens a two-panel TUI for hunk selection (files on the left, colored diff on the right), followed by inline commit message inputs for both the new and remainder commits. Use `--no-tui` to fall back to sequential `git add -p` style prompts. The `-m` flag bypasses the TUI message input for the new commit. The `--no-edit` flag skips the remainder message input.
+- Split a commit into two: `gg split` — opens a two-panel TUI for hunk selection (files on the left, colored diff on the right), followed by inline commit message inputs for both the new and remainder commits. Use `--no-tui` to fall back to sequential `git add -p` style prompts. The `-m` flag bypasses the TUI message input for the new commit. The `--no-edit` flag skips the remainder message input. Pass `FILES...` to auto-select all hunks from those files (e.g., `gg split -c 3 file1.rs file2.rs`).
 - Drop commits from stack: `gg drop <position|sha|gg-id>... --force` (alias: `gg abandon`)
 - Reorder/drop stack (TUI): `gg reorder` (or `gg arrange`) — opens interactive TUI for visual reordering and dropping commits. Press `d` to mark a commit for dropping. Use `--no-tui` to fall back to text editor (delete lines to drop).
 - Reorder stack (direct): `gg reorder -o "3,1,2"`

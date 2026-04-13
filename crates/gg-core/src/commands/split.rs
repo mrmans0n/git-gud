@@ -545,6 +545,7 @@ fn get_new_commit_message(options: &SplitOptions, target: &git2::Commit) -> Resu
 
     match edited {
         Some(msg) if !msg.trim().is_empty() => Ok(msg.trim().to_string()),
+        None => Ok(default_msg),
         _ => Err(GgError::Other(
             "Empty commit message, aborting split".to_string(),
         )),

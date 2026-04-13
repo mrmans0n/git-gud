@@ -161,6 +161,18 @@ pub fn run(options: SplitOptions) -> Result<()> {
     }
 
     if hunks.is_empty() && no_hunk_files.is_empty() {
+        // If there are changed files but no textual hunks, the commit only has
+        // non-textual changes (binary, mode-only, renames) that can't be displayed
+        // in the hunk selection TUI. Guide the user to the file-args path.
+        if !changed_files.is_empty() {
+            let file_list: Vec<&str> = changed_files.iter().map(|f| f.path.as_str()).collect();
+            return Err(GgError::Other(format!(
+                "No textual hunks to split. The commit only contains non-textual changes \
+                 (binary, mode-only, or renames).\n\
+                 To split by file, specify files explicitly: gg split {}",
+                file_list.join(" ")
+            )));
+        }
         return Err(GgError::Other("No hunks found to split".to_string()));
     }
 

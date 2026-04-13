@@ -170,8 +170,7 @@ pub fn run(options: SplitOptions) -> Result<()> {
 
         if use_tui {
             let commit_title = git::get_commit_title(&target_commit);
-            let original_msg =
-                git::strip_gg_id_from_message(target_commit.message().unwrap_or(""));
+            let original_msg = git::strip_gg_id_from_message(target_commit.message().unwrap_or(""));
             match super::split_tui::select_hunks_tui(
                 hunks.clone(),
                 &commit_title,

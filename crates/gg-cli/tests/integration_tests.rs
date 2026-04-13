@@ -6202,8 +6202,7 @@ fn test_split_hunk_mode_is_default() {
     run_git(&repo_path, &["commit", "-m", "Test commit"]);
 
     // split without -i should work (hunk mode is default)
-    let (_success, _stdout, stderr) =
-        run_gg(&repo_path, &["split", "-m", "test", "--no-edit"]);
+    let (_success, _stdout, stderr) = run_gg(&repo_path, &["split", "-m", "test", "--no-edit"]);
 
     // Should NOT say "unrecognized" or "unknown" flag
     assert!(

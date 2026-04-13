@@ -136,9 +136,8 @@ Split a commit into two. Selected files/hunks become a new commit inserted befor
 - `-c, --commit <TARGET>` — target commit (position, SHA, or GG-ID; default: current)
 - `-m, --message <MSG>` — message for the new commit
 - `--no-edit` — keep original message for remainder, don't prompt
-- `-i, --interactive` — select individual hunks interactively with TUI. Auto-enabled for single-file commits. After selecting hunks, inline text inputs appear for both the new commit message (pre-filled with `Split from: <original title>`) and the remainder commit message (pre-filled with the original commit message). Press Enter to confirm each, Esc to go back to the previous step. The `--no-edit` flag skips the remainder message input.
-- `--no-tui` — disable TUI, use sequential prompt instead (legacy `git add -p` style)
-- `FILES...` — files for the new commit (interactive selector if omitted)
+- `--no-tui` — disable TUI, use sequential prompt instead (`git add -p` style)
+- `FILES...` — files for the new commit (auto-selects all hunks for specified files; opens interactive TUI if omitted). After selecting hunks, inline text inputs appear for both the new commit message (pre-filled with `Split from: <original title>`) and the remainder commit message (pre-filled with the original commit message). Press Enter to confirm each, Esc to go back to the previous step. The `--no-edit` flag skips the remainder message input.
 
 #### `gg rebase [TARGET]`
 Rebase current stack onto base or explicit target.
@@ -536,7 +535,7 @@ Split a commit by moving specified files to a new commit.
   - `files` (string[], required) — files to include in the new commit
   - `message` (string, optional) — message for the new commit
   - `no_edit` (bool, default false) — skip prompt for remainder commit message
-- **Notes:** File-level only (`--no-tui` implicit). Hunk-level selection not available via MCP.
+- **Notes:** Auto-selects all hunks for the specified files (`--no-tui` implicit).
 - **Returns:** Result of the split operation
 
 #### `stack_reorder`

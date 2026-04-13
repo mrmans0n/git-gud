@@ -1,7 +1,7 @@
 {
   "name": "git-gud",
   "description": "Stacked diffs CLI for GitHub and GitLab. Skills for creating, syncing, landing, and managing stacked PRs/MRs with gg.",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "author": {
     "name": "Nacho L\u00f3pez",
     "url": "https://nlopez.io"

@@ -15,6 +15,7 @@ gg land [OPTIONS]
 - `-u, --until <UNTIL>`: Land up to a target entry (position, GG-ID, SHA)
 - `-c, --clean`: Clean stack automatically after landing all
 - `--no-clean`: Disable auto-clean for this run
+- `--admin`: *(GitHub only)* Use admin privileges to bypass branch protection approval requirements
 - `--json`: Emit machine-readable JSON output (no human logs)
 
 ## Examples
@@ -34,6 +35,12 @@ gg land --all --auto-merge
 
 # JSON output for automation
 gg land --all --json
+
+# Bypass approval requirements (GitHub admin)
+gg land --admin
+
+# Land full stack with admin override
+gg land --all --wait --admin
 ```
 
 ## Merge Trains (GitLab)

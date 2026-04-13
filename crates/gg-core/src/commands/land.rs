@@ -342,6 +342,7 @@ pub fn run(
     auto_clean: bool,
     auto_merge_flag: bool,
     until: Option<String>,
+    admin: bool,
 ) -> Result<()> {
     let repo = git::open_repo()?;
     let _lock = git::acquire_operation_lock(&repo, "land")?;
@@ -617,7 +618,7 @@ pub fn run(
                     if let Err(e) = wait_for_pr_ready(
                         &provider,
                         pr_num,
-                        land_all,
+                        land_all || admin,
                         timeout_minutes,
                         interrupted.as_ref(),
                         &stack.base,
@@ -635,7 +636,7 @@ pub fn run(
                         land_error = Some(e.to_string());
                         break 'landing_loop;
                     }
-                } else if !land_all {
+                } else if !land_all && !admin {
                     let approved = provider.check_pr_approved(pr_num)?;
                     if !approved {
                         land_error = Some(format!(
@@ -782,7 +783,10 @@ pub fn run(
             }
             break 'landing_loop;
         } else {
-            match provider.merge_pr(pr_num, squash, false) {
+            if admin {
+                eprintln!("⚠ Merging with admin override — bypassing approval requirements");
+            }
+            match provider.merge_pr(pr_num, squash, false, admin) {
                 Ok(()) => {
                     landed_entries.push(LandedEntryJson {
                         position: entry.position,

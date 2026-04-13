@@ -212,6 +212,10 @@ enum Commands {
         /// Disable automatic cleanup after landing (overrides config default)
         #[arg(long = "no-clean", conflicts_with = "clean")]
         no_clean: bool,
+
+        /// Use admin privileges to bypass branch protection approval requirements
+        #[arg(long)]
+        admin: bool,
     },
 
     /// Clean up merged stacks
@@ -467,6 +471,7 @@ fn main() {
             until,
             clean,
             no_clean,
+            admin,
         }) => {
             // Determine auto_clean based on flags and config
             let auto_clean = if clean {
@@ -485,9 +490,17 @@ fn main() {
                 }
             };
 
+            let admin = admin
+                || match gg_core::git::open_repo()
+                    .and_then(|repo| gg_core::config::Config::load_with_global(repo.commondir()))
+                {
+                    Ok(cfg) => cfg.get_land_admin(),
+                    Err(_) => false,
+                };
+
             (
                 gg_core::commands::land::run(
-                    all, json, !no_squash, wait, auto_clean, auto_merge, until,
+                    all, json, !no_squash, wait, auto_clean, auto_merge, until, admin,
                 ),
                 json,
             )

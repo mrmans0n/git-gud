@@ -47,6 +47,10 @@ pub struct Defaults {
     #[serde(default)]
     pub land_auto_clean: bool,
 
+    /// Use admin privileges to bypass approval requirements on land (default: false)
+    #[serde(default)]
+    pub land_admin: bool,
+
     /// Automatically run lint before sync (default: false)
     #[serde(default)]
     pub sync_auto_lint: bool,
@@ -108,6 +112,7 @@ impl Default for Defaults {
             auto_add_gg_ids: true,
             land_wait_timeout_minutes: None,
             land_auto_clean: false,
+            land_admin: false,
             sync_auto_lint: false,
             sync_auto_rebase: false,
             sync_behind_threshold: default_sync_behind_threshold(),
@@ -322,6 +327,11 @@ impl Config {
         self.defaults.land_auto_clean
     }
 
+    /// Get whether to use admin privileges when landing (default: false)
+    pub fn get_land_admin(&self) -> bool {
+        self.defaults.land_admin
+    }
+
     /// Get whether GitLab auto-merge-on-land is enabled by default (default: false)
     pub fn get_gitlab_auto_merge_on_land(&self) -> bool {
         self.defaults.gitlab.auto_merge_on_land
@@ -532,6 +542,33 @@ mod tests {
 
         let loaded = Config::load(git_dir).unwrap();
         assert!(loaded.get_land_auto_clean());
+    }
+
+    #[test]
+    fn test_land_admin_default() {
+        let config = Config::default();
+        assert!(!config.get_land_admin());
+    }
+
+    #[test]
+    fn test_land_admin_enabled() {
+        let mut config = Config::default();
+        config.defaults.land_admin = true;
+        assert!(config.get_land_admin());
+    }
+
+    #[test]
+    fn test_land_admin_roundtrip() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_dir = temp_dir.path();
+
+        let mut config = Config::default();
+        config.defaults.land_admin = true;
+
+        config.save(git_dir).unwrap();
+
+        let loaded = Config::load(git_dir).unwrap();
+        assert!(loaded.get_land_admin());
     }
 
     #[test]

@@ -208,7 +208,7 @@ pub fn run(options: SplitOptions) -> Result<()> {
         }
     };
 
-    if selected_indices.is_empty() {
+    if selected_indices.is_empty() && no_hunk_files.is_empty() {
         return Err(GgError::Other(
             "No hunks selected, nothing to split".to_string(),
         ));
@@ -229,7 +229,12 @@ pub fn run(options: SplitOptions) -> Result<()> {
     if !no_hunk_files.is_empty() {
         let mut builder = repo.treebuilder(Some(&first_tree))?;
         for file_path in &no_hunk_files {
-            update_tree_entry(&repo, &mut builder, &parent_tree, &target_tree, file_path)?;
+            let path = std::path::Path::new(file_path);
+            if target_tree.get_path(path).is_ok() {
+                update_tree_entry(&repo, &mut builder, &parent_tree, &target_tree, file_path)?;
+            } else {
+                remove_tree_entry(&repo, &mut builder, &parent_tree, file_path)?;
+            }
         }
         let tree_oid = builder.write()?;
         first_tree = repo.find_tree(tree_oid)?;

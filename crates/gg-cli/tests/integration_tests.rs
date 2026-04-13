@@ -6232,6 +6232,122 @@ fn test_split_no_tui_flag() {
     }
 }
 
+#[test]
+fn test_split_file_args_auto_selects_hunks() {
+    // Verify that `gg split <file>` auto-selects all hunks for that file
+    // without prompting, and leaves the other file in the remainder commit.
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "test-auto-select"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    // Create a commit with two text files, each with multiple lines
+    fs::write(
+        repo_path.join("alpha.txt"),
+        "line1\nline2\nline3\n",
+    )
+    .expect("write");
+    fs::write(
+        repo_path.join("beta.txt"),
+        "lineA\nlineB\nlineC\n",
+    )
+    .expect("write");
+    run_git(&repo_path, &["add", "alpha.txt", "beta.txt"]);
+    run_git(&repo_path, &["commit", "-m", "Add alpha and beta"]);
+
+    // Split out alpha.txt only
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &["split", "-m", "Split alpha", "--no-edit", "alpha.txt"],
+    );
+    assert!(
+        success,
+        "split should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+    assert!(
+        stdout.contains("Split complete"),
+        "Expected 'Split complete': {}",
+        stdout
+    );
+
+    // Verify the split commit only contains alpha.txt
+    let (_, diff_output, _) = run_git_full(&repo_path, &["diff", "HEAD~1", "HEAD", "--name-only"]);
+    assert!(
+        diff_output.contains("beta.txt"),
+        "Remainder commit should contain beta.txt: {}",
+        diff_output
+    );
+    assert!(
+        !diff_output.contains("alpha.txt"),
+        "Remainder commit should NOT contain alpha.txt: {}",
+        diff_output
+    );
+}
+
+#[test]
+fn test_split_binary_file_with_file_args() {
+    // Verify that `gg split <binary_file>` succeeds for a commit containing
+    // both a binary file and a text file, exercising the no_hunk_files path.
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "test-binary-split"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    // Create a commit with a text file and a binary file
+    fs::write(repo_path.join("readme.txt"), "hello\n").expect("write");
+    // Write a small PNG-like binary blob so git treats it as binary
+    let binary_content: Vec<u8> = vec![
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG header
+        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, // IHDR chunk
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+    ];
+    fs::write(repo_path.join("image.png"), &binary_content).expect("write binary");
+    run_git(&repo_path, &["add", "readme.txt", "image.png"]);
+    run_git(&repo_path, &["commit", "-m", "Add readme and image"]);
+
+    // Split out the binary file
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &["split", "-m", "Split binary", "--no-edit", "image.png"],
+    );
+    assert!(
+        success,
+        "split of binary file should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+    assert!(
+        stdout.contains("Split complete"),
+        "Expected 'Split complete': {}",
+        stdout
+    );
+
+    // Verify the stack now has 3 commits
+    let (_, log_output, _) = run_git_full(&repo_path, &["log", "--oneline"]);
+    let commit_count = log_output.lines().count();
+    assert!(
+        commit_count >= 3,
+        "Should have at least 3 commits after split: {}",
+        log_output
+    );
+}
+
 // ============================================================================
 // Clean command verification tests
 // ============================================================================

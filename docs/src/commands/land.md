@@ -15,6 +15,7 @@ gg land [OPTIONS]
 - `-u, --until <UNTIL>`: Land up to a target entry (position, GG-ID, SHA)
 - `-c, --clean`: Clean stack automatically after landing all
 - `--no-clean`: Disable auto-clean for this run
+- `--admin`: *(GitHub only)* Use admin privileges to bypass branch protection requirements (see [Admin Override](#admin-override) below)
 - `--json`: Emit machine-readable JSON output (no human logs)
 
 ## Examples
@@ -34,7 +35,23 @@ gg land --all --auto-merge
 
 # JSON output for automation
 gg land --all --json
+
+# Bypass approval requirements (GitHub admin)
+gg land --admin
+
+# Land full stack with admin override
+gg land --all --wait --admin
 ```
+
+## Admin Override
+
+The `--admin` flag (or `land_admin` config default) passes `--admin` to `gh pr merge`, which uses GitHub's API-level admin merge. This bypasses **all** branch protection rules the merging user has permission to override, which may include both review approvals **and** required status checks depending on your repository settings.
+
+Use `--wait --admin` if you want to wait for CI to pass before merging while still bypassing approval requirements. Without `--wait`, no client-side CI validation is performed.
+
+On GitLab, `--admin` is a no-op — `glab mr merge` has no equivalent flag. A warning is printed and the merge proceeds normally.
+
+A warning (`⚠ Merging with admin override`) is printed before each admin-elevated merge.
 
 ## Merge Trains (GitLab)
 

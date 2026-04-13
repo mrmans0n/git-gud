@@ -33,6 +33,7 @@ For global config, manually create `~/.config/gg/config.json` with your preferre
     "auto_add_gg_ids": true,
     "unstaged_action": "ask",
     "land_wait_timeout_minutes": 30,
+    "land_admin": false,
     "land_auto_clean": false,
     "sync_auto_lint": false,
     "sync_auto_rebase": false,
@@ -58,6 +59,7 @@ For global config, manually create `~/.config/gg/config.json` with your preferre
 | `auto_add_gg_ids` | `boolean` | **Deprecated** compatibility field. gg always enforces GG metadata normalization, regardless of this value. | `true` |
 | `unstaged_action` | `string` | Default behavior for `gg sc`/`gg amend` when unstaged changes exist: `ask`, `add`, `stash`, `continue`, or `abort` | `ask` |
 | `land_wait_timeout_minutes` | `number` | Timeout for `gg land --wait` polling | `30` |
+| `land_admin` | `boolean` | Use admin privileges to bypass approval requirements on land (GitHub only) | `false` |
 | `land_auto_clean` | `boolean` | Auto-run cleanup after full landing | `false` |
 | `sync_auto_lint` | `boolean` | Automatically run `gg lint` before `gg sync` | `false` |
 | `sync_auto_rebase` | `boolean` | Automatically run `gg rebase` before `gg sync` when behind threshold is reached | `false` |

@@ -333,17 +333,31 @@ fn rebase_remaining_branches(
     Ok(())
 }
 
+/// Options for the land command
+#[derive(Debug, Default)]
+pub struct LandOptions {
+    pub land_all: bool,
+    pub json: bool,
+    pub squash: bool,
+    pub wait: bool,
+    pub auto_clean: bool,
+    pub auto_merge_flag: bool,
+    pub until: Option<String>,
+    pub admin: bool,
+}
+
 /// Run the land command
-pub fn run(
-    land_all: bool,
-    json: bool,
-    squash: bool,
-    wait: bool,
-    auto_clean: bool,
-    auto_merge_flag: bool,
-    until: Option<String>,
-    admin: bool,
-) -> Result<()> {
+pub fn run(opts: LandOptions) -> Result<()> {
+    let LandOptions {
+        land_all,
+        json,
+        squash,
+        wait,
+        auto_clean,
+        auto_merge_flag,
+        until,
+        admin,
+    } = opts;
     let repo = git::open_repo()?;
     let _lock = git::acquire_operation_lock(&repo, "land")?;
 
@@ -618,7 +632,7 @@ pub fn run(
                     if let Err(e) = wait_for_pr_ready(
                         &provider,
                         pr_num,
-                        land_all || admin,
+                        land_all || (admin && provider == Provider::GitHub),
                         timeout_minutes,
                         interrupted.as_ref(),
                         &stack.base,
@@ -636,7 +650,7 @@ pub fn run(
                         land_error = Some(e.to_string());
                         break 'landing_loop;
                     }
-                } else if !land_all && !admin {
+                } else if !land_all && (!admin || provider != Provider::GitHub) {
                     let approved = provider.check_pr_approved(pr_num)?;
                     if !approved {
                         land_error = Some(format!(

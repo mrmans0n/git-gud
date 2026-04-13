@@ -55,6 +55,7 @@ Store shared defaults in `~/.config/gg/config.json` that apply to all repos. Loc
     "sync_auto_lint": false,
     "sync_draft": false,
     "sync_update_descriptions": true,
+    "land_admin": false,
     "land_auto_clean": false,
     "land_wait_timeout_minutes": 30,
     "unstaged_action": "ask"

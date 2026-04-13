@@ -473,35 +473,34 @@ fn main() {
             no_clean,
             admin,
         }) => {
-            // Determine auto_clean based on flags and config
+            // Load config once for resolving defaults
+            let land_cfg = gg_core::git::open_repo()
+                .and_then(|repo| gg_core::config::Config::load_with_global(repo.commondir()))
+                .ok();
+
             let auto_clean = if clean {
-                // --clean explicitly passed
                 true
             } else if no_clean {
-                // --no-clean explicitly passed
                 false
             } else {
-                // No explicit flag, use config default
-                match gg_core::git::open_repo()
-                    .and_then(|repo| gg_core::config::Config::load_with_global(repo.commondir()))
-                {
-                    Ok(cfg) => cfg.get_land_auto_clean(),
-                    Err(_) => false, // If we can't load config, default to false
-                }
+                land_cfg
+                    .as_ref()
+                    .is_some_and(|cfg| cfg.get_land_auto_clean())
             };
 
-            let admin = admin
-                || match gg_core::git::open_repo()
-                    .and_then(|repo| gg_core::config::Config::load_with_global(repo.commondir()))
-                {
-                    Ok(cfg) => cfg.get_land_admin(),
-                    Err(_) => false,
-                };
+            let admin = admin || land_cfg.as_ref().is_some_and(|cfg| cfg.get_land_admin());
 
             (
-                gg_core::commands::land::run(
-                    all, json, !no_squash, wait, auto_clean, auto_merge, until, admin,
-                ),
+                gg_core::commands::land::run(gg_core::commands::land::LandOptions {
+                    land_all: all,
+                    json,
+                    squash: !no_squash,
+                    wait,
+                    auto_clean,
+                    auto_merge_flag: auto_merge,
+                    until,
+                    admin,
+                }),
                 json,
             )
         }

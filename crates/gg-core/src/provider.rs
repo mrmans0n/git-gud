@@ -229,7 +229,13 @@ impl Provider {
     }
 
     /// Merge a PR/MR immediately.
-    pub fn merge_pr(&self, number: u64, squash: bool, delete_branch: bool, admin: bool) -> Result<()> {
+    pub fn merge_pr(
+        &self,
+        number: u64,
+        squash: bool,
+        delete_branch: bool,
+        admin: bool,
+    ) -> Result<()> {
         match self {
             Provider::GitHub => gh::merge_pr(number, squash, delete_branch, admin),
             Provider::GitLab => {

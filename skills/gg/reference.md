@@ -88,6 +88,7 @@ Merge approved PRs/MRs from bottom up.
 - `-u, --until <UNTIL>`
 - `-c, --clean`
 - `--no-clean`
+- `--admin` *(GitHub only)* — bypass branch protection approval requirements
 - `--json`
 
 #### `gg clean [OPTIONS]`
@@ -467,7 +468,7 @@ Get detailed PR/MR information by number.
 #### `config_show`
 Show repository git-gud configuration.
 - **Params:** none
-- **Returns:** `{ provider, base_branch, branch_username, lint_commands, auto_add_gg_ids, land_auto_clean, sync_auto_lint, sync_auto_rebase }` (`auto_add_gg_ids` is a compatibility field and is always `true`).
+- **Returns:** `{ provider, base_branch, branch_username, lint_commands, auto_add_gg_ids, land_admin, land_auto_clean, sync_auto_lint, sync_auto_rebase }` (`auto_add_gg_ids` is a compatibility field and is always `true`).
 
 ### Environment Variables
 
@@ -486,7 +487,7 @@ Push branches and create/update PRs.
 
 #### `stack_land`
 Merge approved PRs.
-- **Params:** `all` (bool), `squash` (bool), `auto_clean` (bool), `until` (string)
+- **Params:** `all` (bool), `squash` (bool), `auto_clean` (bool), `until` (string), `admin` (bool)
 - **Returns:** JSON land results
 
 #### `stack_clean`

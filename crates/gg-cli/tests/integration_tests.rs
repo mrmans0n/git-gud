@@ -6250,16 +6250,8 @@ fn test_split_file_args_auto_selects_hunks() {
     assert!(success, "Failed to create stack: {}", stderr);
 
     // Create a commit with two text files, each with multiple lines
-    fs::write(
-        repo_path.join("alpha.txt"),
-        "line1\nline2\nline3\n",
-    )
-    .expect("write");
-    fs::write(
-        repo_path.join("beta.txt"),
-        "lineA\nlineB\nlineC\n",
-    )
-    .expect("write");
+    fs::write(repo_path.join("alpha.txt"), "line1\nline2\nline3\n").expect("write");
+    fs::write(repo_path.join("beta.txt"), "lineA\nlineB\nlineC\n").expect("write");
     run_git(&repo_path, &["add", "alpha.txt", "beta.txt"]);
     run_git(&repo_path, &["commit", "-m", "Add alpha and beta"]);
 

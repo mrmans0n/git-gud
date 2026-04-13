@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-04-13
+
+### Added
+- `gg run` command to execute commands across stack commits, with read-only, amend, discard, parallel, and JSON output modes (#258)
+- `--admin` flag for `gg land` to allow PR approval bypass flows where supported (#262)
+
+### Changed
+- `gg split` now defaults to the interactive hunk-selection TUI, removing the need for a separate `-i` mode (#265)
+
+### Fixed
+- `gg split` no longer fails when the editor is left unchanged and the commit message would otherwise become empty (#263)
+
+### Dependencies
+- Updated `rmcp` to v1.4.0 (#256)
+
 ## [0.7.4] - 2026-04-08
 
 ### Fixed

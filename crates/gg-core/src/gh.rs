@@ -297,7 +297,7 @@ pub fn update_pr_title(pr_number: u64, title: &str) -> Result<()> {
 }
 
 /// Merge a PR
-pub fn merge_pr(pr_number: u64, squash: bool, delete_branch: bool) -> Result<()> {
+pub fn merge_pr(pr_number: u64, squash: bool, delete_branch: bool, admin: bool) -> Result<()> {
     let pr_num_str = pr_number.to_string();
     let mut args = vec!["pr", "merge", &pr_num_str];
 
@@ -309,6 +309,10 @@ pub fn merge_pr(pr_number: u64, squash: bool, delete_branch: bool) -> Result<()>
 
     if delete_branch {
         args.push("--delete-branch");
+    }
+
+    if admin {
+        args.push("--admin");
     }
 
     let output = Command::new("gh").args(&args).output()?;

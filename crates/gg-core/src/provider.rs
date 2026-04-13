@@ -229,10 +229,15 @@ impl Provider {
     }
 
     /// Merge a PR/MR immediately.
-    pub fn merge_pr(&self, number: u64, squash: bool, delete_branch: bool) -> Result<()> {
+    pub fn merge_pr(&self, number: u64, squash: bool, delete_branch: bool, admin: bool) -> Result<()> {
         match self {
-            Provider::GitHub => gh::merge_pr(number, squash, delete_branch),
-            Provider::GitLab => glab::merge_mr(number, squash, delete_branch),
+            Provider::GitHub => gh::merge_pr(number, squash, delete_branch, admin),
+            Provider::GitLab => {
+                if admin {
+                    eprintln!("⚠ --admin is not supported on GitLab; ignoring flag");
+                }
+                glab::merge_mr(number, squash, delete_branch)
+            }
         }
     }
 

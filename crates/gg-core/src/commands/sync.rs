@@ -8,12 +8,12 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git::{self, get_commit_description, strip_gg_id_from_message};
+use crate::managed_body;
 use crate::output::{
     print_json, SyncEntryResultJson, SyncMetadataJson, SyncResponse, SyncResultJson, OUTPUT_VERSION,
 };
 use crate::provider::Provider;
 use crate::stack::{resolve_target, Stack};
-use crate::managed_body;
 use crate::template::{self, TemplateContext};
 
 /// Format and display a push error with helpful context
@@ -464,10 +464,8 @@ pub fn run(
                         // preserving user edits outside the markers.
                         match provider.get_pr_body(pr_num) {
                             Ok(remote_body) => {
-                                let merged = managed_body::replace_managed(
-                                    &remote_body,
-                                    &description,
-                                );
+                                let merged =
+                                    managed_body::replace_managed(&remote_body, &description);
                                 let new_body = match merged {
                                     Some(body) => body,
                                     None => {
@@ -499,9 +497,8 @@ pub fn run(
                                             ));
                                         }
                                         if entry_error.is_none() {
-                                            entry_error = Some(format!(
-                                                "Could not update description: {e}"
-                                            ));
+                                            entry_error =
+                                                Some(format!("Could not update description: {e}"));
                                         }
                                     }
                                 }
@@ -519,8 +516,7 @@ pub fn run(
                                     ));
                                 }
                                 if entry_error.is_none() {
-                                    entry_error =
-                                        Some(format!("Could not read remote body: {e}"));
+                                    entry_error = Some(format!("Could not read remote body: {e}"));
                                 }
                             }
                         }

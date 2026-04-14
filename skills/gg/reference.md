@@ -71,7 +71,7 @@ Push and create/update PRs/MRs.
 
 - `-d, --draft`: Create new PRs/MRs as draft (does not convert existing PRs to draft)
 - `-f, --force`
-- `--update-descriptions`
+- `--update-descriptions`: Update PR/MR titles and descriptions. On update, only the managed block (`<!-- gg:managed:start/end -->`) is replaced — user content outside the markers is preserved. Legacy PRs without markers skip the body update with a warning.
 - `-l, --lint` *(aborts sync on lint failure and restores repository state to the pre-sync snapshot)*
 - `--no-lint`
 - `--no-rebase-check`

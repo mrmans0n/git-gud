@@ -21,8 +21,12 @@ pub fn wrap(content: &str) -> String {
 /// Returns `None` if the body does not contain both markers in order.
 pub fn extract_managed(body: &str) -> Option<&str> {
     let start_idx = body.find(MANAGED_START)?;
-    let content_start = start_idx + MANAGED_START.len() + 1; // +1 for the \n after marker
-    let end_idx = body[content_start..].find(MANAGED_END)?;
+    let mut content_start = start_idx + MANAGED_START.len();
+    // Skip the newline after the start marker if present
+    if body.as_bytes().get(content_start) == Some(&b'\n') {
+        content_start += 1;
+    }
+    let end_idx = body.get(content_start..)?.find(MANAGED_END)?;
     let content = &body[content_start..content_start + end_idx];
     // Trim trailing newline before end marker
     Some(content.strip_suffix('\n').unwrap_or(content))
@@ -213,6 +217,20 @@ mod tests {
         assert!(synced2.contains("User footer"));
         assert!(synced2.contains("v3"));
         assert!(!synced2.contains("v2"));
+    }
+
+    #[test]
+    fn test_extract_managed_no_newline_after_start() {
+        // Start marker immediately followed by content (no \n)
+        let body = "<!-- gg:managed:start -->content\n<!-- gg:managed:end -->";
+        assert_eq!(extract_managed(body), Some("content"));
+    }
+
+    #[test]
+    fn test_extract_managed_start_marker_at_end() {
+        // Start marker at end of string with nothing after it
+        let body = "some text\n<!-- gg:managed:start -->";
+        assert_eq!(extract_managed(body), None);
     }
 
     #[test]

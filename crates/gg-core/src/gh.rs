@@ -262,6 +262,34 @@ pub fn update_pr_base(pr_number: u64, base_branch: &str) -> Result<()> {
     Ok(())
 }
 
+/// Get PR body text
+pub fn get_pr_body(pr_number: u64) -> Result<String> {
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr_number.to_string(),
+            "--json",
+            "body",
+            "--jq",
+            ".body",
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::Other(format!(
+            "Failed to get PR #{} body: {}",
+            pr_number, stderr
+        )));
+    }
+
+    let body = String::from_utf8_lossy(&output.stdout)
+        .trim_end()
+        .to_string();
+    Ok(body)
+}
+
 /// Update PR description/body
 pub fn update_pr_description(pr_number: u64, description: &str) -> Result<()> {
     let output = Command::new("gh")

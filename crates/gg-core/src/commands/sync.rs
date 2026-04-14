@@ -13,6 +13,7 @@ use crate::output::{
 };
 use crate::provider::Provider;
 use crate::stack::{resolve_target, Stack};
+use crate::managed_body;
 use crate::template::{self, TemplateContext};
 
 /// Format and display a push error with helpful context
@@ -458,19 +459,69 @@ pub fn run(
                                 entry_error = Some(format!("Could not update title: {e}"));
                             }
                         }
-                        if let Err(e) = provider.update_pr_description(pr_num, &description) {
-                            if !json {
-                                pb.println(format!(
-                                    "{} Could not update {} {}{} description: {}",
-                                    style("Warning:").yellow(),
-                                    provider.pr_label(),
-                                    provider.pr_number_prefix(),
-                                    pr_num,
-                                    e
-                                ));
+
+                        // Fetch current remote body and merge only the managed block,
+                        // preserving user edits outside the markers.
+                        match provider.get_pr_body(pr_num) {
+                            Ok(remote_body) => {
+                                let merged = managed_body::replace_managed(
+                                    &remote_body,
+                                    &description,
+                                );
+                                let new_body = match merged {
+                                    Some(body) => body,
+                                    None => {
+                                        // Legacy PR without managed markers — skip body update
+                                        if !json {
+                                            pb.println(format!(
+                                                "{} {} {}{} has no managed markers, skipping body update",
+                                                style("Warning:").yellow(),
+                                                provider.pr_label(),
+                                                provider.pr_number_prefix(),
+                                                pr_num
+                                            ));
+                                        }
+                                        String::new()
+                                    }
+                                };
+                                if !new_body.is_empty() {
+                                    if let Err(e) =
+                                        provider.update_pr_description(pr_num, &new_body)
+                                    {
+                                        if !json {
+                                            pb.println(format!(
+                                                "{} Could not update {} {}{} description: {}",
+                                                style("Warning:").yellow(),
+                                                provider.pr_label(),
+                                                provider.pr_number_prefix(),
+                                                pr_num,
+                                                e
+                                            ));
+                                        }
+                                        if entry_error.is_none() {
+                                            entry_error = Some(format!(
+                                                "Could not update description: {e}"
+                                            ));
+                                        }
+                                    }
+                                }
                             }
-                            if entry_error.is_none() {
-                                entry_error = Some(format!("Could not update description: {e}"));
+                            Err(e) => {
+                                // Could not read remote body — skip update to be safe
+                                if !json {
+                                    pb.println(format!(
+                                        "{} Could not read {} {}{} body, skipping description update: {}",
+                                        style("Warning:").yellow(),
+                                        provider.pr_label(),
+                                        provider.pr_number_prefix(),
+                                        pr_num,
+                                        e
+                                    ));
+                                }
+                                if entry_error.is_none() {
+                                    entry_error =
+                                        Some(format!("Could not read remote body: {e}"));
+                                }
                             }
                         }
                     }
@@ -515,12 +566,13 @@ pub fn run(
                 }
             }
             None => {
-                // Create new PR/MR
+                // Create new PR/MR — wrap description in managed markers
+                let wrapped_description = managed_body::wrap(&description);
                 match provider.create_pr(
                     &entry_branch,
                     &target_branch,
                     &title,
-                    &description,
+                    &wrapped_description,
                     entry_draft,
                 ) {
                     Ok(result) => {

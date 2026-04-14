@@ -51,6 +51,28 @@ gg sync --no-rebase-check
 gg sync --json
 ```
 
+## PR/MR Body Ownership
+
+When `gg sync` creates a new PR/MR, the generated description is wrapped in invisible HTML comment markers:
+
+```
+<!-- gg:managed:start -->
+(generated content from commit message / template)
+<!-- gg:managed:end -->
+```
+
+On subsequent syncs with `--update-descriptions`, only the content inside the managed block is regenerated. Any text you add **above or below** the markers on GitHub/GitLab is preserved across syncs.
+
+This means you can safely:
+
+- Add review checklists above or below the managed block
+- Write reviewer notes that survive re-syncs
+- Check/uncheck task boxes outside the managed section
+
+Content **inside** the managed block (the generated description) is regenerated on every sync. If your PR template includes a checklist, place persistent checklists outside the markers after creation.
+
+**Legacy PRs** (created before this feature) have no managed markers. `gg sync` will skip body updates for these PRs and log a warning, to avoid overwriting manual edits.
+
 Example JSON (shape):
 
 ```json

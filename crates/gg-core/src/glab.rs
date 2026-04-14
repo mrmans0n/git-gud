@@ -367,6 +367,33 @@ pub fn update_mr_target(mr_number: u64, target_branch: &str) -> Result<()> {
     Ok(())
 }
 
+/// JSON response for getting MR body only
+#[derive(Debug, Deserialize)]
+struct GlabMrBodyJson {
+    description: Option<String>,
+}
+
+/// Get MR description/body text
+pub fn get_mr_body(mr_number: u64) -> Result<String> {
+    let output = Command::new("glab")
+        .args(["mr", "view", &mr_number.to_string(), "--output", "json"])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::GlabError(format!(
+            "Failed to get MR !{} body: {}",
+            mr_number, stderr
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mr_json: GlabMrBodyJson = serde_json::from_str(&stdout)
+        .map_err(|e| GgError::GlabError(format!("Failed to parse MR JSON: {}", e)))?;
+
+    Ok(mr_json.description.unwrap_or_default())
+}
+
 /// Update MR description/body
 pub fn update_mr_description(mr_number: u64, description: &str) -> Result<()> {
     let output = Command::new("glab")

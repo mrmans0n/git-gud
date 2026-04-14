@@ -10,6 +10,7 @@ pub mod error;
 pub mod gh;
 pub mod git;
 pub mod glab;
+pub mod managed_body;
 pub mod output;
 pub mod provider;
 pub mod stack;

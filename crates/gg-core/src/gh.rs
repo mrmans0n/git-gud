@@ -285,7 +285,7 @@ pub fn get_pr_body(pr_number: u64) -> Result<String> {
     }
 
     let body = String::from_utf8_lossy(&output.stdout)
-        .trim_end()
+        .trim_end_matches('\n')
         .to_string();
     Ok(body)
 }

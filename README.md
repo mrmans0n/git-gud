@@ -315,41 +315,6 @@ Example configuration:
 }
 ```
 
-### PR/MR Description Templates
-
-You can customize PR/MR descriptions by creating a template file at `.git/gg/pr_template.md`. When this file exists, it will be used for all new PR/MR descriptions created by `gg sync`.
-
-#### Template Placeholders
-
-| Placeholder | Description |
-|-------------|-------------|
-| `{{title}}` | The PR/MR title (from commit subject) |
-| `{{description}}` | The commit body/description (empty if none) |
-| `{{stack_name}}` | Name of the current stack |
-| `{{commit_sha}}` | Short SHA of the commit |
-
-#### Example Template
-
-Create `.git/gg/pr_template.md`:
-
-```markdown
-## Summary
-
-{{description}}
-
----
-
-**Stack:** `{{stack_name}}`
-**Commit:** {{commit_sha}}
-
-## Checklist
-
-- [ ] Tests added/updated
-- [ ] Documentation updated
-```
-
-If no template file exists, git-gud uses the commit description directly, or a default fallback message if the commit has no body.
-
 ## How It Works
 
 ### Branch Naming
@@ -462,33 +427,6 @@ $ gg ls
 $ gg sync
 ```
 
-## Shell Completions
-
-Generate completions for your shell, then enable them in your shell config:
-
-```bash
-# Bash
-mkdir -p ~/.local/share/bash-completion/completions
-gg completions bash > ~/.local/share/bash-completion/completions/gg
-
-# Add to ~/.bashrc (if bash-completion isn't already enabled)
-# source /usr/share/bash-completion/bash_completion
-# or on some distros:
-# source /etc/bash_completion
-
-# Zsh
-mkdir -p ~/.zfunc
-gg completions zsh > ~/.zfunc/_gg
-
-# Add to ~/.zshrc
-# fpath=(~/.zfunc $fpath)
-# autoload -Uz compinit && compinit
-
-# Fish
-mkdir -p ~/.config/fish/completions
-gg completions fish > ~/.config/fish/completions/gg.fish
-```
-
 ## Reconciling Out-of-Sync Stacks
 
 If you (or someone else) pushed commits without using `gg sync`, your stack may be out of sync:
@@ -530,7 +468,7 @@ OK Reconciliation complete!
 - When inheriting a stack from another machine that got out of sync
 - When PRs were created manually outside of git-gud
 
-## AI Agent Integration
+## AI Agent Integration: Skills
 
 git-gud ships as a [Claude Code plugin](https://code.claude.com/docs/en/plugins) following the open [Agent Skills](https://agentskills.io) standard. AI coding agents — Claude Code, Cursor, Gemini CLI, OpenAI Codex, and others — can use `gg` for stacked-diff workflows.
 
@@ -549,6 +487,63 @@ One unified skill is included:
 - **gg** — Stacked diffs with GitHub (`gh` CLI) or GitLab (`glab` CLI, merge trains)
 
 📚 **[Agent Skills Guide](https://mrmans0n.github.io/git-gud/guides/agent-skills.html)** — full setup, usage, and agent operating rules.
+
+## AI Agent Integration: MCP Server
+
+git-gud includes an MCP (Model Context Protocol) server that lets AI assistants interact with your stacked-diffs workflows.
+
+```json
+{
+  "mcpServers": {
+    "git-gud": {
+      "command": "gg-mcp",
+      "env": { "GG_REPO_PATH": "/path/to/your/repo" }
+    }
+  }
+}
+```
+
+**19 tools** available: stack inspection, PR status, sync, land, rebase, navigation, and more. See the [MCP Server docs](https://mrmans0n.github.io/git-gud/mcp-server.html) for details.
+
+### MCP vs Agent Skills
+
+git-gud also ships [agent skills](https://mrmans0n.github.io/git-gud/guides/agent-skills.html) (`skills/gg/`) for coding agents like Claude Code and Codex. Here's when to use each:
+
+| | **MCP Server** | **Agent Skills** |
+|---|---|---|
+| **Best for** | AI apps (Claude Desktop, Cursor, Windsurf) | Coding agents with shell access |
+| **How it works** | Structured tool calls over JSON-RPC | Agent reads SKILL.md, runs `gg` CLI directly |
+| **Setup** | Add `gg-mcp` to MCP client config | Drop `skills/gg/` into the project |
+| **Output** | Typed JSON responses | Parses CLI text or `--json` output |
+
+Use **MCP** when your AI client supports it. Use **Skills** when the agent has direct terminal access and you want zero extra setup.
+
+## Shell Completions
+
+Generate completions for your shell, then enable them in your shell config:
+
+```bash
+# Bash
+mkdir -p ~/.local/share/bash-completion/completions
+gg completions bash > ~/.local/share/bash-completion/completions/gg
+
+# Add to ~/.bashrc (if bash-completion isn't already enabled)
+# source /usr/share/bash-completion/bash_completion
+# or on some distros:
+# source /etc/bash_completion
+
+# Zsh
+mkdir -p ~/.zfunc
+gg completions zsh > ~/.zfunc/_gg
+
+# Add to ~/.zshrc
+# fpath=(~/.zfunc $fpath)
+# autoload -Uz compinit && compinit
+
+# Fish
+mkdir -p ~/.config/fish/completions
+gg completions fish > ~/.config/fish/completions/gg.fish
+```
 
 ## Troubleshooting
 
@@ -587,35 +582,6 @@ Stacks must have linear history. Rebase your branch to remove merge commits:
 git rebase main
 ```
 
-## MCP Server
-
-git-gud includes an MCP (Model Context Protocol) server that lets AI assistants interact with your stacked-diffs workflows.
-
-```json
-{
-  "mcpServers": {
-    "git-gud": {
-      "command": "gg-mcp",
-      "env": { "GG_REPO_PATH": "/path/to/your/repo" }
-    }
-  }
-}
-```
-
-**19 tools** available: stack inspection, PR status, sync, land, rebase, navigation, and more. See the [MCP Server docs](https://mrmans0n.github.io/git-gud/mcp-server.html) for details.
-
-### MCP vs Agent Skills
-
-git-gud also ships [agent skills](https://mrmans0n.github.io/git-gud/guides/agent-skills.html) (`skills/gg/`) for coding agents like Claude Code and Codex. Here's when to use each:
-
-| | **MCP Server** | **Agent Skills** |
-|---|---|---|
-| **Best for** | AI apps (Claude Desktop, Cursor, Windsurf) | Coding agents with shell access |
-| **How it works** | Structured tool calls over JSON-RPC | Agent reads SKILL.md, runs `gg` CLI directly |
-| **Setup** | Add `gg-mcp` to MCP client config | Drop `skills/gg/` into the project |
-| **Output** | Typed JSON responses | Parses CLI text or `--json` output |
-
-Use **MCP** when your AI client supports it. Use **Skills** when the agent has direct terminal access and you want zero extra setup.
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.

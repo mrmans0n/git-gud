@@ -166,7 +166,7 @@ gg clean
 | `gg sync` | Push all commits and create/update PRs/MRs |
 | `gg sync --draft` | Create new PRs/MRs as drafts |
 | `gg sync --force` | Force push even if remote diverged |
-| `gg sync --update-descriptions` | Update PR/MR titles and descriptions to match commit messages |
+| `gg sync --update-descriptions` | Update PR/MR titles and descriptions. Only the managed block is replaced; user edits outside the markers are preserved. Legacy PRs without markers skip the body update with a warning. |
 | `gg sync --until <target>` | Sync only up to a specific commit (by position, GG-ID, or SHA) |
 | `gg sync --no-rebase-check` | Skip checking whether the stack base is behind `origin/<base>` |
 
@@ -349,6 +349,10 @@ Create `.git/gg/pr_template.md`:
 ```
 
 If no template file exists, git-gud uses the commit description directly, or a default fallback message if the commit has no body.
+
+#### Body Ownership
+
+PR/MR descriptions created by `gg sync` are wrapped in managed markers (`<!-- gg:managed:start/end -->`). On subsequent syncs with `--update-descriptions`, only the managed block is regenerated — any text you add outside the markers (review checklists, notes) is preserved. PRs created before this feature have no markers and their body is left untouched on re-sync.
 
 ## How It Works
 

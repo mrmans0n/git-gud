@@ -284,9 +284,10 @@ pub fn get_pr_body(pr_number: u64) -> Result<String> {
         )));
     }
 
-    let body = String::from_utf8_lossy(&output.stdout)
-        .trim_end_matches('\n')
-        .to_string();
+    let body = String::from_utf8_lossy(&output.stdout);
+    // Strip only the single trailing newline that `gh --jq` appends,
+    // preserving any user-authored trailing whitespace.
+    let body = body.strip_suffix('\n').unwrap_or(&body).to_string();
     Ok(body)
 }
 

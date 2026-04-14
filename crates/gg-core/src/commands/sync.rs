@@ -470,14 +470,21 @@ pub fn run(
                                     Some(body) => body,
                                     None => {
                                         // Legacy PR without managed markers — skip body update
+                                        let skip_msg = format!(
+                                            "{} {}{} has no managed markers, skipping body update",
+                                            provider.pr_label(),
+                                            provider.pr_number_prefix(),
+                                            pr_num
+                                        );
                                         if !json {
                                             pb.println(format!(
-                                                "{} {} {}{} has no managed markers, skipping body update",
+                                                "{} {}",
                                                 style("Warning:").yellow(),
-                                                provider.pr_label(),
-                                                provider.pr_number_prefix(),
-                                                pr_num
+                                                skip_msg
                                             ));
+                                        }
+                                        if entry_error.is_none() {
+                                            entry_error = Some(skip_msg);
                                         }
                                         String::new()
                                     }
@@ -969,6 +976,85 @@ mod tests {
             ensure_draft_prefix_for_gitlab("  Draft: Add feature", &Provider::GitLab, true),
             "  Draft: Add feature"
         );
+    }
+
+    #[test]
+    fn test_build_pr_payload_wrapped_in_managed_markers() {
+        use crate::managed_body;
+
+        let (_, description) = build_pr_payload(
+            "Add feature",
+            Some("Details here".to_string()),
+            "stack",
+            "abc123",
+            None,
+        );
+        let wrapped = managed_body::wrap(&description);
+        assert!(wrapped.starts_with("<!-- gg:managed:start -->"));
+        assert!(wrapped.ends_with("<!-- gg:managed:end -->"));
+        assert!(wrapped.contains("Details here"));
+
+        // Simulate user editing the PR body around the managed block
+        let user_edited = format!(
+            "## Checklist\n- [x] Tests pass\n- [ ] Docs updated\n\n{}\n\n## Notes\nReviewer comments here",
+            wrapped
+        );
+
+        // Re-sync with updated description preserves user edits
+        let (_, new_description) = build_pr_payload(
+            "Add feature v2",
+            Some("Updated details".to_string()),
+            "stack",
+            "abc123",
+            None,
+        );
+        let result = managed_body::replace_managed(&user_edited, &new_description).unwrap();
+        assert!(result.contains("- [x] Tests pass"));
+        assert!(result.contains("- [ ] Docs updated"));
+        assert!(result.contains("Reviewer comments here"));
+        assert!(result.contains("Updated details"));
+        assert!(!result.contains("Details here"));
+    }
+
+    #[test]
+    fn test_build_pr_payload_with_template_wrapped_survives_resync() {
+        use crate::managed_body;
+
+        let template = "## {{title}}\n\n{{description}}\n\n---\nStack: {{stack_name}}";
+        let (_, description) = build_pr_payload(
+            "Fix bug",
+            Some("Bug fix description".to_string()),
+            "my-stack",
+            "def456",
+            Some(template),
+        );
+        let wrapped = managed_body::wrap(&description);
+
+        // User adds checklist before and after
+        let body = format!("- [x] Review done\n\n{}\n\n- [ ] Deploy verified", wrapped);
+
+        // Re-sync with new description
+        let (_, new_desc) = build_pr_payload(
+            "Fix bug v2",
+            Some("Updated fix".to_string()),
+            "my-stack",
+            "def456",
+            Some(template),
+        );
+        let result = managed_body::replace_managed(&body, &new_desc).unwrap();
+        assert!(result.contains("- [x] Review done"));
+        assert!(result.contains("- [ ] Deploy verified"));
+        assert!(result.contains("Fix bug v2"));
+        assert!(result.contains("Updated fix"));
+    }
+
+    #[test]
+    fn test_legacy_body_without_markers_returns_none() {
+        use crate::managed_body;
+
+        let legacy_body =
+            "This is a PR created before managed markers were introduced.\n\n- [x] Tests pass";
+        assert!(managed_body::replace_managed(legacy_body, "New content").is_none());
     }
 
     #[test]

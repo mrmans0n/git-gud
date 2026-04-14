@@ -20,7 +20,7 @@ pub fn wrap(content: &str) -> String {
 ///
 /// Returns `None` if the body does not contain both markers in order.
 pub fn extract_managed(body: &str) -> Option<&str> {
-    let start_idx = body.find(MANAGED_START)?;
+    let start_idx = body.rfind(MANAGED_START)?;
     let mut content_start = start_idx + MANAGED_START.len();
     // Skip the newline after the start marker if present
     if body.as_bytes().get(content_start) == Some(&b'\n') {
@@ -37,7 +37,7 @@ pub fn extract_managed(body: &str) -> Option<&str> {
 ///
 /// Returns `None` if the body does not contain managed markers (legacy body).
 pub fn replace_managed(existing_body: &str, new_content: &str) -> Option<String> {
-    let start_idx = existing_body.find(MANAGED_START)?;
+    let start_idx = existing_body.rfind(MANAGED_START)?;
     let after_start = start_idx + MANAGED_START.len();
     let end_idx = existing_body[after_start..].find(MANAGED_END)?;
     let absolute_end = after_start + end_idx + MANAGED_END.len();
@@ -238,6 +238,25 @@ mod tests {
         // If user removes markers, we treat it as legacy and don't touch it
         let body = "User completely rewrote the PR body";
         assert!(replace_managed(body, "New generated").is_none());
+    }
+
+    #[test]
+    fn test_marker_text_in_user_content_before_managed_block() {
+        // If a user references marker syntax in their PR body before the actual
+        // managed block, rfind ensures we find the real managed block, not the
+        // false positive in user text.
+        let managed = wrap("Real generated content");
+        let body = format!(
+            "See docs — markers look like `<!-- gg:managed:start -->`.\n\n{}",
+            managed
+        );
+        let extracted = extract_managed(&body).unwrap();
+        assert_eq!(extracted, "Real generated content");
+
+        let replaced = replace_managed(&body, "Updated content").unwrap();
+        assert!(replaced.contains("markers look like"));
+        assert!(replaced.contains("Updated content"));
+        assert!(!replaced.contains("Real generated content"));
     }
 
     #[test]

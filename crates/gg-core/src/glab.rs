@@ -1341,4 +1341,25 @@ mod tests {
         assert_eq!(cloned.name, job.name);
         assert_eq!(cloned.stage, job.stage);
     }
+
+    #[test]
+    fn test_glab_mr_body_json_deserialization() {
+        let json = r#"{"description": "Some MR description"}"#;
+        let parsed: GlabMrBodyJson = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.description, Some("Some MR description".to_string()));
+    }
+
+    #[test]
+    fn test_glab_mr_body_json_null_description() {
+        let json = r#"{"description": null}"#;
+        let parsed: GlabMrBodyJson = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.description, None);
+    }
+
+    #[test]
+    fn test_glab_mr_body_json_missing_description() {
+        let json = r#"{}"#;
+        let parsed: GlabMrBodyJson = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.description, None);
+    }
 }

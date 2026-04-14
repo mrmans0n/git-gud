@@ -239,4 +239,17 @@ mod tests {
         let body = "User completely rewrote the PR body";
         assert!(replace_managed(body, "New generated").is_none());
     }
+
+    #[test]
+    fn test_replace_managed_marker_in_generated_content() {
+        // If generated content contains the end marker text, replace_managed
+        // matches the first end marker after the start marker. This is a
+        // degenerate case — generated content should never contain markers.
+        let existing = wrap("Normal content");
+        let result = replace_managed(&existing, "Content with <!-- gg:managed:end --> inside");
+        assert!(result.is_some());
+        // The new content is wrapped correctly
+        let body = result.unwrap();
+        assert!(body.contains("Content with <!-- gg:managed:end --> inside"));
+    }
 }

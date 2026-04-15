@@ -390,6 +390,7 @@ pub fn run(
                         draft: entry_draft,
                         pushed,
                         error: entry_error,
+                        nav_comment_action: None,
                     });
                     continue;
                 }
@@ -640,6 +641,7 @@ pub fn run(
                 draft: entry_draft,
                 pushed,
                 error: entry_error,
+                nav_comment_action: None,
             });
         }
 
@@ -1079,6 +1081,7 @@ mod tests {
                     draft: false,
                     pushed: true,
                     error: None,
+                    nav_comment_action: None,
                 }],
             },
         };

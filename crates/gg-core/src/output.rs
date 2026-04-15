@@ -131,6 +131,11 @@ pub struct SyncEntryResultJson {
     pub draft: bool,
     pub pushed: bool,
     pub error: Option<String>,
+    /// Optional: action taken on the managed nav comment for this entry's PR.
+    /// One of "created", "updated", "unchanged", "deleted", "skipped", "error".
+    /// Omitted when the feature is disabled and no cleanup was required.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nav_comment_action: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -281,6 +286,49 @@ mod tests {
             value["lint"]["results"][0]["commands"][0]["output"],
             "error: warning denied"
         );
+    }
+
+    #[test]
+    fn test_sync_entry_nav_comment_action_omitted_when_none() {
+        let entry = SyncEntryResultJson {
+            position: 1,
+            sha: "abc".to_string(),
+            title: "t".to_string(),
+            gg_id: "c-1234567".to_string(),
+            branch: "b".to_string(),
+            action: "created".to_string(),
+            pr_number: Some(1),
+            pr_url: None,
+            draft: false,
+            pushed: true,
+            error: None,
+            nav_comment_action: None,
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert!(
+            json.get("nav_comment_action").is_none(),
+            "field should be omitted when None"
+        );
+    }
+
+    #[test]
+    fn test_sync_entry_nav_comment_action_serializes_when_some() {
+        let entry = SyncEntryResultJson {
+            position: 1,
+            sha: "abc".to_string(),
+            title: "t".to_string(),
+            gg_id: "c-1234567".to_string(),
+            branch: "b".to_string(),
+            action: "created".to_string(),
+            pr_number: Some(1),
+            pr_url: None,
+            draft: false,
+            pushed: true,
+            error: None,
+            nav_comment_action: Some("created".to_string()),
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["nav_comment_action"], "created");
     }
 }
 

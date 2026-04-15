@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-04-15
+
+### Added
+- `gg sync` now preserves manual pull request body edits while still managing the generated sections it owns (#272)
+
+### Changed
+- Updated dependencies: `tokio` to v1.51.1 and v1.52.0, `clap_complete` to v4.6.2, and `skim` to v4.6.0 (#267, #268, #269, #273)
+- README refresh and cleanup
+
 ## [0.8.0] - 2026-04-13
 
 ### Added
@@ -349,7 +358,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.7.4...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/mrmans0n/git-gud/compare/v0.8.0...v0.8.1
 [0.7.4]: https://github.com/mrmans0n/git-gud/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/mrmans0n/git-gud/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/mrmans0n/git-gud/compare/v0.7.1...v0.7.2
@@ -385,3 +395,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.7]: https://github.com/mrmans0n/git-gud/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/mrmans0n/git-gud/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/mrmans0n/git-gud/releases/tag/v0.1.5
+
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/mrmans0n/git-gud/compare/v0.8.0...v0.8.2

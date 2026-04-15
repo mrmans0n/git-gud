@@ -99,12 +99,16 @@ pub(crate) fn decide_action(input: NavDecisionInput) -> NavAction {
     }
 }
 
-/// Returns true if `body` contains the managed-comment marker.
+/// Returns true if `body` ends with the managed-comment marker.
 ///
 /// Used to identify git-gud-managed nav comments among arbitrary PR comments
 /// when we need to find our own comment to update or delete it.
+///
+/// We require the marker at the end (modulo trailing whitespace) rather than
+/// just `contains()` to avoid false positives when a reviewer quotes the
+/// marker text in a normal discussion comment.
 pub(crate) fn is_managed_comment(body: &str) -> bool {
-    body.contains(MARKER)
+    body.trim_end().ends_with(MARKER)
 }
 
 #[cfg(test)]
@@ -286,6 +290,16 @@ mod tests {
     #[test]
     fn test_is_managed_comment_empty_body() {
         assert!(!is_managed_comment(""));
+    }
+
+    #[test]
+    fn test_is_managed_comment_marker_in_middle_is_false_positive() {
+        // A reviewer quoting the marker in a discussion comment should NOT match.
+        let body = "See the docs — the marker is `<!-- gg:stack-nav -->` at the end.\n\nLGTM!";
+        assert!(
+            !is_managed_comment(body),
+            "marker in the middle of a comment should not match"
+        );
     }
 
     #[test]

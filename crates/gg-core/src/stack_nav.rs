@@ -47,6 +47,15 @@ pub fn render(stack_name: &str, entries: &[StackNavEntry], number_prefix: &str) 
     out
 }
 
+/// Returns true if `body` contains the managed-comment marker.
+///
+/// Used to identify git-gud-managed nav comments among arbitrary PR comments
+/// when we need to find our own comment to update or delete it.
+#[allow(dead_code)]
+pub(crate) fn is_managed_comment(body: &str) -> bool {
+    body.contains(MARKER)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,5 +212,28 @@ mod tests {
         ];
         let body = render("s", &entries, "#");
         assert!(body.contains("<sub>Managed by [git-gud]"));
+    }
+
+    #[test]
+    fn test_is_managed_comment_with_marker() {
+        let body = "some text\n<!-- gg:stack-nav -->";
+        assert!(is_managed_comment(body));
+    }
+
+    #[test]
+    fn test_is_managed_comment_without_marker() {
+        let body = "a user comment with no markers";
+        assert!(!is_managed_comment(body));
+    }
+
+    #[test]
+    fn test_is_managed_comment_with_trailing_whitespace_after_marker() {
+        let body = "body\n<!-- gg:stack-nav -->   \n";
+        assert!(is_managed_comment(body));
+    }
+
+    #[test]
+    fn test_is_managed_comment_empty_body() {
+        assert!(!is_managed_comment(""));
     }
 }

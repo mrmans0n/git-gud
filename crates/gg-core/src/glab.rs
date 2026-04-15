@@ -1514,4 +1514,24 @@ mod tests {
         let _: fn(u64, u64, &str) -> Result<()> = update_mr_note;
         let _: fn(u64, u64) -> Result<()> = delete_mr_note;
     }
+
+    #[test]
+    fn test_mr_note_deserialization() {
+        let json = r#"{"id": 67890, "body": "A note\n<!-- gg:stack-nav -->"}"#;
+        let note: MrNote = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(note.id, 67890);
+        assert!(note.body.contains("<!-- gg:stack-nav -->"));
+    }
+
+    #[test]
+    fn test_mr_note_list_deserialization() {
+        let json = r#"[
+            {"id": 1, "body": "first note"},
+            {"id": 2, "body": "nav <!-- gg:stack-nav -->"}
+        ]"#;
+        let notes: Vec<MrNote> = serde_json::from_str(json).expect("should deserialize list");
+        assert_eq!(notes.len(), 2);
+        assert_eq!(notes[0].id, 1);
+        assert_eq!(notes[1].body, "nav <!-- gg:stack-nav -->");
+    }
 }

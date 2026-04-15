@@ -742,4 +742,25 @@ mod tests {
         let _: fn(u64, &str) -> Result<()> = update_issue_comment;
         let _: fn(u64) -> Result<()> = delete_issue_comment;
     }
+
+    #[test]
+    fn test_issue_comment_deserialization() {
+        let json = r#"{"id": 12345, "body": "This is a comment\n<!-- gg:stack-nav -->"}"#;
+        let comment: IssueComment = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(comment.id, 12345);
+        assert!(comment.body.contains("<!-- gg:stack-nav -->"));
+    }
+
+    #[test]
+    fn test_issue_comment_list_deserialization() {
+        let json = r#"[
+            {"id": 1, "body": "first"},
+            {"id": 2, "body": "second <!-- gg:stack-nav -->"}
+        ]"#;
+        let comments: Vec<IssueComment> =
+            serde_json::from_str(json).expect("should deserialize list");
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0].id, 1);
+        assert_eq!(comments[1].body, "second <!-- gg:stack-nav -->");
+    }
 }

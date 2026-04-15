@@ -671,14 +671,20 @@ pub fn run(
             // Reuse state cached during the main loop if available (existing PRs);
             // fall back to a fresh fetch only for newly created PRs.
             let state = if let Some(cached) = pr_state_cached {
-                Some(cached)
+                cached
             } else {
                 match provider.get_pr_info(num).map(|info| info.state).ok() {
-                    Some(crate::provider::PrState::Open) => Some(stack_nav::PrEntryState::Open),
-                    Some(crate::provider::PrState::Draft) => Some(stack_nav::PrEntryState::Draft),
-                    Some(crate::provider::PrState::Merged) => Some(stack_nav::PrEntryState::Merged),
-                    Some(crate::provider::PrState::Closed) => Some(stack_nav::PrEntryState::Closed),
-                    None => None,
+                    Some(crate::provider::PrState::Open) => stack_nav::PrEntryState::Open,
+                    Some(crate::provider::PrState::Draft) => stack_nav::PrEntryState::Draft,
+                    Some(crate::provider::PrState::Merged) => stack_nav::PrEntryState::Merged,
+                    Some(crate::provider::PrState::Closed) => stack_nav::PrEntryState::Closed,
+                    // Default to Open when the API is unreachable — we know the
+                    // PR exists (just created or from config). Treating it as Open
+                    // means the reconcile pass will attempt to upsert/delete the
+                    // nav comment; if the API is truly down, that will fail with a
+                    // non-fatal warning rather than silently dropping the entry
+                    // from all nav comments.
+                    None => stack_nav::PrEntryState::Open,
                 }
             };
             // json_entries.len() - 1 = the index of the entry we just pushed (JSON mode).
@@ -688,9 +694,9 @@ pub fn run(
             } else {
                 0
             };
-            state.map(|pr_state| NavEntrySnapshot {
+            Some(NavEntrySnapshot {
                 pr_number: num,
-                pr_state,
+                pr_state: state,
                 json_index,
             })
         } else {

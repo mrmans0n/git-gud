@@ -887,6 +887,132 @@ pub fn get_merge_train_status(mr_number: u64, target_branch: &str) -> Result<Mer
     })
 }
 
+/// A GitLab MR note (a discussion entry on the merge request).
+#[derive(Debug, Clone, Deserialize)]
+pub struct MrNote {
+    pub id: u64,
+    pub body: String,
+}
+
+/// Get the project identifier prefix for `glab api` calls.
+///
+/// `glab api` expands `:id` to the numeric project ID of the current repo,
+/// resolved from the git remote.  This matches the pattern used throughout
+/// this file (e.g. `projects/:id/merge_requests/…`).
+fn glab_project_prefix() -> &'static str {
+    ":id"
+}
+
+/// List all notes on an MR.
+///
+/// Note IDs are needed to update or delete individual notes.
+pub fn list_mr_notes(mr_iid: u64) -> Result<Vec<MrNote>> {
+    let endpoint = format!(
+        "projects/{}/merge_requests/{}/notes?per_page=100",
+        glab_project_prefix(),
+        mr_iid
+    );
+    let output = Command::new("glab")
+        .args(["api", "--paginate", &endpoint])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::GlabError(format!(
+            "Failed to list notes for MR !{}: {}",
+            mr_iid, stderr
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let notes: Vec<MrNote> = serde_json::from_str(&stdout).map_err(|e| {
+        GgError::GlabError(format!(
+            "Failed to parse notes JSON for MR !{}: {}",
+            mr_iid, e
+        ))
+    })?;
+    Ok(notes)
+}
+
+/// Create a new note on an MR.
+pub fn create_mr_note(mr_iid: u64, body: &str) -> Result<()> {
+    let endpoint = format!(
+        "projects/{}/merge_requests/{}/notes",
+        glab_project_prefix(),
+        mr_iid
+    );
+    let output = Command::new("glab")
+        .args([
+            "api",
+            "-X",
+            "POST",
+            &endpoint,
+            "-f",
+            &format!("body={}", body),
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::GlabError(format!(
+            "Failed to create note on MR !{}: {}",
+            mr_iid, stderr
+        )));
+    }
+    Ok(())
+}
+
+/// Update an existing note on an MR.
+pub fn update_mr_note(mr_iid: u64, note_id: u64, body: &str) -> Result<()> {
+    let endpoint = format!(
+        "projects/{}/merge_requests/{}/notes/{}",
+        glab_project_prefix(),
+        mr_iid,
+        note_id
+    );
+    let output = Command::new("glab")
+        .args([
+            "api",
+            "-X",
+            "PUT",
+            &endpoint,
+            "-f",
+            &format!("body={}", body),
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::GlabError(format!(
+            "Failed to update note {} on MR !{}: {}",
+            note_id, mr_iid, stderr
+        )));
+    }
+    Ok(())
+}
+
+/// Delete a note from an MR.
+pub fn delete_mr_note(mr_iid: u64, note_id: u64) -> Result<()> {
+    let endpoint = format!(
+        "projects/{}/merge_requests/{}/notes/{}",
+        glab_project_prefix(),
+        mr_iid,
+        note_id
+    );
+    let output = Command::new("glab")
+        .args(["api", "-X", "DELETE", &endpoint])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::GlabError(format!(
+            "Failed to delete note {} on MR !{}: {}",
+            note_id, mr_iid, stderr
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1361,5 +1487,14 @@ mod tests {
         let json = r#"{}"#;
         let parsed: GlabMrBodyJson = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.description, None);
+    }
+
+    #[test]
+    fn test_note_helpers_exist() {
+        // Compile-only; real API calls tested manually.
+        let _: fn(u64) -> Result<Vec<MrNote>> = list_mr_notes;
+        let _: fn(u64, &str) -> Result<()> = create_mr_note;
+        let _: fn(u64, u64, &str) -> Result<()> = update_mr_note;
+        let _: fn(u64, u64) -> Result<()> = delete_mr_note;
     }
 }

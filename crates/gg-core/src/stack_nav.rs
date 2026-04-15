@@ -5,7 +5,7 @@
 
 /// Hidden HTML comment used to identify git-gud-managed nav comments.
 /// Present at the end of every comment body rendered by `render`.
-pub const MARKER: &str = "<!-- gg:stack-nav -->";
+pub(crate) const MARKER: &str = "<!-- gg:stack-nav -->";
 
 /// A single entry in the rendered navigation list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,19 +25,24 @@ pub struct StackNavEntry {
 /// The caller is responsible for deciding whether to render at all
 /// (single-entry stacks should skip this function).
 pub fn render(stack_name: &str, entries: &[StackNavEntry], number_prefix: &str) -> String {
+    use std::fmt::Write as _;
+
     let mut out = String::new();
-    out.push_str(&format!(
-        "This change is part of the `{}` stack:\n\n",
-        stack_name
-    ));
+    writeln!(out, "This change is part of the `{}` stack:", stack_name).unwrap();
+    writeln!(out).unwrap();
     for entry in entries {
         if entry.is_current {
-            out.push_str(&format!("- 👉 {}{}\n", number_prefix, entry.pr_number));
+            writeln!(out, "- 👉 {}{}", number_prefix, entry.pr_number).unwrap();
         } else {
-            out.push_str(&format!("- {}{}\n", number_prefix, entry.pr_number));
+            writeln!(out, "- {}{}", number_prefix, entry.pr_number).unwrap();
         }
     }
-    out.push_str("\n<sub>Managed by [git-gud](https://github.com/mrmans0n/git-gud).</sub>\n");
+    writeln!(out).unwrap();
+    writeln!(
+        out,
+        "<sub>Managed by [git-gud](https://github.com/mrmans0n/git-gud).</sub>"
+    )
+    .unwrap();
     out.push_str(MARKER);
     out
 }

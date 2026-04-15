@@ -73,4 +73,135 @@ mod tests {
              <!-- gg:stack-nav -->"
         );
     }
+
+    #[test]
+    fn test_render_three_entries_current_middle_github() {
+        let entries = vec![
+            StackNavEntry {
+                pr_number: 42,
+                is_current: false,
+            },
+            StackNavEntry {
+                pr_number: 43,
+                is_current: true,
+            },
+            StackNavEntry {
+                pr_number: 44,
+                is_current: false,
+            },
+        ];
+        let body = render("feat-auth", &entries, "#");
+        assert!(body.contains("- #42\n"));
+        assert!(body.contains("- 👉 #43\n"));
+        assert!(body.contains("- #44\n"));
+        assert!(body.ends_with(MARKER));
+    }
+
+    #[test]
+    fn test_render_current_last_preserves_bottom_up_order() {
+        // Bottom-up: base-adjacent first, tip last. Current on tip should be last.
+        let entries = vec![
+            StackNavEntry {
+                pr_number: 10,
+                is_current: false,
+            },
+            StackNavEntry {
+                pr_number: 11,
+                is_current: false,
+            },
+            StackNavEntry {
+                pr_number: 12,
+                is_current: true,
+            },
+        ];
+        let body = render("s", &entries, "#");
+        let idx_10 = body.find("#10").unwrap();
+        let idx_11 = body.find("#11").unwrap();
+        let idx_12 = body.find("#12").unwrap();
+        assert!(idx_10 < idx_11 && idx_11 < idx_12);
+        assert!(body.contains("- 👉 #12\n"));
+    }
+
+    #[test]
+    fn test_render_gitlab_prefix() {
+        let entries = vec![
+            StackNavEntry {
+                pr_number: 1,
+                is_current: true,
+            },
+            StackNavEntry {
+                pr_number: 2,
+                is_current: false,
+            },
+        ];
+        let body = render("s", &entries, "!");
+        assert!(body.contains("- 👉 !1\n"));
+        assert!(body.contains("- !2\n"));
+        assert!(!body.contains('#'));
+    }
+
+    #[test]
+    fn test_render_is_idempotent() {
+        let entries = vec![
+            StackNavEntry {
+                pr_number: 1,
+                is_current: true,
+            },
+            StackNavEntry {
+                pr_number: 2,
+                is_current: false,
+            },
+        ];
+        let a = render("s", &entries, "#");
+        let b = render("s", &entries, "#");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_render_includes_stack_name_backticked() {
+        let entries = vec![
+            StackNavEntry {
+                pr_number: 1,
+                is_current: true,
+            },
+            StackNavEntry {
+                pr_number: 2,
+                is_current: false,
+            },
+        ];
+        let body = render("my-stack", &entries, "#");
+        assert!(body.contains("`my-stack`"));
+    }
+
+    #[test]
+    fn test_render_ends_with_marker() {
+        let entries = vec![
+            StackNavEntry {
+                pr_number: 1,
+                is_current: true,
+            },
+            StackNavEntry {
+                pr_number: 2,
+                is_current: false,
+            },
+        ];
+        let body = render("s", &entries, "#");
+        assert!(body.ends_with(MARKER));
+    }
+
+    #[test]
+    fn test_render_includes_attribution_footer() {
+        let entries = vec![
+            StackNavEntry {
+                pr_number: 1,
+                is_current: true,
+            },
+            StackNavEntry {
+                pr_number: 2,
+                is_current: false,
+            },
+        ];
+        let body = render("s", &entries, "#");
+        assert!(body.contains("<sub>Managed by [git-gud]"));
+    }
 }

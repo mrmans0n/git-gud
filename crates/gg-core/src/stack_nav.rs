@@ -9,7 +9,7 @@ pub(crate) const MARKER: &str = "<!-- gg:stack-nav -->";
 
 /// A single entry in the rendered navigation list.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StackNavEntry {
+pub(crate) struct StackNavEntry {
     pub pr_number: u64,
     pub is_current: bool,
 }
@@ -24,7 +24,7 @@ pub struct StackNavEntry {
 ///
 /// The caller is responsible for deciding whether to render at all
 /// (single-entry stacks should skip this function).
-pub fn render(stack_name: &str, entries: &[StackNavEntry], number_prefix: &str) -> String {
+pub(crate) fn render(stack_name: &str, entries: &[StackNavEntry], number_prefix: &str) -> String {
     use std::fmt::Write as _;
 
     let mut out = String::new();

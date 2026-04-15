@@ -89,8 +89,8 @@ Merged or closed PRs are left alone — `gg sync` never modifies comments on
 historical PRs.
 
 When running with `--json`, each entry includes an optional `nav_comment_action`
-field (one of `"created"`, `"updated"`, `"unchanged"`, `"deleted"`, `"skipped"`,
-`"error"`) when a reconcile decision was made.
+field (one of `"created"`, `"updated"`, `"unchanged"`, `"deleted"`, `"error"`)
+when a reconcile decision was made.
 
 Example JSON (shape):
 

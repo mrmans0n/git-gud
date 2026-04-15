@@ -132,7 +132,7 @@ pub struct SyncEntryResultJson {
     pub pushed: bool,
     pub error: Option<String>,
     /// Optional: action taken on the managed nav comment for this entry's PR.
-    /// One of "created", "updated", "unchanged", "deleted", "skipped", "error".
+    /// One of "created", "updated", "unchanged", "deleted", or "error".
     /// Omitted when the feature is disabled and no cleanup was required.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nav_comment_action: Option<String>,

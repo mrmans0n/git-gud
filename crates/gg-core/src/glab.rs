@@ -906,15 +906,19 @@ fn glab_project_prefix() -> &'static str {
 /// List all notes on an MR.
 ///
 /// Note IDs are needed to update or delete individual notes.
+/// List all notes on an MR.
+///
+/// Note IDs are needed to update or delete individual notes.
+/// Caps at 100 notes (per_page=100); MRs with more notes than that would
+/// need pagination handling, but this is extremely rare and the managed
+/// nav comment is typically visible among the most recent notes.
 pub fn list_mr_notes(mr_iid: u64) -> Result<Vec<MrNote>> {
     let endpoint = format!(
         "projects/{}/merge_requests/{}/notes?per_page=100",
         glab_project_prefix(),
         mr_iid
     );
-    let output = Command::new("glab")
-        .args(["api", "--paginate", &endpoint])
-        .output()?;
+    let output = Command::new("glab").args(["api", &endpoint]).output()?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

@@ -346,8 +346,8 @@ Field types:
 Field types for `entries`:
 - `nav_comment_action` (string, optional): action taken on the managed
   stack-nav comment for this entry's PR during this sync. One of
-  `"created"`, `"updated"`, `"unchanged"`, `"deleted"`, `"skipped"`, or
-  `"error"`. Omitted when no reconcile action was required.
+  `"created"`, `"updated"`, `"unchanged"`, `"deleted"`, or `"error"`.
+  Omitted when no reconcile action was required.
 
 ### `gg lint --json`
 

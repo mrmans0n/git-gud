@@ -49,7 +49,6 @@ pub fn render(stack_name: &str, entries: &[StackNavEntry], number_prefix: &str) 
 
 /// The per-entry PR state that matters for nav-comment reconciliation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum PrEntryState {
     Open,
     Draft,
@@ -83,7 +82,6 @@ pub(crate) enum NavAction {
 /// - Closed/merged PRs: always skip.
 /// - Setting off OR single-entry stack: delete if a comment exists, else skip.
 /// - Otherwise: upsert.
-#[allow(dead_code)]
 pub(crate) fn decide_action(input: NavDecisionInput) -> NavAction {
     // Historical PRs are never touched.
     if matches!(input.pr_state, PrEntryState::Merged | PrEntryState::Closed) {

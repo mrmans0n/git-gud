@@ -74,6 +74,13 @@ pub struct PrCreationResult {
     pub url: String,
 }
 
+/// A PR/MR comment that git-gud manages (identified by marker).
+#[derive(Debug, Clone)]
+pub struct ManagedComment {
+    pub id: u64,
+    pub body: String,
+}
+
 impl Provider {
     /// Detect provider from config or repository URL
     ///
@@ -225,6 +232,65 @@ impl Provider {
         match self {
             Provider::GitHub => gh::update_pr_description(number, description),
             Provider::GitLab => glab::update_mr_description(number, description),
+        }
+    }
+
+    /// Find the first comment on a PR/MR whose body contains `marker`.
+    ///
+    /// Returns `Ok(None)` if no such comment exists.
+    pub fn find_managed_comment(
+        &self,
+        pr_number: u64,
+        marker: &str,
+    ) -> Result<Option<ManagedComment>> {
+        match self {
+            Provider::GitHub => {
+                let comments = gh::list_issue_comments(pr_number)?;
+                Ok(comments
+                    .into_iter()
+                    .find(|c| c.body.contains(marker))
+                    .map(|c| ManagedComment {
+                        id: c.id,
+                        body: c.body,
+                    }))
+            }
+            Provider::GitLab => {
+                let notes = glab::list_mr_notes(pr_number)?;
+                Ok(notes
+                    .into_iter()
+                    .find(|n| n.body.contains(marker))
+                    .map(|n| ManagedComment {
+                        id: n.id,
+                        body: n.body,
+                    }))
+            }
+        }
+    }
+
+    /// Create a comment on a PR/MR.
+    pub fn create_pr_comment(&self, pr_number: u64, body: &str) -> Result<()> {
+        match self {
+            Provider::GitHub => gh::create_issue_comment(pr_number, body),
+            Provider::GitLab => glab::create_mr_note(pr_number, body),
+        }
+    }
+
+    /// Update an existing comment by its id.
+    ///
+    /// `pr_number` is required for GitLab (notes are per-MR); GitHub ignores it
+    /// because issue-comment endpoints address comments by id alone.
+    pub fn update_pr_comment(&self, pr_number: u64, comment_id: u64, body: &str) -> Result<()> {
+        match self {
+            Provider::GitHub => gh::update_issue_comment(comment_id, body),
+            Provider::GitLab => glab::update_mr_note(pr_number, comment_id, body),
+        }
+    }
+
+    /// Delete a comment by its id.
+    pub fn delete_pr_comment(&self, pr_number: u64, comment_id: u64) -> Result<()> {
+        match self {
+            Provider::GitHub => gh::delete_issue_comment(comment_id),
+            Provider::GitLab => glab::delete_mr_note(pr_number, comment_id),
         }
     }
 
@@ -615,5 +681,15 @@ mod tests {
     fn test_check_auth_with_network_fallback_passes_through_ok() {
         let result = check_auth_with_network_fallback(Ok(()));
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_managed_comment_construction() {
+        let comment = ManagedComment {
+            id: 99,
+            body: "hello\n<!-- gg:stack-nav -->".to_string(),
+        };
+        assert_eq!(comment.id, 99);
+        assert!(comment.body.contains("<!-- gg:stack-nav -->"));
     }
 }

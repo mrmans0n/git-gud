@@ -40,6 +40,9 @@ Capture:
 - `sync.entries[*].pr_number`
 - `sync.entries[*].pr_url`
 
+If `defaults.stack_nav_comments` is enabled, also check:
+- `sync.entries[*].nav_comment_action` — confirms nav comments were posted
+
 ## 5) Refresh status after reviews/CI
 
 ```bash

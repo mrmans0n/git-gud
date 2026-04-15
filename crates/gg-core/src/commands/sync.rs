@@ -717,7 +717,10 @@ pub fn run(
     // cannot vouch for all PRs in the stack, and the single-entry skip rule
     // would misfire for partial subsets. Full `gg sync` (no --until) will
     // reconcile navigation across the whole stack.
-    if until.is_none() {
+    // Skip nav reconcile if any entry failed during the sync — a partial set of
+    // PR numbers would produce truncated stack navigation on every other PR in
+    // the stack. The next full successful sync will reconcile.
+    if until.is_none() && nav_snapshots.iter().all(|s| s.is_some()) {
         // For each synced entry whose PR exists and is reachable, decide whether
         // to create/update/delete the managed nav comment based on:
         //   - the stack_nav_comments setting
@@ -852,7 +855,7 @@ pub fn run(
                 }
             }
         }
-    } // end if until.is_none()
+    } // end nav-comment reconcile
 
     // Save updated config
     config.save(git_dir)?;

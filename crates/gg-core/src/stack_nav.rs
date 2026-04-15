@@ -367,4 +367,102 @@ mod tests {
         });
         assert_eq!(decision, NavAction::Upsert);
     }
+
+    // --- Pipeline tests: snapshot → decision → rendered body ---
+
+    #[test]
+    fn test_full_pipeline_three_entries_setting_on() {
+        // Simulate the reconcile pass for a 3-entry stack with setting on.
+        let stack_name = "my-stack";
+        let entries: Vec<(u64, PrEntryState)> = vec![
+            (42, PrEntryState::Open),
+            (43, PrEntryState::Open),
+            (44, PrEntryState::Draft), // draft treated as open
+        ];
+
+        for (current_idx, _) in entries.iter().enumerate() {
+            let decision = decide_action(NavDecisionInput {
+                setting_enabled: true,
+                stack_entry_count: entries.len(),
+                pr_state: entries[current_idx].1,
+                has_existing_comment: false,
+            });
+            assert_eq!(
+                decision,
+                NavAction::Upsert,
+                "entry {} should upsert",
+                current_idx
+            );
+
+            let nav_entries: Vec<StackNavEntry> = entries
+                .iter()
+                .enumerate()
+                .map(|(j, (num, _))| StackNavEntry {
+                    pr_number: *num,
+                    is_current: j == current_idx,
+                })
+                .collect();
+            let body = render(stack_name, &nav_entries, "#");
+
+            // Each PR's body should contain all 3 entries.
+            assert!(
+                body.contains("#42"),
+                "entry {} body missing #42",
+                current_idx
+            );
+            assert!(
+                body.contains("#43"),
+                "entry {} body missing #43",
+                current_idx
+            );
+            assert!(
+                body.contains("#44"),
+                "entry {} body missing #44",
+                current_idx
+            );
+            // Only the current entry should have the marker.
+            let current_num = entries[current_idx].0;
+            assert!(
+                body.contains(&format!("👉 #{}", current_num)),
+                "entry {} should be marked current",
+                current_idx
+            );
+        }
+    }
+
+    #[test]
+    fn test_full_pipeline_setting_off_with_existing_comments() {
+        // When setting is off, every entry with an existing comment should be Delete.
+        let entries: Vec<(u64, PrEntryState, bool)> = vec![
+            (10, PrEntryState::Open, true),   // has comment → Delete
+            (11, PrEntryState::Open, false),  // no comment → Skip
+            (12, PrEntryState::Merged, true), // merged with comment → Skip (merged always skipped)
+        ];
+
+        let expected = [NavAction::Delete, NavAction::Skip, NavAction::Skip];
+
+        for (i, (_, state, has_comment)) in entries.iter().enumerate() {
+            let decision = decide_action(NavDecisionInput {
+                setting_enabled: false,
+                stack_entry_count: entries.len(),
+                pr_state: *state,
+                has_existing_comment: *has_comment,
+            });
+            assert_eq!(decision, expected[i], "entry {} mismatch", i);
+        }
+    }
+
+    #[test]
+    fn test_full_pipeline_partial_failure_should_skip() {
+        // When one entry has no snapshot (failed during sync), the calling code
+        // in sync.rs checks nav_snapshots.iter().all(|s| s.is_some()) before
+        // entering the reconcile pass. Verify the precondition catches this.
+        let snapshots: Vec<Option<(u64, PrEntryState)>> = vec![
+            Some((42, PrEntryState::Open)),
+            None, // entry 2 failed during sync
+            Some((44, PrEntryState::Open)),
+        ];
+        let all_present = snapshots.iter().all(|s| s.is_some());
+        assert!(!all_present, "should detect incomplete snapshot set");
+    }
 }

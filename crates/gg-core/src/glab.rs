@@ -905,37 +905,50 @@ fn glab_project_prefix() -> &'static str {
 
 /// List all notes on an MR.
 ///
-/// Note IDs are needed to update or delete individual notes.
-/// List all notes on an MR.
-///
-/// Note IDs are needed to update or delete individual notes.
-/// Caps at 100 notes (per_page=100); MRs with more notes than that would
-/// need pagination handling, but this is extremely rare and the managed
-/// nav comment is typically visible among the most recent notes.
+/// Note IDs are needed to update or delete individual notes. Paginates
+/// manually (100 per page) until a short page is returned, so MRs with
+/// many notes still surface the managed nav note reliably.
 pub fn list_mr_notes(mr_iid: u64) -> Result<Vec<MrNote>> {
-    let endpoint = format!(
-        "projects/{}/merge_requests/{}/notes?per_page=100",
-        glab_project_prefix(),
-        mr_iid
-    );
-    let output = Command::new("glab").args(["api", &endpoint]).output()?;
+    let mut all = Vec::new();
+    let mut page = 1u32;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(GgError::GlabError(format!(
-            "Failed to list notes for MR !{}: {}",
-            mr_iid, stderr
-        )));
+    loop {
+        let endpoint = format!(
+            "projects/{}/merge_requests/{}/notes?per_page=100&page={}",
+            glab_project_prefix(),
+            mr_iid,
+            page
+        );
+        let output = Command::new("glab").args(["api", &endpoint]).output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(GgError::GlabError(format!(
+                "Failed to list notes for MR !{} (page {}): {}",
+                mr_iid, page, stderr
+            )));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let page_notes: Vec<MrNote> = serde_json::from_str(&stdout).map_err(|e| {
+            GgError::GlabError(format!(
+                "Failed to parse notes JSON for MR !{} (page {}): {}",
+                mr_iid, page, e
+            ))
+        })?;
+
+        if page_notes.is_empty() {
+            break;
+        }
+        let full_page = page_notes.len() == 100;
+        all.extend(page_notes);
+        if !full_page {
+            break;
+        }
+        page += 1;
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let notes: Vec<MrNote> = serde_json::from_str(&stdout).map_err(|e| {
-        GgError::GlabError(format!(
-            "Failed to parse notes JSON for MR !{}: {}",
-            mr_iid, e
-        ))
-    })?;
-    Ok(notes)
+    Ok(all)
 }
 
 /// Create a new note on an MR.

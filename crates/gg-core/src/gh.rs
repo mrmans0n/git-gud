@@ -525,33 +525,49 @@ pub struct IssueComment {
 
 /// List all comments on a PR (issue comments, i.e. Conversation-tab comments).
 ///
-/// Paginates across 100-per-page responses until exhausted.
+/// Paginates manually (100 per page) because `gh api --paginate` without
+/// `--slurp` concatenates raw JSON arrays, which is not valid JSON — parsing
+/// would fail as soon as a PR has more than one page of comments. We iterate
+/// pages until an empty array comes back.
 pub fn list_issue_comments(pr_number: u64) -> Result<Vec<IssueComment>> {
-    let endpoint = format!(
-        "repos/{{owner}}/{{repo}}/issues/{}/comments?per_page=100",
-        pr_number
-    );
-    let output = Command::new("gh")
-        .args(["api", "--paginate", &endpoint])
-        .output()?;
+    let mut all = Vec::new();
+    let mut page = 1u32;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(GgError::Other(format!(
-            "Failed to list comments for PR #{}: {}",
-            pr_number, stderr
-        )));
+    loop {
+        let endpoint = format!(
+            "repos/{{owner}}/{{repo}}/issues/{}/comments?per_page=100&page={}",
+            pr_number, page
+        );
+        let output = Command::new("gh").args(["api", &endpoint]).output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(GgError::Other(format!(
+                "Failed to list comments for PR #{} (page {}): {}",
+                pr_number, page, stderr
+            )));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let page_comments: Vec<IssueComment> = serde_json::from_str(&stdout).map_err(|e| {
+            GgError::Other(format!(
+                "Failed to parse comments JSON for PR #{} (page {}): {}",
+                pr_number, page, e
+            ))
+        })?;
+
+        if page_comments.is_empty() {
+            break;
+        }
+        let full_page = page_comments.len() == 100;
+        all.extend(page_comments);
+        if !full_page {
+            break;
+        }
+        page += 1;
     }
 
-    // With --paginate, gh concatenates JSON arrays. Parse as one Vec.
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let comments: Vec<IssueComment> = serde_json::from_str(&stdout).map_err(|e| {
-        GgError::Other(format!(
-            "Failed to parse comments JSON for PR #{}: {}",
-            pr_number, e
-        ))
-    })?;
-    Ok(comments)
+    Ok(all)
 }
 
 /// Post a new comment on a PR.

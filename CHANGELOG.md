@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-04-16
+
+### Added
+- Stack navigation comments on GitHub and GitLab pull requests and merge requests via `gg sync` (#276)
+
+### Changed
+- Updated `clap` to v4.6.1 (#277)
+
 ## [0.8.2] - 2026-04-15
 
 ### Added

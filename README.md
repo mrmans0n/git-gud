@@ -286,6 +286,7 @@ All configuration options are in the `defaults` section (with provider-specific 
 | `sync_auto_lint` | `boolean` | Automatically run `gg lint` before `gg sync` | `false` |
 | `sync_auto_rebase` (`sync.auto_rebase`) | `boolean` | Automatically run `gg rebase` before `gg sync` when base is behind threshold | `false` |
 | `sync_behind_threshold` (`sync.behind_threshold`) | `number` | Warn/rebase in `gg sync` when base is at least this many commits behind `origin/<base>` (`0` disables check) | `1` |
+| `stack_nav_comments` | `boolean` | **Stack navigation comments** — opt-in. Each PR/MR in a stack gets a managed comment listing sibling PRs with a 👉 marker on the current one (GitHub `#N` or GitLab `!N`). | `false` |
 | `worktree_base_path` | `string` | Base directory used by `gg co --wt` / `--worktree` for managed stack worktrees | Parent directory of current repository |
 | `gitlab.auto_merge_on_land` | `boolean` | *(GitLab only)* Use "merge when pipeline succeeds" for `gg land` by default | `false` |
 

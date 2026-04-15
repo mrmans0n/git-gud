@@ -180,6 +180,16 @@ Interactive config wizard.
 
 Supports global config at `~/.config/gg/config.json` for shared defaults across repos. New fields: `sync_draft` (create PRs as drafts) and `sync_update_descriptions` (update PR descriptions on re-sync).
 
+#### `defaults.stack_nav_comments`
+
+- **Type:** `boolean`
+- **Default:** `false`
+- **Effect:** When `true`, `gg sync` posts and maintains a managed "stack
+  navigation" comment on each open PR/MR in a multi-entry stack. When `false`
+  (default), no such comments are posted; any pre-existing managed comments
+  are removed on the next sync. The reconcile pass is skipped when `--until`
+  limits a sync.
+
 #### `gg completions <SHELL>`
 Generate shell completion (`bash|elvish|fish|powershell|zsh`).
 
@@ -325,12 +335,19 @@ Field types:
         "pr_url": "https://host/org/repo/...",
         "draft": false,
         "pushed": true,
+        "nav_comment_action": "created",
         "error": null
       }
     ]
   }
 }
 ```
+
+Field types for `entries`:
+- `nav_comment_action` (string, optional): action taken on the managed
+  stack-nav comment for this entry's PR during this sync. One of
+  `"created"`, `"updated"`, `"unchanged"`, `"deleted"`, `"skipped"`, or
+  `"error"`. Omitted when no reconcile action was required.
 
 ### `gg lint --json`
 

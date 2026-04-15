@@ -516,6 +516,109 @@ pub fn list_prs_for_branch(branch: &str) -> Result<Vec<u64>> {
     Ok(prs)
 }
 
+/// A GitHub issue comment (which includes PR comments on the Conversation tab).
+#[derive(Debug, Clone, Deserialize)]
+pub struct IssueComment {
+    pub id: u64,
+    pub body: String,
+}
+
+/// List all comments on a PR (issue comments, i.e. Conversation-tab comments).
+///
+/// Paginates across 100-per-page responses until exhausted.
+pub fn list_issue_comments(pr_number: u64) -> Result<Vec<IssueComment>> {
+    let endpoint = format!(
+        "repos/{{owner}}/{{repo}}/issues/{}/comments?per_page=100",
+        pr_number
+    );
+    let output = Command::new("gh")
+        .args(["api", "--paginate", &endpoint])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::Other(format!(
+            "Failed to list comments for PR #{}: {}",
+            pr_number, stderr
+        )));
+    }
+
+    // With --paginate, gh concatenates JSON arrays. Parse as one Vec.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let comments: Vec<IssueComment> = serde_json::from_str(&stdout).map_err(|e| {
+        GgError::Other(format!(
+            "Failed to parse comments JSON for PR #{}: {}",
+            pr_number, e
+        ))
+    })?;
+    Ok(comments)
+}
+
+/// Post a new comment on a PR.
+pub fn create_issue_comment(pr_number: u64, body: &str) -> Result<()> {
+    let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{}/comments", pr_number);
+    let output = Command::new("gh")
+        .args([
+            "api",
+            "-X",
+            "POST",
+            &endpoint,
+            "-f",
+            &format!("body={}", body),
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::Other(format!(
+            "Failed to create comment on PR #{}: {}",
+            pr_number, stderr
+        )));
+    }
+    Ok(())
+}
+
+/// Edit an existing PR comment by its comment id.
+pub fn update_issue_comment(comment_id: u64, body: &str) -> Result<()> {
+    let endpoint = format!("repos/{{owner}}/{{repo}}/issues/comments/{}", comment_id);
+    let output = Command::new("gh")
+        .args([
+            "api",
+            "-X",
+            "PATCH",
+            &endpoint,
+            "-f",
+            &format!("body={}", body),
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::Other(format!(
+            "Failed to update comment {}: {}",
+            comment_id, stderr
+        )));
+    }
+    Ok(())
+}
+
+/// Delete a PR comment by its comment id.
+pub fn delete_issue_comment(comment_id: u64) -> Result<()> {
+    let endpoint = format!("repos/{{owner}}/{{repo}}/issues/comments/{}", comment_id);
+    let output = Command::new("gh")
+        .args(["api", "-X", "DELETE", &endpoint])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::Other(format!(
+            "Failed to delete comment {}: {}",
+            comment_id, stderr
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -612,5 +715,15 @@ mod tests {
         let cloned = result.clone();
         assert_eq!(cloned.number, 123);
         assert_eq!(cloned.url, "https://github.com/test/repo/pull/123");
+    }
+
+    #[test]
+    fn test_comment_helpers_exist() {
+        // Compile-only test; ensures the new functions are wired up.
+        // Real invocations require a live gh CLI and are tested manually / in CI.
+        let _: fn(u64) -> Result<Vec<IssueComment>> = list_issue_comments;
+        let _: fn(u64, &str) -> Result<()> = create_issue_comment;
+        let _: fn(u64, &str) -> Result<()> = update_issue_comment;
+        let _: fn(u64) -> Result<()> = delete_issue_comment;
     }
 }

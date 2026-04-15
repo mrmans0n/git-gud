@@ -197,6 +197,20 @@ config.
 - **Legacy PRs (no markers)**: Body is left untouched with a warning — no risk of clobbering manual edits.
 - **Content inside the managed block** is regenerated on each sync. Place persistent checklists and notes outside the markers.
 
+## Stack-navigation comments
+
+If the repo's `.git/gg/config.json` has `defaults.stack_nav_comments: true`,
+`gg sync` posts and maintains a managed comment on each open PR/MR in the
+stack. The comment lists every entry (`#N` on GitHub, `!N` on GitLab) with a
+👉 marker on the current one. The comment is identified by a hidden
+`<!-- gg:stack-nav -->` marker and managed entirely by git-gud — don't edit
+these comments manually, and don't be surprised when `gg sync` adds, updates,
+or removes them automatically.
+
+Disable the feature by setting `defaults.stack_nav_comments: false` (the
+default). The next `gg sync` then cleans up any existing managed comments.
+Reconcile is skipped under `--until` to avoid partial-stack inconsistencies.
+
 ## GitLab-specific
 
 - `gg land --auto-merge` is GitLab-only and requests queueing/auto-merge.

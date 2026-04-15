@@ -14,4 +14,5 @@ pub mod managed_body;
 pub mod output;
 pub mod provider;
 pub mod stack;
+pub mod stack_nav;
 pub mod template;

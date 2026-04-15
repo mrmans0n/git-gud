@@ -50,6 +50,9 @@ gg reorder -o "2,1,3"
 gg sync -f --json
 ```
 
+If `defaults.stack_nav_comments` is enabled, the response includes
+`nav_comment_action` per entry (`"created"`, `"updated"`, or `"unchanged"`).
+
 ## 6) Validate lint + status
 
 ```bash

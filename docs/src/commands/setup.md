@@ -48,6 +48,7 @@ Full mode organizes all settings into logical groups:
 | `sync_behind_threshold` | number | 1 | Commits behind origin before warning/rebase |
 | `sync_draft` | bool | false | Create new PRs/MRs as drafts by default |
 | `sync_update_descriptions` | bool | true | Update PR/MR descriptions on re-sync |
+| `stack_nav_comments` | bool | false | Post a managed navigation comment linking all PRs/MRs in the stack |
 
 ### Land
 

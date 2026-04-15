@@ -73,6 +73,25 @@ Content **inside** the managed block (the generated description) is regenerated 
 
 **Legacy PRs** (created before this feature) have no managed markers. `gg sync` will skip body updates for these PRs and log a warning, to avoid overwriting manual edits.
 
+## Stack navigation comments
+
+If `defaults.stack_nav_comments` is enabled in `.git/gg/config.json`, every
+full `gg sync` (no `--until`) reconciles a managed comment on each PR/MR in
+the stack. The comment shows all entries in the stack in bottom-up order,
+with a 👉 marker on the entry that PR corresponds to — letting reviewers see
+where they are in the chain and click through to siblings.
+
+The comment is identified by a hidden HTML marker (`<!-- gg:stack-nav -->`)
+and never touches comments git-gud didn't create. Disabling the setting and
+re-syncing cleans up any previously-posted comments automatically.
+
+Merged or closed PRs are left alone — `gg sync` never modifies comments on
+historical PRs.
+
+When running with `--json`, each entry includes an optional `nav_comment_action`
+field (one of `"created"`, `"updated"`, `"unchanged"`, `"deleted"`, `"error"`)
+when a reconcile decision was made.
+
 Example JSON (shape):
 
 ```json

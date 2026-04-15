@@ -74,6 +74,11 @@ pub struct Defaults {
     /// Update PR/MR descriptions on re-sync (default: true)
     #[serde(default = "default_true")]
     pub sync_update_descriptions: bool,
+
+    /// Post and maintain a managed navigation comment on each PR/MR in a
+    /// multi-entry stack. Default: false (opt-in).
+    #[serde(default)]
+    pub stack_nav_comments: bool,
 }
 
 fn default_sync_behind_threshold() -> usize {
@@ -119,6 +124,7 @@ impl Default for Defaults {
             unstaged_action: UnstagedAction::Ask,
             sync_draft: false,
             sync_update_descriptions: true,
+            stack_nav_comments: false,
         }
     }
 }
@@ -365,6 +371,11 @@ impl Config {
     /// Get whether to update PR/MR descriptions on re-sync (default: true)
     pub fn get_sync_update_descriptions(&self) -> bool {
         self.defaults.sync_update_descriptions
+    }
+
+    /// Whether to post and maintain stack-navigation comments on PRs/MRs.
+    pub fn get_stack_nav_comments(&self) -> bool {
+        self.defaults.stack_nav_comments
     }
 
     // ============ Global config loading ============
@@ -828,6 +839,34 @@ mod tests {
     fn test_sync_update_descriptions_deserializes_to_default_when_missing() {
         let config: Config = serde_json::from_str(r#"{"defaults":{"base":"main"}}"#).unwrap();
         assert!(config.get_sync_update_descriptions());
+    }
+
+    // ============ Tests for stack_nav_comments ============
+
+    #[test]
+    fn test_stack_nav_comments_defaults_to_false() {
+        let defaults = Defaults::default();
+        assert!(
+            !defaults.stack_nav_comments,
+            "should default to false (opt-in)"
+        );
+    }
+
+    #[test]
+    fn test_stack_nav_comments_round_trips_through_json() {
+        let mut config = Config::default();
+        config.defaults.stack_nav_comments = true;
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: Config = serde_json::from_str(&json).unwrap();
+        assert!(parsed.defaults.stack_nav_comments);
+    }
+
+    #[test]
+    fn test_stack_nav_comments_missing_field_loads_as_false() {
+        // Existing configs without the field must continue to deserialize.
+        let json = r#"{"defaults":{}}"#;
+        let parsed: Config = serde_json::from_str(json).unwrap();
+        assert!(!parsed.defaults.stack_nav_comments);
     }
 
     // ============ Tests for global config loading ============

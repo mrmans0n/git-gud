@@ -516,6 +516,125 @@ pub fn list_prs_for_branch(branch: &str) -> Result<Vec<u64>> {
     Ok(prs)
 }
 
+/// A GitHub issue comment (which includes PR comments on the Conversation tab).
+#[derive(Debug, Clone, Deserialize)]
+pub struct IssueComment {
+    pub id: u64,
+    pub body: String,
+}
+
+/// List all comments on a PR (issue comments, i.e. Conversation-tab comments).
+///
+/// Paginates manually (100 per page) because `gh api --paginate` without
+/// `--slurp` concatenates raw JSON arrays, which is not valid JSON — parsing
+/// would fail as soon as a PR has more than one page of comments. We iterate
+/// pages until an empty array comes back.
+pub fn list_issue_comments(pr_number: u64) -> Result<Vec<IssueComment>> {
+    let mut all = Vec::new();
+    let mut page = 1u32;
+
+    loop {
+        let endpoint = format!(
+            "repos/{{owner}}/{{repo}}/issues/{}/comments?per_page=100&page={}",
+            pr_number, page
+        );
+        let output = Command::new("gh").args(["api", &endpoint]).output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(GgError::Other(format!(
+                "Failed to list comments for PR #{} (page {}): {}",
+                pr_number, page, stderr
+            )));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let page_comments: Vec<IssueComment> = serde_json::from_str(&stdout).map_err(|e| {
+            GgError::Other(format!(
+                "Failed to parse comments JSON for PR #{} (page {}): {}",
+                pr_number, page, e
+            ))
+        })?;
+
+        if page_comments.is_empty() {
+            break;
+        }
+        let full_page = page_comments.len() == 100;
+        all.extend(page_comments);
+        if !full_page {
+            break;
+        }
+        page += 1;
+    }
+
+    Ok(all)
+}
+
+/// Post a new comment on a PR.
+pub fn create_issue_comment(pr_number: u64, body: &str) -> Result<()> {
+    let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{}/comments", pr_number);
+    let output = Command::new("gh")
+        .args([
+            "api",
+            "-X",
+            "POST",
+            &endpoint,
+            "-f",
+            &format!("body={}", body),
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::Other(format!(
+            "Failed to create comment on PR #{}: {}",
+            pr_number, stderr
+        )));
+    }
+    Ok(())
+}
+
+/// Edit an existing PR comment by its comment id.
+pub fn update_issue_comment(comment_id: u64, body: &str) -> Result<()> {
+    let endpoint = format!("repos/{{owner}}/{{repo}}/issues/comments/{}", comment_id);
+    let output = Command::new("gh")
+        .args([
+            "api",
+            "-X",
+            "PATCH",
+            &endpoint,
+            "-f",
+            &format!("body={}", body),
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::Other(format!(
+            "Failed to update comment {}: {}",
+            comment_id, stderr
+        )));
+    }
+    Ok(())
+}
+
+/// Delete a PR comment by its comment id.
+pub fn delete_issue_comment(comment_id: u64) -> Result<()> {
+    let endpoint = format!("repos/{{owner}}/{{repo}}/issues/comments/{}", comment_id);
+    let output = Command::new("gh")
+        .args(["api", "-X", "DELETE", &endpoint])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::Other(format!(
+            "Failed to delete comment {}: {}",
+            comment_id, stderr
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -612,5 +731,36 @@ mod tests {
         let cloned = result.clone();
         assert_eq!(cloned.number, 123);
         assert_eq!(cloned.url, "https://github.com/test/repo/pull/123");
+    }
+
+    #[test]
+    fn test_comment_helpers_exist() {
+        // Compile-only test; ensures the new functions are wired up.
+        // Real invocations require a live gh CLI and are tested manually / in CI.
+        let _: fn(u64) -> Result<Vec<IssueComment>> = list_issue_comments;
+        let _: fn(u64, &str) -> Result<()> = create_issue_comment;
+        let _: fn(u64, &str) -> Result<()> = update_issue_comment;
+        let _: fn(u64) -> Result<()> = delete_issue_comment;
+    }
+
+    #[test]
+    fn test_issue_comment_deserialization() {
+        let json = r#"{"id": 12345, "body": "This is a comment\n<!-- gg:stack-nav -->"}"#;
+        let comment: IssueComment = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(comment.id, 12345);
+        assert!(comment.body.contains("<!-- gg:stack-nav -->"));
+    }
+
+    #[test]
+    fn test_issue_comment_list_deserialization() {
+        let json = r#"[
+            {"id": 1, "body": "first"},
+            {"id": 2, "body": "second <!-- gg:stack-nav -->"}
+        ]"#;
+        let comments: Vec<IssueComment> =
+            serde_json::from_str(json).expect("should deserialize list");
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0].id, 1);
+        assert_eq!(comments[1].body, "second <!-- gg:stack-nav -->");
     }
 }

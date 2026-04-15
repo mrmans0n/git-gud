@@ -9,6 +9,7 @@ use crate::error::{GgError, Result};
 use crate::gh::{self, CiStatus as GhCiStatus, PrState as GhPrState};
 use crate::git;
 use crate::glab::{self, AutoMergeResult, CiStatus as GlabCiStatus, MrState as GlabMrState};
+use crate::stack_nav;
 
 pub use crate::glab::FailedJob;
 
@@ -235,20 +236,16 @@ impl Provider {
         }
     }
 
-    /// Find the first comment on a PR/MR whose body contains `marker`.
+    /// Find the first comment on a PR/MR that is a git-gud managed nav comment.
     ///
     /// Returns `Ok(None)` if no such comment exists.
-    pub fn find_managed_comment(
-        &self,
-        pr_number: u64,
-        marker: &str,
-    ) -> Result<Option<ManagedComment>> {
+    pub fn find_managed_comment(&self, pr_number: u64) -> Result<Option<ManagedComment>> {
         match self {
             Provider::GitHub => {
                 let comments = gh::list_issue_comments(pr_number)?;
                 Ok(comments
                     .into_iter()
-                    .find(|c| c.body.contains(marker))
+                    .find(|c| stack_nav::is_managed_comment(&c.body))
                     .map(|c| ManagedComment {
                         id: c.id,
                         body: c.body,
@@ -258,7 +255,7 @@ impl Provider {
                 let notes = glab::list_mr_notes(pr_number)?;
                 Ok(notes
                     .into_iter()
-                    .find(|n| n.body.contains(marker))
+                    .find(|n| stack_nav::is_managed_comment(&n.body))
                     .map(|n| ManagedComment {
                         id: n.id,
                         body: n.body,

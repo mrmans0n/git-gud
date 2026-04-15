@@ -358,6 +358,7 @@ pub fn run(
         let mut pr_url: Option<String> = None;
         let mut pushed = false;
         let mut entry_error: Option<String> = None;
+        let mut pr_state_cached: Option<crate::stack_nav::PrEntryState> = None;
 
         let (title, description) = build_pr_payload(
             &title,
@@ -431,6 +432,14 @@ pub fn run(
                 // Check if PR is still open before updating
                 let pr_info = provider.get_pr_info(pr_num).ok();
                 pr_url = pr_info.as_ref().map(|info| info.url.clone());
+                // Cache the state so the nav reconcile pass can reuse it without
+                // a second network round-trip.
+                pr_state_cached = pr_info.as_ref().map(|info| match info.state {
+                    crate::provider::PrState::Open => crate::stack_nav::PrEntryState::Open,
+                    crate::provider::PrState::Draft => crate::stack_nav::PrEntryState::Draft,
+                    crate::provider::PrState::Merged => crate::stack_nav::PrEntryState::Merged,
+                    crate::provider::PrState::Closed => crate::stack_nav::PrEntryState::Closed,
+                });
                 let is_closed = pr_info
                     .as_ref()
                     .map(|info| {
@@ -659,12 +668,18 @@ pub fn run(
 
         // Capture state for nav reconcile pass after the main loop.
         let nav_snapshot: Option<NavEntrySnapshot> = if let Some(num) = pr_number {
-            let state = match provider.get_pr_info(num).map(|info| info.state).ok() {
-                Some(crate::provider::PrState::Open) => Some(stack_nav::PrEntryState::Open),
-                Some(crate::provider::PrState::Draft) => Some(stack_nav::PrEntryState::Draft),
-                Some(crate::provider::PrState::Merged) => Some(stack_nav::PrEntryState::Merged),
-                Some(crate::provider::PrState::Closed) => Some(stack_nav::PrEntryState::Closed),
-                None => None,
+            // Reuse state cached during the main loop if available (existing PRs);
+            // fall back to a fresh fetch only for newly created PRs.
+            let state = if let Some(cached) = pr_state_cached {
+                Some(cached)
+            } else {
+                match provider.get_pr_info(num).map(|info| info.state).ok() {
+                    Some(crate::provider::PrState::Open) => Some(stack_nav::PrEntryState::Open),
+                    Some(crate::provider::PrState::Draft) => Some(stack_nav::PrEntryState::Draft),
+                    Some(crate::provider::PrState::Merged) => Some(stack_nav::PrEntryState::Merged),
+                    Some(crate::provider::PrState::Closed) => Some(stack_nav::PrEntryState::Closed),
+                    None => None,
+                }
             };
             // json_entries.len() - 1 = the index of the entry we just pushed (JSON mode).
             // In non-JSON mode, json_entries is empty — use a sentinel index.
@@ -692,140 +707,146 @@ pub fn run(
 
     // --- Nav-comment reconcile pass ---
     //
-    // For each synced entry whose PR exists and is reachable, decide whether
-    // to create/update/delete the managed nav comment based on:
-    //   - the stack_nav_comments setting
-    //   - the total stack size
-    //   - the PR's state (open/draft vs merged/closed)
-    //
-    // We render the nav body with `is_current = true` on the entry being
-    // processed, so each PR's comment highlights the reader's location.
-    let setting_enabled = config.get_stack_nav_comments();
-    let stack_entry_count = entries_to_sync.len();
-    let number_prefix = provider.pr_number_prefix();
+    // Skipped under --until to avoid inconsistent nav comments: a partial sync
+    // cannot vouch for all PRs in the stack, and the single-entry skip rule
+    // would misfire for partial subsets. Full `gg sync` (no --until) will
+    // reconcile navigation across the whole stack.
+    if until.is_none() {
+        // For each synced entry whose PR exists and is reachable, decide whether
+        // to create/update/delete the managed nav comment based on:
+        //   - the stack_nav_comments setting
+        //   - the total stack size
+        //   - the PR's state (open/draft vs merged/closed)
+        //
+        // We render the nav body with `is_current = true` on the entry being
+        // processed, so each PR's comment highlights the reader's location.
+        let setting_enabled = config.get_stack_nav_comments();
+        let stack_entry_count = entries_to_sync.len();
+        let number_prefix = provider.pr_number_prefix();
 
-    // Collect the (pr_number, index) pairs once — used to render each
-    // per-PR body with a different `is_current` flag.
-    let all_entries: Vec<(u64, usize)> = nav_snapshots
-        .iter()
-        .enumerate()
-        .filter_map(|(i, s)| s.as_ref().map(|snap| (snap.pr_number, i)))
-        .collect();
+        // Collect the (pr_number, index) pairs once — used to render each
+        // per-PR body with a different `is_current` flag.
+        let all_entries: Vec<(u64, usize)> = nav_snapshots
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| s.as_ref().map(|snap| (snap.pr_number, i)))
+            .collect();
 
-    for (i, snap) in nav_snapshots.iter().enumerate() {
-        let snap = match snap {
-            Some(s) => s,
-            None => continue,
-        };
+        for (i, snap) in nav_snapshots.iter().enumerate() {
+            let snap = match snap {
+                Some(s) => s,
+                None => continue,
+            };
 
-        // Check for an existing managed comment once per PR.
-        let existing = match provider.find_managed_comment(snap.pr_number, stack_nav::MARKER) {
-            Ok(v) => v,
-            Err(e) => {
-                if !json {
-                    println!(
-                        "{} Could not list comments on {} {}{}: {}",
-                        style("Warning:").yellow(),
-                        provider.pr_label(),
-                        number_prefix,
-                        snap.pr_number,
-                        e
-                    );
+            // Check for an existing managed comment once per PR.
+            let existing = match provider.find_managed_comment(snap.pr_number) {
+                Ok(v) => v,
+                Err(e) => {
+                    if !json {
+                        println!(
+                            "{} Could not list comments on {} {}{}: {}",
+                            style("Warning:").yellow(),
+                            provider.pr_label(),
+                            number_prefix,
+                            snap.pr_number,
+                            e
+                        );
+                    }
+                    if json {
+                        if let Some(entry_json) = json_entries.get_mut(snap.json_index) {
+                            entry_json.nav_comment_action = Some("error".to_string());
+                        }
+                    }
+                    continue;
                 }
+            };
+
+            let decision = stack_nav::decide_action(stack_nav::NavDecisionInput {
+                setting_enabled,
+                stack_entry_count,
+                pr_state: snap.pr_state,
+                has_existing_comment: existing.is_some(),
+            });
+
+            let action_result: Option<&str> = match decision {
+                stack_nav::NavAction::Skip => None,
+                stack_nav::NavAction::Upsert => {
+                    // Render body with `is_current = true` for this entry's position.
+                    let nav_entries: Vec<stack_nav::StackNavEntry> = all_entries
+                        .iter()
+                        .map(|(n, j)| stack_nav::StackNavEntry {
+                            pr_number: *n,
+                            is_current: *j == i,
+                        })
+                        .collect();
+                    let body = stack_nav::render(&stack.name, &nav_entries, number_prefix);
+
+                    match existing {
+                        Some(c) if c.body == body => Some("unchanged"),
+                        Some(c) => match provider.update_pr_comment(snap.pr_number, c.id, &body) {
+                            Ok(()) => Some("updated"),
+                            Err(e) => {
+                                if !json {
+                                    println!(
+                                        "{} Could not update nav comment on {} {}{}: {}",
+                                        style("Warning:").yellow(),
+                                        provider.pr_label(),
+                                        number_prefix,
+                                        snap.pr_number,
+                                        e
+                                    );
+                                }
+                                Some("error")
+                            }
+                        },
+                        None => match provider.create_pr_comment(snap.pr_number, &body) {
+                            Ok(()) => Some("created"),
+                            Err(e) => {
+                                if !json {
+                                    println!(
+                                        "{} Could not create nav comment on {} {}{}: {}",
+                                        style("Warning:").yellow(),
+                                        provider.pr_label(),
+                                        number_prefix,
+                                        snap.pr_number,
+                                        e
+                                    );
+                                }
+                                Some("error")
+                            }
+                        },
+                    }
+                }
+                stack_nav::NavAction::Delete => match existing {
+                    Some(c) => match provider.delete_pr_comment(snap.pr_number, c.id) {
+                        Ok(()) => Some("deleted"),
+                        Err(e) => {
+                            if !json {
+                                println!(
+                                    "{} Could not delete nav comment on {} {}{}: {}",
+                                    style("Warning:").yellow(),
+                                    provider.pr_label(),
+                                    number_prefix,
+                                    snap.pr_number,
+                                    e
+                                );
+                            }
+                            Some("error")
+                        }
+                    },
+                    None => None,
+                },
+            };
+
+            if let Some(action) = action_result {
                 if json {
                     if let Some(entry_json) = json_entries.get_mut(snap.json_index) {
-                        entry_json.nav_comment_action = Some("error".to_string());
+                        entry_json.nav_comment_action = Some(action.to_string());
                     }
-                }
-                continue;
-            }
-        };
-
-        let decision = stack_nav::decide_action(stack_nav::NavDecisionInput {
-            setting_enabled,
-            stack_entry_count,
-            pr_state: snap.pr_state,
-            has_existing_comment: existing.is_some(),
-        });
-
-        let action_result: Option<&str> = match decision {
-            stack_nav::NavAction::Skip => None,
-            stack_nav::NavAction::Upsert => {
-                // Render body with `is_current = true` for this entry's position.
-                let nav_entries: Vec<stack_nav::StackNavEntry> = all_entries
-                    .iter()
-                    .map(|(n, j)| stack_nav::StackNavEntry {
-                        pr_number: *n,
-                        is_current: *j == i,
-                    })
-                    .collect();
-                let body = stack_nav::render(&stack.name, &nav_entries, number_prefix);
-
-                match existing {
-                    Some(c) if c.body == body => Some("unchanged"),
-                    Some(c) => match provider.update_pr_comment(snap.pr_number, c.id, &body) {
-                        Ok(()) => Some("updated"),
-                        Err(e) => {
-                            if !json {
-                                println!(
-                                    "{} Could not update nav comment on {} {}{}: {}",
-                                    style("Warning:").yellow(),
-                                    provider.pr_label(),
-                                    number_prefix,
-                                    snap.pr_number,
-                                    e
-                                );
-                            }
-                            Some("error")
-                        }
-                    },
-                    None => match provider.create_pr_comment(snap.pr_number, &body) {
-                        Ok(()) => Some("created"),
-                        Err(e) => {
-                            if !json {
-                                println!(
-                                    "{} Could not create nav comment on {} {}{}: {}",
-                                    style("Warning:").yellow(),
-                                    provider.pr_label(),
-                                    number_prefix,
-                                    snap.pr_number,
-                                    e
-                                );
-                            }
-                            Some("error")
-                        }
-                    },
-                }
-            }
-            stack_nav::NavAction::Delete => match existing {
-                Some(c) => match provider.delete_pr_comment(snap.pr_number, c.id) {
-                    Ok(()) => Some("deleted"),
-                    Err(e) => {
-                        if !json {
-                            println!(
-                                "{} Could not delete nav comment on {} {}{}: {}",
-                                style("Warning:").yellow(),
-                                provider.pr_label(),
-                                number_prefix,
-                                snap.pr_number,
-                                e
-                            );
-                        }
-                        Some("error")
-                    }
-                },
-                None => None,
-            },
-        };
-
-        if let Some(action) = action_result {
-            if json {
-                if let Some(entry_json) = json_entries.get_mut(snap.json_index) {
-                    entry_json.nav_comment_action = Some(action.to_string());
                 }
             }
         }
-    }
+    } // end if until.is_none()
 
     // Save updated config
     config.save(git_dir)?;

@@ -103,7 +103,6 @@ pub(crate) fn decide_action(input: NavDecisionInput) -> NavAction {
 ///
 /// Used to identify git-gud-managed nav comments among arbitrary PR comments
 /// when we need to find our own comment to update or delete it.
-#[allow(dead_code)]
 pub(crate) fn is_managed_comment(body: &str) -> bool {
     body.contains(MARKER)
 }

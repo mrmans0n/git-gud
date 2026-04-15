@@ -47,6 +47,60 @@ pub fn render(stack_name: &str, entries: &[StackNavEntry], number_prefix: &str) 
     out
 }
 
+/// The per-entry PR state that matters for nav-comment reconciliation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum PrEntryState {
+    Open,
+    Draft,
+    Merged,
+    Closed,
+}
+
+/// Inputs for the per-entry nav-action decision.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct NavDecisionInput {
+    pub setting_enabled: bool,
+    pub stack_entry_count: usize,
+    pub pr_state: PrEntryState,
+    pub has_existing_comment: bool,
+}
+
+/// What to do with the nav comment on a single PR in the stack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NavAction {
+    /// Do nothing: no comment should exist and none does.
+    Skip,
+    /// Create a new comment, or update the existing one (idempotent upsert).
+    Upsert,
+    /// Delete an existing comment.
+    Delete,
+}
+
+/// Decide what to do with the nav comment on a single PR, based on state.
+///
+/// See the design spec for the full decision table. In short:
+/// - Closed/merged PRs: always skip.
+/// - Setting off OR single-entry stack: delete if a comment exists, else skip.
+/// - Otherwise: upsert.
+#[allow(dead_code)]
+pub(crate) fn decide_action(input: NavDecisionInput) -> NavAction {
+    // Historical PRs are never touched.
+    if matches!(input.pr_state, PrEntryState::Merged | PrEntryState::Closed) {
+        return NavAction::Skip;
+    }
+
+    let should_have_comment = input.setting_enabled && input.stack_entry_count >= 2;
+
+    if should_have_comment {
+        NavAction::Upsert
+    } else if input.has_existing_comment {
+        NavAction::Delete
+    } else {
+        NavAction::Skip
+    }
+}
+
 /// Returns true if `body` contains the managed-comment marker.
 ///
 /// Used to identify git-gud-managed nav comments among arbitrary PR comments
@@ -235,5 +289,85 @@ mod tests {
     #[test]
     fn test_is_managed_comment_empty_body() {
         assert!(!is_managed_comment(""));
+    }
+
+    #[test]
+    fn test_decide_action_reconcile_when_setting_on_and_multi_entry_open() {
+        let decision = decide_action(NavDecisionInput {
+            setting_enabled: true,
+            stack_entry_count: 3,
+            pr_state: PrEntryState::Open,
+            has_existing_comment: false,
+        });
+        assert_eq!(decision, NavAction::Upsert);
+    }
+
+    #[test]
+    fn test_decide_action_cleanup_when_setting_off_and_comment_exists() {
+        let decision = decide_action(NavDecisionInput {
+            setting_enabled: false,
+            stack_entry_count: 3,
+            pr_state: PrEntryState::Open,
+            has_existing_comment: true,
+        });
+        assert_eq!(decision, NavAction::Delete);
+    }
+
+    #[test]
+    fn test_decide_action_skip_when_setting_off_and_no_comment() {
+        let decision = decide_action(NavDecisionInput {
+            setting_enabled: false,
+            stack_entry_count: 3,
+            pr_state: PrEntryState::Open,
+            has_existing_comment: false,
+        });
+        assert_eq!(decision, NavAction::Skip);
+    }
+
+    #[test]
+    fn test_decide_action_cleanup_when_single_entry_and_comment_exists() {
+        let decision = decide_action(NavDecisionInput {
+            setting_enabled: true,
+            stack_entry_count: 1,
+            pr_state: PrEntryState::Open,
+            has_existing_comment: true,
+        });
+        assert_eq!(decision, NavAction::Delete);
+    }
+
+    #[test]
+    fn test_decide_action_skip_when_single_entry_and_no_comment() {
+        let decision = decide_action(NavDecisionInput {
+            setting_enabled: true,
+            stack_entry_count: 1,
+            pr_state: PrEntryState::Open,
+            has_existing_comment: false,
+        });
+        assert_eq!(decision, NavAction::Skip);
+    }
+
+    #[test]
+    fn test_decide_action_skip_when_pr_closed() {
+        // Closed / merged PRs are historical — never touch their comments.
+        for state in [PrEntryState::Merged, PrEntryState::Closed] {
+            let decision = decide_action(NavDecisionInput {
+                setting_enabled: true,
+                stack_entry_count: 3,
+                pr_state: state,
+                has_existing_comment: true,
+            });
+            assert_eq!(decision, NavAction::Skip, "closed/merged must be skipped");
+        }
+    }
+
+    #[test]
+    fn test_decide_action_draft_treated_as_open() {
+        let decision = decide_action(NavDecisionInput {
+            setting_enabled: true,
+            stack_entry_count: 2,
+            pr_state: PrEntryState::Draft,
+            has_existing_comment: false,
+        });
+        assert_eq!(decision, NavAction::Upsert);
     }
 }

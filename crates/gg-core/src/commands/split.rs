@@ -86,14 +86,10 @@ impl std::fmt::Display for ChangedFile {
 pub fn run(options: SplitOptions) -> Result<()> {
     let repo = git::open_repo()?;
     let config = Config::load_with_global(repo.commondir())?;
-    let (_lock, guard) = git::acquire_operation_lock_and_record(
-        &repo,
-        &config,
-        OperationKind::Split,
-        std::env::args().collect(),
-        None,
-        SnapshotScope::AllUserBranches,
-    )?;
+    // Acquire the operation lock up-front but defer writing the op-log
+    // record until after all validation (including the immutability guard)
+    // so refused operations never leak into `gg undo --list` (design §4.6).
+    let _lock = git::acquire_operation_lock(&repo, "split")?;
 
     git::require_clean_working_directory(&repo)?;
 
@@ -267,6 +263,19 @@ pub fn run(options: SplitOptions) -> Result<()> {
     } else {
         get_remainder_message(&options, &target_commit)?
     };
+
+    // All validation passed — write the Pending op-log record now, right
+    // before the first actual repo mutation. A failure beyond this point
+    // leaves a Pending record the sweep promotes to Interrupted, which
+    // `gg undo` refuses (avoiding an unsafe partial-state rewind).
+    let guard = git::begin_recorded_op(
+        &repo,
+        &config,
+        OperationKind::Split,
+        std::env::args().skip(1).collect(),
+        None,
+        SnapshotScope::AllUserBranches,
+    )?;
 
     // 2. Create the first (new, lower) commit
     let sig = git::get_signature(&repo)?;

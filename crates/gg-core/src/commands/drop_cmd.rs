@@ -34,15 +34,11 @@ pub fn run(options: DropOptions) -> Result<()> {
     let repo = git::open_repo()?;
     let config = Config::load_with_global(repo.commondir())?;
 
-    // Acquire operation lock + record a Pending op for the undo log.
-    let (_lock, guard) = git::acquire_operation_lock_and_record(
-        &repo,
-        &config,
-        OperationKind::Drop,
-        std::env::args().collect(),
-        None,
-        SnapshotScope::AllUserBranches,
-    )?;
+    // Acquire the operation lock early so all validation runs under it, but
+    // defer writing the op-log record until *after* the immutability guard
+    // passes. This keeps refused operations from polluting `gg undo --list`
+    // with Interrupted ghosts (design §4.6).
+    let _lock = git::acquire_operation_lock(&repo, "drop")?;
 
     // Require clean working directory
     git::require_clean_working_directory(&repo)?;
@@ -135,18 +131,24 @@ pub fn run(options: DropOptions) -> Result<()> {
 
         if !confirmed {
             println!("{}", style("Drop cancelled.").dim());
-            // No mutation occurred; finalize with refs_after == refs_before so
-            // the record doesn't linger as Pending and undo is a safe no-op.
-            guard.finalize_with_scope(
-                &repo,
-                &config,
-                SnapshotScope::AllUserBranches,
-                vec![],
-                false,
-            )?;
+            // No mutation occurred and no record was written; drop the lock
+            // and exit cleanly without leaving a ghost in `gg undo --list`.
             return Ok(());
         }
     }
+
+    // All pre-mutation checks passed and the user confirmed (or confirmation
+    // is not required) — now write the Pending op-log record. Any later
+    // failure leaves a Pending record that the sweep promotes to Interrupted,
+    // which `gg undo` will refuse.
+    let guard = git::begin_recorded_op(
+        &repo,
+        &config,
+        OperationKind::Drop,
+        std::env::args().skip(1).collect(),
+        None,
+        SnapshotScope::AllUserBranches,
+    )?;
 
     // Build the rebase todo list, omitting dropped commits
     let drop_indices: Vec<usize> = drop_positions.iter().map(|p| p - 1).collect();

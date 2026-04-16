@@ -38,7 +38,7 @@ where
 
 /// Move to a specific position, entry ID, or SHA
 pub fn move_to(target: &str) -> Result<()> {
-    let op_args = std::env::args().collect();
+    let op_args = std::env::args().skip(1).collect();
     with_recorded_nav_lock(op_args, |repo, config| {
         if git::is_rebase_in_progress(repo) {
             return Err(GgError::Other(
@@ -87,7 +87,7 @@ pub fn move_to(target: &str) -> Result<()> {
 
 /// Move to the first commit in the stack
 pub fn first() -> Result<()> {
-    let op_args = std::env::args().collect();
+    let op_args = std::env::args().skip(1).collect();
     with_recorded_nav_lock(op_args, |repo, config| {
         if git::is_rebase_in_progress(repo) {
             return Err(GgError::Other(
@@ -108,7 +108,7 @@ pub fn first() -> Result<()> {
 
 /// Move to the last commit (stack head)
 pub fn last() -> Result<()> {
-    let op_args = std::env::args().collect();
+    let op_args = std::env::args().skip(1).collect();
     with_recorded_nav_lock(op_args, |repo, config| {
         let stack = Stack::load(repo, config)?;
 
@@ -152,7 +152,7 @@ pub fn last() -> Result<()> {
 
 /// Move to the previous commit
 pub fn prev() -> Result<()> {
-    let op_args = std::env::args().collect();
+    let op_args = std::env::args().skip(1).collect();
     with_recorded_nav_lock(op_args, |repo, config| {
         if git::is_rebase_in_progress(repo) {
             return Err(GgError::Other(
@@ -175,7 +175,7 @@ pub fn prev() -> Result<()> {
 
 /// Move to the next commit
 pub fn next() -> Result<()> {
-    let op_args = std::env::args().collect();
+    let op_args = std::env::args().skip(1).collect();
     with_recorded_nav_lock(op_args, |repo, config| {
         let stack = Stack::load(repo, config)?;
 

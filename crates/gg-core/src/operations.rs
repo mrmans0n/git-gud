@@ -185,6 +185,28 @@ pub fn new_id() -> String {
     format!("op_{ms:013}_{uuid}")
 }
 
+/// True iff `id` matches the `op_<digits>_<alphanumeric>` format produced
+/// by [`new_id`]. Used by [`OperationStore::path_for`] to reject ids that
+/// could traverse out of the operations directory (`../`, absolute paths,
+/// `\0`, path separators, etc.). Intentionally permissive on length so
+/// ids from older schema versions still parse — the structure check is
+/// what matters.
+pub fn is_valid_operation_id(id: &str) -> bool {
+    // Expected shape: "op_" + >=1 ASCII digits + "_" + >=1 ASCII alphanumerics.
+    let Some(rest) = id.strip_prefix("op_") else {
+        return false;
+    };
+    let Some(underscore) = rest.find('_') else {
+        return false;
+    };
+    let (ts, rand) = rest.split_at(underscore);
+    let rand = &rand[1..]; // drop the separator
+    if ts.is_empty() || rand.is_empty() {
+        return false;
+    }
+    ts.bytes().all(|b| b.is_ascii_digit()) && rand.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
 // ---------------------------------------------------------------------------
 // OperationStore (atomic save/load/list/prune)
 // ---------------------------------------------------------------------------
@@ -206,15 +228,23 @@ impl OperationStore {
         }
     }
 
-    fn path_for(&self, id: &str) -> PathBuf {
-        self.operations_dir.join(format!("{id}.json"))
+    /// Resolve the on-disk path for a record id. Rejects ids that do not
+    /// match the `op_<13-digit-ms>_<hex-or-alphanumeric>` format generated
+    /// by [`new_id`], which defends against a confused-deputy path-traversal
+    /// gadget via `gg undo <id>` / MCP `stack_undo` (a caller passing e.g.
+    /// `../../etc/passwd` would otherwise escape the operations dir).
+    fn path_for(&self, id: &str) -> Result<PathBuf> {
+        if !is_valid_operation_id(id) {
+            return Err(GgError::OperationRecordNotFound(id.to_string()));
+        }
+        Ok(self.operations_dir.join(format!("{id}.json")))
     }
 
     /// Persist a record atomically. Prunes Committed/Interrupted records
     /// beyond `OPERATION_LOG_CAP` afterwards, oldest-first.
     pub fn save(&self, record: &OperationRecord) -> Result<()> {
         fs::create_dir_all(&self.operations_dir)?;
-        let path = self.path_for(&record.id);
+        let path = self.path_for(&record.id)?;
         let tmp = path.with_extension("json.tmp");
         let json = serde_json::to_vec_pretty(record)?;
         {
@@ -227,9 +257,10 @@ impl OperationStore {
         Ok(())
     }
 
-    /// Load a record by id. Returns `OperationRecordNotFound` if absent.
+    /// Load a record by id. Returns `OperationRecordNotFound` if absent or
+    /// if the id fails [`is_valid_operation_id`].
     pub fn load(&self, id: &str) -> Result<OperationRecord> {
-        let path = self.path_for(id);
+        let path = self.path_for(id)?;
         let bytes = fs::read(&path).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => GgError::OperationRecordNotFound(id.to_string()),
             _ => GgError::Io(e),
@@ -240,6 +271,9 @@ impl OperationStore {
 
     /// Newest-first ids (lexical sort == chronological because of the
     /// zero-padded timestamp prefix). Cheap: no JSON parse.
+    ///
+    /// Filenames that don't parse as a valid operation id are skipped so
+    /// stray files in the operations directory can't leak into `--list`.
     pub fn list_ids(&self, limit: usize) -> Result<Vec<String>> {
         if !self.operations_dir.exists() {
             return Ok(vec![]);
@@ -249,6 +283,7 @@ impl OperationStore {
             .filter_map(|e| e.file_name().into_string().ok())
             .filter(|name| name.ends_with(".json") && !name.ends_with(".json.tmp"))
             .map(|name| name.trim_end_matches(".json").to_string())
+            .filter(|id| is_valid_operation_id(id))
             .collect();
         ids.sort_by(|a, b| b.cmp(a));
         ids.truncate(limit);
@@ -289,7 +324,9 @@ impl OperationStore {
             if rec.status == OperationStatus::Pending {
                 continue;
             }
-            let _ = fs::remove_file(self.path_for(&rec.id));
+            if let Ok(path) = self.path_for(&rec.id) {
+                let _ = fs::remove_file(path);
+            }
             pruned += 1;
         }
     }
@@ -460,6 +497,40 @@ pub struct OperationGuard {
 impl OperationGuard {
     pub fn id(&self) -> &str {
         &self.record.id
+    }
+
+    /// Persist a remote side effect to the Pending record immediately.
+    ///
+    /// Use this between successive remote mutations (push, PR create, PR
+    /// update) inside a long-running operation so a mid-sequence failure
+    /// leaves the record with an accurate trail. The guard still needs
+    /// `finalize` on success; if the caller drops instead, the sweep will
+    /// promote the record to `Interrupted` — with `touched_remote=true`
+    /// and `remote_effects` already populated, so `gg undo` correctly
+    /// refuses instead of silently rewinding local refs (see design §4.4).
+    ///
+    /// Errors from the save are swallowed: losing a `remote_effect` update
+    /// must not take down the mutating command that just succeeded.
+    pub fn record_remote_effect(&mut self, effect: RemoteEffect) {
+        self.record.remote_effects.push(effect);
+        self.record.touched_remote = true;
+        let _ = self.store.save(&self.record);
+    }
+
+    /// Flip `touched_remote` on the Pending record without appending a
+    /// specific `RemoteEffect` variant. Use for remote mutations we don't
+    /// yet model (e.g. PR base updates, merge-train scheduling): the
+    /// "touched remote" bit alone is enough to make `gg undo` refuse, which
+    /// is the only property we rely on for correctness.
+    ///
+    /// Errors from the save are swallowed: a failed persistence step must
+    /// not take down the mutating command that just succeeded.
+    pub fn mark_touched_remote(&mut self) {
+        if self.record.touched_remote {
+            return;
+        }
+        self.record.touched_remote = true;
+        let _ = self.store.save(&self.record);
     }
 
     /// Mark the operation as Committed with the given post-mutation ref
@@ -827,6 +898,47 @@ pub(crate) mod tests {
         let (_guard, gg_dir) = tmp_gg_dir();
         let store = OperationStore::new(&gg_dir);
         assert!(store.load("op_does_not_exist").is_err());
+    }
+
+    #[test]
+    fn store_load_rejects_path_traversal() {
+        let (_guard, gg_dir) = tmp_gg_dir();
+        let store = OperationStore::new(&gg_dir);
+        // Classic confused-deputy gadgets the old unvalidated `path_for`
+        // would happily resolve. Each must surface as OperationRecordNotFound
+        // rather than reading outside the operations directory.
+        for bad in [
+            "../../etc/passwd",
+            "../../../../../../etc/shadow",
+            "/etc/passwd",
+            "op_123_abc/../../../etc/passwd",
+            "op_123\x00_abc",
+            "op__",
+            "op_abc_def", // non-digit timestamp
+            "",
+        ] {
+            let err = store.load(bad).unwrap_err();
+            assert!(
+                matches!(err, GgError::OperationRecordNotFound(_)),
+                "id {bad:?} should be rejected as not-found, got: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn list_ids_skips_invalid_filenames() {
+        // A stray file with a name that doesn't match the operation-id shape
+        // must not appear in `list_ids`. This keeps `gg undo --list` from
+        // surfacing arbitrary junk dropped into the operations directory.
+        let (_guard, gg_dir) = tmp_gg_dir();
+        let store = OperationStore::new(&gg_dir);
+        let rec = make_record(OperationKind::Drop, 1_700_000_000_000);
+        store.save(&rec).unwrap();
+        // Drop a stray .json next to the real record.
+        let stray = store.operations_dir.join("totally_bogus.json");
+        fs::write(&stray, "{}").unwrap();
+        let ids = store.list_ids(usize::MAX).unwrap();
+        assert_eq!(ids, vec![rec.id.clone()]);
     }
 
     // -- guard ---------------------------------------------------------------

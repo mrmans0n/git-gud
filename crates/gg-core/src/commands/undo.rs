@@ -31,7 +31,7 @@ pub struct UndoCliOptions {
     pub operation_id: Option<String>,
     /// Emit machine-readable JSON.
     pub json: bool,
-    /// Limit for `--list`. Defaults to 20 when 0.
+    /// Limit for `--list`. Defaults to 100 when 0 (matches the op-log cap).
     pub limit: usize,
 }
 
@@ -48,7 +48,7 @@ pub fn run(options: UndoCliOptions) -> Result<()> {
 
 fn run_list(repo: &git2::Repository, options: &UndoCliOptions) -> Result<()> {
     let limit = if options.limit == 0 {
-        20
+        100
     } else {
         options.limit
     };
@@ -106,31 +106,16 @@ fn run_undo(repo: &git2::Repository, config: &Config, options: &UndoCliOptions) 
 
     emit_response(&outcome, options.json)?;
 
-    // Non-success outcomes exit non-zero so scripts can branch on it.
+    // `emit_response` already printed a detailed human-readable diagnostic
+    // (or the structured JSON refusal). For refusals we return the marker
+    // `Silenced` error so the CLI exits non-zero without prepending another
+    // generic "error: ..." line that would duplicate the refusal message.
     match outcome {
         UndoOutcome::Succeeded(_) => Ok(()),
-        UndoOutcome::RefusedRemote { target, hints: _ } => Err(GgError::OperationNotUndoable {
-            id: target.id,
-            reason: "operation touched a remote".into(),
-        }),
-        UndoOutcome::RefusedInterrupted(target) => Err(GgError::OperationNotUndoable {
-            id: target.id,
-            reason: "operation was interrupted".into(),
-        }),
-        UndoOutcome::RefusedStale {
-            target,
-            ref_name,
-            expected,
-            actual,
-        } => Err(GgError::StaleUndo {
-            ref_name,
-            expected,
-            actual: format!("{actual} (target: {})", target.id),
-        }),
-        UndoOutcome::RefusedUnsupportedSchema(target) => Err(GgError::OperationNotUndoable {
-            id: target.id,
-            reason: "operation was written by a newer gg; schema not supported".into(),
-        }),
+        UndoOutcome::RefusedRemote { .. }
+        | UndoOutcome::RefusedInterrupted(_)
+        | UndoOutcome::RefusedStale { .. }
+        | UndoOutcome::RefusedUnsupportedSchema(_) => Err(GgError::Silenced),
     }
 }
 

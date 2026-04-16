@@ -76,15 +76,10 @@ pub fn run(all: bool, force: bool) -> Result<()> {
     let repo = git::open_repo()?;
     let config = Config::load_with_global(repo.commondir())?;
 
-    // Acquire operation lock + record a Pending op for the undo log.
-    let (_lock, guard) = git::acquire_operation_lock_and_record(
-        &repo,
-        &config,
-        OperationKind::Squash,
-        std::env::args().collect(),
-        None,
-        SnapshotScope::AllUserBranches,
-    )?;
+    // Acquire the operation lock for validation, but defer writing the
+    // op-log record until after the immutability guard passes so refused
+    // operations never pollute `gg undo --list` (design §4.6).
+    let _lock = git::acquire_operation_lock(&repo, "squash")?;
 
     // Verify we're on a stack
     let mut stack = Stack::load(&repo, &config)?;
@@ -97,13 +92,7 @@ pub fn run(all: bool, force: bool) -> Result<()> {
     let statuses = repo.statuses(None)?;
     if statuses.is_empty() {
         println!("{}", style("No changes to squash.").dim());
-        guard.finalize_with_scope(
-            &repo,
-            &config,
-            SnapshotScope::AllUserBranches,
-            vec![],
-            false,
-        )?;
+        // No mutation — no record needed.
         return Ok(());
     }
 
@@ -188,14 +177,9 @@ pub fn run(all: bool, force: bool) -> Result<()> {
                     }
                     2 => {}
                     _ => {
-                        // User aborted: no mutation occurred.
-                        guard.finalize_with_scope(
-                            &repo,
-                            &config,
-                            SnapshotScope::AllUserBranches,
-                            vec![],
-                            false,
-                        )?;
+                        // User aborted: no mutation occurred and no record
+                        // has been written yet. Exit clean — the op log
+                        // stays untouched.
                         return Ok(());
                     }
                 }
@@ -241,6 +225,18 @@ pub fn run(all: bool, force: bool) -> Result<()> {
             ));
         }
     }
+
+    // All validation passed and we are about to mutate: write the Pending
+    // op-log record now so a failure beyond this point leaves a record the
+    // sweep can promote to Interrupted.
+    let guard = git::begin_recorded_op(
+        &repo,
+        &config,
+        OperationKind::Squash,
+        std::env::args().skip(1).collect(),
+        None,
+        SnapshotScope::AllUserBranches,
+    )?;
 
     // Perform the squash using git command (more reliable for amend)
     let mut args = vec!["commit", "--amend", "--no-edit"];

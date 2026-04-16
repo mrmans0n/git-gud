@@ -60,7 +60,7 @@ pub fn run(dry_run: bool) -> Result<()> {
         &repo,
         &config,
         OperationKind::Reconcile,
-        std::env::args().collect(),
+        std::env::args().skip(1).collect(),
         None,
         SnapshotScope::AllUserBranches,
     )?;

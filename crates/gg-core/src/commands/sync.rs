@@ -183,17 +183,19 @@ pub fn run(
     let mut config = Config::load_with_global(git_dir)?;
 
     // Acquire operation lock + record a Pending op for the undo log.
-    let (_lock, guard) = git::acquire_operation_lock_and_record(
+    let (_lock, mut guard) = git::acquire_operation_lock_and_record(
         &repo,
         &config,
         OperationKind::Sync,
-        std::env::args().collect(),
+        std::env::args().skip(1).collect(),
         None,
         SnapshotScope::AllUserBranches,
     )?;
 
-    // Remote effects collected during the sync loop. Populated when a push
-    // succeeds or a PR is created; consumed by `guard.finalize_*`.
+    // Remote effects are persisted incrementally via `guard.record_remote_effect`
+    // / `guard.mark_touched_remote` so a mid-loop failure leaves an accurate
+    // trail (design §4.4). These locals mirror what has been recorded so the
+    // success-path finalize can replay the same values without a disk read.
     let mut remote_effects: Vec<RemoteEffect> = Vec::new();
     let mut touched_remote = false;
 
@@ -447,12 +449,14 @@ pub fn run(
             // Record the push as a remote effect. `sync` always pushes with
             // force-with-lease because rebases rewrite entry-branch history;
             // the `force` field here reflects the hard --force escape hatch.
-            remote_effects.push(RemoteEffect::Pushed {
+            let effect = RemoteEffect::Pushed {
                 remote: "origin".to_string(),
                 branch: entry_branch.clone(),
                 force,
-            });
+            };
+            remote_effects.push(effect.clone());
             touched_remote = true;
+            guard.record_remote_effect(effect);
         }
 
         // Determine target branch for MR
@@ -593,20 +597,32 @@ pub fn run(
                         }
                     }
 
-                    // Update PR/MR base if needed
-                    if let Err(e) = provider.update_pr_base(pr_num, &target_branch) {
-                        if !json {
-                            pb.println(format!(
-                                "{} Could not update {} {}{}: {}",
-                                style("Warning:").yellow(),
-                                provider.pr_label(),
-                                provider.pr_number_prefix(),
-                                pr_num,
-                                e
-                            ));
+                    // Update PR/MR base if needed. A successful `update_pr_base`
+                    // call mutates remote state — even if the new base matches
+                    // what the API already had, we've made a request that the
+                    // provider treats as an authoritative update. Mark
+                    // `touched_remote` so `gg undo` refuses to replay this sync
+                    // locally (there's no safe local inverse for a remote base
+                    // change).
+                    match provider.update_pr_base(pr_num, &target_branch) {
+                        Ok(()) => {
+                            touched_remote = true;
+                            guard.mark_touched_remote();
                         }
-                        if entry_error.is_none() {
-                            entry_error = Some(format!("Could not update base: {e}"));
+                        Err(e) => {
+                            if !json {
+                                pb.println(format!(
+                                    "{} Could not update {} {}{}: {}",
+                                    style("Warning:").yellow(),
+                                    provider.pr_label(),
+                                    provider.pr_number_prefix(),
+                                    pr_num,
+                                    e
+                                ));
+                            }
+                            if entry_error.is_none() {
+                                entry_error = Some(format!("Could not update base: {e}"));
+                            }
                         }
                     }
 
@@ -653,12 +669,16 @@ pub fn run(
                         action = "created".to_string();
 
                         // Record the PR creation as a remote effect so `gg undo`
-                        // can surface a provider-specific revert hint.
-                        remote_effects.push(RemoteEffect::PrCreated {
+                        // can surface a provider-specific revert hint. Persist
+                        // immediately so a mid-sequence failure still leaves an
+                        // accurate record on disk.
+                        let effect = RemoteEffect::PrCreated {
                             number: result.number,
                             url: result.url.clone(),
-                        });
+                        };
+                        remote_effects.push(effect.clone());
                         touched_remote = true;
+                        guard.record_remote_effect(effect);
 
                         if !json {
                             let draft_label = if entry_draft { " (draft)" } else { "" };

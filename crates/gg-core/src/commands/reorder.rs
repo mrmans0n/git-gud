@@ -30,16 +30,11 @@ pub fn run(options: ReorderOptions) -> Result<()> {
     let repo = git::open_repo()?;
     let config = Config::load_with_global(repo.commondir())?;
 
-    // Acquire operation lock + record a Pending op for the undo log.
+    // Acquire the operation lock now but defer writing the op-log record
+    // until all validation (including the immutability guard) passes so
+    // refused or cancelled operations never leak into `gg undo --list`.
     // NOTE: this is a behaviour change — reorder previously had no lock.
-    let (_lock, guard) = git::acquire_operation_lock_and_record(
-        &repo,
-        &config,
-        OperationKind::Reorder,
-        std::env::args().collect(),
-        None,
-        SnapshotScope::AllUserBranches,
-    )?;
+    let _lock = git::acquire_operation_lock(&repo, "reorder")?;
 
     // Require clean working directory
     git::require_clean_working_directory(&repo)?;
@@ -52,13 +47,6 @@ pub fn run(options: ReorderOptions) -> Result<()> {
 
     if stack.len() < 2 {
         println!("{}", style("Need at least 2 commits to reorder.").dim());
-        guard.finalize_with_scope(
-            &repo,
-            &config,
-            SnapshotScope::AllUserBranches,
-            vec![],
-            false,
-        )?;
         return Ok(());
     }
 
@@ -80,26 +68,12 @@ pub fn run(options: ReorderOptions) -> Result<()> {
         Some(order) => order,
         None => {
             println!("{}", style("Reorder cancelled.").dim());
-            guard.finalize_with_scope(
-                &repo,
-                &config,
-                SnapshotScope::AllUserBranches,
-                vec![],
-                false,
-            )?;
             return Ok(());
         }
     };
 
     if new_order.is_empty() {
         println!("{}", style("No commits in reorder list. Aborting.").dim());
-        guard.finalize_with_scope(
-            &repo,
-            &config,
-            SnapshotScope::AllUserBranches,
-            vec![],
-            false,
-        )?;
         return Ok(());
     }
 
@@ -107,13 +81,6 @@ pub fn run(options: ReorderOptions) -> Result<()> {
     let old_order: Vec<&str> = stack.entries.iter().map(|e| e.short_sha.as_str()).collect();
     if new_order.len() == old_order.len() && new_order == old_order {
         println!("{}", style("Order unchanged.").dim());
-        guard.finalize_with_scope(
-            &repo,
-            &config,
-            SnapshotScope::AllUserBranches,
-            vec![],
-            false,
-        )?;
         return Ok(());
     }
 
@@ -128,6 +95,17 @@ pub fn run(options: ReorderOptions) -> Result<()> {
         let report = policy.check_positions(&stack, &targets);
         immutability::guard(report, options.force)?;
     }
+
+    // All validation passed — write the Pending op-log record immediately
+    // before the actual rebase.
+    let guard = git::begin_recorded_op(
+        &repo,
+        &config,
+        OperationKind::Reorder,
+        std::env::args().skip(1).collect(),
+        None,
+        SnapshotScope::AllUserBranches,
+    )?;
 
     let dropped_count = stack.len() - new_order.len();
     if dropped_count > 0 {

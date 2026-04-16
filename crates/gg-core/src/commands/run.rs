@@ -134,7 +134,7 @@ pub fn execute(options: RunOptions) -> Result<bool> {
             &repo,
             &config,
             OperationKind::Run,
-            std::env::args().collect(),
+            std::env::args().skip(1).collect(),
             None,
             SnapshotScope::AllUserBranches,
         )?)

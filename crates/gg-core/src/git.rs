@@ -166,6 +166,11 @@ pub(crate) fn acquire_operation_lock_with_timeout(
 /// This is the instrumentation sibling of [`acquire_operation_lock`]. The
 /// original function stays unchanged for callers that do not need to
 /// record (e.g. `gg continue` / `gg abort`).
+///
+/// Callers that need to gate recording on pre-mutation validation (e.g.
+/// the immutability guard) should instead use [`acquire_operation_lock`]
+/// combined with [`begin_recorded_op`] so that rejected operations never
+/// pollute the op log.
 pub fn acquire_operation_lock_and_record(
     repo: &Repository,
     config: &crate::config::Config,
@@ -174,25 +179,47 @@ pub fn acquire_operation_lock_and_record(
     stack_name: Option<String>,
     scope: crate::operations::SnapshotScope<'_>,
 ) -> Result<(OperationLock, crate::operations::OperationGuard)> {
+    let op_name = format!("{kind:?}").to_lowercase();
+    let lock = acquire_operation_lock(repo, &op_name)?;
+    let guard = begin_recorded_op(repo, config, kind, args, stack_name, scope)?;
+    Ok((lock, guard))
+}
+
+/// Write a `Pending` operation record, assuming the caller already holds
+/// the operation lock (via [`acquire_operation_lock`]).
+///
+/// This is the half of [`acquire_operation_lock_and_record`] that runs
+/// *after* lock acquisition. Split out so instrumented commands can do
+/// pre-mutation validation (e.g. immutability checks) without polluting
+/// the op log with rejected operations: acquire the lock first, validate,
+/// then call this helper immediately before mutating.
+///
+/// The returned guard MUST be `finalize`d on the success path — dropping
+/// it leaves the record `Pending` on disk for the sweep to promote to
+/// `Interrupted`.
+pub fn begin_recorded_op(
+    repo: &Repository,
+    config: &crate::config::Config,
+    kind: crate::operations::OperationKind,
+    args: Vec<String>,
+    stack_name: Option<String>,
+    scope: crate::operations::SnapshotScope<'_>,
+) -> Result<crate::operations::OperationGuard> {
     use crate::operations::{
         self, new_id, now_ms, OperationGuard, OperationRecord, OperationStatus, OperationStore,
         SCHEMA_VERSION,
     };
 
-    // 1. Reuse the existing lock acquisition (handles index.lock + flock).
-    let op_name = format!("{kind:?}").to_lowercase();
-    let lock = acquire_operation_lock(repo, &op_name)?;
-
-    // 2. Sweep stale Pending records. Swallows all errors.
+    // 1. Sweep stale Pending records. Swallows all errors.
     let gg_dir_path = gg_dir(repo);
     let store = OperationStore::new(&gg_dir_path);
     store.sweep_pending(now_ms());
 
-    // 3. Capture refs_before. Snapshot errors propagate — if we can't read
+    // 2. Capture refs_before. Snapshot errors propagate — if we can't read
     //    refs we can't safely record anything.
     let refs_before = operations::snapshot_refs(repo, config, scope)?;
 
-    // 4. Write the Pending record.
+    // 3. Write the Pending record.
     let record = OperationRecord {
         id: new_id(),
         schema_version: SCHEMA_VERSION,
@@ -210,12 +237,11 @@ pub fn acquire_operation_lock_and_record(
     };
     store.save(&record)?;
 
-    let guard = OperationGuard {
+    Ok(OperationGuard {
         record,
         store,
         finalized: false,
-    };
-    Ok((lock, guard))
+    })
 }
 
 /// Find the base branch (main, master, or trunk)

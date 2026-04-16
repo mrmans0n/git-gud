@@ -24,7 +24,7 @@ pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
         &repo,
         &config,
         OperationKind::Clean,
-        std::env::args().collect(),
+        std::env::args().skip(1).collect(),
         Some(stack_name.to_string()),
         SnapshotScope::AllUserBranches,
     )?;
@@ -184,7 +184,7 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
         &repo,
         &config,
         OperationKind::Clean,
-        std::env::args().collect(),
+        std::env::args().skip(1).collect(),
         None,
         SnapshotScope::AllUserBranches,
     )?;

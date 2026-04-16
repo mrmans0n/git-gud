@@ -41,16 +41,11 @@ pub fn run(options: AbsorbOptions) -> Result<()> {
     let repo = git::open_repo()?;
     let gg_config = Config::load_with_global(repo.commondir())?;
 
-    // Acquire operation lock + record a Pending op for the undo log.
+    // Acquire the operation lock for validation, but defer writing the
+    // op-log record until after the immutability guard passes so refused
+    // operations never pollute `gg undo --list` (design §4.6).
     // NOTE: behaviour change — absorb previously had no lock.
-    let (_lock, guard) = git::acquire_operation_lock_and_record(
-        &repo,
-        &gg_config,
-        OperationKind::Absorb,
-        std::env::args().collect(),
-        None,
-        SnapshotScope::AllUserBranches,
-    )?;
+    let _lock = git::acquire_operation_lock(&repo, "absorb")?;
 
     // Check if there are staged changes
     let statuses = repo.statuses(None)?;
@@ -82,13 +77,7 @@ pub fn run(options: AbsorbOptions) -> Result<()> {
         } else {
             println!("{}", style("No changes to absorb.").dim());
         }
-        guard.finalize_with_scope(
-            &repo,
-            &gg_config,
-            SnapshotScope::AllUserBranches,
-            vec![],
-            false,
-        )?;
+        // No mutation — no record needed.
         return Ok(());
     }
 
@@ -113,6 +102,23 @@ pub fn run(options: AbsorbOptions) -> Result<()> {
         let report = policy.check_all(&stack);
         immutability::guard(report, options.force)?;
     }
+
+    // All validation passed and we are about to mutate: write the Pending
+    // op-log record now so a failure beyond this point leaves a record the
+    // sweep can promote to Interrupted. Dry-run mutates nothing, so skip
+    // recording entirely in that branch.
+    let guard = if options.dry_run {
+        None
+    } else {
+        Some(git::begin_recorded_op(
+            &repo,
+            &gg_config,
+            OperationKind::Absorb,
+            std::env::args().skip(1).collect(),
+            None,
+            SnapshotScope::AllUserBranches,
+        )?)
+    };
 
     // Determine the base reference for absorb
     // We want to absorb into commits between base and HEAD
@@ -203,13 +209,15 @@ pub fn run(options: AbsorbOptions) -> Result<()> {
     };
     outcome?;
 
-    guard.finalize_with_scope(
-        &repo,
-        &gg_config,
-        SnapshotScope::AllUserBranches,
-        vec![],
-        false,
-    )?;
+    if let Some(guard) = guard {
+        guard.finalize_with_scope(
+            &repo,
+            &gg_config,
+            SnapshotScope::AllUserBranches,
+            vec![],
+            false,
+        )?;
+    }
 
     Ok(())
 }

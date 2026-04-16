@@ -8681,3 +8681,88 @@ fn test_undo_help_mentions_list_and_json() {
     assert!(stdout.contains("--json"), "help must document --json");
     assert!(stdout.contains("--limit"), "help must document --limit");
 }
+
+#[test]
+fn test_undo_roundtrip_from_worktree() {
+    // Regression coverage for a subtle interaction between `gg undo` and
+    // linked worktrees: the op-log lives under `commondir/gg/operations`
+    // and the op lock under the shared common git dir, so a mutation run
+    // inside a linked worktree must produce a record that a subsequent
+    // `gg undo` invoked from the same worktree can read and replay.
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let stack_name = "undo-wt-test";
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", stack_name, "--worktree"]);
+    assert!(success, "Failed to create worktree stack: {stderr}");
+
+    // Default worktree layout: ../<repo-dir>.<stack>/
+    let worktree_path = repo_path.parent().unwrap().join(format!(
+        "{}.{}",
+        repo_path.file_name().unwrap().to_string_lossy(),
+        stack_name
+    ));
+    assert!(
+        worktree_path.exists(),
+        "Worktree should exist at {}",
+        worktree_path.display()
+    );
+    let wt = worktree_path.to_path_buf();
+
+    // Build a 3-commit stack inside the worktree.
+    for i in 1..=3 {
+        fs::write(
+            worktree_path.join(format!("f{i}.txt")),
+            format!("content {i}"),
+        )
+        .unwrap();
+        run_git(&wt, &["add", "."]);
+        run_git(&wt, &["commit", "-m", &format!("Commit {i}")]);
+    }
+    let head_before_drop = head_sha(&wt);
+
+    // Drop position 2 from inside the worktree.
+    let (success, _, stderr) = run_gg(&wt, &["drop", "2", "--force"]);
+    assert!(success, "drop from worktree failed: {stderr}");
+    assert_ne!(
+        head_sha(&wt),
+        head_before_drop,
+        "drop should move HEAD in the worktree"
+    );
+
+    // `undo --list` run from the worktree must see the drop record. Both
+    // paths share `commondir`, so the op log is visible.
+    let (success, stdout, stderr) = run_gg(&wt, &["undo", "--list", "--json"]);
+    assert!(success, "undo --list from worktree failed: {stderr}");
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    let ops = parsed["operations"]
+        .as_array()
+        .expect("operations must be array");
+    assert!(
+        ops.iter().any(|op| op["kind"] == "drop"),
+        "worktree op-log should include the drop record: {ops:?}"
+    );
+
+    // Undo from the worktree — HEAD should return to the pre-drop sha.
+    let (success, stdout, stderr) = run_gg(&wt, &["undo", "--json"]);
+    assert!(
+        success,
+        "undo from worktree failed: stdout={stdout} stderr={stderr}"
+    );
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(parsed["status"], "succeeded");
+    assert_eq!(parsed["undone"]["kind"], "drop");
+
+    assert_eq!(
+        head_sha(&wt),
+        head_before_drop,
+        "undo from worktree should restore pre-drop HEAD"
+    );
+}

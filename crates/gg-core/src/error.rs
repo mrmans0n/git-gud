@@ -101,6 +101,13 @@ pub enum GgError {
 
     #[error("A git operation is currently in progress.\n{0}\nIf no other process is running, remove the stale lock:\n  rm {1}")]
     GitOperationInProgress(String, String),
+
+    /// Marker error for commands that have already printed their own human-
+    /// readable diagnostic and just need the process to exit non-zero. The
+    /// CLI top-level handler recognises this and suppresses the generic
+    /// "error: ..." prefix to avoid double-printing.
+    #[error("")]
+    Silenced,
 }
 
 pub type Result<T> = std::result::Result<T, GgError>;

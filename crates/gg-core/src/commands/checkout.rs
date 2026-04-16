@@ -26,7 +26,7 @@ pub fn run(stack_name: Option<String>, base: Option<String>, use_worktree: bool)
         &repo,
         &config,
         OperationKind::Checkout,
-        std::env::args().collect(),
+        std::env::args().skip(1).collect(),
         stack_name.clone(),
         SnapshotScope::AllUserBranches,
     )?;

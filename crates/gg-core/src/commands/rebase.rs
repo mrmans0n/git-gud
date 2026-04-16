@@ -15,17 +15,29 @@ pub fn run(target: Option<String>, force: bool) -> Result<()> {
     let repo = git::open_repo()?;
     let config = Config::load_with_global(repo.commondir())?;
 
-    // Acquire operation lock + record a Pending op for the undo log.
-    let (_lock, guard) = git::acquire_operation_lock_and_record(
+    // Acquire the operation lock for validation, but defer writing the
+    // op-log record until after the immutability guard passes so refused
+    // operations never pollute `gg undo --list` (design §4.6).
+    let _lock = git::acquire_operation_lock(&repo, "rebase")?;
+
+    // Run validation (fetch + immutability guard). This may mutate refs
+    // via the fetch and local-branch fast-forward, but those are harmless
+    // and don't need undo coverage.
+    let target_branch = prepare_rebase(&repo, &config, target.clone(), false, force)?;
+
+    // All validation passed — now write the Pending op-log record so a
+    // failure beyond this point leaves a record the sweep can promote to
+    // Interrupted.
+    let guard = git::begin_recorded_op(
         &repo,
         &config,
         OperationKind::Rebase,
-        std::env::args().collect(),
+        std::env::args().skip(1).collect(),
         None,
         SnapshotScope::AllUserBranches,
     )?;
 
-    run_with_repo(&repo, target, false, force)?;
+    execute_rebase(&repo, &target_branch, false)?;
 
     guard.finalize_with_scope(
         &repo,
@@ -44,13 +56,25 @@ pub fn run_with_repo(
     force: bool,
 ) -> Result<()> {
     let config = Config::load_with_global(repo.commondir())?;
+    let target_branch = prepare_rebase(repo, &config, target, json, force)?;
+    execute_rebase(repo, &target_branch, json)
+}
 
+/// Validation phase: resolve target, fetch, update local base, run the
+/// immutability guard. Returns the resolved target branch on success.
+fn prepare_rebase(
+    repo: &Repository,
+    config: &Config,
+    target: Option<String>,
+    json: bool,
+    force: bool,
+) -> Result<String> {
     // Determine target branch. If no target provided, we need to be on a
     // stack to get the base branch.
     let target_branch = if let Some(t) = target {
         t
     } else {
-        let stack = Stack::load(repo, &config)?;
+        let stack = Stack::load(repo, config)?;
         stack.base.clone()
     };
 
@@ -109,7 +133,7 @@ pub fn run_with_repo(
     // parent chain. If any commit is merged or already on the (freshly
     // fetched) base, refuse without --force. Must run *after* the fetch so
     // origin/<base> reflects the latest remote state.
-    if let Ok(mut stack) = Stack::load(repo, &config) {
+    if let Ok(mut stack) = Stack::load(repo, config) {
         if !stack.is_empty() {
             // Best-effort refresh of mr_state so the guard catches
             // squash-merged PRs (their merge SHA isn't on origin/<base>, so
@@ -120,6 +144,14 @@ pub fn run_with_repo(
             immutability::guard(report, force)?;
         }
     }
+
+    Ok(target_branch)
+}
+
+/// Mutation phase: stash uncommitted changes, run `git rebase`, restore
+/// stash. Assumes validation (fetch + immutability guard) has already run.
+fn execute_rebase(repo: &Repository, target_branch: &str, json: bool) -> Result<()> {
+    let current_branch = git::current_branch_name(repo);
 
     // Auto-stash uncommitted changes if present. Done after the guard so we
     // don't create a stash we'll have to restore if the guard rejects.

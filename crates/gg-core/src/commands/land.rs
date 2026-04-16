@@ -365,11 +365,11 @@ pub fn run(opts: LandOptions) -> Result<()> {
     let mut config = Config::load_with_global(git_dir)?;
 
     // Acquire operation lock + record a Pending op for the undo log.
-    let (_lock, guard) = git::acquire_operation_lock_and_record(
+    let (_lock, mut guard) = git::acquire_operation_lock_and_record(
         &repo,
         &config,
         OperationKind::Land,
-        std::env::args().collect(),
+        std::env::args().skip(1).collect(),
         None,
         SnapshotScope::AllUserBranches,
     )?;
@@ -708,6 +708,14 @@ pub fn run(opts: LandOptions) -> Result<()> {
         if merge_trains_enabled {
             match provider.add_to_merge_train(pr_num) {
                 Ok(result) => {
+                    // Queueing a PR/MR on the merge train is a remote state
+                    // mutation even when the PR was already queued — the
+                    // API call still touches the remote. Mark `touched_remote`
+                    // so `gg undo` refuses to replay this op locally. Persist
+                    // the flag immediately so a mid-sequence failure still
+                    // leaves a record the sweep will promote correctly.
+                    touched_remote = true;
+                    guard.mark_touched_remote();
                     let action = match result {
                         AutoMergeResult::Queued => "queued",
                         AutoMergeResult::AlreadyQueued => "already_queued",
@@ -790,8 +798,10 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 Ok(AutoMergeResult::Queued) => {
                     // Queuing for auto-merge mutates remote state even though
                     // the MR is not merged yet; mark the op as having touched
-                    // remote so `gg undo` refuses with a provider hint.
+                    // remote so `gg undo` refuses with a provider hint. Persist
+                    // immediately for mid-sequence failure tolerance.
                     touched_remote = true;
+                    guard.mark_touched_remote();
                     landed_entries.push(LandedEntryJson {
                         position: entry.position,
                         sha: entry.short_sha.clone(),
@@ -837,11 +847,13 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         .get_pr_info(pr_num)
                         .map(|info| info.url)
                         .unwrap_or_default();
-                    remote_effects.push(RemoteEffect::PrMerged {
+                    let effect = RemoteEffect::PrMerged {
                         number: pr_num,
                         url: pr_url,
-                    });
+                    };
+                    remote_effects.push(effect.clone());
                     touched_remote = true;
+                    guard.record_remote_effect(effect);
 
                     landed_entries.push(LandedEntryJson {
                         position: entry.position,

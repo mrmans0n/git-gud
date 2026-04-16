@@ -411,8 +411,9 @@ enum Commands {
         #[arg(long)]
         json: bool,
 
-        /// Limit for `--list` (default 20).
-        #[arg(long, default_value_t = 20)]
+        /// Limit for `--list` (default 100, matches the op-log cap). Has no
+        /// effect unless `--list` is also passed.
+        #[arg(long, default_value_t = 100, requires = "list")]
         limit: usize,
     },
 }
@@ -681,6 +682,12 @@ fn main() {
     };
 
     if let Err(e) = result {
+        // `GgError::Silenced` means the command already emitted a detailed
+        // human diagnostic; we just need to exit non-zero without prepending
+        // a second generic "error: ..." line.
+        if matches!(e, gg_core::error::GgError::Silenced) {
+            exit(1);
+        }
         if json_mode {
             gg_core::output::print_json_error(&e.to_string());
         } else {

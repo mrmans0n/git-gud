@@ -96,7 +96,8 @@ git commit -m "feat: add input validation"
 3. Check stack state:
 
 ```bash
-gg ls --json
+gg ls --json        # single-stack details + summary metrics
+gg log --json       # smartlog-style view of the current stack
 ```
 
 4. Publish/update PR/MR chain:
@@ -241,7 +242,7 @@ Reconcile is skipped under `--until` to avoid partial-stack inconsistencies.
 The `gg-mcp` binary exposes git-gud as an MCP server (stdio transport). Set `GG_REPO_PATH` to the target repo.
 
 ### Read-only tools (safe, no side effects)
-- `stack_list` / `stack_list_all` / `stack_status` — inspect stacks
+- `stack_list` / `stack_log` / `stack_list_all` / `stack_status` — inspect stacks (`stack_log` gives a smartlog-style view of the current stack; `stack_list_all` is cross-stack)
 - `pr_info` — check PR state, CI, approval
 - `config_show` — read repo configuration
 

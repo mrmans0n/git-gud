@@ -46,6 +46,15 @@ List the current stack with commit entries and PR/MR status.
 
 **Returns:** Stack name, base branch, commit entries with positions, SHAs, titles, GG-IDs, PR numbers, states, CI status, and approval status.
 
+### `stack_log`
+
+Render the current stack as a smartlog-style view (stack-scoped). Mirrors the CLI `gg log --json` output.
+
+**Parameters:**
+- `refresh` (boolean, optional): Refresh PR/MR status from remote before rendering. Default: `false`.
+
+**Returns:** `{ stack, base, current_position, entries: [...] }`. Entry fields match `stack_list`. Use `stack_list_all` when you need a cross-stack overview.
+
 ### `stack_list_all`
 
 List all stacks in the repository with summary information.

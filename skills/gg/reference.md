@@ -66,6 +66,14 @@ List current/all/remote stacks.
 - `--remote`
 - `--json`
 
+#### `gg log [OPTIONS]`
+Smartlog-style view of the **current** stack (tree with HEAD marker, PR/CI
+badges). Stack-scoped — use `gg ls --all` for cross-stack browsing.
+
+- `-r, --refresh`
+- `--json` (auto-refreshes PR/MR state; shape mirrors `gg ls --json` entries
+  under a `log` key)
+
 #### `gg sync [OPTIONS]`
 Push and create/update PRs/MRs.
 
@@ -308,6 +316,37 @@ Field types:
 }
 ```
 
+### `gg log --json`
+
+```json
+{
+  "version": 1,
+  "log": {
+    "stack": "feature-auth",
+    "base": "main",
+    "current_position": 2,
+    "entries": [
+      {
+        "position": 1,
+        "sha": "abc1234",
+        "title": "feat: add parser",
+        "gg_id": "c-abc1234",
+        "gg_parent": null,
+        "pr_number": 101,
+        "pr_state": "open",
+        "approved": false,
+        "ci_status": "success",
+        "is_current": false,
+        "in_merge_train": false,
+        "merge_train_position": null
+      }
+    ]
+  }
+}
+```
+
+Entry fields match `gg ls --json` so consumers can share parsers.
+
 ### `gg sync --json`
 
 ```json
@@ -465,6 +504,11 @@ Transport: stdio (JSON-RPC over stdin/stdout).
 List the current stack with commit entries and PR/MR status.
 - **Params:** `refresh` (bool, default false) — refresh PR status from remote
 - **Returns:** `{ name, base, total_commits, synced_commits, current_position, entries: [{ position, sha, title, gg_id, gg_parent, pr_number, pr_state, approved, ci_status, is_current }] }`
+
+#### `stack_log`
+Smartlog-style view of the current stack (stack-scoped). Mirrors `gg log --json`.
+- **Params:** `refresh` (bool, default false) — refresh PR status from remote
+- **Returns:** `{ stack, base, current_position, entries: [...] }` (entry fields match `stack_list`)
 
 #### `stack_list_all`
 List all stacks in the repository.

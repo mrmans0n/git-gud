@@ -395,6 +395,26 @@ enum Commands {
         #[arg(short = 'n', long)]
         dry_run: bool,
     },
+
+    /// Undo the last local-only gg operation (see `gg undo --list`)
+    #[command(name = "undo")]
+    Undo {
+        /// List recent operations and their undoable status instead of undoing.
+        #[arg(long)]
+        list: bool,
+
+        /// Specific operation id to undo (defaults to most-recent-undoable).
+        #[arg(value_name = "OPERATION_ID")]
+        operation_id: Option<String>,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Limit for `--list` (default 20).
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
 }
 
 fn main() {
@@ -644,6 +664,20 @@ fn main() {
         Some(Commands::Reconcile { dry_run }) => {
             (gg_core::commands::reconcile::run(dry_run), false)
         }
+        Some(Commands::Undo {
+            list,
+            operation_id,
+            json,
+            limit,
+        }) => (
+            gg_core::commands::undo::run(gg_core::commands::undo::UndoCliOptions {
+                list,
+                operation_id,
+                json,
+                limit,
+            }),
+            json,
+        ),
     };
 
     if let Err(e) = result {

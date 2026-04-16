@@ -13,6 +13,10 @@ gg arrange [OPTIONS]
 
 - `-o, --order <ORDER>`: New order as positions/SHAs (`"3,1,2"` or `"3 1 2"`)
 - `--no-tui`: Disable the interactive TUI and use a text editor instead
+- `-f, --force` (alias `--ignore-immutable`): Override the immutability guard.
+  Reordering or dropping a commit that is already merged or reachable from
+  `origin/<base>` is refused by default. See
+  [Core concepts · Immutable commits](../core-concepts.md#immutable-commits).
 
 ## Interactive TUI
 

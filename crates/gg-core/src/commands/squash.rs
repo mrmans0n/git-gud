@@ -8,6 +8,7 @@ use dialoguer::Select;
 use crate::config::{Config, UnstagedAction};
 use crate::error::{GgError, Result};
 use crate::git;
+use crate::immutability::{self, ImmutabilityPolicy};
 use crate::stack;
 use crate::stack::Stack;
 
@@ -70,7 +71,7 @@ fn has_untracked_files() -> Result<bool> {
 }
 
 /// Run the squash command
-pub fn run(all: bool) -> Result<()> {
+pub fn run(all: bool, force: bool) -> Result<()> {
     let repo = git::open_repo()?;
 
     // Acquire operation lock to prevent concurrent operations
@@ -98,6 +99,23 @@ pub fn run(all: bool) -> Result<()> {
         .current_position
         .map(|p| p < stack.len() - 1)
         .unwrap_or(false);
+
+    // Immutability pre-flight: squash amends the current commit (position =
+    // current_position + 1, or stack head) and rebases every position above
+    // it when `needs_rebase` is true. Guard against rewriting merged/
+    // base-ancestor commits unless the user explicitly overrides.
+    if !stack.is_empty() {
+        let head_pos = stack.current_position.map(|p| p + 1).unwrap_or(stack.len());
+        let mut targets = vec![head_pos];
+        if needs_rebase {
+            for pos in (head_pos + 1)..=stack.len() {
+                targets.push(pos);
+            }
+        }
+        let policy = ImmutabilityPolicy::for_stack(&repo, &stack)?;
+        let report = policy.check_positions(&stack, &targets);
+        immutability::guard(report, force)?;
+    }
 
     let has_unstaged = has_unstaged_changes()?;
     let has_untracked = has_untracked_files()?;

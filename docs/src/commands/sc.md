@@ -9,6 +9,10 @@ gg sc [OPTIONS]
 ## Options
 
 - `-a, --all`: Include staged and unstaged changes
+- `-f, --force` (alias `--ignore-immutable`): Override the immutability guard.
+  By default `gg sc` refuses to amend a commit whose PR is merged or which is
+  already reachable from `origin/<base>`. See
+  [Core concepts · Immutable commits](../core-concepts.md#immutable-commits).
 
 When unstaged changes are present, behavior is controlled by `defaults.unstaged_action` in `.git/gg/config.json`:
 

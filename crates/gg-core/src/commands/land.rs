@@ -884,7 +884,11 @@ pub fn run(opts: LandOptions) -> Result<()> {
         };
 
         if should_clean && !has_unsynced_commits_before_merge {
-            let _ = crate::commands::rebase::run_with_repo(&repo, Some(stack.base.clone()), json);
+            // After landing, the stack contains merged commits by definition.
+            // Bypass the immutability guard since the rebase here is a
+            // sanctioned cleanup step, not a user-driven history rewrite.
+            let _ =
+                crate::commands::rebase::run_with_repo(&repo, Some(stack.base.clone()), json, true);
             if crate::commands::clean::run_for_stack_with_repo(&repo, &stack.name, true).is_ok() {
                 cleaned = true;
             }

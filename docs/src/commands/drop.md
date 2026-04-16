@@ -17,7 +17,11 @@ gg drop <TARGET>... [OPTIONS]
 
 ## Options
 
-- `-f, --force`: Skip the confirmation prompt
+- `-f, --force` (alias `--ignore-immutable`): Skip the confirmation prompt
+  **and** override the immutability guard. `gg drop` refuses by default to
+  drop or rewrite commits whose PR is merged or which are already reachable
+  from `origin/<base>`; this flag bypasses both safeties. See
+  [Core concepts · Immutable commits](../core-concepts.md#immutable-commits).
 - `--json`: Output result as JSON
 
 ## Behavior

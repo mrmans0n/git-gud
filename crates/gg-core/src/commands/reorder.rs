@@ -9,6 +9,7 @@ use super::reorder_tui::{self, ReorderEntry};
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
+use crate::immutability::{self, ImmutabilityPolicy};
 use crate::stack::Stack;
 
 /// Options for the reorder command
@@ -19,6 +20,8 @@ pub struct ReorderOptions {
     pub order: Option<String>,
     /// If true, disable TUI and use editor fallback
     pub no_tui: bool,
+    /// If true, override the immutability check
+    pub force: bool,
 }
 
 /// Run the reorder command
@@ -71,6 +74,18 @@ pub fn run(options: ReorderOptions) -> Result<()> {
         return Ok(());
     }
 
+    // Immutability pre-flight: the rebase rewrites parents for every commit
+    // from the lowest changed position upward, so check that span. Dropped
+    // commits count as "changes" too (anything missing from new_order needs
+    // to be included in the check).
+    let min_change = lowest_change_position(&old_order, &new_order);
+    if let Some(min) = min_change {
+        let targets: Vec<usize> = (min..=stack.len()).collect();
+        let policy = ImmutabilityPolicy::for_stack(&repo, &stack)?;
+        let report = policy.check_positions(&stack, &targets);
+        immutability::guard(report, options.force)?;
+    }
+
     let dropped_count = stack.len() - new_order.len();
     if dropped_count > 0 {
         println!(
@@ -109,6 +124,25 @@ pub fn run(options: ReorderOptions) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Find the lowest (1-indexed) stack position whose SHA differs between the
+/// old and new orderings. If positions match up to the shorter length but
+/// the new order is shorter (commits dropped from the tail), the first
+/// missing position is returned. Returns `None` if nothing changed.
+fn lowest_change_position(old_order: &[&str], new_order: &[String]) -> Option<usize> {
+    for i in 0..new_order.len().min(old_order.len()) {
+        if new_order[i].as_str() != old_order[i] {
+            return Some(i + 1);
+        }
+    }
+    if new_order.len() != old_order.len() {
+        // Either extra entries in new_order (unreachable in reorder) or
+        // trailing entries were dropped.
+        Some(new_order.len().min(old_order.len()) + 1)
+    } else {
+        None
+    }
 }
 
 /// Parse order from a string like "3,1,2" or "3 1 2" (positions) or "abc123,def456" (SHAs)

@@ -8,6 +8,7 @@ use dialoguer::Confirm;
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
+use crate::immutability::{self, ImmutabilityPolicy};
 use crate::output::{print_json, DropResponse, DropResultJson, DroppedEntryJson, OUTPUT_VERSION};
 use crate::stack::{self, Stack};
 
@@ -61,6 +62,20 @@ pub fn run(options: DropOptions) -> Result<()> {
         return Err(GgError::Other(
             "Cannot drop all commits from the stack. At least one commit must remain.".to_string(),
         ));
+    }
+
+    // Immutability pre-flight: dropping a commit rewrites the stack from the
+    // lowest dropped position upward (parents change for every kept commit
+    // above). Check the dropped positions themselves and every position above
+    // the lowest drop.
+    if let Some(&min_drop) = drop_positions.iter().min() {
+        let mut targets: Vec<usize> = drop_positions.clone();
+        for pos in (min_drop + 1)..=stack_obj.len() {
+            targets.push(pos);
+        }
+        let policy = ImmutabilityPolicy::for_stack(&repo, &stack_obj)?;
+        let report = policy.check_positions(&stack_obj, &targets);
+        immutability::guard(report, options.force)?;
     }
 
     // Build list of entries to drop for display and JSON

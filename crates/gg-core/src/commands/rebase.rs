@@ -6,21 +6,39 @@ use git2::Repository;
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
+use crate::immutability::{self, ImmutabilityPolicy};
 use crate::stack::Stack;
 
 /// Run the rebase command
-pub fn run(target: Option<String>) -> Result<()> {
+pub fn run(target: Option<String>, force: bool) -> Result<()> {
     let repo = git::open_repo()?;
 
     // Acquire operation lock to prevent concurrent operations
     let _lock = git::acquire_operation_lock(&repo, "rebase")?;
 
-    run_with_repo(&repo, target, false)
+    run_with_repo(&repo, target, false, force)
 }
 
 /// Run rebase with an already-open repository (no lock acquisition)
-pub fn run_with_repo(repo: &Repository, target: Option<String>, json: bool) -> Result<()> {
+pub fn run_with_repo(
+    repo: &Repository,
+    target: Option<String>,
+    json: bool,
+    force: bool,
+) -> Result<()> {
     let config = Config::load_with_global(repo.commondir())?;
+
+    // Immutability pre-flight: rebase rewrites every commit in the stack's
+    // parent chain. If any commit is merged or already on the base, refuse
+    // without --force. Only runs when the working directory is clean (we
+    // don't want to trip on stashed / un-loadable state).
+    if let Ok(stack) = Stack::load(repo, &config) {
+        if !stack.is_empty() {
+            let policy = ImmutabilityPolicy::for_stack(repo, &stack)?;
+            let report = policy.check_all(&stack);
+            immutability::guard(report, force)?;
+        }
+    }
 
     // Auto-stash uncommitted changes if present
     let needs_stash = !git::is_working_directory_clean(repo)?;

@@ -57,3 +57,37 @@ Dependency chaining is automatic during `gg sync`:
 - This continues until stack head
 
 Result: reviewers can review from bottom to top, and `gg land` can merge safely in order.
+
+## Immutable commits
+
+Some commits should not be casually rewritten. History-rewriting commands —
+`gg squash`, `gg drop`, `gg reorder`, `gg split`, `gg absorb`, and `gg rebase` —
+refuse to touch the following by default:
+
+- **Merged PR/MR commits.** If an entry's PR/MR state is `Merged`, rewriting it
+  locally produces a duplicate of something already upstream.
+- **Base-ancestor commits.** Any commit already reachable from `origin/<base>`
+  (for example, because it was squash-merged) falls in the same bucket. When
+  no `origin/<base>` ref exists, gg falls back to the local base branch.
+
+Running one of those commands on an immutable target prints a clear error like:
+
+```text
+error: cannot rewrite immutable commits (pass --force / --ignore-immutable to override):
+  #2  abc1234  Fix typo in parser  (merged as !123)
+  #3  def5678  Bump dependency     (already in origin/main)
+```
+
+If you genuinely want to rewrite history anyway, pass `--force` (or
+`--ignore-immutable` if you prefer the longer, self-describing name). Every
+rewrite command accepts both spellings. The guard still emits a warning so
+scripts see that they are bypassing a safety check.
+
+### Keeping PR state fresh
+
+Merge-state info is populated from the MR mapping in your config and is
+refreshed by `gg ls --refresh`. In a fresh clone or a long-lived checkout,
+state may be stale; the base-ancestor rule is the backstop — it catches
+squash-merged commits even when `mr_state` hasn't been refreshed. If you
+routinely edit history right after someone else merges your PR, run
+`gg ls --refresh` first.

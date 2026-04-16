@@ -12,6 +12,7 @@ use slog::{o, Drain, Logger};
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
+use crate::immutability::{self, ImmutabilityPolicy};
 use crate::stack::Stack;
 
 /// Options for the absorb command
@@ -29,6 +30,9 @@ pub struct AbsorbOptions {
     pub no_limit: bool,
     /// Squash absorbed changes directly instead of creating fixup commits
     pub squash: bool,
+    /// Override the immutability check (any stack commit being flagged as
+    /// merged or base-ancestor would otherwise abort the operation).
+    pub force: bool,
 }
 
 /// Run the absorb command
@@ -76,6 +80,16 @@ pub fn run(options: AbsorbOptions) -> Result<()> {
         return Err(GgError::Other(
             "Stack is empty. Use `git commit` to create commits first.".to_string(),
         ));
+    }
+
+    // Immutability pre-flight: enumerating exactly which commits git-absorb
+    // will target requires re-running its scoring logic. v1 is conservative:
+    // if any commit in the stack is immutable, refuse unless --force. Skip
+    // the check on dry-run so users can inspect the would-be-changes.
+    if !options.dry_run {
+        let policy = ImmutabilityPolicy::for_stack(&repo, &stack)?;
+        let report = policy.check_all(&stack);
+        immutability::guard(report, options.force)?;
     }
 
     // Determine the base reference for absorb

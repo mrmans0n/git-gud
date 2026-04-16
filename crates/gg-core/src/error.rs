@@ -63,6 +63,11 @@ pub enum GgError {
     #[error("No rebase in progress")]
     NoRebaseInProgress,
 
+    #[error(
+        "cannot rewrite immutable commits (pass --force / --ignore-immutable to override):\n{0}"
+    )]
+    ImmutableTargets(String),
+
     #[error("Git error: {0}")]
     Git(#[from] git2::Error),
 

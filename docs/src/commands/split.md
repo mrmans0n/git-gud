@@ -12,6 +12,9 @@ gg split [OPTIONS] [FILES...]
 - `-m, --message <MESSAGE>`: Commit message for the new (first) commit. Skips the editor prompt.
 - `--no-edit`: Keep the original message for the remainder commit without prompting.
 - `--no-tui`: Disable TUI, use sequential prompt instead (legacy `git add -p` style).
+- `-f, --force` (alias `--ignore-immutable`): Override the immutability guard.
+  Splitting a merged or base-ancestor commit is refused by default. See
+  [Core concepts · Immutable commits](../core-concepts.md#immutable-commits).
 - `FILES...`: Files to include in the new commit. When provided, all hunks from those files are auto-selected (skips the interactive picker).
 
 ## How It Works

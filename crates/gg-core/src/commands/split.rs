@@ -10,6 +10,7 @@ use dialoguer::Editor;
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
+use crate::immutability::{self, ImmutabilityPolicy};
 use crate::stack::{self, Stack};
 
 /// Options for the split command
@@ -25,6 +26,8 @@ pub struct SplitOptions {
     pub no_edit: bool,
     /// If true, disable TUI and use sequential prompt instead.
     pub no_tui: bool,
+    /// If true, override the immutability check.
+    pub force: bool,
 }
 
 /// A single line in a diff hunk
@@ -107,6 +110,16 @@ pub fn run(options: SplitOptions) -> Result<()> {
     let target_oid = entry.oid;
     let target_commit = repo.find_commit(target_oid)?;
     let original_gg_id = entry.gg_id.clone();
+
+    // Immutability pre-flight: splitting rewrites the target commit and every
+    // commit above it (they get a new parent). Guard against splitting a
+    // merged or base-ancestor commit unless the user explicitly overrides.
+    {
+        let targets: Vec<usize> = (target_pos..=stack.len()).collect();
+        let policy = ImmutabilityPolicy::for_stack(&repo, &stack)?;
+        let report = policy.check_positions(&stack, &targets);
+        immutability::guard(report, options.force)?;
+    }
 
     println!(
         "Splitting commit {}: {} ({})",

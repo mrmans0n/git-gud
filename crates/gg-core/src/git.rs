@@ -725,20 +725,47 @@ pub fn count_branch_behind_upstream(
     Ok(behind)
 }
 
+/// Build the argv passed to `git push`.
+///
+/// Order: `push [--force | --force-with-lease] [--no-verify] origin <branch>`.
+/// `hard_force` wins over `force_with_lease` when both are true, matching
+/// `push_branch`'s existing contract.
+fn build_push_args(
+    branch_name: &str,
+    force_with_lease: bool,
+    hard_force: bool,
+    no_verify: bool,
+) -> Vec<&str> {
+    let mut args: Vec<&str> = vec!["push"];
+    if hard_force {
+        args.push("--force");
+    } else if force_with_lease {
+        args.push("--force-with-lease");
+    }
+    if no_verify {
+        args.push("--no-verify");
+    }
+    args.push("origin");
+    args.push(branch_name);
+    args
+}
+
 /// Push a branch to origin
 ///
 /// - `force_with_lease`: Use --force-with-lease (safe force, recommended for stacked diffs)
 /// - `hard_force`: Use --force (overrides force_with_lease, use only as escape hatch)
+/// - `no_verify`: Forward `--no-verify` to `git push` (skips the `pre-push` hook only)
 ///
 /// If force_with_lease fails with "stale info", retries without lease since
-/// the remote branch may have been deleted (e.g., after a PR was merged)
-pub fn push_branch(branch_name: &str, force_with_lease: bool, hard_force: bool) -> Result<()> {
-    let mut args = vec!["push", "origin", branch_name];
-    if hard_force {
-        args.insert(1, "--force");
-    } else if force_with_lease {
-        args.insert(1, "--force-with-lease");
-    }
+/// the remote branch may have been deleted (e.g., after a PR was merged).
+/// The retry path honors `no_verify` the same way.
+pub fn push_branch(
+    branch_name: &str,
+    force_with_lease: bool,
+    hard_force: bool,
+    no_verify: bool,
+) -> Result<()> {
+    let args = build_push_args(branch_name, force_with_lease, hard_force, no_verify);
 
     let output = Command::new("git").args(&args).output()?;
 
@@ -795,7 +822,7 @@ pub fn push_branch(branch_name: &str, force_with_lease: bool, hard_force: bool) 
 
         // User confirmed, proceed with force push
         eprintln!("{}", console::style("Force-pushing...").dim());
-        let retry_args = vec!["push", "--force", "origin", branch_name];
+        let retry_args = build_push_args(branch_name, false, true, no_verify);
         return run_git_command(&retry_args).map(|_| ());
     }
 
@@ -2059,6 +2086,52 @@ mod tests {
 
         // Clean up
         std::fs::remove_file(&index_lock).ok();
+    }
+
+    #[test]
+    #[allow(clippy::type_complexity)]
+    fn test_build_push_args_matrix() {
+        let cases: &[((bool, bool, bool), &[&str])] = &[
+            (
+                (true, false, false),
+                &["push", "--force-with-lease", "origin", "feat/x"],
+            ),
+            (
+                (true, false, true),
+                &[
+                    "push",
+                    "--force-with-lease",
+                    "--no-verify",
+                    "origin",
+                    "feat/x",
+                ],
+            ),
+            (
+                (false, true, false),
+                &["push", "--force", "origin", "feat/x"],
+            ),
+            (
+                (false, true, true),
+                &["push", "--force", "--no-verify", "origin", "feat/x"],
+            ),
+            ((false, false, false), &["push", "origin", "feat/x"]),
+            (
+                (false, false, true),
+                &["push", "--no-verify", "origin", "feat/x"],
+            ),
+        ];
+
+        for ((fwl, hard, no_verify), expected) in cases {
+            let got = build_push_args("feat/x", *fwl, *hard, *no_verify);
+            assert_eq!(
+                got.as_slice(),
+                *expected,
+                "mismatch for (fwl={}, hard={}, no_verify={})",
+                fwl,
+                hard,
+                no_verify
+            );
+        }
     }
 }
 

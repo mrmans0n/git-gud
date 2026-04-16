@@ -97,6 +97,14 @@ struct StackInfo {
 }
 
 #[derive(Debug, Serialize)]
+struct StackLogInfo {
+    stack: String,
+    base: String,
+    current_position: Option<usize>,
+    entries: Vec<StackEntryInfo>,
+}
+
+#[derive(Debug, Serialize)]
 struct StackSummary {
     name: String,
     base: String,
@@ -127,6 +135,13 @@ struct ConfigInfo {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct StackListParams {
     /// Refresh PR/MR status from remote before listing
+    #[serde(default)]
+    pub refresh: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct StackLogParams {
+    /// Refresh PR/MR status from remote before rendering
     #[serde(default)]
     pub refresh: bool,
 }
@@ -433,6 +448,36 @@ impl GgMcpServer {
 
         let info = build_stack_info(&stack, &repo);
         Ok(to_json(&info))
+    }
+
+    /// Render the current stack as a smartlog-style view.
+    /// Returns a stack-scoped view with positions, SHAs, titles, GG-IDs,
+    /// PR/MR state, CI status, and a flag marking the HEAD entry. Use
+    /// `stack_list_all` for cross-stack browsing.
+    #[tool(
+        description = "Show a smartlog-style view of the current stack (positions, SHAs, titles, PR/MR status, HEAD marker). Stack-scoped — use stack_list_all for all stacks."
+    )]
+    fn stack_log(&self, Parameters(params): Parameters<StackLogParams>) -> Result<String, String> {
+        let repo = open_repo()?;
+        let config = load_config(&repo)?;
+        let mut stack = load_stack(&repo, &config)?;
+
+        if params.refresh {
+            let provider =
+                Provider::detect(&repo).map_err(|e| McpToolError::ProviderDetect(e.to_string()))?;
+            stack
+                .refresh_mr_info(&provider)
+                .map_err(McpToolError::ConfigLoad)?;
+        }
+
+        let info = build_stack_info(&stack, &repo);
+        let log_info = StackLogInfo {
+            stack: info.name,
+            base: info.base,
+            current_position: info.current_position,
+            entries: info.entries,
+        };
+        Ok(to_json(&log_info))
     }
 
     /// List all stacks in the repository with summary information.

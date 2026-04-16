@@ -362,3 +362,17 @@ pub struct DroppedEntryJson {
     pub sha: String,
     pub title: String,
 }
+
+#[derive(Serialize)]
+pub struct LogResponse {
+    pub version: u32,
+    pub log: LogJson,
+}
+
+#[derive(Serialize)]
+pub struct LogJson {
+    pub stack: String,
+    pub base: String,
+    pub current_position: Option<usize>,
+    pub entries: Vec<StackEntryJson>,
+}

@@ -86,7 +86,6 @@ fn run_undo(
 
     let undo_opts = UndoOptions {
         operation_id: options.operation_id.clone(),
-        json: options.json,
     };
     let outcome = operations::run_undo(repo, config, undo_opts)?;
 

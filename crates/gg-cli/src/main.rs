@@ -411,8 +411,8 @@ enum Commands {
         #[arg(long)]
         json: bool,
 
-        /// Limit for `--list` (default 20).
-        #[arg(long, default_value_t = 20)]
+        /// Limit for `--list` (default 100, matching the operation log cap).
+        #[arg(long, default_value_t = 100)]
         limit: usize,
     },
 }

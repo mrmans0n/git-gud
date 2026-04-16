@@ -528,12 +528,13 @@ impl Drop for OperationGuard {
 
 /// Options passed to [`run_undo`]. The CLI handler owns the surrounding
 /// lock/record scaffolding.
+///
+/// JSON vs. human-readable output selection is handled by the caller; it
+/// never affects [`run_undo`] behaviour, so it's not on this struct.
 #[derive(Debug, Clone, Default)]
 pub struct UndoOptions {
     /// Specific record id to target. `None` → most-recent-undoable.
     pub operation_id: Option<String>,
-    /// Reserved: machine-readable output is selected by the caller.
-    pub json: bool,
 }
 
 /// Outcome of [`run_undo`]. The caller decides exit codes and rendering.
@@ -1100,7 +1101,6 @@ mod undo_tests {
             &cfg_user("nacho"),
             UndoOptions {
                 operation_id: Some(rec.id.clone()),
-                json: false,
             },
         )
         .unwrap();
@@ -1151,7 +1151,6 @@ mod undo_tests {
             &cfg_user("nacho"),
             UndoOptions {
                 operation_id: Some(rec.id.clone()),
-                json: false,
             },
         )
         .unwrap();
@@ -1188,7 +1187,6 @@ mod undo_tests {
             &cfg_user("nacho"),
             UndoOptions {
                 operation_id: Some(rec.id.clone()),
-                json: false,
             },
         )
         .unwrap();
@@ -1208,7 +1206,6 @@ mod undo_tests {
             &cfg_user("nacho"),
             UndoOptions {
                 operation_id: Some(rec.id.clone()),
-                json: false,
             },
         )
         .unwrap();

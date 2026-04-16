@@ -7,16 +7,27 @@ use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::immutability::{self, ImmutabilityPolicy};
+use crate::operations::{OperationKind, SnapshotScope};
 use crate::stack::Stack;
 
 /// Run the rebase command
 pub fn run(target: Option<String>, force: bool) -> Result<()> {
     let repo = git::open_repo()?;
+    let config = Config::load_with_global(repo.commondir())?;
 
-    // Acquire operation lock to prevent concurrent operations
-    let _lock = git::acquire_operation_lock(&repo, "rebase")?;
+    // Acquire operation lock + record a Pending op for the undo log.
+    let (_lock, guard) = git::acquire_operation_lock_and_record(
+        &repo,
+        &config,
+        OperationKind::Rebase,
+        std::env::args().collect(),
+        None,
+        SnapshotScope::AllUserBranches,
+    )?;
 
-    run_with_repo(&repo, target, false, force)
+    run_with_repo(&repo, target, false, force)?;
+
+    guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)
 }
 
 /// Run rebase with an already-open repository (no lock acquisition)

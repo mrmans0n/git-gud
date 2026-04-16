@@ -5,226 +5,234 @@ use console::style;
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
+use crate::operations::{OperationKind, SnapshotScope};
 use crate::stack::{self, Stack, StackEntry};
+
+/// Acquire the operation lock, record a Pending Nav op, run the given
+/// closure, then finalize on success. On error, the guard is dropped
+/// without finalize; the sweep promotes the Pending record to Interrupted
+/// on the next lock acquisition.
+fn with_recorded_nav_lock<F>(op_args: Vec<String>, f: F) -> Result<()>
+where
+    F: FnOnce(&git2::Repository, &Config) -> Result<()>,
+{
+    let repo = git::open_repo()?;
+    let config = Config::load_with_global(repo.commondir())?;
+    let (_lock, guard) = git::acquire_operation_lock_and_record(
+        &repo,
+        &config,
+        OperationKind::Nav,
+        op_args,
+        None,
+        SnapshotScope::AllUserBranches,
+    )?;
+    f(&repo, &config)?;
+    guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)
+}
 
 /// Move to a specific position, entry ID, or SHA
 pub fn move_to(target: &str) -> Result<()> {
-    let repo = git::open_repo()?;
-
-    // Acquire operation lock to prevent concurrent operations
-    let _lock = git::acquire_operation_lock(&repo, "nav")?;
-
-    if git::is_rebase_in_progress(&repo) {
-        return Err(GgError::Other(
-            "A rebase is in progress. Run `gg continue` to continue or `gg abort` to cancel."
-                .to_string(),
-        ));
-    }
-
-    let config = Config::load_with_global(repo.commondir())?;
-    let stack = Stack::load(&repo, &config)?;
-
-    if stack.is_empty() {
-        return Err(GgError::Other("Stack is empty".to_string()));
-    }
-
-    // Try to parse target as position (1-indexed number)
-    if let Ok(pos) = target.parse::<usize>() {
-        if let Some(entry) = stack.get_entry_by_position(pos) {
-            return checkout_entry(&repo, &stack, entry);
-        } else {
-            return Err(GgError::Other(format!(
-                "Position {} is out of range (1-{})",
-                pos,
-                stack.len()
-            )));
+    let op_args = std::env::args().collect();
+    with_recorded_nav_lock(op_args, |repo, config| {
+        if git::is_rebase_in_progress(repo) {
+            return Err(GgError::Other(
+                "A rebase is in progress. Run `gg continue` to continue or `gg abort` to cancel."
+                    .to_string(),
+            ));
         }
-    }
 
-    // Try to find by GG-ID
-    if let Some(entry) = stack.get_entry_by_gg_id(target) {
-        return checkout_entry(&repo, &stack, entry);
-    }
+        let stack = Stack::load(repo, config)?;
 
-    // Try to find by SHA prefix
-    for entry in &stack.entries {
-        if entry.short_sha.starts_with(target) || entry.oid.to_string().starts_with(target) {
-            return checkout_entry(&repo, &stack, entry);
+        if stack.is_empty() {
+            return Err(GgError::Other("Stack is empty".to_string()));
         }
-    }
 
-    Err(GgError::Other(format!(
-        "Could not find commit matching '{}' in stack",
-        target
-    )))
+        // Try to parse target as position (1-indexed number)
+        if let Ok(pos) = target.parse::<usize>() {
+            if let Some(entry) = stack.get_entry_by_position(pos) {
+                return checkout_entry(repo, &stack, entry);
+            } else {
+                return Err(GgError::Other(format!(
+                    "Position {} is out of range (1-{})",
+                    pos,
+                    stack.len()
+                )));
+            }
+        }
+
+        // Try to find by GG-ID
+        if let Some(entry) = stack.get_entry_by_gg_id(target) {
+            return checkout_entry(repo, &stack, entry);
+        }
+
+        // Try to find by SHA prefix
+        for entry in &stack.entries {
+            if entry.short_sha.starts_with(target) || entry.oid.to_string().starts_with(target) {
+                return checkout_entry(repo, &stack, entry);
+            }
+        }
+
+        Err(GgError::Other(format!(
+            "Could not find commit matching '{}' in stack",
+            target
+        )))
+    })
 }
 
 /// Move to the first commit in the stack
 pub fn first() -> Result<()> {
-    let repo = git::open_repo()?;
+    let op_args = std::env::args().collect();
+    with_recorded_nav_lock(op_args, |repo, config| {
+        if git::is_rebase_in_progress(repo) {
+            return Err(GgError::Other(
+                "A rebase is in progress. Run `gg continue` to continue or `gg abort` to cancel."
+                    .to_string(),
+            ));
+        }
 
-    // Acquire operation lock to prevent concurrent operations
-    let _lock = git::acquire_operation_lock(&repo, "nav")?;
+        let stack = Stack::load(repo, config)?;
 
-    if git::is_rebase_in_progress(&repo) {
-        return Err(GgError::Other(
-            "A rebase is in progress. Run `gg continue` to continue or `gg abort` to cancel."
-                .to_string(),
-        ));
-    }
-
-    let config = Config::load_with_global(repo.commondir())?;
-    let stack = Stack::load(&repo, &config)?;
-
-    if let Some(entry) = stack.first() {
-        checkout_entry(&repo, &stack, entry)
-    } else {
-        Err(GgError::Other("Stack is empty".to_string()))
-    }
+        if let Some(entry) = stack.first() {
+            checkout_entry(repo, &stack, entry)
+        } else {
+            Err(GgError::Other("Stack is empty".to_string()))
+        }
+    })
 }
 
 /// Move to the last commit (stack head)
 pub fn last() -> Result<()> {
-    let repo = git::open_repo()?;
+    let op_args = std::env::args().collect();
+    with_recorded_nav_lock(op_args, |repo, config| {
+        let stack = Stack::load(repo, config)?;
 
-    // Acquire operation lock to prevent concurrent operations
-    let _lock = git::acquire_operation_lock(&repo, "nav")?;
-
-    let config = Config::load_with_global(repo.commondir())?;
-    let stack = Stack::load(&repo, &config)?;
-
-    // Check if a rebase is in progress
-    if git::is_rebase_in_progress(&repo) {
-        return Err(GgError::Other(
-            "A rebase is in progress. Run `gg continue` to continue or `gg abort` to cancel."
-                .to_string(),
-        ));
-    }
-
-    if let Some(entry) = stack.last() {
-        // Check if we're in detached HEAD and if the current commit has changed
-        let needs_rebase = check_and_rebase_if_modified(&repo, &stack)?;
-
-        // For last, we should checkout the branch, not detach
-        git::checkout_branch(&repo, &stack.branch_name())?;
-        // Clear the saved stack since we're back on the branch (per-worktree state)
-        stack::clear_current_stack(repo.path())?;
-
-        if needs_rebase {
-            println!(
-                "{} Moved to stack head (rebased after modifications)",
-                style("OK").green().bold()
-            );
-        } else {
-            println!(
-                "{} Moved to stack head: [{}] {} {}",
-                style("OK").green().bold(),
-                entry.position,
-                style(&entry.short_sha).yellow(),
-                entry.title
-            );
+        // Check if a rebase is in progress
+        if git::is_rebase_in_progress(repo) {
+            return Err(GgError::Other(
+                "A rebase is in progress. Run `gg continue` to continue or `gg abort` to cancel."
+                    .to_string(),
+            ));
         }
-        Ok(())
-    } else {
-        Err(GgError::Other("Stack is empty".to_string()))
-    }
+
+        if let Some(entry) = stack.last() {
+            // Check if we're in detached HEAD and if the current commit has changed
+            let needs_rebase = check_and_rebase_if_modified(repo, &stack)?;
+
+            // For last, we should checkout the branch, not detach
+            git::checkout_branch(repo, &stack.branch_name())?;
+            // Clear the saved stack since we're back on the branch (per-worktree state)
+            stack::clear_current_stack(repo.path())?;
+
+            if needs_rebase {
+                println!(
+                    "{} Moved to stack head (rebased after modifications)",
+                    style("OK").green().bold()
+                );
+            } else {
+                println!(
+                    "{} Moved to stack head: [{}] {} {}",
+                    style("OK").green().bold(),
+                    entry.position,
+                    style(&entry.short_sha).yellow(),
+                    entry.title
+                );
+            }
+            Ok(())
+        } else {
+            Err(GgError::Other("Stack is empty".to_string()))
+        }
+    })
 }
 
 /// Move to the previous commit
 pub fn prev() -> Result<()> {
-    let repo = git::open_repo()?;
+    let op_args = std::env::args().collect();
+    with_recorded_nav_lock(op_args, |repo, config| {
+        if git::is_rebase_in_progress(repo) {
+            return Err(GgError::Other(
+                "A rebase is in progress. Run `gg continue` to continue or `gg abort` to cancel."
+                    .to_string(),
+            ));
+        }
 
-    // Acquire operation lock to prevent concurrent operations
-    let _lock = git::acquire_operation_lock(&repo, "nav")?;
+        let stack = Stack::load(repo, config)?;
 
-    if git::is_rebase_in_progress(&repo) {
-        return Err(GgError::Other(
-            "A rebase is in progress. Run `gg continue` to continue or `gg abort` to cancel."
-                .to_string(),
-        ));
-    }
-
-    let config = Config::load_with_global(repo.commondir())?;
-    let stack = Stack::load(&repo, &config)?;
-
-    if let Some(entry) = stack.prev() {
-        checkout_entry(&repo, &stack, entry)
-    } else {
-        Err(GgError::Other(
-            "Already at the first commit in the stack".to_string(),
-        ))
-    }
+        if let Some(entry) = stack.prev() {
+            checkout_entry(repo, &stack, entry)
+        } else {
+            Err(GgError::Other(
+                "Already at the first commit in the stack".to_string(),
+            ))
+        }
+    })
 }
 
 /// Move to the next commit
 pub fn next() -> Result<()> {
-    let repo = git::open_repo()?;
+    let op_args = std::env::args().collect();
+    with_recorded_nav_lock(op_args, |repo, config| {
+        let stack = Stack::load(repo, config)?;
 
-    // Acquire operation lock to prevent concurrent operations
-    let _lock = git::acquire_operation_lock(&repo, "nav")?;
-
-    let config = Config::load_with_global(repo.commondir())?;
-    let stack = Stack::load(&repo, &config)?;
-
-    // Check if a rebase is in progress
-    if git::is_rebase_in_progress(&repo) {
-        return Err(GgError::Other(
-            "A rebase is in progress. Run `gg continue` to continue or `gg abort` to cancel."
-                .to_string(),
-        ));
-    }
-
-    // Check if we need to rebase due to modifications
-    let needs_rebase = check_and_rebase_if_modified(&repo, &stack)?;
-
-    // If we're at the last commit, we might just need to checkout the branch
-    let current_pos = stack
-        .current_position
-        .unwrap_or(stack.len().saturating_sub(1));
-
-    if current_pos >= stack.len().saturating_sub(1) {
-        // At stack head, ensure we're on the branch
-        git::checkout_branch(&repo, &stack.branch_name())?;
-        stack::clear_current_stack(repo.path())?;
-        if needs_rebase {
-            println!(
-                "{} Already at stack head (rebased)",
-                style("OK").green().bold()
-            );
-        } else {
-            println!("{} Already at stack head", style("OK").green().bold());
+        // Check if a rebase is in progress
+        if git::is_rebase_in_progress(repo) {
+            return Err(GgError::Other(
+                "A rebase is in progress. Run `gg continue` to continue or `gg abort` to cancel."
+                    .to_string(),
+            ));
         }
-        return Ok(());
-    }
 
-    // Reload stack after potential rebase
-    let stack = if needs_rebase {
-        Stack::load(&repo, &config)?
-    } else {
-        stack
-    };
+        // Check if we need to rebase due to modifications
+        let needs_rebase = check_and_rebase_if_modified(repo, &stack)?;
 
-    if let Some(entry) = stack.next() {
-        // If next is the last entry, checkout branch instead of detaching
-        if entry.position == stack.len() {
-            git::checkout_branch(&repo, &stack.branch_name())?;
+        // If we're at the last commit, we might just need to checkout the branch
+        let current_pos = stack
+            .current_position
+            .unwrap_or(stack.len().saturating_sub(1));
+
+        if current_pos >= stack.len().saturating_sub(1) {
+            // At stack head, ensure we're on the branch
+            git::checkout_branch(repo, &stack.branch_name())?;
             stack::clear_current_stack(repo.path())?;
-            println!(
-                "{} Moved to stack head: [{}] {} {}",
-                style("OK").green().bold(),
-                entry.position,
-                style(&entry.short_sha).yellow(),
-                entry.title
-            );
-            Ok(())
-        } else {
-            checkout_entry(&repo, &stack, entry)
+            if needs_rebase {
+                println!(
+                    "{} Already at stack head (rebased)",
+                    style("OK").green().bold()
+                );
+            } else {
+                println!("{} Already at stack head", style("OK").green().bold());
+            }
+            return Ok(());
         }
-    } else {
-        Err(GgError::Other(
-            "Already at the last commit in the stack".to_string(),
-        ))
-    }
+
+        // Reload stack after potential rebase
+        let stack = if needs_rebase {
+            Stack::load(repo, config)?
+        } else {
+            stack
+        };
+
+        if let Some(entry) = stack.next() {
+            // If next is the last entry, checkout branch instead of detaching
+            if entry.position == stack.len() {
+                git::checkout_branch(repo, &stack.branch_name())?;
+                stack::clear_current_stack(repo.path())?;
+                println!(
+                    "{} Moved to stack head: [{}] {} {}",
+                    style("OK").green().bold(),
+                    entry.position,
+                    style(&entry.short_sha).yellow(),
+                    entry.title
+                );
+                Ok(())
+            } else {
+                checkout_entry(repo, &stack, entry)
+            }
+        } else {
+            Err(GgError::Other(
+                "Already at the last commit in the stack".to_string(),
+            ))
+        }
+    })
 }
 
 /// Checkout a specific entry (detached HEAD)

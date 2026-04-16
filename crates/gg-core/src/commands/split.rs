@@ -11,6 +11,7 @@ use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::immutability::{self, ImmutabilityPolicy};
+use crate::operations::{OperationKind, SnapshotScope};
 use crate::stack::{self, Stack};
 
 /// Options for the split command
@@ -84,8 +85,15 @@ impl std::fmt::Display for ChangedFile {
 /// Run the split command
 pub fn run(options: SplitOptions) -> Result<()> {
     let repo = git::open_repo()?;
-    let _lock = git::acquire_operation_lock(&repo, "split")?;
     let config = Config::load_with_global(repo.commondir())?;
+    let (_lock, guard) = git::acquire_operation_lock_and_record(
+        &repo,
+        &config,
+        OperationKind::Split,
+        std::env::args().collect(),
+        None,
+        SnapshotScope::AllUserBranches,
+    )?;
 
     git::require_clean_working_directory(&repo)?;
 
@@ -323,6 +331,8 @@ pub fn run(options: SplitOptions) -> Result<()> {
             if num_rebased == 1 { "" } else { "s" }
         );
     }
+
+    guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
 
     Ok(())
 }

@@ -14,6 +14,7 @@ use git2::Repository;
 use crate::config::Config;
 use crate::error::Result;
 use crate::git;
+use crate::operations::{OperationKind, SnapshotScope};
 use crate::provider::Provider;
 use crate::stack::Stack;
 
@@ -51,6 +52,19 @@ pub fn run(dry_run: bool) -> Result<()> {
     let git_dir = repo.commondir();
     let mut config = Config::load_with_global(git_dir)?;
 
+    // Acquire operation lock + record a Pending op for the undo log.
+    // NOTE: behaviour change — reconcile previously had no lock. Only the
+    // mutating (non-dry-run) path actually changes state, but we record both
+    // so the user can see dry-runs in `gg undo --list`.
+    let (_lock, guard) = git::acquire_operation_lock_and_record(
+        &repo,
+        &config,
+        OperationKind::Reconcile,
+        std::env::args().collect(),
+        None,
+        SnapshotScope::AllUserBranches,
+    )?;
+
     // Detect provider
     let provider = Provider::detect(&repo)?;
 
@@ -66,6 +80,7 @@ pub fn run(dry_run: bool) -> Result<()> {
 
     if stack.is_empty() {
         println!("{}", style("Stack is empty. Nothing to reconcile.").dim());
+        guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
         return Ok(());
     }
 
@@ -123,11 +138,13 @@ pub fn run(dry_run: bool) -> Result<()> {
             "\n{} Stack is already reconciled. Nothing to do.",
             style("✓").green().bold()
         );
+        guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
         return Ok(());
     }
 
     if dry_run {
         println!("\n{} Dry run complete. No changes made.", style("→").cyan());
+        guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
         return Ok(());
     }
 
@@ -158,6 +175,8 @@ pub fn run(dry_run: bool) -> Result<()> {
     config.save(git_dir)?;
 
     println!("\n{} Reconciliation complete!", style("OK").green().bold());
+
+    guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
 
     Ok(())
 }

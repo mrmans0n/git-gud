@@ -13,6 +13,7 @@ use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::immutability::{self, ImmutabilityPolicy};
+use crate::operations::{OperationKind, SnapshotScope};
 use crate::stack::Stack;
 
 /// Options for the absorb command
@@ -39,6 +40,17 @@ pub struct AbsorbOptions {
 pub fn run(options: AbsorbOptions) -> Result<()> {
     let repo = git::open_repo()?;
     let gg_config = Config::load_with_global(repo.commondir())?;
+
+    // Acquire operation lock + record a Pending op for the undo log.
+    // NOTE: behaviour change — absorb previously had no lock.
+    let (_lock, guard) = git::acquire_operation_lock_and_record(
+        &repo,
+        &gg_config,
+        OperationKind::Absorb,
+        std::env::args().collect(),
+        None,
+        SnapshotScope::AllUserBranches,
+    )?;
 
     // Check if there are staged changes
     let statuses = repo.statuses(None)?;
@@ -70,6 +82,13 @@ pub fn run(options: AbsorbOptions) -> Result<()> {
         } else {
             println!("{}", style("No changes to absorb.").dim());
         }
+        guard.finalize_with_scope(
+            &repo,
+            &gg_config,
+            SnapshotScope::AllUserBranches,
+            vec![],
+            false,
+        )?;
         return Ok(());
     }
 
@@ -130,7 +149,7 @@ pub fn run(options: AbsorbOptions) -> Result<()> {
 
     // Run git-absorb
     let _env_guard = prepare_git_absorb_env(&repo);
-    match git_absorb::run(&logger, &absorb_config) {
+    let outcome = match git_absorb::run(&logger, &absorb_config) {
         Ok(()) => {
             if options.dry_run {
                 println!(
@@ -181,7 +200,18 @@ pub fn run(options: AbsorbOptions) -> Result<()> {
                 Err(GgError::Other(format!("git-absorb failed: {}", error_msg)))
             }
         }
-    }
+    };
+    outcome?;
+
+    guard.finalize_with_scope(
+        &repo,
+        &gg_config,
+        SnapshotScope::AllUserBranches,
+        vec![],
+        false,
+    )?;
+
+    Ok(())
 }
 
 /// Create a slog logger for git-absorb output

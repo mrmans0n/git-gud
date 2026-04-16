@@ -493,6 +493,20 @@ impl OperationGuard {
         self.finalized = true;
         Ok(())
     }
+
+    /// Convenience: snapshot refs with the given scope and finalize. The
+    /// common happy-path one-liner for Phase D instrumented commands.
+    pub fn finalize_with_scope(
+        self,
+        repo: &Repository,
+        config: &Config,
+        scope: SnapshotScope<'_>,
+        remote_effects: Vec<RemoteEffect>,
+        touched_remote: bool,
+    ) -> Result<()> {
+        let refs_after = snapshot_refs(repo, config, scope)?;
+        self.finalize(refs_after, remote_effects, touched_remote)
+    }
 }
 
 impl Drop for OperationGuard {

@@ -9,6 +9,7 @@ use crate::config::{Config, UnstagedAction};
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::immutability::{self, ImmutabilityPolicy};
+use crate::operations::{OperationKind, SnapshotScope};
 use crate::stack;
 use crate::stack::Stack;
 
@@ -73,11 +74,17 @@ fn has_untracked_files() -> Result<bool> {
 /// Run the squash command
 pub fn run(all: bool, force: bool) -> Result<()> {
     let repo = git::open_repo()?;
-
-    // Acquire operation lock to prevent concurrent operations
-    let _lock = git::acquire_operation_lock(&repo, "squash")?;
-
     let config = Config::load_with_global(repo.commondir())?;
+
+    // Acquire operation lock + record a Pending op for the undo log.
+    let (_lock, guard) = git::acquire_operation_lock_and_record(
+        &repo,
+        &config,
+        OperationKind::Squash,
+        std::env::args().collect(),
+        None,
+        SnapshotScope::AllUserBranches,
+    )?;
 
     // Verify we're on a stack
     let mut stack = Stack::load(&repo, &config)?;
@@ -90,6 +97,7 @@ pub fn run(all: bool, force: bool) -> Result<()> {
     let statuses = repo.statuses(None)?;
     if statuses.is_empty() {
         println!("{}", style("No changes to squash.").dim());
+        guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
         return Ok(());
     }
 
@@ -173,7 +181,17 @@ pub fn run(all: bool, force: bool) -> Result<()> {
                         auto_stashed = true;
                     }
                     2 => {}
-                    _ => return Ok(()),
+                    _ => {
+                        // User aborted: no mutation occurred.
+                        guard.finalize_with_scope(
+                            &repo,
+                            &config,
+                            SnapshotScope::AllUserBranches,
+                            vec![],
+                            false,
+                        )?;
+                        return Ok(());
+                    }
                 }
             }
             UnstagedAction::Add => {
@@ -341,6 +359,9 @@ pub fn run(all: bool, force: bool) -> Result<()> {
     if auto_stashed {
         restore_auto_stash();
     }
+
+    // Finalize op record — purely local mutation.
+    guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
 
     Ok(())
 }

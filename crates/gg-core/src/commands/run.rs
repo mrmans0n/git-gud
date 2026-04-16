@@ -8,6 +8,7 @@ use git2::Oid;
 
 use crate::error::{GgError, Result};
 use crate::git;
+use crate::operations::{OperationKind, SnapshotScope};
 use crate::output::{
     self, RunCommandResult, RunCommitResult, RunResponse, RunResultJson, OUTPUT_VERSION,
 };
@@ -138,7 +139,52 @@ pub fn execute_raw(options: RunOptions) -> Result<RunResult> {
 
     // Load stack
     let config = crate::config::Config::load_with_global(repo.commondir())?;
-    let stack = Stack::load(&repo, &config)?;
+
+    // In Amend mode, `gg run` rewrites commits — acquire an operation lock
+    // and record the op so `gg undo` can reverse it. Behaviour change: prior
+    // versions had no lock for this path. Read-only/Discard don't mutate the
+    // stack's commit graph, so they skip the record.
+    let recorded = if options.change_mode == ChangeMode::Amend {
+        Some(git::acquire_operation_lock_and_record(
+            &repo,
+            &config,
+            OperationKind::Run,
+            std::env::args().collect(),
+            None,
+            SnapshotScope::AllUserBranches,
+        )?)
+    } else {
+        None
+    };
+
+    let result = execute_raw_body(&repo, &config, options);
+
+    // Finalize only on success. On error the guard is dropped without
+    // finalize; the sweep promotes the Pending record to Interrupted on the
+    // next lock acquisition.
+    if result.is_ok() {
+        if let Some((_lock, guard)) = recorded {
+            guard.finalize_with_scope(
+                &repo,
+                &config,
+                SnapshotScope::AllUserBranches,
+                vec![],
+                false,
+            )?;
+        }
+    }
+
+    result
+}
+
+/// Execute body (without lock/record). Split out so `execute_raw` can manage
+/// the operation guard around it cleanly.
+fn execute_raw_body(
+    repo: &git2::Repository,
+    config: &crate::config::Config,
+    options: RunOptions,
+) -> Result<RunResult> {
+    let stack = Stack::load(repo, config)?;
 
     if stack.is_empty() {
         if !options.json {
@@ -182,7 +228,7 @@ pub fn execute_raw(options: RunOptions) -> Result<RunResult> {
             println!("{}", style(header).dim());
         }
 
-        return run_on_commits_parallel(&repo, &stack, &options, end_pos);
+        return run_on_commits_parallel(repo, &stack, &options, end_pos);
     }
 
     // --- Sequential path ---
@@ -219,14 +265,14 @@ pub fn execute_raw(options: RunOptions) -> Result<RunResult> {
         );
     }
 
-    let original_branch = git::current_branch_name(&repo);
+    let original_branch = git::current_branch_name(repo);
     let original_head = repo.head()?.peel_to_commit()?.id();
 
-    let result = run_on_commits(&repo, stack, &options, end_pos);
+    let result = run_on_commits(repo, stack, &options, end_pos);
 
-    if result.is_err() && !git::is_rebase_in_progress(&repo) {
+    if result.is_err() && !git::is_rebase_in_progress(repo) {
         restore_original_position(
-            &repo,
+            repo,
             original_branch.as_deref(),
             original_head,
             options.json,

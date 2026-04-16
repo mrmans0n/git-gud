@@ -10,6 +10,7 @@ use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::immutability::{self, ImmutabilityPolicy};
+use crate::operations::{OperationKind, SnapshotScope};
 use crate::stack::Stack;
 
 /// Options for the reorder command
@@ -29,6 +30,17 @@ pub fn run(options: ReorderOptions) -> Result<()> {
     let repo = git::open_repo()?;
     let config = Config::load_with_global(repo.commondir())?;
 
+    // Acquire operation lock + record a Pending op for the undo log.
+    // NOTE: this is a behaviour change — reorder previously had no lock.
+    let (_lock, guard) = git::acquire_operation_lock_and_record(
+        &repo,
+        &config,
+        OperationKind::Reorder,
+        std::env::args().collect(),
+        None,
+        SnapshotScope::AllUserBranches,
+    )?;
+
     // Require clean working directory
     git::require_clean_working_directory(&repo)?;
 
@@ -40,6 +52,7 @@ pub fn run(options: ReorderOptions) -> Result<()> {
 
     if stack.len() < 2 {
         println!("{}", style("Need at least 2 commits to reorder.").dim());
+        guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
         return Ok(());
     }
 
@@ -61,12 +74,20 @@ pub fn run(options: ReorderOptions) -> Result<()> {
         Some(order) => order,
         None => {
             println!("{}", style("Reorder cancelled.").dim());
+            guard.finalize_with_scope(
+                &repo,
+                &config,
+                SnapshotScope::AllUserBranches,
+                vec![],
+                false,
+            )?;
             return Ok(());
         }
     };
 
     if new_order.is_empty() {
         println!("{}", style("No commits in reorder list. Aborting.").dim());
+        guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
         return Ok(());
     }
 
@@ -74,6 +95,7 @@ pub fn run(options: ReorderOptions) -> Result<()> {
     let old_order: Vec<&str> = stack.entries.iter().map(|e| e.short_sha.as_str()).collect();
     if new_order.len() == old_order.len() && new_order == old_order {
         println!("{}", style("Order unchanged.").dim());
+        guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
         return Ok(());
     }
 
@@ -125,6 +147,8 @@ pub fn run(options: ReorderOptions) -> Result<()> {
             new_order.len()
         );
     }
+
+    guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
 
     Ok(())
 }

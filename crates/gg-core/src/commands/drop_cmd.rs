@@ -9,6 +9,7 @@ use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::immutability::{self, ImmutabilityPolicy};
+use crate::operations::{OperationKind, SnapshotScope};
 use crate::output::{print_json, DropResponse, DropResultJson, DroppedEntryJson, OUTPUT_VERSION};
 use crate::stack::{self, Stack};
 
@@ -33,8 +34,15 @@ pub fn run(options: DropOptions) -> Result<()> {
     let repo = git::open_repo()?;
     let config = Config::load_with_global(repo.commondir())?;
 
-    // Acquire operation lock
-    let _lock = git::acquire_operation_lock(&repo, "drop")?;
+    // Acquire operation lock + record a Pending op for the undo log.
+    let (_lock, guard) = git::acquire_operation_lock_and_record(
+        &repo,
+        &config,
+        OperationKind::Drop,
+        std::env::args().collect(),
+        None,
+        SnapshotScope::AllUserBranches,
+    )?;
 
     // Require clean working directory
     git::require_clean_working_directory(&repo)?;
@@ -127,6 +135,15 @@ pub fn run(options: DropOptions) -> Result<()> {
 
         if !confirmed {
             println!("{}", style("Drop cancelled.").dim());
+            // No mutation occurred; finalize with refs_after == refs_before so
+            // the record doesn't linger as Pending and undo is a safe no-op.
+            guard.finalize_with_scope(
+                &repo,
+                &config,
+                SnapshotScope::AllUserBranches,
+                vec![],
+                false,
+            )?;
             return Ok(());
         }
     }
@@ -204,6 +221,10 @@ pub fn run(options: DropOptions) -> Result<()> {
     }
 
     let remaining = stack_obj.len() - dropped_entries.len();
+
+    // Finalize the op record with post-mutation refs. Drop is purely
+    // local; no remote effects.
+    guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
 
     if options.json {
         print_json(&DropResponse {

@@ -8274,10 +8274,19 @@ fn test_gg_log_shows_stack_tree() {
     assert!(stdout.contains("Add A"), "commit title should appear");
     assert!(stdout.contains("Add B"), "commit title should appear");
     // Tree glyphs: non-last uses ├──, last uses └──
-    assert!(stdout.contains("├──"), "tree tee glyph should appear: {stdout}");
-    assert!(stdout.contains("└──"), "tree corner glyph should appear: {stdout}");
+    assert!(
+        stdout.contains("├──"),
+        "tree tee glyph should appear: {stdout}"
+    );
+    assert!(
+        stdout.contains("└──"),
+        "tree corner glyph should appear: {stdout}"
+    );
     // HEAD marker should appear on the currently-checked-out (latest) commit
-    assert!(stdout.contains("HEAD"), "HEAD marker should appear: {stdout}");
+    assert!(
+        stdout.contains("HEAD"),
+        "HEAD marker should appear: {stdout}"
+    );
 }
 
 #[test]
@@ -8354,7 +8363,10 @@ fn test_gg_log_empty_stack() {
     let (success, stdout, stderr) = run_gg(&repo_path, &["log"]);
     assert!(success, "gg log on empty stack should succeed: {}", stderr);
     assert!(stdout.contains("log-empty"), "stack name should appear");
-    assert!(stdout.contains("empty stack"), "empty-stack hint should appear: {stdout}");
+    assert!(
+        stdout.contains("empty stack"),
+        "empty-stack hint should appear: {stdout}"
+    );
 
     // JSON shape should still be valid with zero entries.
     let (success, stdout, stderr) = run_gg(&repo_path, &["log", "--json"]);

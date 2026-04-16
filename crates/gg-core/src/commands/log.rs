@@ -142,7 +142,11 @@ fn render_text(stack: &Stack, repo: &git2::Repository) {
             }
 
             let continuation = if i + 1 < total { "│" } else { " " };
-            println!("  {}     {}", style(continuation).dim(), style(&mr_line).blue());
+            println!(
+                "  {}     {}",
+                style(continuation).dim(),
+                style(&mr_line).blue()
+            );
         }
     }
 

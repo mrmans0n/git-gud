@@ -387,9 +387,7 @@ fn main() {
             remote,
             json,
         }) => (gg_core::commands::ls::run(all, refresh, remote, json), json),
-        Some(Commands::Log { json, refresh }) => {
-            (gg_core::commands::log::run(json, refresh), json)
-        }
+        Some(Commands::Log { json, refresh }) => (gg_core::commands::log::run(json, refresh), json),
         Some(Commands::Sync {
             draft,
             json,

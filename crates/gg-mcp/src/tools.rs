@@ -457,10 +457,7 @@ impl GgMcpServer {
     #[tool(
         description = "Show a smartlog-style view of the current stack (positions, SHAs, titles, PR/MR status, HEAD marker). Stack-scoped — use stack_list_all for all stacks."
     )]
-    fn stack_log(
-        &self,
-        Parameters(params): Parameters<StackLogParams>,
-    ) -> Result<String, String> {
+    fn stack_log(&self, Parameters(params): Parameters<StackLogParams>) -> Result<String, String> {
         let repo = open_repo()?;
         let config = load_config(&repo)?;
         let mut stack = load_stack(&repo, &config)?;

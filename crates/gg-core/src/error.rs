@@ -80,6 +80,22 @@ pub enum GgError {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
+    #[error("No operation record found with id '{0}'")]
+    OperationRecordNotFound(String),
+
+    #[error("Operation '{id}' is not undoable: {reason}")]
+    OperationNotUndoable { id: String, reason: String },
+
+    #[error("Cannot undo: ref '{ref_name}' has moved since the operation (expected {expected}, actually {actual}). Run `gg undo --list` to see a safe candidate.")]
+    StaleUndo {
+        ref_name: String,
+        expected: String,
+        actual: String,
+    },
+
+    #[error("Cannot locally undo '{kind}': it touched a remote.\n{hint}")]
+    RemoteUndoUnsupported { kind: String, hint: String },
+
     #[error("{0}")]
     Other(String),
 

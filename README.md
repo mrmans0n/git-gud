@@ -230,6 +230,9 @@ gg clean
 | `gg reconcile --dry-run` | Show what reconcile would do without making changes |
 | `gg continue` | Continue after resolving conflicts |
 | `gg abort` | Abort current operation |
+| `gg undo` | Roll back the most recent locally-undoable operation (drop/reorder/sc/split/absorb/reconcile/run/rebase). Remote-touching ops (sync/land) are refused. |
+| `gg undo --list` | List recent operations from the op log (use with `--json`) |
+| `gg undo <id>` | Undo a specific operation (id from `--list`). Redo = a second `gg undo`. |
 | `gg completions <shell>` | Generate shell completions |
 
 ## Configuration

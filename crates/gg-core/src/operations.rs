@@ -563,11 +563,7 @@ pub fn list(repo: &Repository, limit: usize) -> Result<Vec<OperationRecord>> {
 
 /// Replay an operation's `refs_before` atop the repo. Consumes nothing from
 /// the log itself; the caller wraps this in a fresh `Undo` record.
-pub fn run_undo(
-    repo: &Repository,
-    _config: &Config,
-    opts: UndoOptions,
-) -> Result<UndoOutcome> {
+pub fn run_undo(repo: &Repository, _config: &Config, opts: UndoOptions) -> Result<UndoOutcome> {
     let gg_dir = crate::git::gg_dir(repo);
     let store = OperationStore::new(&gg_dir);
 
@@ -989,8 +985,7 @@ mod snapshot_tests {
 
     #[test]
     fn all_user_branches_filters_by_username_prefix() {
-        let (_g, repo) =
-            init_repo_with_branches("nacho", &["main", "x/1", "x/2", "other/mine"]);
+        let (_g, repo) = init_repo_with_branches("nacho", &["main", "x/1", "x/2", "other/mine"]);
         let cfg = config_with_username("nacho");
         let snaps = snapshot_refs(&repo, &cfg, SnapshotScope::AllUserBranches).unwrap();
         let names: Vec<&str> = snaps.iter().map(|s| s.name.as_str()).collect();

@@ -8,4 +8,4 @@ Unlike the guides, this section is organized by command surface and flags. Each 
 
 - Stack lifecycle: `co`, `ls`, `sync`, `land`, `clean`
 - Editing: `mv`, `first`, `last`, `prev`, `next`, `sc`, `absorb`, `reorder`, `rebase`
-- Utilities: `lint`, `setup`, `reconcile`, `continue`, `abort`, `completions`
+- Utilities: `lint`, `setup`, `reconcile`, `continue`, `abort`, `completions`, `undo`

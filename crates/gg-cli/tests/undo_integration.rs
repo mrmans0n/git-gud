@@ -24,7 +24,11 @@ fn create_test_repo() -> (TempDir, PathBuf) {
     let repo_path = temp_dir.path().to_path_buf();
 
     run(&repo_path, "git", &["init", "--initial-branch=main"]);
-    run(&repo_path, "git", &["config", "user.email", "test@test.com"]);
+    run(
+        &repo_path,
+        "git",
+        &["config", "user.email", "test@test.com"],
+    );
     run(&repo_path, "git", &["config", "user.name", "Test User"]);
 
     std::fs::write(repo_path.join("README.md"), "# Test\n").unwrap();

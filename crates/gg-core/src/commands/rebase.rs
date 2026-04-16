@@ -27,7 +27,13 @@ pub fn run(target: Option<String>, force: bool) -> Result<()> {
 
     run_with_repo(&repo, target, false, force)?;
 
-    guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)
+    guard.finalize_with_scope(
+        &repo,
+        &config,
+        SnapshotScope::AllUserBranches,
+        vec![],
+        false,
+    )
 }
 
 /// Run rebase with an already-open repository (no lock acquisition)

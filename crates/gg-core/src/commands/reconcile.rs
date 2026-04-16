@@ -80,7 +80,13 @@ pub fn run(dry_run: bool) -> Result<()> {
 
     if stack.is_empty() {
         println!("{}", style("Stack is empty. Nothing to reconcile.").dim());
-        guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
+        guard.finalize_with_scope(
+            &repo,
+            &config,
+            SnapshotScope::AllUserBranches,
+            vec![],
+            false,
+        )?;
         return Ok(());
     }
 
@@ -138,13 +144,25 @@ pub fn run(dry_run: bool) -> Result<()> {
             "\n{} Stack is already reconciled. Nothing to do.",
             style("✓").green().bold()
         );
-        guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
+        guard.finalize_with_scope(
+            &repo,
+            &config,
+            SnapshotScope::AllUserBranches,
+            vec![],
+            false,
+        )?;
         return Ok(());
     }
 
     if dry_run {
         println!("\n{} Dry run complete. No changes made.", style("→").cyan());
-        guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
+        guard.finalize_with_scope(
+            &repo,
+            &config,
+            SnapshotScope::AllUserBranches,
+            vec![],
+            false,
+        )?;
         return Ok(());
     }
 
@@ -176,7 +194,13 @@ pub fn run(dry_run: bool) -> Result<()> {
 
     println!("\n{} Reconciliation complete!", style("OK").green().bold());
 
-    guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
+    guard.finalize_with_scope(
+        &repo,
+        &config,
+        SnapshotScope::AllUserBranches,
+        vec![],
+        false,
+    )?;
 
     Ok(())
 }

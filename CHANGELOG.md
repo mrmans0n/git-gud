@@ -13,12 +13,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refuse by default to rewrite commits whose PR/MR is already merged or which
   are already reachable from `origin/<base>`. A new `-f, --force` flag (alias
   `--ignore-immutable`) bypasses the check for each of these commands.
+- `gg undo` command with a persistent per-repo operation log. Every mutating
+  command records itself before it runs; `gg undo` rolls back the most recent
+  locally-undoable operation by restoring the exact refs and HEAD that existed
+  before it. `gg undo --list [--json]` shows recent operations with their
+  status and whether they are undoable. Targeting a specific op by id is
+  supported: `gg undo <operation-id>`. Redo is a second `gg undo` — the undo
+  is itself recorded, so undoing it replays the original change. Operations
+  that touched a remote (push/PR/merge) are refused; use the provider's own
+  tools to roll those back. The log lives under the git common dir, so
+  undo works consistently from linked worktrees.
+- New MCP tools `stack_undo` and `stack_undo_list` expose the operation log
+  to MCP clients with the same refusal/targeting semantics as the CLI.
 
 ### Changed
 - `gg drop --force` now *also* overrides the immutability check, in addition
   to skipping the existing confirmation prompt. Scripts that previously
   relied on `--force` to silently rewrite merged commits will continue to
   succeed; interactive users get a stronger safety net before they opt in.
+- **Behavior change — mutating commands now hold an exclusive operation lock
+  for the duration of the command.** `gg sc`, `gg drop`, `gg split`,
+  `gg reorder`/`gg arrange`, `gg absorb`, `gg reconcile`, `gg run` (amend
+  mode), `gg rebase`, `gg sync`, and `gg land` acquire an advisory
+  file-lock on `.git/gg/operation.lock` (in the git common dir) before
+  mutating refs. Concurrent mutating invocations in the same repo — including
+  invocations from different worktrees — now fail fast with a clear
+  "operation already in progress" error instead of racing each other. Read-only
+  commands (`gg ls`, `gg log`, `gg status`, navigation, `gg undo --list`)
+  are unaffected. If a previous mutating command crashed without releasing
+  the lock, the next mutating command sweeps the stale record to
+  `Interrupted` and proceeds normally.
 
 ## [0.8.3] - 2026-04-16
 

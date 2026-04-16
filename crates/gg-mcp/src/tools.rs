@@ -327,6 +327,21 @@ pub struct StackReorderParams {
     pub force: bool,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct StackUndoParams {
+    /// Target a specific operation id. When omitted, the most recent
+    /// locally-undoable operation is rolled back.
+    #[serde(default)]
+    pub operation_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct StackUndoListParams {
+    /// Maximum number of operations to return (defaults to 100).
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
 // --- Helper functions ---
 
 fn pr_state_str(state: &PrState) -> &'static str {
@@ -943,6 +958,41 @@ impl GgMcpServer {
         ];
         if params.force {
             args.push("--force".to_string());
+        }
+        run_gg_command(&args)
+    }
+
+    /// Undo the most recent locally-undoable operation (or a specific one).
+    #[tool(
+        description = "Undo the most recent locally-undoable operation (drop, reorder, split, amend, absorb, reconcile, run, or a prior undo). Pass `operation_id` to target a specific op. Refuses ops that touched a remote or were interrupted. Returns JSON with the outcome."
+    )]
+    fn stack_undo(
+        &self,
+        Parameters(params): Parameters<StackUndoParams>,
+    ) -> Result<String, String> {
+        let mut args = vec!["undo".to_string(), "--json".to_string()];
+        if let Some(id) = params.operation_id {
+            args.push(id);
+        }
+        run_gg_command(&args)
+    }
+
+    /// List recent operations from the operation log (newest first).
+    #[tool(
+        description = "List recent operations from the op log (newest first). Each entry reports id, kind, status, args, whether it touched a remote, and whether it is locally undoable. Use an id from this list with `stack_undo`."
+    )]
+    fn stack_undo_list(
+        &self,
+        Parameters(params): Parameters<StackUndoListParams>,
+    ) -> Result<String, String> {
+        let mut args = vec![
+            "undo".to_string(),
+            "--list".to_string(),
+            "--json".to_string(),
+        ];
+        if let Some(limit) = params.limit {
+            args.push("--limit".to_string());
+            args.push(limit.to_string());
         }
         run_gg_command(&args)
     }

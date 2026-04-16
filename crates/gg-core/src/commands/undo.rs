@@ -47,7 +47,11 @@ pub fn run(options: UndoCliOptions) -> Result<()> {
 }
 
 fn run_list(repo: &git2::Repository, options: &UndoCliOptions) -> Result<()> {
-    let limit = if options.limit == 0 { 20 } else { options.limit };
+    let limit = if options.limit == 0 {
+        20
+    } else {
+        options.limit
+    };
     let records = operations::list(repo, limit)?;
 
     if options.json {
@@ -62,11 +66,7 @@ fn run_list(repo: &git2::Repository, options: &UndoCliOptions) -> Result<()> {
     Ok(())
 }
 
-fn run_undo(
-    repo: &git2::Repository,
-    config: &Config,
-    options: &UndoCliOptions,
-) -> Result<()> {
+fn run_undo(repo: &git2::Repository, config: &Config, options: &UndoCliOptions) -> Result<()> {
     // Undo itself takes a lock and records itself (D5). Use AllUserBranches
     // scope so the undo record's refs_before captures whatever user-owned
     // state existed before the replay.
@@ -108,12 +108,10 @@ fn run_undo(
     // Non-success outcomes exit non-zero so scripts can branch on it.
     match outcome {
         UndoOutcome::Succeeded(_) => Ok(()),
-        UndoOutcome::RefusedRemote { target, hints: _ } => {
-            Err(GgError::OperationNotUndoable {
-                id: target.id,
-                reason: "operation touched a remote".into(),
-            })
-        }
+        UndoOutcome::RefusedRemote { target, hints: _ } => Err(GgError::OperationNotUndoable {
+            id: target.id,
+            reason: "operation touched a remote".into(),
+        }),
         UndoOutcome::RefusedInterrupted(target) => Err(GgError::OperationNotUndoable {
             id: target.id,
             reason: "operation was interrupted".into(),

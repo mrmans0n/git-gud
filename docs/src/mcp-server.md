@@ -211,6 +211,33 @@ Reorder commits in the stack with an explicit order.
 
 **Notes:** No TUI via MCP. The order specifies the new bottom-to-top arrangement of commits.
 
+### `stack_undo`
+
+Undo the most recent locally-undoable operation (or a specific one by id).
+
+**Parameters:**
+- `operation_id` (string, optional): Target a specific operation id from
+  `stack_undo_list`. When omitted, the most recent locally-undoable op is
+  rolled back.
+
+**Notes:** Refuses operations that touched a remote (sync/land — use
+the provider's own tooling), interrupted operations, and stale operations
+whose captured refs have since moved. Redo is a second call with no
+`operation_id` — the undo itself is recorded, so undoing it replays the
+original change. Returns JSON with `status: "succeeded" | "refused"`.
+
+### `stack_undo_list`
+
+List recent operations from the operation log, newest first.
+
+**Parameters:**
+- `limit` (integer, optional): Maximum entries to return. Default `100`.
+
+**Notes:** Returns a JSON `{ version, operations: [...] }` payload. Each
+entry carries `id`, `kind`, `status`, `created_at_ms`, `args`,
+`touched_remote`, and `is_undoable`. Use an entry's `id` with
+`stack_undo`.
+
 ## Transport
 
 The MCP server uses **stdio** transport (JSON-RPC over stdin/stdout), which is the standard for local MCP tools. No network configuration is needed.

@@ -332,7 +332,13 @@ pub fn run(options: SplitOptions) -> Result<()> {
         );
     }
 
-    guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
+    guard.finalize_with_scope(
+        &repo,
+        &config,
+        SnapshotScope::AllUserBranches,
+        vec![],
+        false,
+    )?;
 
     Ok(())
 }

@@ -165,6 +165,7 @@ fn format_push_error(error: &GgError, branch_name: &str) {
 }
 
 /// Run the sync command
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     draft: bool,
     json: bool,
@@ -173,6 +174,7 @@ pub fn run(
     update_descriptions: bool,
     run_lint: bool,
     until: Option<String>,
+    no_verify: bool,
 ) -> Result<()> {
     let repo = git::open_repo()?;
 
@@ -386,7 +388,7 @@ pub fn run(
             // Push the branch (always force-push with lease because rebases change commit SHAs)
             // This is safe because each entry branch is owned by this stack
             // If --force is passed, use hard force as an escape hatch
-            let push_result = git::push_branch(&entry_branch, true, force);
+            let push_result = git::push_branch(&entry_branch, true, force, no_verify);
             if let Err(e) = push_result {
                 pb.finish_and_clear();
                 if json {

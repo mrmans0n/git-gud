@@ -184,6 +184,9 @@ pub struct StackSyncParams {
     /// Only sync up to this position, GG-ID, or SHA
     #[serde(default)]
     pub until: Option<String>,
+    /// Skip the pre-push hook (forwards `--no-verify` to `gg sync`)
+    #[serde(default)]
+    pub no_verify: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -692,6 +695,9 @@ impl GgMcpServer {
             args.push("--until".to_string());
             args.push(until.clone());
         }
+        if params.no_verify {
+            args.push("--no-verify".to_string());
+        }
         run_gg_command(&args)
     }
 
@@ -1083,6 +1089,7 @@ mod tests {
         assert!(!params.no_rebase_check);
         assert!(!params.lint);
         assert!(params.until.is_none());
+        assert!(!params.no_verify);
     }
 
     #[test]

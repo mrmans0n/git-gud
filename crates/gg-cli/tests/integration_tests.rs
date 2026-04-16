@@ -189,6 +189,15 @@ fn test_gg_land_help_has_until() {
 }
 
 #[test]
+fn test_gg_sync_help_has_no_verify() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    let (success, stdout, _stderr) = run_gg(&repo_path, &["sync", "--help"]);
+
+    assert!(success);
+    assert!(stdout.contains("--no-verify"));
+}
+
+#[test]
 fn test_gg_land_json_help() {
     let (_temp_dir, repo_path) = create_test_repo();
     let (success, stdout, _stderr) = run_gg(&repo_path, &["land", "--help"]);

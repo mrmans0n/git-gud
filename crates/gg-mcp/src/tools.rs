@@ -327,6 +327,21 @@ pub struct StackReorderParams {
     pub force: bool,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct StackUndoParams {
+    /// Target operation id (e.g. `op_0000001750000000_abcd…`). When
+    /// omitted, undoes the most recent locally-undoable operation.
+    #[serde(default)]
+    pub operation_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct StackUndoListParams {
+    /// Cap the number of records returned (newest-first).
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
 // --- Helper functions ---
 
 fn pr_state_str(state: &PrState) -> &'static str {
@@ -427,6 +442,30 @@ fn run_gg_command(args: &[String]) -> Result<String, String> {
 
 fn to_json<T: Serialize>(value: &T) -> String {
     serde_json::to_string_pretty(value).unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e))
+}
+
+/// Build the argv for `gg undo [--json] [<operation_id>]`.
+/// Extracted for unit testing — see `build_stack_undo_args_*` tests.
+fn build_stack_undo_args(operation_id: Option<String>) -> Vec<String> {
+    let mut args = vec!["undo".to_string(), "--json".to_string()];
+    if let Some(id) = operation_id {
+        args.push(id);
+    }
+    args
+}
+
+/// Build the argv for `gg undo --list --json [--limit N]`.
+fn build_stack_undo_list_args(limit: Option<usize>) -> Vec<String> {
+    let mut args = vec![
+        "undo".to_string(),
+        "--list".to_string(),
+        "--json".to_string(),
+    ];
+    if let Some(n) = limit {
+        args.push("--limit".to_string());
+        args.push(n.to_string());
+    }
+    args
 }
 
 // --- MCP Server ---
@@ -946,6 +985,29 @@ impl GgMcpServer {
         }
         run_gg_command(&args)
     }
+
+    /// Reverse the local ref/HEAD effects of the most recent mutating
+    /// `gg` command (or a specific operation by id).
+    #[tool(
+        description = "Reverse the local ref/HEAD effects of the most recent mutating gg command. Pass operation_id to target a specific record (see stack_undo_list). Refuses on remote-touching operations (sync, land) — you will get a provider-specific revert hint, not an automated revert. `gg undo` is itself recorded, so calling twice in a row redoes the original operation. Working tree changes are NOT reverted."
+    )]
+    fn stack_undo(
+        &self,
+        Parameters(params): Parameters<StackUndoParams>,
+    ) -> Result<String, String> {
+        run_gg_command(&build_stack_undo_args(params.operation_id))
+    }
+
+    /// List recent operations from the per-repo operation log.
+    #[tool(
+        description = "List recent operations from the per-repo operation log (newest-first). Each entry shows id, kind, status, timestamp, stack, args, and whether it is locally undoable. Use the id with stack_undo to target a specific record. Remote-touching operations appear with is_undoable=false and a red `remote` marker."
+    )]
+    fn stack_undo_list(
+        &self,
+        Parameters(params): Parameters<StackUndoListParams>,
+    ) -> Result<String, String> {
+        run_gg_command(&build_stack_undo_list_args(params.limit))
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -978,6 +1040,30 @@ mod tests {
         assert_eq!(ci_status_str(&CiStatus::Failed), "failed");
         assert_eq!(ci_status_str(&CiStatus::Canceled), "canceled");
         assert_eq!(ci_status_str(&CiStatus::Unknown), "unknown");
+    }
+
+    #[test]
+    fn stack_undo_builds_expected_gg_args_with_id() {
+        let args = build_stack_undo_args(Some("op_123".to_string()));
+        assert_eq!(args, vec!["undo", "--json", "op_123"]);
+    }
+
+    #[test]
+    fn stack_undo_builds_expected_gg_args_without_id() {
+        let args = build_stack_undo_args(None);
+        assert_eq!(args, vec!["undo", "--json"]);
+    }
+
+    #[test]
+    fn stack_undo_list_builds_expected_gg_args_with_limit() {
+        let args = build_stack_undo_list_args(Some(10));
+        assert_eq!(args, vec!["undo", "--list", "--json", "--limit", "10"]);
+    }
+
+    #[test]
+    fn stack_undo_list_builds_expected_gg_args_without_limit() {
+        let args = build_stack_undo_list_args(None);
+        assert_eq!(args, vec!["undo", "--list", "--json"]);
     }
 
     #[test]

@@ -549,29 +549,16 @@ pub fn run_undo(
     let gg_dir = crate::git::gg_dir(repo);
     let store = OperationStore::new(&gg_dir);
 
-    // 1. Resolve target.
+    // 1. Resolve target. When no id is provided, pick the most recent
+    // undoable record. Per D5, undo-of-undo is fine: Undo records are
+    // themselves undoable (they have refs_before/after and do not touch
+    // the remote), so `gg undo; gg undo` naturally redoes the first op.
     let target = match opts.operation_id.clone() {
         Some(id) => store.load(&id)?,
         None => store
             .list(usize::MAX)?
             .into_iter()
-            // Skip undo records themselves when picking "most recent" — a
-            // second `gg undo` should target the newest *non-undo* op (D5
-            // says the undo-of-undo is recorded, but users expect
-            // `gg undo; gg undo` to undo the undo).
-            .find(|r| {
-                r.is_undoable_locally() && !matches!(r.kind, OperationKind::Undo) || {
-                    // Actually D5: undo-of-undo is fine; we just need the
-                    // newest undoable record.
-                    false
-                }
-            })
-            .or_else(|| {
-                store
-                    .list(usize::MAX)
-                    .ok()
-                    .and_then(|v| v.into_iter().find(|r| r.is_undoable_locally()))
-            })
+            .find(|r| r.is_undoable_locally())
             .ok_or_else(|| GgError::OperationNotUndoable {
                 id: "<none>".into(),
                 reason: "no undoable operation in the log".into(),
@@ -936,7 +923,12 @@ mod snapshot_tests {
 
     fn init_repo_with_branches(prefix: &str, branches: &[&str]) -> (tempfile::TempDir, Repository) {
         let dir = tempfile::tempdir().unwrap();
-        let repo = Repository::init(dir.path()).unwrap();
+        // Use an explicit, non-conflicting initial branch so the test can freely
+        // create branches named main/master/trunk without the HEAD-branch clash
+        // (init.defaultBranch varies across systems).
+        let mut opts = git2::RepositoryInitOptions::new();
+        opts.initial_head("gg-test-base");
+        let repo = Repository::init_opts(dir.path(), &opts).unwrap();
         {
             let sig = git2::Signature::now("gg-test", "gg@test").unwrap();
             let tree_oid = {

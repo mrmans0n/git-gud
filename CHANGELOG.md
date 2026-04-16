@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `gg undo` command: reverses the local ref/HEAD effects of the most recent
+  mutating `gg` command. `gg undo --list` shows the recent operation log
+  (newest-first, with id, kind, status, args, and undoability); `gg undo
+  <operation_id>` targets a specific record. A second `gg undo` redoes the
+  first (undo of an undo). Operations that touched a remote (`sync`, `land`)
+  are recorded but refused for local replay — `gg` prints a provider-specific
+  revert hint instead of silently rewriting published history. The working
+  tree is never modified.
+- Per-repo operation log at `<commondir>/gg/operations/*.json` feeds the new
+  command. The log is a bounded ring buffer of 100 records; `Pending`
+  records are never pruned so interrupted operations stay visible.
+- `gg undo --json` emits a stable, additive response schema
+  (`UndoResponse` / `UndoListResponse`) — see `docs/src/commands/undo.md`.
+- MCP tools `stack_undo` and `stack_undo_list` shell out to the CLI for
+  agentic undo / log-inspection workflows.
 - Immutability guard for history-rewriting commands: `gg sc`, `gg drop`,
   `gg reorder`/`gg arrange`, `gg split`, `gg absorb`, and `gg rebase` now
   refuse by default to rewrite commits whose PR/MR is already merged or which
@@ -15,6 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--ignore-immutable`) bypasses the check for each of these commands.
 
 ### Changed
+- **Behavior change — new lock acquisition.** `gg reorder`, `gg absorb`,
+  `gg reconcile`, and `gg run --amend` now acquire the existing operation
+  lock for the duration of their work. Concurrent invocations will serialize
+  instead of racing, which closes a latent window where two of these
+  commands running in parallel could corrupt ref state. User-visible
+  effect: a second concurrent invocation will print "Another gg operation
+  is currently running" and exit, instead of proceeding unsafely.
 - `gg drop --force` now *also* overrides the immutability check, in addition
   to skipping the existing confirmation prompt. Scripts that previously
   relied on `--force` to silently rewrite merged commits will continue to

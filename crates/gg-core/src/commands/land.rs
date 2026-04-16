@@ -13,6 +13,7 @@ use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::glab::AutoMergeResult;
+use crate::operations::{OperationKind, RemoteEffect, SnapshotScope};
 use crate::output::{print_json, LandResponse, LandResultJson, LandedEntryJson, OUTPUT_VERSION};
 use crate::provider::{CiStatus, PrState, Provider};
 use crate::stack::{resolve_target, Stack};
@@ -359,10 +360,25 @@ pub fn run(opts: LandOptions) -> Result<()> {
         admin,
     } = opts;
     let repo = git::open_repo()?;
-    let _lock = git::acquire_operation_lock(&repo, "land")?;
 
     let git_dir = repo.commondir();
     let mut config = Config::load_with_global(git_dir)?;
+
+    // Acquire operation lock + record a Pending op for the undo log.
+    let (_lock, mut guard) = git::acquire_operation_lock_and_record(
+        &repo,
+        &config,
+        OperationKind::Land,
+        std::env::args().skip(1).collect(),
+        None,
+        SnapshotScope::AllUserBranches,
+    )?;
+
+    // Remote effects collected during landing. A successful merge adds a
+    // `PrMerged`; auto-merge scheduling sets `touched_remote` without a
+    // specific effect (we don't have a `PrQueued` variant).
+    let mut remote_effects: Vec<RemoteEffect> = Vec::new();
+    let mut touched_remote = false;
 
     let provider = Provider::detect(&repo)?;
     provider.check_installed()?;
@@ -401,6 +417,13 @@ pub fn run(opts: LandOptions) -> Result<()> {
         } else {
             println!("{}", style("Stack is empty. Nothing to land.").dim());
         }
+        guard.finalize_with_scope(
+            &repo,
+            &config,
+            SnapshotScope::AllUserBranches,
+            vec![],
+            false,
+        )?;
         return Ok(());
     }
 
@@ -685,6 +708,14 @@ pub fn run(opts: LandOptions) -> Result<()> {
         if merge_trains_enabled {
             match provider.add_to_merge_train(pr_num) {
                 Ok(result) => {
+                    // Queueing a PR/MR on the merge train is a remote state
+                    // mutation even when the PR was already queued — the
+                    // API call still touches the remote. Mark `touched_remote`
+                    // so `gg undo` refuses to replay this op locally. Persist
+                    // the flag immediately so a mid-sequence failure still
+                    // leaves a record the sweep will promote correctly.
+                    touched_remote = true;
+                    guard.mark_touched_remote();
                     let action = match result {
                         AutoMergeResult::Queued => "queued",
                         AutoMergeResult::AlreadyQueued => "already_queued",
@@ -764,15 +795,23 @@ pub fn run(opts: LandOptions) -> Result<()> {
             }
         } else if auto_merge_on_land {
             match provider.auto_merge_pr_when_pipeline_succeeds(pr_num, squash, false) {
-                Ok(AutoMergeResult::Queued) => landed_entries.push(LandedEntryJson {
-                    position: entry.position,
-                    sha: entry.short_sha.clone(),
-                    title: entry.title.clone(),
-                    gg_id: gg_id.clone(),
-                    pr_number: pr_num,
-                    action: "queued".to_string(),
-                    error: None,
-                }),
+                Ok(AutoMergeResult::Queued) => {
+                    // Queuing for auto-merge mutates remote state even though
+                    // the MR is not merged yet; mark the op as having touched
+                    // remote so `gg undo` refuses with a provider hint. Persist
+                    // immediately for mid-sequence failure tolerance.
+                    touched_remote = true;
+                    guard.mark_touched_remote();
+                    landed_entries.push(LandedEntryJson {
+                        position: entry.position,
+                        sha: entry.short_sha.clone(),
+                        title: entry.title.clone(),
+                        gg_id: gg_id.clone(),
+                        pr_number: pr_num,
+                        action: "queued".to_string(),
+                        error: None,
+                    });
+                }
                 Ok(AutoMergeResult::AlreadyQueued) => landed_entries.push(LandedEntryJson {
                     position: entry.position,
                     sha: entry.short_sha.clone(),
@@ -802,6 +841,20 @@ pub fn run(opts: LandOptions) -> Result<()> {
             }
             match provider.merge_pr(pr_num, squash, false, admin) {
                 Ok(()) => {
+                    // Record the merge as a remote effect. Fetch the URL if we
+                    // can; fall back to empty string if the info call fails.
+                    let pr_url = provider
+                        .get_pr_info(pr_num)
+                        .map(|info| info.url)
+                        .unwrap_or_default();
+                    let effect = RemoteEffect::PrMerged {
+                        number: pr_num,
+                        url: pr_url,
+                    };
+                    remote_effects.push(effect.clone());
+                    touched_remote = true;
+                    guard.record_remote_effect(effect);
+
                     landed_entries.push(LandedEntryJson {
                         position: entry.position,
                         sha: entry.short_sha.clone(),
@@ -944,6 +997,20 @@ pub fn run(opts: LandOptions) -> Result<()> {
             provider.pr_label()
         );
     }
+
+    // Finalize the operation record before we exit. We do this even on error
+    // so the log captures the refs_after snapshot and remote effects that
+    // actually happened before the failure (cumulative merges are already
+    // on remote and can't be undone locally). Dropping the guard without
+    // finalize would leave the record Pending and eventually get swept to
+    // Interrupted — less accurate for `gg undo --list`.
+    guard.finalize_with_scope(
+        &repo,
+        &config,
+        SnapshotScope::AllUserBranches,
+        remote_effects,
+        touched_remote,
+    )?;
 
     // In JSON mode, the error is already included in the LandResponse payload.
     // Returning Err would cause gg-cli to emit a second JSON error object,

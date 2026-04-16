@@ -12,6 +12,7 @@ pub mod git;
 pub mod glab;
 pub mod immutability;
 pub mod managed_body;
+pub mod operations;
 pub mod output;
 pub mod provider;
 pub mod stack;

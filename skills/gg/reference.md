@@ -189,6 +189,37 @@ Repair metadata after external branch/PR/MR manipulation.
 #### `gg continue` / `gg abort`
 Resume/abort paused operations.
 
+#### `gg undo [OPERATION_ID] [--json]` / `gg undo --list [--limit N] [--json]`
+Reverse the local ref/HEAD effects of the most recent mutating `gg`
+command, backed by a per-repo operation log at
+`<commondir>/gg/operations/*.json` (ring buffer, 100 records;
+`Pending`/`Interrupted` records never pruned).
+
+- `OPERATION_ID` — target a specific record (`op_…`). When omitted,
+  undoes the most recent locally-undoable operation.
+- `--list` — show recent operations newest-first.
+- `--limit N` — cap `--list` output (default: 20).
+- `--json` — emit machine-readable JSON.
+
+Every mutating command (`sc`, `drop`, `split`, `rebase`, `reorder`,
+`absorb`, `reconcile`, `checkout`, `mv`/`first`/`last`/`prev`/`next`,
+`clean`, `sync`, `land`, `run --amend`) snapshots refs before mutating
+and records the operation on success. A second `gg undo` redoes the
+first — `undo` itself is recorded.
+
+**Refusals** (exit 1, no refs touched):
+
+| `refusal.reason` | Condition | Handling |
+|---|---|---|
+| `remote` | Op pushed/merged/closed/created a PR or MR | Use the printed provider hint (`gh pr close <n>`, `glab mr close <n>`, `git push --delete …`). |
+| `interrupted` | Op was Ctrl-C'd or crashed mid-flight | Fix state manually; stale Pending records are swept on the next lock-acquiring op. |
+| `stale` | Refs moved since the target op finalised | Run `gg undo --list` and pick a more recent record. Error names the ref, expected OID, actual OID. |
+| `unsupported_schema` | Record was written by a newer `gg` binary | Upgrade `gg` or delete the record. |
+
+`gg undo` never touches the working tree, index, untracked files, or
+remotes. It does not support `--all` / `--range` — one operation per
+call.
+
 #### `gg setup`
 Interactive config wizard.
 - **Quick mode** (`gg setup`): Essential settings (provider, base, username)
@@ -481,6 +512,73 @@ Field types for `entries`:
 }
 ```
 
+### `gg undo --json`
+
+```json
+{
+  "version": 1,
+  "status": "succeeded",
+  "undone": {
+    "id": "op_0000001750000000_018f…",
+    "kind": "drop",
+    "status": "committed",
+    "created_at_ms": 1750000000000,
+    "args": ["drop", "3"],
+    "stack_name": "feature-auth",
+    "touched_remote": false,
+    "is_undoable": true,
+    "is_undo": false,
+    "remote_effects": []
+  }
+}
+```
+
+On refusal:
+
+```json
+{
+  "version": 1,
+  "status": "refused",
+  "refusal": {
+    "reason": "remote",
+    "message": "Cannot locally undo 'sync': it touched a remote.",
+    "target": { "id": "op_…", "kind": "sync", "touched_remote": true },
+    "hints": [
+      "Close PR #42: gh pr close 42",
+      "Delete remote branch: git push --delete origin user/feature-auth--c-abc1234"
+    ]
+  }
+}
+```
+
+`refusal.reason` values: `"remote" | "interrupted" | "stale" | "unsupported_schema"`.
+
+### `gg undo --list --json`
+
+```json
+{
+  "version": 1,
+  "operations": [
+    {
+      "id": "op_…",
+      "kind": "undo",
+      "status": "committed",
+      "created_at_ms": 1750000100000,
+      "args": ["undo"],
+      "stack_name": "feature-auth",
+      "touched_remote": false,
+      "is_undoable": true,
+      "is_undo": true,
+      "undoes": "op_previous…"
+    }
+  ]
+}
+```
+
+Entries are newest-first. Use `is_undoable` to gate UI/agent actions;
+`is_undo` + `undoes` render redo markers. Remote-touching ops appear
+with `is_undoable: false` and `touched_remote: true`.
+
 ---
 
 ## Immutable commits
@@ -657,3 +755,29 @@ Reorder commits in the stack.
   - `force` (bool, default false) — bypass the [immutability guard](#immutable-commits)
 - **Notes:** Direct mode only (`--no-tui` implicit). No interactive TUI via MCP.
 - **Returns:** Result of the reorder operation
+
+#### `stack_undo`
+Reverse the ref/HEAD effects of the most recent mutating `gg` command
+(or a specific op by id). Shell-out wrapper around `gg undo --json`.
+- **Params:**
+  - `operation_id` (string, optional) — target a specific record from
+    `stack_undo_list`. Defaults to the most-recent-undoable operation.
+- **Notes:** Refuses on remote-touching ops (`sync`, `land`) and on
+  `interrupted`, `stale`, or `unsupported_schema` records. On refusal
+  the payload includes `refusal.reason` plus provider-specific revert
+  hints (`gh pr close <n>`, `glab mr close <n>`, `git push --delete …`).
+  Agents must surface the hints to the user rather than attempt silent
+  remote rollback. Working tree is never modified.
+- **Returns:** `{ status: "succeeded", undone: {…} }` or
+  `{ status: "refused", refusal: { reason, message, target, hints } }`.
+
+#### `stack_undo_list`
+List recent operations from the per-repo operation log, newest-first.
+Shell-out wrapper around `gg undo --list --json`.
+- **Params:**
+  - `limit` (usize, optional) — cap output (default: 20)
+- **Notes:** Each entry carries `is_undoable` (gate for safe local
+  replay), `is_undo` + `undoes` (redo markers), and `touched_remote`
+  (set on remote-touching ops, which appear with `is_undoable: false`).
+- **Returns:** `{ operations: [{ id, kind, status, created_at_ms, args,
+  stack_name, touched_remote, is_undoable, is_undo, undoes? }] }`.

@@ -136,6 +136,43 @@ gg land -a -c --json
 - Lint stack: `gg lint --json`
 - Run a command across the stack: `gg run -- <cmd...>` (see below)
 - Clean merged stacks: `gg clean -a --json`
+- Undo last local mutation: `gg undo` (see below)
+
+## Undoing local mutations (`gg undo`)
+
+`gg undo` reverses the ref/`HEAD` effects of the most recent mutating
+`gg` command by replaying a snapshot from the per-repo operation log at
+`<commondir>/gg/operations/*.json`. It never touches the working tree,
+index, or untracked files — only refs move.
+
+```bash
+gg undo              # reverse the most recent local operation
+gg undo --list       # see recent operations (newest-first)
+gg undo <op_id>      # target a specific record from --list
+gg undo; gg undo     # redo: a second undo reverses the first
+gg undo --json       # machine-readable output
+```
+
+Every mutating command (`sc`, `drop`, `split`, `rebase`, `reorder`,
+`absorb`, `reconcile`, `checkout`, nav, `clean`, `sync`, `land`, and
+`run --amend`) snapshots the refs it will touch before mutating and
+records the operation on success. The log keeps the last 100 records;
+interrupted/pending records are never pruned.
+
+**Refusal modes** (exit 1, no refs touched, JSON includes `refusal.reason`):
+
+- `remote` — target operation pushed/merged/closed/created a PR/MR.
+  gg prints a provider-specific revert hint (`gh pr close <n>`,
+  `glab mr close <n>`, `git push --delete …`). Agents must surface the
+  hint to the user rather than attempt silent remote rollback.
+- `interrupted` — operation crashed or was Ctrl-C'd mid-flight.
+- `stale` — refs moved since the target operation finalised. The error
+  names the ref, expected OID, and actual OID.
+- `unsupported_schema` — record was written by a newer `gg` binary.
+
+`gg undo` does **not** restore working-tree content (use `git reflog` or
+`git stash`), does **not** touch remotes, and does **not** support an
+`--all` / `--range` mode.
 
 ## Running commands across the stack (`gg run`)
 
@@ -267,6 +304,7 @@ The `gg-mcp` binary exposes git-gud as an MCP server (stdio transport). Set `GG_
 - `stack_list` / `stack_log` / `stack_list_all` / `stack_status` — inspect stacks (`stack_log` gives a smartlog-style view of the current stack; `stack_list_all` is cross-stack)
 - `pr_info` — check PR state, CI, approval
 - `config_show` — read repo configuration
+- `stack_undo_list` — list recent operations from the per-repo operation log
 
 ### Write tools (mutating, use with care)
 - `stack_checkout` — create or switch stacks
@@ -279,6 +317,7 @@ The `gg-mcp` binary exposes git-gud as an MCP server (stdio transport). Set `GG_
 - `stack_drop` — remove commits from the stack (always passes `--yes`; set `force: true` only to bypass the immutability guard for merged/base commits; agent confirms with user before any drop)
 - `stack_split` — split a commit using interactive hunk selection (TUI opens by default; pass FILES... to auto-select all hunks for those files)
 - `stack_reorder` — reorder commits with explicit order string (no TUI)
+- `stack_undo` — reverse the ref/HEAD effects of the most recent mutating `gg` command (refuses on remote-touching ops, returns provider-specific revert hints; agents must surface those hints rather than attempt silent remote rollback)
 
 ### Navigation tools
 - `stack_move` — jump to a commit by position, GG-ID, or SHA

@@ -13,6 +13,7 @@ use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::immutability::{self, ImmutabilityPolicy};
+use crate::operations::{OperationKind, SnapshotScope};
 use crate::stack::Stack;
 
 /// Options for the absorb command
@@ -39,6 +40,12 @@ pub struct AbsorbOptions {
 pub fn run(options: AbsorbOptions) -> Result<()> {
     let repo = git::open_repo()?;
     let gg_config = Config::load_with_global(repo.commondir())?;
+
+    // Acquire the operation lock for validation, but defer writing the
+    // op-log record until after the immutability guard passes so refused
+    // operations never pollute `gg undo --list` (design §4.6).
+    // NOTE: behaviour change — absorb previously had no lock.
+    let _lock = git::acquire_operation_lock(&repo, "absorb")?;
 
     // Check if there are staged changes
     let statuses = repo.statuses(None)?;
@@ -70,6 +77,7 @@ pub fn run(options: AbsorbOptions) -> Result<()> {
         } else {
             println!("{}", style("No changes to absorb.").dim());
         }
+        // No mutation — no record needed.
         return Ok(());
     }
 
@@ -94,6 +102,23 @@ pub fn run(options: AbsorbOptions) -> Result<()> {
         let report = policy.check_all(&stack);
         immutability::guard(report, options.force)?;
     }
+
+    // All validation passed and we are about to mutate: write the Pending
+    // op-log record now so a failure beyond this point leaves a record the
+    // sweep can promote to Interrupted. Dry-run mutates nothing, so skip
+    // recording entirely in that branch.
+    let guard = if options.dry_run {
+        None
+    } else {
+        Some(git::begin_recorded_op(
+            &repo,
+            &gg_config,
+            OperationKind::Absorb,
+            std::env::args().skip(1).collect(),
+            None,
+            SnapshotScope::AllUserBranches,
+        )?)
+    };
 
     // Determine the base reference for absorb
     // We want to absorb into commits between base and HEAD
@@ -130,7 +155,7 @@ pub fn run(options: AbsorbOptions) -> Result<()> {
 
     // Run git-absorb
     let _env_guard = prepare_git_absorb_env(&repo);
-    match git_absorb::run(&logger, &absorb_config) {
+    let outcome = match git_absorb::run(&logger, &absorb_config) {
         Ok(()) => {
             if options.dry_run {
                 println!(
@@ -181,7 +206,20 @@ pub fn run(options: AbsorbOptions) -> Result<()> {
                 Err(GgError::Other(format!("git-absorb failed: {}", error_msg)))
             }
         }
+    };
+    outcome?;
+
+    if let Some(guard) = guard {
+        guard.finalize_with_scope(
+            &repo,
+            &gg_config,
+            SnapshotScope::AllUserBranches,
+            vec![],
+            false,
+        )?;
     }
+
+    Ok(())
 }
 
 /// Create a slog logger for git-absorb output

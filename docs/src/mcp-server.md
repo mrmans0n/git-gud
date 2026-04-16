@@ -211,6 +211,38 @@ Reorder commits in the stack with an explicit order.
 
 **Notes:** No TUI via MCP. The order specifies the new bottom-to-top arrangement of commits.
 
+### `stack_undo`
+
+Reverse the local ref/HEAD effects of the most recent mutating `gg`
+command (or a specific operation by id). Shell-out wrapper around
+[`gg undo --json`](./commands/undo.md).
+
+**Parameters:**
+- `operation_id` (string, optional): Target a specific record (see
+  `stack_undo_list`). Defaults to the most-recent-undoable operation.
+
+**Notes:** Refuses on remote-touching operations (`sync`, `land`) —
+the returned payload includes a `refusal.reason` of `remote` plus a
+provider-specific revert hint (e.g. `gh pr close <n>`, `git push
+--delete …`). Agents must surface the hint to the user rather than
+attempt silent remote rollback. Also refuses on `interrupted`,
+`stale`, and `unsupported_schema` records; the working tree is never
+modified.
+
+### `stack_undo_list`
+
+List recent operations from the per-repo operation log (newest-first).
+Shell-out wrapper around [`gg undo --list --json`](./commands/undo.md).
+
+**Parameters:**
+- `limit` (integer, optional): Cap the number of records returned
+  (default: 20).
+
+**Notes:** Each entry carries `is_undoable` (gate for safe local
+replay) and, for undo records, `is_undo` + `undoes` (the operation id
+being reversed). Remote-touching ops appear with `is_undoable: false`
+and `touched_remote: true`.
+
 ## Transport
 
 The MCP server uses **stdio** transport (JSON-RPC over stdin/stdout), which is the standard for local MCP tools. No network configuration is needed.

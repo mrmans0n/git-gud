@@ -10,6 +10,7 @@ use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::immutability::{self, ImmutabilityPolicy};
+use crate::operations::{OperationKind, SnapshotScope};
 use crate::stack::Stack;
 
 /// Options for the reorder command
@@ -28,6 +29,12 @@ pub struct ReorderOptions {
 pub fn run(options: ReorderOptions) -> Result<()> {
     let repo = git::open_repo()?;
     let config = Config::load_with_global(repo.commondir())?;
+
+    // Acquire the operation lock now but defer writing the op-log record
+    // until all validation (including the immutability guard) passes so
+    // refused or cancelled operations never leak into `gg undo --list`.
+    // NOTE: this is a behaviour change — reorder previously had no lock.
+    let _lock = git::acquire_operation_lock(&repo, "reorder")?;
 
     // Require clean working directory
     git::require_clean_working_directory(&repo)?;
@@ -89,6 +96,17 @@ pub fn run(options: ReorderOptions) -> Result<()> {
         immutability::guard(report, options.force)?;
     }
 
+    // All validation passed — write the Pending op-log record immediately
+    // before the actual rebase.
+    let guard = git::begin_recorded_op(
+        &repo,
+        &config,
+        OperationKind::Reorder,
+        std::env::args().skip(1).collect(),
+        None,
+        SnapshotScope::AllUserBranches,
+    )?;
+
     let dropped_count = stack.len() - new_order.len();
     if dropped_count > 0 {
         println!(
@@ -125,6 +143,14 @@ pub fn run(options: ReorderOptions) -> Result<()> {
             new_order.len()
         );
     }
+
+    guard.finalize_with_scope(
+        &repo,
+        &config,
+        SnapshotScope::AllUserBranches,
+        vec![],
+        false,
+    )?;
 
     Ok(())
 }

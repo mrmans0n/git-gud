@@ -9,6 +9,7 @@ use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::immutability::{self, ImmutabilityPolicy};
+use crate::operations::{OperationKind, SnapshotScope};
 use crate::output::{print_json, DropResponse, DropResultJson, DroppedEntryJson, OUTPUT_VERSION};
 use crate::stack::{self, Stack};
 
@@ -33,7 +34,10 @@ pub fn run(options: DropOptions) -> Result<()> {
     let repo = git::open_repo()?;
     let config = Config::load_with_global(repo.commondir())?;
 
-    // Acquire operation lock
+    // Acquire the operation lock early so all validation runs under it, but
+    // defer writing the op-log record until *after* the immutability guard
+    // passes. This keeps refused operations from polluting `gg undo --list`
+    // with Interrupted ghosts (design §4.6).
     let _lock = git::acquire_operation_lock(&repo, "drop")?;
 
     // Require clean working directory
@@ -127,9 +131,24 @@ pub fn run(options: DropOptions) -> Result<()> {
 
         if !confirmed {
             println!("{}", style("Drop cancelled.").dim());
+            // No mutation occurred and no record was written; drop the lock
+            // and exit cleanly without leaving a ghost in `gg undo --list`.
             return Ok(());
         }
     }
+
+    // All pre-mutation checks passed and the user confirmed (or confirmation
+    // is not required) — now write the Pending op-log record. Any later
+    // failure leaves a Pending record that the sweep promotes to Interrupted,
+    // which `gg undo` will refuse.
+    let guard = git::begin_recorded_op(
+        &repo,
+        &config,
+        OperationKind::Drop,
+        std::env::args().skip(1).collect(),
+        None,
+        SnapshotScope::AllUserBranches,
+    )?;
 
     // Build the rebase todo list, omitting dropped commits
     let drop_indices: Vec<usize> = drop_positions.iter().map(|p| p - 1).collect();
@@ -204,6 +223,16 @@ pub fn run(options: DropOptions) -> Result<()> {
     }
 
     let remaining = stack_obj.len() - dropped_entries.len();
+
+    // Finalize the op record with post-mutation refs. Drop is purely
+    // local; no remote effects.
+    guard.finalize_with_scope(
+        &repo,
+        &config,
+        SnapshotScope::AllUserBranches,
+        vec![],
+        false,
+    )?;
 
     if options.json {
         print_json(&DropResponse {

@@ -9,6 +9,7 @@ use crate::config::{Config, UnstagedAction};
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::immutability::{self, ImmutabilityPolicy};
+use crate::operations::{OperationKind, SnapshotScope};
 use crate::stack;
 use crate::stack::Stack;
 
@@ -73,11 +74,12 @@ fn has_untracked_files() -> Result<bool> {
 /// Run the squash command
 pub fn run(all: bool, force: bool) -> Result<()> {
     let repo = git::open_repo()?;
-
-    // Acquire operation lock to prevent concurrent operations
-    let _lock = git::acquire_operation_lock(&repo, "squash")?;
-
     let config = Config::load_with_global(repo.commondir())?;
+
+    // Acquire the operation lock for validation, but defer writing the
+    // op-log record until after the immutability guard passes so refused
+    // operations never pollute `gg undo --list` (design §4.6).
+    let _lock = git::acquire_operation_lock(&repo, "squash")?;
 
     // Verify we're on a stack
     let mut stack = Stack::load(&repo, &config)?;
@@ -90,6 +92,7 @@ pub fn run(all: bool, force: bool) -> Result<()> {
     let statuses = repo.statuses(None)?;
     if statuses.is_empty() {
         println!("{}", style("No changes to squash.").dim());
+        // No mutation — no record needed.
         return Ok(());
     }
 
@@ -173,7 +176,12 @@ pub fn run(all: bool, force: bool) -> Result<()> {
                         auto_stashed = true;
                     }
                     2 => {}
-                    _ => return Ok(()),
+                    _ => {
+                        // User aborted: no mutation occurred and no record
+                        // has been written yet. Exit clean — the op log
+                        // stays untouched.
+                        return Ok(());
+                    }
                 }
             }
             UnstagedAction::Add => {
@@ -217,6 +225,18 @@ pub fn run(all: bool, force: bool) -> Result<()> {
             ));
         }
     }
+
+    // All validation passed and we are about to mutate: write the Pending
+    // op-log record now so a failure beyond this point leaves a record the
+    // sweep can promote to Interrupted.
+    let guard = git::begin_recorded_op(
+        &repo,
+        &config,
+        OperationKind::Squash,
+        std::env::args().skip(1).collect(),
+        None,
+        SnapshotScope::AllUserBranches,
+    )?;
 
     // Perform the squash using git command (more reliable for amend)
     let mut args = vec!["commit", "--amend", "--no-edit"];
@@ -341,6 +361,15 @@ pub fn run(all: bool, force: bool) -> Result<()> {
     if auto_stashed {
         restore_auto_stash();
     }
+
+    // Finalize op record — purely local mutation.
+    guard.finalize_with_scope(
+        &repo,
+        &config,
+        SnapshotScope::AllUserBranches,
+        vec![],
+        false,
+    )?;
 
     Ok(())
 }

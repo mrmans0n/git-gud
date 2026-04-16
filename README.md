@@ -230,6 +230,8 @@ gg clean
 | `gg reconcile --dry-run` | Show what reconcile would do without making changes |
 | `gg continue` | Continue after resolving conflicts |
 | `gg abort` | Abort current operation |
+| `gg undo [OP_ID]` | Reverse the local ref/HEAD effects of the most recent mutating `gg` command (refuses on remote-touching ops) |
+| `gg undo --list` | Show recent operations from the per-repo operation log |
 | `gg completions <shell>` | Generate shell completions |
 
 ## Configuration

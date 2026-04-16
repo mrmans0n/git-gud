@@ -1209,12 +1209,10 @@ fn apply_hunks_to_content(parent_content: &str, hunks: &[&DiffHunk]) -> Result<S
                     // Skip (delete) line from parent
                     parent_idx += 1;
                 }
-                ' ' => {
+                ' ' if parent_idx < parent_lines.len() => {
                     // Context - should match, advance parent
-                    if parent_idx < parent_lines.len() {
-                        result_lines.push(parent_lines[parent_idx].to_string());
-                        parent_idx += 1;
-                    }
+                    result_lines.push(parent_lines[parent_idx].to_string());
+                    parent_idx += 1;
                 }
                 _ => {}
             }

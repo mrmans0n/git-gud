@@ -177,6 +177,17 @@ pub fn execute_raw(options: RunOptions) -> Result<RunResult> {
     result
 }
 
+/// Same as [`execute_raw`] but without acquiring the operation lock or
+/// recording an op. Intended for callers that already hold the operation
+/// lock (e.g. `sync` → `lint` → `run` in Amend mode) where re-acquiring
+/// the advisory lock would deadlock.
+pub(crate) fn execute_raw_without_lock(options: RunOptions) -> Result<RunResult> {
+    let repo = git::open_repo()?;
+    git::require_clean_working_directory(&repo)?;
+    let config = crate::config::Config::load_with_global(repo.commondir())?;
+    execute_raw_body(&repo, &config, options)
+}
+
 /// Execute body (without lock/record). Split out so `execute_raw` can manage
 /// the operation guard around it cleanly.
 fn execute_raw_body(
@@ -1232,10 +1243,8 @@ fn restore_original_position(
 pub(crate) fn resolve_git_path(cmd: &str, repo: &git2::Repository) -> Option<PathBuf> {
     let remainder = if let Some(rest) = cmd.strip_prefix("./.git/") {
         rest
-    } else if let Some(rest) = cmd.strip_prefix(".git/") {
-        rest
     } else {
-        return None;
+        cmd.strip_prefix(".git/")?
     };
 
     Some(repo.commondir().join(remainder))

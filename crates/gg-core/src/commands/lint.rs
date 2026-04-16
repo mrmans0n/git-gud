@@ -19,6 +19,26 @@ use super::run::{self, ChangeMode, RunOptions};
 /// Returns `Ok(true)` when all lint commands passed for all linted commits,
 /// `Ok(false)` when one or more commits had lint failures.
 pub fn run(until: Option<usize>, json: bool, emit_json_output: bool) -> Result<bool> {
+    run_inner(until, json, emit_json_output, false)
+}
+
+/// Same as [`run`], but intended for callers that already hold the operation
+/// lock (e.g. `gg sync --run-lint`). Skips re-acquiring the advisory lock,
+/// avoiding a self-deadlock inside `run::execute_raw`.
+pub(crate) fn run_without_lock(
+    until: Option<usize>,
+    json: bool,
+    emit_json_output: bool,
+) -> Result<bool> {
+    run_inner(until, json, emit_json_output, true)
+}
+
+fn run_inner(
+    until: Option<usize>,
+    json: bool,
+    emit_json_output: bool,
+    skip_lock: bool,
+) -> Result<bool> {
     let repo = git::open_repo()?;
     let config = Config::load_with_global(repo.commondir())?;
 
@@ -43,7 +63,7 @@ pub fn run(until: Option<usize>, json: bool, emit_json_output: bool) -> Result<b
         return Ok(true);
     }
 
-    let result = run::execute_raw(RunOptions {
+    let run_options = RunOptions {
         commands: lint_commands
             .iter()
             .map(|s| run::RunCommand::Shell(s.clone()))
@@ -55,7 +75,13 @@ pub fn run(until: Option<usize>, json: bool, emit_json_output: bool) -> Result<b
         emit_json_output,
         header_label: Some("lint".to_string()),
         jobs: 1,
-    })?;
+    };
+
+    let result = if skip_lock {
+        run::execute_raw_without_lock(run_options)?
+    } else {
+        run::execute_raw(run_options)?
+    };
 
     if json && emit_json_output {
         // Emit LintResponse (key: "lint") for backward compatibility

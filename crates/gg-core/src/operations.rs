@@ -116,6 +116,13 @@ pub enum RemoteEffect {
     PrMerged { number: u64, url: String },
     /// A pull/merge request was closed (without merging).
     PrClosed { number: u64, url: String },
+    /// A pull/merge request was queued for auto-merge. URL may be empty if
+    /// the provider didn't surface one at queue time.
+    PrQueued {
+        number: u64,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        url: String,
+    },
 }
 
 /// Durable operation record. One JSON file per record.
@@ -263,7 +270,7 @@ impl OperationStore {
             .into_iter()
             .filter_map(|id| self.load(&id).ok())
             .collect();
-        records.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+        records.sort_by_key(|r| std::cmp::Reverse(r.created_at_ms));
         records.truncate(limit);
         Ok(records)
     }
@@ -279,7 +286,7 @@ impl OperationStore {
             return;
         }
         // Sort oldest-first for pruning.
-        records.sort_by(|a, b| a.created_at_ms.cmp(&b.created_at_ms));
+        records.sort_by_key(|r| r.created_at_ms);
         let excess = records.len() - OPERATION_LOG_CAP;
         let mut pruned = 0;
         for rec in records {
@@ -664,6 +671,13 @@ fn build_remote_hints(record: &OperationRecord) -> Vec<String> {
             RemoteEffect::PrClosed { number, url } => format!(
                 "Reopen {url} with `gh pr reopen {number}` / `glab mr reopen {number}`."
             ),
+            RemoteEffect::PrQueued { number, url } => {
+                let link = if url.is_empty() { format!("PR #{number}") } else { url.clone() };
+                format!(
+                    "This operation queued {link} for auto-merge. To cancel before it merges: \
+                     `gh pr merge --disable-auto {number}` / `glab mr update {number} --remove-auto-merge`."
+                )
+            }
         })
         .collect()
 }
@@ -979,10 +993,10 @@ mod snapshot_tests {
         let cfg = config_with_username("nacho");
         let snaps = snapshot_refs(&repo, &cfg, SnapshotScope::AllUserBranches).unwrap();
         let names: Vec<&str> = snaps.iter().map(|s| s.name.as_str()).collect();
-        assert!(names.iter().any(|n| *n == "refs/heads/nacho/x/1"));
-        assert!(names.iter().any(|n| *n == "refs/heads/nacho/x/2"));
-        assert!(!names.iter().any(|n| *n == "refs/heads/main"));
-        assert!(!names.iter().any(|n| *n == "refs/heads/other/mine"));
+        assert!(names.contains(&"refs/heads/nacho/x/1"));
+        assert!(names.contains(&"refs/heads/nacho/x/2"));
+        assert!(!names.contains(&"refs/heads/main"));
+        assert!(!names.contains(&"refs/heads/other/mine"));
     }
 
     #[test]

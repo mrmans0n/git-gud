@@ -268,8 +268,8 @@ fn print_list_human(records: &[OperationRecord]) {
         return;
     }
     println!(
-        "{:<10}  {:<12}  {:<10}  {:<8}  {}",
-        "ID", "KIND", "STATUS", "UNDOABLE", "ARGS"
+        "{:<10}  {:<12}  {:<10}  {:<8}  ARGS",
+        "ID", "KIND", "STATUS", "UNDOABLE"
     );
     for r in records {
         let undoable = if r.is_undoable_locally() {

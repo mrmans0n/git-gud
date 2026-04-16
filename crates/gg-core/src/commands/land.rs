@@ -785,6 +785,14 @@ pub fn run(opts: LandOptions) -> Result<()> {
                     // Queuing for auto-merge mutates remote state even though
                     // the MR is not merged yet; mark the op as having touched
                     // remote so `gg undo` refuses with a provider hint.
+                    let pr_url = provider
+                        .get_pr_info(pr_num)
+                        .map(|info| info.url)
+                        .unwrap_or_default();
+                    remote_effects.push(RemoteEffect::PrQueued {
+                        number: pr_num,
+                        url: pr_url,
+                    });
                     touched_remote = true;
                     landed_entries.push(LandedEntryJson {
                         position: entry.position,

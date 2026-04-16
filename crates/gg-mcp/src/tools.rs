@@ -199,6 +199,10 @@ pub struct StackRebaseParams {
     /// Target branch to rebase onto (default: base branch)
     #[serde(default)]
     pub target: Option<String>,
+    /// Bypass the immutability guard on merged / base-ancestor commits.
+    /// Only set after surfacing the affected commits to the user.
+    #[serde(default)]
+    pub force: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -206,6 +210,10 @@ pub struct StackSquashParams {
     /// Stage all changes before squashing (like git add -A)
     #[serde(default)]
     pub all: bool,
+    /// Bypass the immutability guard on merged / base-ancestor commits.
+    /// Only set after surfacing the affected commits to the user.
+    #[serde(default)]
+    pub force: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -225,6 +233,10 @@ pub struct StackAbsorbParams {
     /// Squash fixup commits immediately
     #[serde(default)]
     pub squash: bool,
+    /// Bypass the immutability guard on merged / base-ancestor commits.
+    /// Only set after surfacing the affected commits to the user.
+    #[serde(default)]
+    pub force: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -274,12 +286,20 @@ pub struct StackSplitParams {
     /// Don't prompt for the remainder commit message
     #[serde(default)]
     pub no_edit: bool,
+    /// Bypass the immutability guard on merged / base-ancestor commits.
+    /// Only set after surfacing the affected commits to the user.
+    #[serde(default)]
+    pub force: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct StackReorderParams {
     /// New order as positions (1-indexed), e.g., "3,1,2" or "3 1 2"
     pub order: String,
+    /// Bypass the immutability guard on merged / base-ancestor commits.
+    /// Only set after surfacing the affected commits to the user.
+    #[serde(default)]
+    pub force: bool,
 }
 
 // --- Helper functions ---
@@ -672,6 +692,9 @@ impl GgMcpServer {
         Parameters(params): Parameters<StackRebaseParams>,
     ) -> Result<String, String> {
         let mut args = vec!["rebase".to_string()];
+        if params.force {
+            args.push("--force".to_string());
+        }
         if let Some(ref target) = params.target {
             args.push(target.clone());
         }
@@ -689,6 +712,9 @@ impl GgMcpServer {
         let mut args = vec!["sc".to_string()];
         if params.all {
             args.push("--all".to_string());
+        }
+        if params.force {
+            args.push("--force".to_string());
         }
         run_gg_command(&args)
     }
@@ -716,6 +742,9 @@ impl GgMcpServer {
         }
         if params.squash {
             args.push("-s".to_string());
+        }
+        if params.force {
+            args.push("--force".to_string());
         }
         run_gg_command(&args)
     }
@@ -829,6 +858,9 @@ impl GgMcpServer {
         if params.no_edit {
             args.push("--no-edit".to_string());
         }
+        if params.force {
+            args.push("--force".to_string());
+        }
         args.extend(params.files);
         run_gg_command(&args)
     }
@@ -841,12 +873,16 @@ impl GgMcpServer {
         &self,
         Parameters(params): Parameters<StackReorderParams>,
     ) -> Result<String, String> {
-        run_gg_command(&[
+        let mut args = vec![
             "reorder".to_string(),
             "--no-tui".to_string(),
             "-o".to_string(),
             params.order,
-        ])
+        ];
+        if params.force {
+            args.push("--force".to_string());
+        }
+        run_gg_command(&args)
     }
 }
 
@@ -1010,6 +1046,7 @@ mod tests {
         assert!(!params.whole_file);
         assert!(!params.one_fixup_per_commit);
         assert!(!params.squash);
+        assert!(!params.force);
     }
 
     #[test]
@@ -1036,6 +1073,7 @@ mod tests {
         assert!(params.files.is_empty());
         assert!(params.message.is_none());
         assert!(!params.no_edit);
+        assert!(!params.force);
     }
 
     #[test]
@@ -1055,6 +1093,8 @@ mod tests {
         // Order is required for MCP (no TUI)
         let params: StackReorderParams = serde_json::from_str(r#"{"order": "3,1,2"}"#).unwrap();
         assert_eq!(params.order, "3,1,2");
+        // force defaults to false
+        assert!(!params.force);
     }
 
     #[test]
@@ -1077,6 +1117,7 @@ mod tests {
             files: vec![],
             message: None,
             no_edit: false,
+            force: false,
         };
         let result = server.stack_split(Parameters(params));
         assert!(result.is_err());

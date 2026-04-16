@@ -120,6 +120,7 @@ gg land -a -c --json
 5. If sync warns stack is behind base, run `gg rebase` first.
 6. Prefer `gg absorb -s` for multi-commit edits.
 7. **Never use `git add -A` blindly.** Review `git status` first and only stage intended files. Use `git add <specific-files>` to avoid leaking secrets, env files, or unrelated changes.
+8. **Respect the immutability guard.** Rewrite-style commands (`gg sc`, `gg absorb`, `gg reorder`/`gg arrange`, `gg split`, `gg drop`, `gg rebase`) refuse to rewrite merged PRs/MRs or commits already on the base branch. If the command exits with `ImmutableTargets`, surface the listed commits and reasons to the user and get explicit confirmation before retrying with `-f` / `--force` (alias `--ignore-immutable`).
 
 ## Common operations
 
@@ -177,6 +178,27 @@ subsequent tokens as the command, not as `gg run` flags.
 For repeatable linter runs with commands configured in `.git/gg/config.json`,
 prefer `gg lint` — it's `gg run --amend` with the command list coming from
 config.
+
+## Immutable commits
+
+gg refuses by default to rewrite commits that look "already published":
+
+- the tracked PR/MR is merged, or
+- the commit is already reachable from `origin/<base>` (or the local base, as
+  a fallback).
+
+The guard protects `gg sc`, `gg absorb`, `gg reorder` / `gg arrange`,
+`gg split`, `gg drop`, and `gg rebase`. When it fires, the command exits
+with an `ImmutableTargets` error listing every affected position, short
+SHA, title, and reason (e.g. `merged as !123`, `already in origin/main`).
+
+To bypass it intentionally, pass `-f` / `--force` (long alias
+`--ignore-immutable`). Always surface the listed commits and reasons to the
+user first; the override still emits a warning and proceeds.
+
+`gg land`'s post-merge cleanup bypasses the guard by design, and
+`gg absorb --dry-run` skips it (no rewrite happens). See
+`reference.md` → "Immutable commits" for details.
 
 ## PR/MR body ownership
 
@@ -267,3 +289,4 @@ The `gg-mcp` binary exposes git-gud as an MCP server (stdio transport). Set `GG_
 - **Never call `stack_land` without explicit user approval.**
 - Parse JSON output from `stack_sync`, `stack_land`, `stack_clean`, and `stack_lint`.
 - If `stack_status` shows `behind_base > 0`, run `stack_rebase` before syncing.
+- Rewrite tools (`stack_squash`, `stack_absorb`, `stack_reorder`, `stack_split`, `stack_drop`, `stack_rebase`) will fail with `ImmutableTargets` when a target commit is merged or already on the base branch. Each tool accepts a `force: bool` parameter that maps to `--force` / `--ignore-immutable`. Only set `force: true` after surfacing the affected commits to the user and getting explicit approval. `stack_drop` always passes `--force` because its CLI semantics already include skipping confirmation — confirm with the user before calling.

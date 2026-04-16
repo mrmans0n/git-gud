@@ -28,33 +28,11 @@ pub fn run_with_repo(
 ) -> Result<()> {
     let config = Config::load_with_global(repo.commondir())?;
 
-    // Immutability pre-flight: rebase rewrites every commit in the stack's
-    // parent chain. If any commit is merged or already on the base, refuse
-    // without --force. Only runs when the working directory is clean (we
-    // don't want to trip on stashed / un-loadable state).
-    if let Ok(stack) = Stack::load(repo, &config) {
-        if !stack.is_empty() {
-            let policy = ImmutabilityPolicy::for_stack(repo, &stack)?;
-            let report = policy.check_all(&stack);
-            immutability::guard(report, force)?;
-        }
-    }
-
-    // Auto-stash uncommitted changes if present
-    let needs_stash = !git::is_working_directory_clean(repo)?;
-    if needs_stash {
-        if !json {
-            println!("{}", style("Auto-stashing uncommitted changes...").dim());
-        }
-        git::run_git_command(&["stash", "push", "-m", "gg-rebase-autostash"])?;
-    }
-
-    // Determine target branch
-    // If no target provided, we need to be on a stack to get the base branch
+    // Determine target branch. If no target provided, we need to be on a
+    // stack to get the base branch.
     let target_branch = if let Some(t) = target {
         t
     } else {
-        // No target provided, must be on a stack
         let stack = Stack::load(repo, &config)?;
         stack.base.clone()
     };
@@ -69,7 +47,10 @@ pub fn run_with_repo(
         );
     }
 
-    // Fetch the latest from remote first
+    // Fetch the latest from remote first. We want fresh origin/<base> for
+    // both the immutability guard and the rebase itself — running the guard
+    // against stale refs can silently pass on a newly-merged commit and
+    // then rewrite it after the fetch updates the ref.
     let fetch_result = git::run_git_command(&["fetch", "origin", "--prune"]);
     if let Err(e) = fetch_result {
         if !json {
@@ -105,6 +86,28 @@ pub fn run_with_repo(
     // Return to stack branch if we switched away
     if let Some(ref branch) = current_branch {
         let _ = git::run_git_command(&["checkout", branch]);
+    }
+
+    // Immutability pre-flight: rebase rewrites every commit in the stack's
+    // parent chain. If any commit is merged or already on the (freshly
+    // fetched) base, refuse without --force. Must run *after* the fetch so
+    // origin/<base> reflects the latest remote state.
+    if let Ok(stack) = Stack::load(repo, &config) {
+        if !stack.is_empty() {
+            let policy = ImmutabilityPolicy::for_stack(repo, &stack)?;
+            let report = policy.check_all(&stack);
+            immutability::guard(report, force)?;
+        }
+    }
+
+    // Auto-stash uncommitted changes if present. Done after the guard so we
+    // don't create a stash we'll have to restore if the guard rejects.
+    let needs_stash = !git::is_working_directory_clean(repo)?;
+    if needs_stash {
+        if !json {
+            println!("{}", style("Auto-stashing uncommitted changes...").dim());
+        }
+        git::run_git_command(&["stash", "push", "-m", "gg-rebase-autostash"])?;
     }
 
     // Perform the rebase

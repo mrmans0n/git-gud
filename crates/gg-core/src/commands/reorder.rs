@@ -460,4 +460,82 @@ mod tests {
             ])
         );
     }
+
+    #[test]
+    fn lowest_change_position_returns_none_for_identical_orderings() {
+        let old_order = ["aaa1111", "bbb2222", "ccc3333"];
+        let new_order = vec![
+            "aaa1111".to_string(),
+            "bbb2222".to_string(),
+            "ccc3333".to_string(),
+        ];
+        assert_eq!(lowest_change_position(&old_order, &new_order), None);
+    }
+
+    #[test]
+    fn lowest_change_position_detects_first_element_change() {
+        let old_order = ["aaa1111", "bbb2222", "ccc3333"];
+        let new_order = vec![
+            "ccc3333".to_string(),
+            "bbb2222".to_string(),
+            "aaa1111".to_string(),
+        ];
+        assert_eq!(lowest_change_position(&old_order, &new_order), Some(1));
+    }
+
+    #[test]
+    fn lowest_change_position_detects_middle_element_change() {
+        let old_order = ["aaa1111", "bbb2222", "ccc3333"];
+        let new_order = vec![
+            "aaa1111".to_string(),
+            "ccc3333".to_string(),
+            "bbb2222".to_string(),
+        ];
+        assert_eq!(lowest_change_position(&old_order, &new_order), Some(2));
+    }
+
+    #[test]
+    fn lowest_change_position_detects_last_element_change() {
+        let old_order = ["aaa1111", "bbb2222", "ccc3333"];
+        let new_order = vec![
+            "aaa1111".to_string(),
+            "bbb2222".to_string(),
+            "ddd4444".to_string(),
+        ];
+        assert_eq!(lowest_change_position(&old_order, &new_order), Some(3));
+    }
+
+    #[test]
+    fn lowest_change_position_detects_tail_drop_with_matching_prefix() {
+        // Prefix matches, new_order dropped the tail entry.
+        let old_order = ["aaa1111", "bbb2222", "ccc3333"];
+        let new_order = vec!["aaa1111".to_string(), "bbb2222".to_string()];
+        // First missing position (length + 1 of the shorter list).
+        assert_eq!(lowest_change_position(&old_order, &new_order), Some(3));
+    }
+
+    #[test]
+    fn lowest_change_position_detects_tail_drop_with_earlier_change() {
+        // Prefix differs at position 2 AND the tail is dropped. The earlier
+        // change wins (the helper returns the lowest changed position).
+        let old_order = ["aaa1111", "bbb2222", "ccc3333"];
+        let new_order = vec!["aaa1111".to_string(), "zzz9999".to_string()];
+        assert_eq!(lowest_change_position(&old_order, &new_order), Some(2));
+    }
+
+    #[test]
+    fn lowest_change_position_detects_drop_of_first_entry() {
+        let old_order = ["aaa1111", "bbb2222", "ccc3333"];
+        let new_order = vec!["bbb2222".to_string(), "ccc3333".to_string()];
+        // First differing position is the first slot.
+        assert_eq!(lowest_change_position(&old_order, &new_order), Some(1));
+    }
+
+    #[test]
+    fn lowest_change_position_handles_empty_new_order() {
+        // All commits dropped → "first missing position" is position 1.
+        let old_order = ["aaa1111", "bbb2222"];
+        let new_order: Vec<String> = vec![];
+        assert_eq!(lowest_change_position(&old_order, &new_order), Some(1));
+    }
 }

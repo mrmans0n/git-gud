@@ -46,35 +46,37 @@ pub fn run(json: bool, refresh: bool) -> Result<()> {
 }
 
 fn render_json(stack: &Stack) {
+    print_json(&build_log_response(stack));
+}
+
+/// Build the JSON payload for `gg log --json`.
+///
+/// Pure function: no I/O, no formatting. When HEAD isn't mapped to a stack
+/// entry (e.g. detached HEAD), `current_position` is null and no entry is
+/// flagged as current — we do not fall back to marking the tail as HEAD.
+fn build_log_response(stack: &Stack) -> LogResponse {
     let current_pos_1based = stack.current_position.map(|p| p + 1);
 
     let entries: Vec<StackEntryJson> = stack
         .entries
         .iter()
-        .map(|entry| {
-            let is_current = match current_pos_1based {
-                Some(p) => entry.position == p,
-                None => entry.position == stack.len(),
-            };
-
-            StackEntryJson {
-                position: entry.position,
-                sha: entry.short_sha.clone(),
-                title: entry.title.clone(),
-                gg_id: entry.gg_id.clone(),
-                gg_parent: entry.gg_parent.clone(),
-                pr_number: entry.mr_number,
-                pr_state: entry.mr_state.as_ref().map(pr_state_to_json),
-                approved: entry.approved,
-                ci_status: entry.ci_status.as_ref().map(ci_status_to_json),
-                is_current,
-                in_merge_train: entry.in_merge_train,
-                merge_train_position: entry.merge_train_position,
-            }
+        .map(|entry| StackEntryJson {
+            position: entry.position,
+            sha: entry.short_sha.clone(),
+            title: entry.title.clone(),
+            gg_id: entry.gg_id.clone(),
+            gg_parent: entry.gg_parent.clone(),
+            pr_number: entry.mr_number,
+            pr_state: entry.mr_state.as_ref().map(pr_state_to_json),
+            approved: entry.approved,
+            ci_status: entry.ci_status.as_ref().map(ci_status_to_json),
+            is_current: current_pos_1based == Some(entry.position),
+            in_merge_train: entry.in_merge_train,
+            merge_train_position: entry.merge_train_position,
         })
         .collect();
 
-    print_json(&LogResponse {
+    LogResponse {
         version: OUTPUT_VERSION,
         log: LogJson {
             stack: stack.name.clone(),
@@ -82,7 +84,7 @@ fn render_json(stack: &Stack) {
             current_position: current_pos_1based,
             entries,
         },
-    });
+    }
 }
 
 fn render_text(stack: &Stack, repo: &git2::Repository) {
@@ -119,13 +121,12 @@ fn render_text(stack: &Stack, repo: &git2::Repository) {
         .map(|p| p.pr_number_prefix())
         .unwrap_or("!");
 
-    let current_pos_0based = stack
-        .current_position
-        .unwrap_or(stack.len().saturating_sub(1));
     let total = stack.len();
 
     for (i, entry) in stack.entries.iter().enumerate() {
-        let is_current = i == current_pos_0based;
+        // When HEAD isn't mapped to a stack entry (e.g. detached HEAD),
+        // no entry carries the `<- HEAD` marker.
+        let is_current = stack.current_position == Some(i);
         let glyph = glyph_for_position(i, total);
         let line = format_entry_line(entry, is_current, pr_prefix);
         println!("  {} {}", style(glyph).dim(), line);
@@ -252,6 +253,53 @@ fn should_refresh_mr_info(refresh: bool, json: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stack::StackEntry;
+
+    fn fake_entry(position: usize, title: &str) -> StackEntry {
+        StackEntry {
+            oid: git2::Oid::zero(),
+            short_sha: format!("sha{position}"),
+            title: title.to_string(),
+            gg_id: Some(format!("c-fake{position}")),
+            gg_parent: None,
+            mr_number: None,
+            mr_state: None,
+            approved: false,
+            ci_status: None,
+            position,
+            in_merge_train: false,
+            merge_train_position: None,
+        }
+    }
+
+    fn fake_stack(current_position: Option<usize>) -> Stack {
+        Stack {
+            name: "demo".to_string(),
+            username: "tester".to_string(),
+            base: "main".to_string(),
+            entries: vec![fake_entry(1, "first"), fake_entry(2, "second")],
+            current_position,
+        }
+    }
+
+    #[test]
+    fn json_marks_current_entry_when_head_maps_to_stack() {
+        let response = build_log_response(&fake_stack(Some(1)));
+        assert_eq!(response.log.current_position, Some(2));
+        assert!(!response.log.entries[0].is_current);
+        assert!(response.log.entries[1].is_current);
+    }
+
+    #[test]
+    fn json_flags_no_current_when_head_is_detached() {
+        // Regression: when HEAD is not part of the stack (detached HEAD onto an
+        // unrelated commit) current_position is None — the JSON must mirror
+        // that by reporting `current_position: null` AND `is_current: false`
+        // on every entry, not forcing the tail to be current.
+        let response = build_log_response(&fake_stack(None));
+        assert_eq!(response.log.current_position, None);
+        assert!(response.log.entries.iter().all(|e| !e.is_current));
+    }
 
     #[test]
     fn glyph_middle_entries_use_tee() {

@@ -4,10 +4,11 @@
 //!
 //! 1. Commits whose PR/MR is already merged — rewriting them produces a local
 //!    duplicate of work that is already published, and can confuse later
-//!    `gg sync` / `gg rebase` flows.
-//! 2. Commits already reachable from `origin/<base>` — the same footgun, but
-//!    caught via git ancestry rather than provider state, which also handles
-//!    squash-merges cleanly.
+//!    `gg sync` / `gg rebase` flows. This is the *only* rule that catches
+//!    **squash-merged** PRs, because their merge commit on `origin/<base>`
+//!    has a brand-new SHA that doesn't share ancestry with the local commit.
+//! 2. Commits already reachable from `origin/<base>` — caught via git ancestry
+//!    rather than provider state. Handles plain merges and rebases.
 //!
 //! This module centralises the policy so that every rewrite-style command
 //! (squash, drop, reorder, split, absorb, rebase) applies the same check.
@@ -22,6 +23,10 @@
 //!   be stale; we fall back to the local base if no remote ref exists.
 //! - Results are cached implicitly by resolving the base OID once when the
 //!   policy is constructed from a stack.
+//! - Because `Stack::load` does not refresh provider state, the merged-PR
+//!   rule would otherwise rarely fire. [`refresh_mr_state_for_guard`] is a
+//!   best-effort pre-flight refresh that callers run once per command after
+//!   `Stack::load` to populate `mr_state` for the guard.
 //!
 //! See `docs/src/core-concepts.md` for the user-facing explanation.
 
@@ -29,7 +34,7 @@ use console::style;
 use git2::Repository;
 
 use crate::error::{GgError, Result};
-use crate::provider::PrState;
+use crate::provider::{PrState, Provider};
 use crate::stack::{Stack, StackEntry};
 
 /// Why a specific commit is considered immutable.
@@ -231,6 +236,46 @@ pub fn guard(report: ImmutabilityReport, force: bool) -> Result<()> {
     }
 
     Err(GgError::ImmutableTargets(report.format_for_error()))
+}
+
+/// Best-effort refresh of `mr_state` for every entry that has an `mr_number`,
+/// done once per command invocation immediately before the immutability guard
+/// runs.
+///
+/// `Stack::load` does not call any provider, so without this helper the
+/// merged-PR rule would essentially never fire — and squash-merged commits
+/// (whose merge SHA on `origin/<base>` doesn't share ancestry with the local
+/// commit) would slip past the guard entirely. By proactively populating
+/// `mr_state` here we close that gap for any user with a working provider.
+///
+/// **Best-effort by design:**
+/// - If no provider can be detected (no remote, missing config), this is a
+///   no-op so offline / no-auth users see no behaviour change.
+/// - Errors from individual `get_pr_info` calls are silently swallowed; the
+///   guard then falls back to the base-ancestor rule for that entry. We do
+///   not want a flaky API to block a `gg squash`.
+/// - Only `mr_state` is touched. CI status, approval and merge-train info are
+///   not needed by the guard, so we skip those calls to keep the latency
+///   roughly "1 API call per open PR in the stack".
+///
+/// Cost: O(entries with `mr_number`) network round-trips, executed serially.
+/// For typical stacks (a handful of open PRs) this is well below a second.
+pub fn refresh_mr_state_for_guard(repo: &Repository, stack: &mut Stack) {
+    let Ok(provider) = Provider::detect(repo) else {
+        // No provider configured — offline or non-GitHub/GitLab repo. The
+        // base-ancestor rule remains in effect.
+        return;
+    };
+
+    for entry in &mut stack.entries {
+        if let Some(pr_num) = entry.mr_number {
+            if let Ok(info) = provider.get_pr_info(pr_num) {
+                entry.mr_state = Some(info.state);
+            }
+            // On error: leave mr_state untouched. A missing/closed PR will
+            // simply not trigger the merged-PR rule; base-ancestor still applies.
+        }
+    }
 }
 
 #[cfg(test)]

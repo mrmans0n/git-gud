@@ -33,7 +33,10 @@ pub fn run(options: ReorderOptions) -> Result<()> {
     git::require_clean_working_directory(&repo)?;
 
     // Load stack
-    let stack = Stack::load(&repo, &config)?;
+    let mut stack = Stack::load(&repo, &config)?;
+    // Best-effort refresh of mr_state for the immutability guard (catches
+    // squash-merged PRs that base-ancestor would otherwise miss).
+    immutability::refresh_mr_state_for_guard(&repo, &mut stack);
 
     if stack.len() < 2 {
         println!("{}", style("Need at least 2 commits to reorder.").dim());

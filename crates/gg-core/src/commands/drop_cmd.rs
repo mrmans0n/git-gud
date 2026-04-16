@@ -40,7 +40,10 @@ pub fn run(options: DropOptions) -> Result<()> {
     git::require_clean_working_directory(&repo)?;
 
     // Load stack
-    let stack_obj = Stack::load(&repo, &config)?;
+    let mut stack_obj = Stack::load(&repo, &config)?;
+    // Best-effort refresh of mr_state for the immutability guard (catches
+    // squash-merged PRs that base-ancestor would otherwise miss).
+    immutability::refresh_mr_state_for_guard(&repo, &mut stack_obj);
 
     if stack_obj.is_empty() {
         return Err(GgError::Other("Stack is empty".to_string()));

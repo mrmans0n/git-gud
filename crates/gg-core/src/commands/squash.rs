@@ -80,7 +80,11 @@ pub fn run(all: bool, force: bool) -> Result<()> {
     let config = Config::load_with_global(repo.commondir())?;
 
     // Verify we're on a stack
-    let stack = Stack::load(&repo, &config)?;
+    let mut stack = Stack::load(&repo, &config)?;
+    // Best-effort refresh of mr_state so the immutability guard can catch
+    // squash-merged PRs (their merge SHA isn't on origin/<base>, so the
+    // base-ancestor rule misses them). No-op when offline / no provider.
+    immutability::refresh_mr_state_for_guard(&repo, &mut stack);
 
     // Check if we have changes to squash
     let statuses = repo.statuses(None)?;

@@ -89,7 +89,10 @@ pub fn run(options: SplitOptions) -> Result<()> {
 
     git::require_clean_working_directory(&repo)?;
 
-    let stack = Stack::load(&repo, &config)?;
+    let mut stack = Stack::load(&repo, &config)?;
+    // Best-effort refresh of mr_state for the immutability guard (catches
+    // squash-merged PRs that base-ancestor would otherwise miss).
+    immutability::refresh_mr_state_for_guard(&repo, &mut stack);
 
     // Resolve target commit position (1-indexed)
     let target_pos = match &options.target {

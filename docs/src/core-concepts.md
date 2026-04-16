@@ -65,10 +65,13 @@ Some commits should not be casually rewritten. History-rewriting commands —
 refuse to touch the following by default:
 
 - **Merged PR/MR commits.** If an entry's PR/MR state is `Merged`, rewriting it
-  locally produces a duplicate of something already upstream.
+  locally produces a duplicate of something already upstream. This is the only
+  rule that catches **squash-merged** PRs, because their merge commit on
+  `origin/<base>` has a brand-new SHA that doesn't share ancestry with your
+  local commit.
 - **Base-ancestor commits.** Any commit already reachable from `origin/<base>`
-  (for example, because it was squash-merged) falls in the same bucket. When
-  no `origin/<base>` ref exists, gg falls back to the local base branch.
+  via plain merge or rebase falls in the same bucket. When no `origin/<base>`
+  ref exists, gg falls back to the local base branch.
 
 Running one of those commands on an immutable target prints a clear error like:
 
@@ -85,9 +88,12 @@ scripts see that they are bypassing a safety check.
 
 ### Keeping PR state fresh
 
-Merge-state info is populated from the MR mapping in your config and is
-refreshed by `gg ls --refresh`. In a fresh clone or a long-lived checkout,
-state may be stale; the base-ancestor rule is the backstop — it catches
-squash-merged commits even when `mr_state` hasn't been refreshed. If you
-routinely edit history right after someone else merges your PR, run
-`gg ls --refresh` first.
+Each rewrite command runs a best-effort PR-state refresh against the
+configured provider just before the immutability check, so the merged-PR rule
+fires even when nothing in the session has touched provider state yet. The
+refresh is silent when offline / no auth is configured, in which case the
+base-ancestor rule remains the only protection. Note that base-ancestor does
+**not** catch squash-merges (those produce a new SHA on `origin/<base>`), so
+working offline against a repo that uses squash-merge is the one case where
+you can still rewrite a "merged" commit without `--force`. A working provider
+closes that gap automatically.

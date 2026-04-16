@@ -6,7 +6,9 @@ use std::process::Command;
 
 use git2::Repository;
 
-use gg_core::immutability::{guard, ImmutabilityPolicy, ImmutableReason};
+use gg_core::immutability::{
+    guard, refresh_mr_state_for_guard, ImmutabilityPolicy, ImmutableReason,
+};
 use gg_core::provider::PrState;
 use gg_core::stack::{Stack, StackEntry};
 
@@ -196,6 +198,69 @@ fn guard_error_includes_both_sha_and_reason() {
     let msg = format!("{}", err);
     assert!(msg.contains("merged as !100"));
     assert!(msg.contains("already in origin/main"));
+}
+
+#[test]
+fn squash_merged_commit_fires_guard_via_mr_state_only() {
+    // Reproduces the scenario the merged-PR rule exists for: a PR was
+    // squash-merged upstream, so its merge commit on origin/<base> has a new
+    // SHA that doesn't share ancestry with the local commit. The
+    // base-ancestor rule misses it; only mr_state == Merged catches it.
+    let temp = tempfile::tempdir().unwrap();
+    let (repo, oids, _) = make_linear_stack(&temp, 3, 0);
+    // origin/main is at base — no stack commit is reachable from it.
+
+    // Commit #2 was squash-merged: its PR is Merged but the local SHA isn't
+    // anywhere on origin/main. Without the merged-PR rule, the guard would
+    // happily rewrite it.
+    let stack = build_stack(&oids, &[None, Some(PrState::Merged), None]);
+    let policy = ImmutabilityPolicy::for_stack(&repo, &stack).unwrap();
+    let report = policy.check_all(&stack);
+
+    assert_eq!(
+        report.entries.len(),
+        1,
+        "expected exactly one immutable entry"
+    );
+    let entry = &report.entries[0];
+    assert_eq!(entry.position, 2);
+    assert_eq!(
+        entry.reasons.len(),
+        1,
+        "only the merged-PR reason should fire (base-ancestor misses squash-merge): {:?}",
+        entry.reasons
+    );
+    assert!(matches!(
+        entry.reasons[0],
+        ImmutableReason::MergedPr { number: Some(101) }
+    ));
+
+    // And the guard rejects it without --force.
+    let err = guard(report, false).expect_err("guard should reject squash-merged commit");
+    let msg = format!("{}", err);
+    assert!(msg.contains("merged as !101"), "got: {}", msg);
+}
+
+#[test]
+fn refresh_mr_state_for_guard_is_noop_without_provider() {
+    // No remote configured → Provider::detect fails → helper must be a quiet
+    // no-op (offline / no-auth users see no behaviour change). We rely on the
+    // helper not panicking and not modifying mr_state.
+    let temp = tempfile::tempdir().unwrap();
+    let (repo, oids, _) = make_linear_stack(&temp, 2, 0);
+
+    let mut stack = build_stack(&oids, &[Some(PrState::Open), None]);
+    let original_state = stack.entries[0].mr_state.clone();
+
+    refresh_mr_state_for_guard(&repo, &mut stack);
+
+    // mr_state must be unchanged because no provider could be reached.
+    assert_eq!(
+        stack.entries[0].mr_state, original_state,
+        "helper must not mutate state when no provider is configured"
+    );
+    // And entries without an mr_number must remain untouched too.
+    assert_eq!(stack.entries[1].mr_state, None);
 }
 
 #[test]

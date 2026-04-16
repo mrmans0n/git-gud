@@ -74,7 +74,10 @@ pub fn run(options: AbsorbOptions) -> Result<()> {
     }
 
     // Load stack to get the base
-    let stack = Stack::load(&repo, &gg_config)?;
+    let mut stack = Stack::load(&repo, &gg_config)?;
+    // Best-effort refresh of mr_state for the immutability guard (catches
+    // squash-merged PRs that base-ancestor would otherwise miss).
+    immutability::refresh_mr_state_for_guard(&repo, &mut stack);
 
     if stack.is_empty() {
         return Err(GgError::Other(

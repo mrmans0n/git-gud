@@ -92,8 +92,12 @@ pub fn run_with_repo(
     // parent chain. If any commit is merged or already on the (freshly
     // fetched) base, refuse without --force. Must run *after* the fetch so
     // origin/<base> reflects the latest remote state.
-    if let Ok(stack) = Stack::load(repo, &config) {
+    if let Ok(mut stack) = Stack::load(repo, &config) {
         if !stack.is_empty() {
+            // Best-effort refresh of mr_state so the guard catches
+            // squash-merged PRs (their merge SHA isn't on origin/<base>, so
+            // the base-ancestor rule misses them). No-op when offline.
+            immutability::refresh_mr_state_for_guard(repo, &mut stack);
             let policy = ImmutabilityPolicy::for_stack(repo, &stack)?;
             let report = policy.check_all(&stack);
             immutability::guard(report, force)?;

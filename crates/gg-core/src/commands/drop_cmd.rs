@@ -224,7 +224,13 @@ pub fn run(options: DropOptions) -> Result<()> {
 
     // Finalize the op record with post-mutation refs. Drop is purely
     // local; no remote effects.
-    guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
+    guard.finalize_with_scope(
+        &repo,
+        &config,
+        SnapshotScope::AllUserBranches,
+        vec![],
+        false,
+    )?;
 
     if options.json {
         print_json(&DropResponse {

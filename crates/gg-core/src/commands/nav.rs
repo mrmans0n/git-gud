@@ -27,7 +27,13 @@ where
         SnapshotScope::AllUserBranches,
     )?;
     f(&repo, &config)?;
-    guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)
+    guard.finalize_with_scope(
+        &repo,
+        &config,
+        SnapshotScope::AllUserBranches,
+        vec![],
+        false,
+    )
 }
 
 /// Move to a specific position, entry ID, or SHA

@@ -277,7 +277,13 @@ pub fn run(stack_name: Option<String>, base: Option<String>, use_worktree: bool)
         }
     }
 
-    guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
+    guard.finalize_with_scope(
+        &repo,
+        &config,
+        SnapshotScope::AllUserBranches,
+        vec![],
+        false,
+    )?;
 
     Ok(())
 }

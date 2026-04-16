@@ -52,7 +52,13 @@ pub fn run(options: ReorderOptions) -> Result<()> {
 
     if stack.len() < 2 {
         println!("{}", style("Need at least 2 commits to reorder.").dim());
-        guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
+        guard.finalize_with_scope(
+            &repo,
+            &config,
+            SnapshotScope::AllUserBranches,
+            vec![],
+            false,
+        )?;
         return Ok(());
     }
 
@@ -87,7 +93,13 @@ pub fn run(options: ReorderOptions) -> Result<()> {
 
     if new_order.is_empty() {
         println!("{}", style("No commits in reorder list. Aborting.").dim());
-        guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
+        guard.finalize_with_scope(
+            &repo,
+            &config,
+            SnapshotScope::AllUserBranches,
+            vec![],
+            false,
+        )?;
         return Ok(());
     }
 
@@ -95,7 +107,13 @@ pub fn run(options: ReorderOptions) -> Result<()> {
     let old_order: Vec<&str> = stack.entries.iter().map(|e| e.short_sha.as_str()).collect();
     if new_order.len() == old_order.len() && new_order == old_order {
         println!("{}", style("Order unchanged.").dim());
-        guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
+        guard.finalize_with_scope(
+            &repo,
+            &config,
+            SnapshotScope::AllUserBranches,
+            vec![],
+            false,
+        )?;
         return Ok(());
     }
 
@@ -148,7 +166,13 @@ pub fn run(options: ReorderOptions) -> Result<()> {
         );
     }
 
-    guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
+    guard.finalize_with_scope(
+        &repo,
+        &config,
+        SnapshotScope::AllUserBranches,
+        vec![],
+        false,
+    )?;
 
     Ok(())
 }

@@ -222,7 +222,13 @@ pub fn run(
         } else {
             println!("{}", style("Stack is empty. Nothing to sync.").dim());
         }
-        guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
+        guard.finalize_with_scope(
+            &repo,
+            &config,
+            SnapshotScope::AllUserBranches,
+            vec![],
+            false,
+        )?;
         return Ok(());
     }
 

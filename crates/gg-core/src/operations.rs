@@ -263,7 +263,7 @@ impl OperationStore {
             .into_iter()
             .filter_map(|id| self.load(&id).ok())
             .collect();
-        records.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+        records.sort_by_key(|r| std::cmp::Reverse(r.created_at_ms));
         records.truncate(limit);
         Ok(records)
     }
@@ -279,7 +279,7 @@ impl OperationStore {
             return;
         }
         // Sort oldest-first for pruning.
-        records.sort_by(|a, b| a.created_at_ms.cmp(&b.created_at_ms));
+        records.sort_by_key(|r| r.created_at_ms);
         let excess = records.len() - OPERATION_LOG_CAP;
         let mut pruned = 0;
         for rec in records {
@@ -555,11 +555,7 @@ pub fn list(repo: &Repository, limit: usize) -> Result<Vec<OperationRecord>> {
 
 /// Replay an operation's `refs_before` atop the repo. Consumes nothing from
 /// the log itself; the caller wraps this in a fresh `Undo` record.
-pub fn run_undo(
-    repo: &Repository,
-    _config: &Config,
-    opts: UndoOptions,
-) -> Result<UndoOutcome> {
+pub fn run_undo(repo: &Repository, _config: &Config, opts: UndoOptions) -> Result<UndoOutcome> {
     let gg_dir = crate::git::gg_dir(repo);
     let store = OperationStore::new(&gg_dir);
 
@@ -974,15 +970,14 @@ mod snapshot_tests {
 
     #[test]
     fn all_user_branches_filters_by_username_prefix() {
-        let (_g, repo) =
-            init_repo_with_branches("nacho", &["main", "x/1", "x/2", "other/mine"]);
+        let (_g, repo) = init_repo_with_branches("nacho", &["main", "x/1", "x/2", "other/mine"]);
         let cfg = config_with_username("nacho");
         let snaps = snapshot_refs(&repo, &cfg, SnapshotScope::AllUserBranches).unwrap();
         let names: Vec<&str> = snaps.iter().map(|s| s.name.as_str()).collect();
-        assert!(names.iter().any(|n| *n == "refs/heads/nacho/x/1"));
-        assert!(names.iter().any(|n| *n == "refs/heads/nacho/x/2"));
-        assert!(!names.iter().any(|n| *n == "refs/heads/main"));
-        assert!(!names.iter().any(|n| *n == "refs/heads/other/mine"));
+        assert!(names.contains(&"refs/heads/nacho/x/1"));
+        assert!(names.contains(&"refs/heads/nacho/x/2"));
+        assert!(!names.contains(&"refs/heads/main"));
+        assert!(!names.contains(&"refs/heads/other/mine"));
     }
 
     #[test]

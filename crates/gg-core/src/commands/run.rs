@@ -110,34 +110,19 @@ pub struct RunResult {
 
 /// Run commands on each commit in the stack and print output.
 ///
+/// Top-level CLI entry for `gg run`. In Amend mode this acquires an
+/// operation lock and records the op so `gg undo` can reverse it.
+/// Internal callers (e.g. `gg lint`, `gg sync --lint`) must use
+/// [`execute_raw`] directly — they are already inside a recorded op or
+/// intentionally unrecorded, so they must not acquire the lock again.
+///
 /// Returns `Ok(true)` when all commands passed on all commits,
 /// `Ok(false)` when one or more had failures.
 pub fn execute(options: RunOptions) -> Result<bool> {
     let json = options.json;
     let emit_json_output = options.emit_json_output;
-    let result = execute_raw(options)?;
 
-    if json && emit_json_output {
-        output::print_json(&RunResponse {
-            version: OUTPUT_VERSION,
-            run: RunResultJson {
-                results: result.results,
-                all_passed: result.all_passed,
-            },
-        });
-    }
-
-    Ok(result.all_passed)
-}
-
-/// Execute and return raw results (for `gg lint` to wrap in LintResponse).
-pub fn execute_raw(options: RunOptions) -> Result<RunResult> {
     let repo = git::open_repo()?;
-
-    // Require clean working directory
-    git::require_clean_working_directory(&repo)?;
-
-    // Load stack
     let config = crate::config::Config::load_with_global(repo.commondir())?;
 
     // In Amend mode, `gg run` rewrites commits — acquire an operation lock
@@ -157,24 +142,49 @@ pub fn execute_raw(options: RunOptions) -> Result<RunResult> {
         None
     };
 
-    let result = execute_raw_body(&repo, &config, options);
+    let result = execute_raw(options);
 
     // Finalize only on success. On error the guard is dropped without
     // finalize; the sweep promotes the Pending record to Interrupted on the
     // next lock acquisition.
-    if result.is_ok() {
-        if let Some((_lock, guard)) = recorded {
-            guard.finalize_with_scope(
-                &repo,
-                &config,
-                SnapshotScope::AllUserBranches,
-                vec![],
-                false,
-            )?;
-        }
+    if let (Ok(_), Some((_lock, guard))) = (&result, recorded) {
+        guard.finalize_with_scope(
+            &repo,
+            &config,
+            SnapshotScope::AllUserBranches,
+            vec![],
+            false,
+        )?;
     }
 
-    result
+    let result = result?;
+
+    if json && emit_json_output {
+        output::print_json(&RunResponse {
+            version: OUTPUT_VERSION,
+            run: RunResultJson {
+                results: result.results,
+                all_passed: result.all_passed,
+            },
+        });
+    }
+
+    Ok(result.all_passed)
+}
+
+/// Execute and return raw results (for `gg lint` and `gg sync --lint`
+/// to wrap). Does NOT acquire the operation lock — callers that need
+/// recording must go through [`execute`] instead.
+pub fn execute_raw(options: RunOptions) -> Result<RunResult> {
+    let repo = git::open_repo()?;
+
+    // Require clean working directory
+    git::require_clean_working_directory(&repo)?;
+
+    // Load stack
+    let config = crate::config::Config::load_with_global(repo.commondir())?;
+
+    execute_raw_body(&repo, &config, options)
 }
 
 /// Execute body (without lock/record). Split out so `execute_raw` can manage
@@ -1232,10 +1242,8 @@ fn restore_original_position(
 pub(crate) fn resolve_git_path(cmd: &str, repo: &git2::Repository) -> Option<PathBuf> {
     let remainder = if let Some(rest) = cmd.strip_prefix("./.git/") {
         rest
-    } else if let Some(rest) = cmd.strip_prefix(".git/") {
-        rest
     } else {
-        return None;
+        cmd.strip_prefix(".git/")?
     };
 
     Some(repo.commondir().join(remainder))

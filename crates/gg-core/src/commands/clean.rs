@@ -31,7 +31,13 @@ pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
 
     run_for_stack_with_repo(&repo, stack_name, force)?;
 
-    guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)
+    guard.finalize_with_scope(
+        &repo,
+        &config,
+        SnapshotScope::AllUserBranches,
+        vec![],
+        false,
+    )
 }
 
 /// Run clean for a stack with an already-open repository (no lock acquisition)
@@ -212,7 +218,13 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
         } else {
             println!("{}", style("No stacks to clean.").dim());
         }
-        guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
+        guard.finalize_with_scope(
+            &repo,
+            &config,
+            SnapshotScope::AllUserBranches,
+            vec![],
+            false,
+        )?;
         return Ok(());
     }
 
@@ -390,7 +402,13 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
         println!("{}", style("No stacks to clean.").dim());
     }
 
-    guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
+    guard.finalize_with_scope(
+        &repo,
+        &config,
+        SnapshotScope::AllUserBranches,
+        vec![],
+        false,
+    )?;
 
     Ok(())
 }

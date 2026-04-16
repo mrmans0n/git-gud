@@ -97,7 +97,13 @@ pub fn run(all: bool, force: bool) -> Result<()> {
     let statuses = repo.statuses(None)?;
     if statuses.is_empty() {
         println!("{}", style("No changes to squash.").dim());
-        guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
+        guard.finalize_with_scope(
+            &repo,
+            &config,
+            SnapshotScope::AllUserBranches,
+            vec![],
+            false,
+        )?;
         return Ok(());
     }
 
@@ -361,7 +367,13 @@ pub fn run(all: bool, force: bool) -> Result<()> {
     }
 
     // Finalize op record — purely local mutation.
-    guard.finalize_with_scope(&repo, &config, SnapshotScope::AllUserBranches, vec![], false)?;
+    guard.finalize_with_scope(
+        &repo,
+        &config,
+        SnapshotScope::AllUserBranches,
+        vec![],
+        false,
+    )?;
 
     Ok(())
 }

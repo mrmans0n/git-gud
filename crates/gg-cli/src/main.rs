@@ -133,9 +133,15 @@ enum Commands {
     Drop {
         /// Commits to drop: position (1-indexed), short SHA, or GG-ID
         targets: Vec<String>,
-        /// Skip confirmation prompt and override the immutability check
-        #[arg(short, long, alias = "ignore-immutable")]
+        /// Override the immutability check and rewrite merged/base commits
+        /// anyway. Implies `--yes`.
+        #[arg(short = 'f', long = "force", alias = "ignore-immutable")]
         force: bool,
+        /// Skip the confirmation prompt without bypassing the immutability
+        /// guard. Use this for non-interactive callers that still want
+        /// merged/base commits protected.
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -450,11 +456,13 @@ fn main() {
         Some(Commands::Drop {
             targets,
             force,
+            yes,
             json,
         }) => (
             gg_core::commands::drop_cmd::run(gg_core::commands::drop_cmd::DropOptions {
                 targets,
                 force,
+                yes,
                 json,
             }),
             json,

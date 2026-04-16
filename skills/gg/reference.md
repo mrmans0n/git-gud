@@ -124,7 +124,8 @@ Reorder and/or drop stack entries. Opens an interactive TUI by default where you
 #### `gg drop <TARGET>...` *(alias: `gg abandon`)*
 Remove one or more commits from the stack. Targets can be positions (1-indexed), short SHAs, or GG-IDs.
 
-- `-f, --force` (alias: `--ignore-immutable`) — skip confirmation **and** bypass the [immutability guard](#immutable-commits)
+- `-y, --yes` — skip the confirmation prompt without bypassing the [immutability guard](#immutable-commits). Use this for non-interactive callers (CI, MCP) that still want merged/base commits protected.
+- `-f, --force` (alias: `--ignore-immutable`) — bypass the [immutability guard](#immutable-commits). Implies `--yes`.
 - `--json`
 
 #### `gg reorder [OPTIONS]`
@@ -587,8 +588,10 @@ Run lint on stack commits.
 
 #### `stack_drop`
 Remove commits from the stack.
-- **Params:** `targets` (string[], required) — commits to drop: positions (1-indexed), short SHAs, or GG-IDs
-- **Notes:** Always uses `--force`, which skips interactive confirmation **and** bypasses the [immutability guard](#immutable-commits). Agent must confirm with user before calling, and must surface any merged/base-ancestor commits before dropping them.
+- **Params:**
+  - `targets` (string[], required) — commits to drop: positions (1-indexed), short SHAs, or GG-IDs
+  - `force` (bool, optional, default `false`) — bypass the [immutability guard](#immutable-commits) for merged/base-ancestor commits. When `false`, drops still succeed for regular commits; merged/base commits are refused with `ImmutableTargets`.
+- **Notes:** Always passes `--yes` to skip the interactive prompt (MCP is non-interactive). `force` is a separate opt-in so MCP drop does not silently rewrite already-published commits. Agent must confirm any drop with the user beforehand, and must surface the merged/base-ancestor reasons before retrying with `force: true`.
 - **Returns:** JSON with dropped commits and remaining count
 
 #### `stack_split`

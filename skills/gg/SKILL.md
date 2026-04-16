@@ -128,7 +128,7 @@ gg land -a -c --json
 - Amend current commit: `gg sc` / `gg sc -a`
 - Auto-distribute staged hunks: `gg absorb -s`
 - Split a commit into two: `gg split` — opens a two-panel TUI for hunk selection (files on the left, colored diff on the right), followed by inline commit message inputs for both the new and remainder commits. Use `--no-tui` to fall back to sequential `git add -p` style prompts. The `-m` flag bypasses the TUI message input for the new commit. The `--no-edit` flag skips the remainder message input. Pass `FILES...` to auto-select all hunks from those files (e.g., `gg split -c 3 file1.rs file2.rs`).
-- Drop commits from stack: `gg drop <position|sha|gg-id>... --force` (alias: `gg abandon`)
+- Drop commits from stack: `gg drop <position|sha|gg-id>... -y` (alias: `gg abandon`). Use `-y` / `--yes` to skip confirmation; add `-f` / `--force` only to bypass the immutability guard for merged/base-ancestor commits.
 - Reorder/drop stack (TUI): `gg reorder` (or `gg arrange`) — opens interactive TUI for visual reordering and dropping commits. Press `d` to mark a commit for dropping. Use `--no-tui` to fall back to text editor (delete lines to drop).
 - Reorder stack (direct): `gg reorder -o "3,1,2"`
 - Sync subset: `gg sync -u <position|gg-id|sha> --json`
@@ -275,7 +275,7 @@ The `gg-mcp` binary exposes git-gud as an MCP server (stdio transport). Set `GG_
 - `stack_rebase` — rebase onto latest base
 - `stack_squash` / `stack_absorb` — amend commits
 - `stack_reconcile` — fix out-of-sync remote branches
-- `stack_drop` — remove commits from the stack (always uses `--force`; agent confirms with user)
+- `stack_drop` — remove commits from the stack (always passes `--yes`; set `force: true` only to bypass the immutability guard for merged/base commits; agent confirms with user before any drop)
 - `stack_split` — split a commit using interactive hunk selection (TUI opens by default; pass FILES... to auto-select all hunks for those files)
 - `stack_reorder` — reorder commits with explicit order string (no TUI)
 
@@ -289,4 +289,4 @@ The `gg-mcp` binary exposes git-gud as an MCP server (stdio transport). Set `GG_
 - **Never call `stack_land` without explicit user approval.**
 - Parse JSON output from `stack_sync`, `stack_land`, `stack_clean`, and `stack_lint`.
 - If `stack_status` shows `behind_base > 0`, run `stack_rebase` before syncing.
-- Rewrite tools (`stack_squash`, `stack_absorb`, `stack_reorder`, `stack_split`, `stack_drop`, `stack_rebase`) will fail with `ImmutableTargets` when a target commit is merged or already on the base branch. Each tool accepts a `force: bool` parameter that maps to `--force` / `--ignore-immutable`. Only set `force: true` after surfacing the affected commits to the user and getting explicit approval. `stack_drop` always passes `--force` because its CLI semantics already include skipping confirmation — confirm with the user before calling.
+- Rewrite tools (`stack_squash`, `stack_absorb`, `stack_reorder`, `stack_split`, `stack_drop`, `stack_rebase`) will fail with `ImmutableTargets` when a target commit is merged or already on the base branch. Each tool accepts a `force: bool` parameter that maps to `--force` / `--ignore-immutable`. Only set `force: true` after surfacing the affected commits to the user and getting explicit approval. `stack_drop` always passes `--yes` (MCP is non-interactive), but its `force: bool` param is separate from the confirmation-skip — leave it `false` unless the user has approved rewriting merged/base commits.

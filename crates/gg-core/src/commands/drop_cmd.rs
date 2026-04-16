@@ -17,8 +17,13 @@ use crate::stack::{self, Stack};
 pub struct DropOptions {
     /// Targets to drop: position (1-indexed), short SHA, or GG-ID
     pub targets: Vec<String>,
-    /// Skip confirmation prompt
+    /// Override the immutability check for merged/base-ancestor commits.
+    /// Implies `yes` (skipping confirmation is a superset of bypassing the guard).
     pub force: bool,
+    /// Skip the interactive confirmation prompt without bypassing the
+    /// immutability guard. Use this for non-interactive callers (CI, MCP)
+    /// that do not want to silently rewrite merged commits.
+    pub yes: bool,
     /// Output as JSON
     pub json: bool,
 }
@@ -91,8 +96,10 @@ pub fn run(options: DropOptions) -> Result<()> {
         });
     }
 
-    // Show what will be dropped
-    if !options.json && !options.force {
+    // Show what will be dropped. Skip the prompt when the caller has opted
+    // out (`--yes`), is bypassing immutability (`--force`, which implies
+    // yes), or is running in JSON mode.
+    if !options.json && !options.force && !options.yes {
         println!(
             "{} Will drop {} commit(s):",
             style("Drop").red().bold(),
@@ -224,6 +231,7 @@ mod tests {
         let opts = DropOptions::default();
         assert!(opts.targets.is_empty());
         assert!(!opts.force);
+        assert!(!opts.yes);
         assert!(!opts.json);
     }
 
@@ -232,9 +240,24 @@ mod tests {
         let opts = DropOptions {
             targets: vec!["1".to_string(), "c-abc1234".to_string()],
             force: true,
+            yes: false,
             json: false,
         };
         assert_eq!(opts.targets.len(), 2);
         assert!(opts.force);
+    }
+
+    #[test]
+    fn test_drop_options_yes_without_force() {
+        // Non-interactive callers (CI, MCP) should be able to skip the
+        // prompt without silently bypassing the immutability guard.
+        let opts = DropOptions {
+            targets: vec!["2".to_string()],
+            force: false,
+            yes: true,
+            json: true,
+        };
+        assert!(!opts.force);
+        assert!(opts.yes);
     }
 }

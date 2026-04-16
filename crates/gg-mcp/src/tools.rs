@@ -270,6 +270,13 @@ pub struct StackDropParams {
     /// Commits to drop: position (1-indexed), short SHA, or GG-ID
     #[serde(default)]
     pub targets: Vec<String>,
+    /// Bypass the immutability guard and drop merged/base-ancestor commits
+    /// anyway. Defaults to false so the MCP tool does not silently rewrite
+    /// already-published history. The confirmation prompt is always skipped
+    /// (MCP is non-interactive); only set this when the user has explicitly
+    /// approved rewriting immutable commits.
+    #[serde(default)]
+    pub force: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -817,7 +824,7 @@ impl GgMcpServer {
 
     /// Drop (remove) commits from the stack.
     #[tool(
-        description = "Remove commits from the stack. Targets can be positions (1-indexed), short SHAs, or GG-IDs. Always uses --force (agent confirms with user). Returns JSON with dropped commits."
+        description = "Remove commits from the stack. Targets can be positions (1-indexed), short SHAs, or GG-IDs. Always passes --yes (MCP is non-interactive); set `force: true` only to bypass the immutability guard for merged/base-ancestor commits. Returns JSON with dropped commits."
     )]
     fn stack_drop(
         &self,
@@ -826,11 +833,15 @@ impl GgMcpServer {
         if params.targets.is_empty() {
             return Err("At least one target is required".to_string());
         }
-        let mut args = vec![
-            "drop".to_string(),
-            "--force".to_string(),
-            "--json".to_string(),
-        ];
+        // Always pass `--yes` to skip the interactive prompt. Only add
+        // `--force` when the caller has explicitly opted into rewriting
+        // merged/base-ancestor commits — otherwise the immutability guard
+        // keeps already-published history safe.
+        let mut args = vec!["drop".to_string(), "--yes".to_string()];
+        if params.force {
+            args.push("--force".to_string());
+        }
+        args.push("--json".to_string());
         args.extend(params.targets);
         run_gg_command(&args)
     }
@@ -1054,6 +1065,9 @@ mod tests {
         // Empty targets array should deserialize
         let params: StackDropParams = serde_json::from_str("{}").unwrap();
         assert!(params.targets.is_empty());
+        // force must default to false so MCP drop does not silently bypass
+        // the immutability guard for merged/base commits.
+        assert!(!params.force);
     }
 
     #[test]
@@ -1064,6 +1078,14 @@ mod tests {
         assert_eq!(params.targets[0], "1");
         assert_eq!(params.targets[1], "c-abc1234");
         assert_eq!(params.targets[2], "abc1234");
+        assert!(!params.force);
+    }
+
+    #[test]
+    fn test_drop_params_with_force() {
+        let params: StackDropParams =
+            serde_json::from_str(r#"{"targets": ["1"], "force": true}"#).unwrap();
+        assert!(params.force);
     }
 
     #[test]
@@ -1100,7 +1122,10 @@ mod tests {
     #[test]
     fn test_stack_drop_requires_targets() {
         let server = GgMcpServer::new();
-        let params = StackDropParams { targets: vec![] };
+        let params = StackDropParams {
+            targets: vec![],
+            force: false,
+        };
         let result = server.stack_drop(Parameters(params));
         assert!(result.is_err());
         assert_eq!(

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Immutability guard for history-rewriting commands: `gg sc`, `gg drop`,
+  `gg reorder`/`gg arrange`, `gg split`, `gg absorb`, and `gg rebase` now
+  refuse by default to rewrite commits whose PR/MR is already merged or which
+  are already reachable from `origin/<base>`. A new `-f, --force` flag (alias
+  `--ignore-immutable`) bypasses the check for each of these commands.
+
+### Changed
+- `gg drop --force` now *also* overrides the immutability check, in addition
+  to skipping the existing confirmation prompt. Scripts that previously
+  relied on `--force` to silently rewrite merged commits will continue to
+  succeed; interactive users get a stronger safety net before they opt in.
+
 ## [0.8.3] - 2026-04-16
 
 ### Added

@@ -66,7 +66,10 @@ fn maybe_rebase_if_base_is_behind(
                 prs_label
             );
         }
-        crate::commands::rebase::run_with_repo(repo, None, json)?;
+        // Internal auto-rebase during sync: the user hasn't been asked to
+        // --force, so respect the immutability guard rather than silently
+        // bypassing it.
+        crate::commands::rebase::run_with_repo(repo, None, json, false)?;
         return Ok(true);
     }
 
@@ -91,7 +94,7 @@ fn maybe_rebase_if_base_is_behind(
         .unwrap_or(true);
 
     if should_rebase {
-        crate::commands::rebase::run_with_repo(repo, None, json)?;
+        crate::commands::rebase::run_with_repo(repo, None, json, false)?;
         return Ok(true);
     }
 

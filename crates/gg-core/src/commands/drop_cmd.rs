@@ -8,6 +8,7 @@ use dialoguer::Confirm;
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
+use crate::immutability::{self, ImmutabilityPolicy};
 use crate::output::{print_json, DropResponse, DropResultJson, DroppedEntryJson, OUTPUT_VERSION};
 use crate::stack::{self, Stack};
 
@@ -16,8 +17,13 @@ use crate::stack::{self, Stack};
 pub struct DropOptions {
     /// Targets to drop: position (1-indexed), short SHA, or GG-ID
     pub targets: Vec<String>,
-    /// Skip confirmation prompt
+    /// Override the immutability check for merged/base-ancestor commits.
+    /// Implies `yes` (skipping confirmation is a superset of bypassing the guard).
     pub force: bool,
+    /// Skip the interactive confirmation prompt without bypassing the
+    /// immutability guard. Use this for non-interactive callers (CI, MCP)
+    /// that do not want to silently rewrite merged commits.
+    pub yes: bool,
     /// Output as JSON
     pub json: bool,
 }
@@ -34,7 +40,10 @@ pub fn run(options: DropOptions) -> Result<()> {
     git::require_clean_working_directory(&repo)?;
 
     // Load stack
-    let stack_obj = Stack::load(&repo, &config)?;
+    let mut stack_obj = Stack::load(&repo, &config)?;
+    // Best-effort refresh of mr_state for the immutability guard (catches
+    // squash-merged PRs that base-ancestor would otherwise miss).
+    immutability::refresh_mr_state_for_guard(&repo, &mut stack_obj);
 
     if stack_obj.is_empty() {
         return Err(GgError::Other("Stack is empty".to_string()));
@@ -63,6 +72,20 @@ pub fn run(options: DropOptions) -> Result<()> {
         ));
     }
 
+    // Immutability pre-flight: dropping a commit rewrites the stack from the
+    // lowest dropped position upward (parents change for every kept commit
+    // above). Check the dropped positions themselves and every position above
+    // the lowest drop.
+    if let Some(&min_drop) = drop_positions.iter().min() {
+        let mut targets: Vec<usize> = drop_positions.clone();
+        for pos in (min_drop + 1)..=stack_obj.len() {
+            targets.push(pos);
+        }
+        let policy = ImmutabilityPolicy::for_stack(&repo, &stack_obj)?;
+        let report = policy.check_positions(&stack_obj, &targets);
+        immutability::guard(report, options.force)?;
+    }
+
     // Build list of entries to drop for display and JSON
     let mut dropped_entries: Vec<DroppedEntryJson> = Vec::new();
     for &pos in &drop_positions {
@@ -76,8 +99,10 @@ pub fn run(options: DropOptions) -> Result<()> {
         });
     }
 
-    // Show what will be dropped
-    if !options.json && !options.force {
+    // Show what will be dropped. Skip the prompt when the caller has opted
+    // out (`--yes`), is bypassing immutability (`--force`, which implies
+    // yes), or is running in JSON mode.
+    if !options.json && !options.force && !options.yes {
         println!(
             "{} Will drop {} commit(s):",
             style("Drop").red().bold(),
@@ -209,6 +234,7 @@ mod tests {
         let opts = DropOptions::default();
         assert!(opts.targets.is_empty());
         assert!(!opts.force);
+        assert!(!opts.yes);
         assert!(!opts.json);
     }
 
@@ -217,9 +243,24 @@ mod tests {
         let opts = DropOptions {
             targets: vec!["1".to_string(), "c-abc1234".to_string()],
             force: true,
+            yes: false,
             json: false,
         };
         assert_eq!(opts.targets.len(), 2);
         assert!(opts.force);
+    }
+
+    #[test]
+    fn test_drop_options_yes_without_force() {
+        // Non-interactive callers (CI, MCP) should be able to skip the
+        // prompt without silently bypassing the immutability guard.
+        let opts = DropOptions {
+            targets: vec!["2".to_string()],
+            force: false,
+            yes: true,
+            json: true,
+        };
+        assert!(!opts.force);
+        assert!(opts.yes);
     }
 }

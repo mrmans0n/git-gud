@@ -134,6 +134,10 @@ enum Commands {
         /// Squash all changes (staged and unstaged)
         #[arg(short, long)]
         all: bool,
+
+        /// Override the immutability check and rewrite merged/base commits anyway
+        #[arg(short = 'f', long = "force", alias = "ignore-immutable")]
+        force: bool,
     },
 
     /// Drop (remove) commits from the stack
@@ -141,9 +145,15 @@ enum Commands {
     Drop {
         /// Commits to drop: position (1-indexed), short SHA, or GG-ID
         targets: Vec<String>,
-        /// Skip confirmation prompt
-        #[arg(short, long)]
+        /// Override the immutability check and rewrite merged/base commits
+        /// anyway. Implies `--yes`.
+        #[arg(short = 'f', long = "force", alias = "ignore-immutable")]
         force: bool,
+        /// Skip the confirmation prompt without bypassing the immutability
+        /// guard. Use this for non-interactive callers that still want
+        /// merged/base commits protected.
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -160,6 +170,10 @@ enum Commands {
         /// Disable TUI, use text editor instead
         #[arg(long)]
         no_tui: bool,
+
+        /// Override the immutability check and rewrite merged/base commits anyway
+        #[arg(short = 'f', long = "force", alias = "ignore-immutable")]
+        force: bool,
     },
 
     /// Split a commit into two
@@ -180,6 +194,10 @@ enum Commands {
         /// Disable TUI, use sequential prompt instead
         #[arg(long)]
         no_tui: bool,
+
+        /// Override the immutability check and rewrite merged/base commits anyway
+        #[arg(short = 'f', long = "force", alias = "ignore-immutable")]
+        force: bool,
 
         /// Files to include in the new commit
         #[arg(value_name = "FILES")]
@@ -243,6 +261,10 @@ enum Commands {
     Rebase {
         /// Target branch to rebase onto (default: base branch)
         target: Option<String>,
+
+        /// Override the immutability check and rewrite merged/base commits anyway
+        #[arg(short = 'f', long = "force", alias = "ignore-immutable")]
+        force: bool,
     },
 
     /// Continue a paused operation (rebase, etc.)
@@ -331,6 +353,10 @@ enum Commands {
         /// Squash fixup commits directly instead of creating fixup! commits for later rebase.
         #[arg(short = 's', long)]
         squash: bool,
+
+        /// Override the immutability check and rewrite merged/base commits anyway
+        #[arg(short = 'f', long = "force", alias = "ignore-immutable")]
+        force: bool,
     },
 
     /// Generate shell completions
@@ -352,6 +378,10 @@ enum Commands {
         /// Disable TUI, use text editor instead
         #[arg(long)]
         no_tui: bool,
+
+        /// Override the immutability check and rewrite merged/base commits anyway
+        #[arg(short = 'f', long = "force", alias = "ignore-immutable")]
+        force: bool,
     },
 
     /// Reconcile stacks that were pushed without using `gg sync`
@@ -433,23 +463,32 @@ fn main() {
         Some(Commands::Last) => (gg_core::commands::nav::last(), false),
         Some(Commands::Prev) => (gg_core::commands::nav::prev(), false),
         Some(Commands::Next) => (gg_core::commands::nav::next(), false),
-        Some(Commands::Squash { all }) => (gg_core::commands::squash::run(all), false),
+        Some(Commands::Squash { all, force }) => {
+            (gg_core::commands::squash::run(all, force), false)
+        }
         Some(Commands::Drop {
             targets,
             force,
+            yes,
             json,
         }) => (
             gg_core::commands::drop_cmd::run(gg_core::commands::drop_cmd::DropOptions {
                 targets,
                 force,
+                yes,
                 json,
             }),
             json,
         ),
-        Some(Commands::Reorder { order, no_tui }) => (
+        Some(Commands::Reorder {
+            order,
+            no_tui,
+            force,
+        }) => (
             gg_core::commands::reorder::run(gg_core::commands::reorder::ReorderOptions {
                 order,
                 no_tui,
+                force,
             }),
             false,
         ),
@@ -458,6 +497,7 @@ fn main() {
             message,
             no_edit,
             no_tui,
+            force,
             files,
         }) => (
             gg_core::commands::split::run(gg_core::commands::split::SplitOptions {
@@ -466,6 +506,7 @@ fn main() {
                 message,
                 no_edit,
                 no_tui,
+                force,
             }),
             false,
         ),
@@ -512,7 +553,9 @@ fn main() {
             )
         }
         Some(Commands::Clean { all, json }) => (gg_core::commands::clean::run(all, json), json),
-        Some(Commands::Rebase { target }) => (gg_core::commands::rebase::run(target), false),
+        Some(Commands::Rebase { target, force }) => {
+            (gg_core::commands::rebase::run(target, force), false)
+        }
         Some(Commands::Continue) => (gg_core::commands::rebase::continue_rebase(), false),
         Some(Commands::Abort) => (gg_core::commands::rebase::abort_rebase(), false),
         Some(Commands::Lint { until, json }) => (
@@ -564,6 +607,7 @@ fn main() {
             one_fixup_per_commit,
             no_limit,
             squash,
+            force,
         }) => (
             gg_core::commands::absorb::run(gg_core::commands::absorb::AbsorbOptions {
                 dry_run,
@@ -572,13 +616,19 @@ fn main() {
                 one_fixup_per_commit,
                 no_limit,
                 squash,
+                force,
             }),
             false,
         ),
-        Some(Commands::Arrange { order, no_tui }) => (
+        Some(Commands::Arrange {
+            order,
+            no_tui,
+            force,
+        }) => (
             gg_core::commands::reorder::run(gg_core::commands::reorder::ReorderOptions {
                 order,
                 no_tui,
+                force,
             }),
             false,
         ),

@@ -114,6 +114,7 @@ Move around stack entries.
 Squash changes into current stack commit.
 
 - `-a, --all`
+- `-f, --force` (alias: `--ignore-immutable`) — bypass the [immutability guard](#immutable-commits)
 
 #### `gg absorb [OPTIONS]`
 Auto-distribute staged changes to matching commits.
@@ -124,13 +125,15 @@ Auto-distribute staged changes to matching commits.
 - `--one-fixup-per-commit`
 - `-n, --no-limit`
 - `-s, --squash`
+- `-f, --force` (alias: `--ignore-immutable`) — bypass the [immutability guard](#immutable-commits)
 
 #### `gg reorder [OPTIONS]` (alias: `gg arrange`)
 Reorder and/or drop stack entries. Opens an interactive TUI by default where you can move commits with `J`/`K` (or Shift+arrows) and mark commits for dropping with `d`.
 #### `gg drop <TARGET>...` *(alias: `gg abandon`)*
 Remove one or more commits from the stack. Targets can be positions (1-indexed), short SHAs, or GG-IDs.
 
-- `-f, --force` — skip confirmation
+- `-y, --yes` — skip the confirmation prompt without bypassing the [immutability guard](#immutable-commits). Use this for non-interactive callers (CI, MCP) that still want merged/base commits protected.
+- `-f, --force` (alias: `--ignore-immutable`) — bypass the [immutability guard](#immutable-commits). Implies `--yes`.
 - `--json`
 
 #### `gg reorder [OPTIONS]`
@@ -138,6 +141,7 @@ Reorder stack entries. Opens an interactive TUI by default where you can move co
 
 - `-o, --order <ORDER>` — reorder only (no dropping via CLI flag)
 - `--no-tui` — disable TUI, use text editor instead (delete lines to drop commits)
+- `-f, --force` (alias: `--ignore-immutable`) — bypass the [immutability guard](#immutable-commits)
 
 #### `gg split [OPTIONS] [FILES...]`
 Split a commit into two. Selected files/hunks become a new commit inserted before the original.
@@ -146,10 +150,13 @@ Split a commit into two. Selected files/hunks become a new commit inserted befor
 - `-m, --message <MSG>` — message for the new commit
 - `--no-edit` — keep original message for remainder, don't prompt
 - `--no-tui` — disable TUI, use sequential prompt instead (legacy `git add -p` style)
+- `-f, --force` (alias: `--ignore-immutable`) — bypass the [immutability guard](#immutable-commits)
 - `FILES...` — auto-select all hunks from these files (opens interactive hunk picker if omitted)
 
 #### `gg rebase [TARGET]`
 Rebase current stack onto base or explicit target.
+
+- `-f, --force` (alias: `--ignore-immutable`) — bypass the [immutability guard](#immutable-commits)
 
 ### Utilities
 
@@ -475,6 +482,44 @@ Field types for `entries`:
 
 ---
 
+## Immutable commits
+
+gg refuses by default to let rewrite-style commands (`gg sc`, `gg absorb`,
+`gg reorder`/`gg arrange`, `gg split`, `gg drop`, `gg rebase`) touch commits
+that look "already published". A commit is considered immutable when any of
+these is true:
+
+- **Merged PR/MR** — the entry's tracked PR/MR state is `merged`.
+- **Base ancestor** — the commit is already reachable from `origin/<base>`
+  (falling back to the local base branch when the remote ref isn't
+  available). Covers anything already landed on the trunk.
+
+When the guard fires, the command exits with an `ImmutableTargets` error
+listing each affected position, short SHA, title, and reason, for example:
+
+```
+error: cannot rewrite immutable commits (use --force / --ignore-immutable to override):
+  #2  abc1234  Fix typo in parser          (merged as !123)
+  #3  def5678  Bump dependency             (already in origin/main)
+```
+
+To override intentionally, pass `-f` / `--force` (or the longer alias
+`--ignore-immutable`) to the command. The override emits a warning listing
+what is being rewritten and then proceeds.
+
+Notes for agents:
+
+- Before offering `--force`, surface the guard output to the user and get
+  explicit confirmation — bypassing is a footgun.
+- `gg rebase` and `gg sync`'s internal auto-rebase only consider a commit a
+  base ancestor **after** the remote ref is fetched, so the guard reflects
+  freshly-updated state rather than stale local refs.
+- `gg sync`'s other paths (push, PR create/update) are not guarded; only
+  history-rewriting commands are.
+- `gg land` performs a post-merge cleanup rebase with the guard
+  intentionally bypassed (the commits it touches are by definition just
+  merged).
+
 ## Operational guardrails for agents
 
 - Never run `gg land` without explicit user approval.
@@ -482,6 +527,7 @@ Field types for `entries`:
 - Always parse `--json` output, do not scrape text.
 - If `gg sync --json` includes warnings about stale base, run `gg rebase`.
 - For GitLab merge trains, monitor `in_merge_train` and `merge_train_position` in `gg ls --json`.
+- If a rewrite command fails with `ImmutableTargets`, explain to the user which commits are immutable and why before offering `--force`.
 
 ---
 
@@ -557,15 +603,15 @@ Clean up merged stacks.
 
 #### `stack_rebase`
 Rebase stack onto latest base.
-- **Params:** `target` (string, optional)
+- **Params:** `target` (string, optional), `force` (bool, default false) — bypass the [immutability guard](#immutable-commits)
 
 #### `stack_squash`
 Squash staged changes into current commit.
-- **Params:** `all` (bool)
+- **Params:** `all` (bool), `force` (bool, default false) — bypass the [immutability guard](#immutable-commits)
 
 #### `stack_absorb`
 Auto-absorb staged changes into correct commits.
-- **Params:** `dry_run` (bool), `and_rebase` (bool), `whole_file` (bool), `one_fixup_per_commit` (bool), `squash` (bool)
+- **Params:** `dry_run` (bool), `and_rebase` (bool), `whole_file` (bool), `one_fixup_per_commit` (bool), `squash` (bool), `force` (bool, default false) — bypass the [immutability guard](#immutable-commits)
 
 #### `stack_reconcile`
 Reconcile out-of-sync remote branches.
@@ -586,8 +632,10 @@ Run lint on stack commits.
 
 #### `stack_drop`
 Remove commits from the stack.
-- **Params:** `targets` (string[], required) — commits to drop: positions (1-indexed), short SHAs, or GG-IDs
-- **Notes:** Always uses `--force` (no interactive confirmation). Agent should confirm with user before calling.
+- **Params:**
+  - `targets` (string[], required) — commits to drop: positions (1-indexed), short SHAs, or GG-IDs
+  - `force` (bool, optional, default `false`) — bypass the [immutability guard](#immutable-commits) for merged/base-ancestor commits. When `false`, drops still succeed for regular commits; merged/base commits are refused with `ImmutableTargets`.
+- **Notes:** Always passes `--yes` to skip the interactive prompt (MCP is non-interactive). `force` is a separate opt-in so MCP drop does not silently rewrite already-published commits. Agent must confirm any drop with the user beforehand, and must surface the merged/base-ancestor reasons before retrying with `force: true`.
 - **Returns:** JSON with dropped commits and remaining count
 
 #### `stack_split`
@@ -597,11 +645,14 @@ Split a commit by moving specified files to a new commit.
   - `files` (string[], required) — files to include in the new commit
   - `message` (string, optional) — message for the new commit
   - `no_edit` (bool, default false) — skip prompt for remainder commit message
+  - `force` (bool, default false) — bypass the [immutability guard](#immutable-commits)
 - **Notes:** File-level only (`--no-tui` implicit). Hunk-level selection not available via MCP.
 - **Returns:** Result of the split operation
 
 #### `stack_reorder`
 Reorder commits in the stack.
-- **Params:** `order` (string, required) — new order as positions (1-indexed), e.g., "3,1,2" or "3 1 2". Position 1 = bottom (closest to base).
+- **Params:**
+  - `order` (string, required) — new order as positions (1-indexed), e.g., "3,1,2" or "3 1 2". Position 1 = bottom (closest to base).
+  - `force` (bool, default false) — bypass the [immutability guard](#immutable-commits)
 - **Notes:** Direct mode only (`--no-tui` implicit). No interactive TUI via MCP.
 - **Returns:** Result of the reorder operation

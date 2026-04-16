@@ -8,6 +8,14 @@ gg rebase [TARGET]
 
 - If `TARGET` is omitted, git-gud uses the stack base branch.
 
+## Options
+
+- `-f, --force` (alias `--ignore-immutable`): Override the immutability guard.
+  Rebase rewrites the parent of every commit in the stack; if any commit is
+  merged or already reachable from `origin/<base>`, gg refuses by default to
+  avoid producing local duplicates of upstream history. See
+  [Core concepts · Immutable commits](../core-concepts.md#immutable-commits).
+
 ## Examples
 
 ```bash

@@ -6,37 +6,33 @@ use git2::Repository;
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
+use crate::immutability::{self, ImmutabilityPolicy};
 use crate::stack::Stack;
 
 /// Run the rebase command
-pub fn run(target: Option<String>) -> Result<()> {
+pub fn run(target: Option<String>, force: bool) -> Result<()> {
     let repo = git::open_repo()?;
 
     // Acquire operation lock to prevent concurrent operations
     let _lock = git::acquire_operation_lock(&repo, "rebase")?;
 
-    run_with_repo(&repo, target, false)
+    run_with_repo(&repo, target, false, force)
 }
 
 /// Run rebase with an already-open repository (no lock acquisition)
-pub fn run_with_repo(repo: &Repository, target: Option<String>, json: bool) -> Result<()> {
+pub fn run_with_repo(
+    repo: &Repository,
+    target: Option<String>,
+    json: bool,
+    force: bool,
+) -> Result<()> {
     let config = Config::load_with_global(repo.commondir())?;
 
-    // Auto-stash uncommitted changes if present
-    let needs_stash = !git::is_working_directory_clean(repo)?;
-    if needs_stash {
-        if !json {
-            println!("{}", style("Auto-stashing uncommitted changes...").dim());
-        }
-        git::run_git_command(&["stash", "push", "-m", "gg-rebase-autostash"])?;
-    }
-
-    // Determine target branch
-    // If no target provided, we need to be on a stack to get the base branch
+    // Determine target branch. If no target provided, we need to be on a
+    // stack to get the base branch.
     let target_branch = if let Some(t) = target {
         t
     } else {
-        // No target provided, must be on a stack
         let stack = Stack::load(repo, &config)?;
         stack.base.clone()
     };
@@ -51,7 +47,10 @@ pub fn run_with_repo(repo: &Repository, target: Option<String>, json: bool) -> R
         );
     }
 
-    // Fetch the latest from remote first
+    // Fetch the latest from remote first. We want fresh origin/<base> for
+    // both the immutability guard and the rebase itself — running the guard
+    // against stale refs can silently pass on a newly-merged commit and
+    // then rewrite it after the fetch updates the ref.
     let fetch_result = git::run_git_command(&["fetch", "origin", "--prune"]);
     if let Err(e) = fetch_result {
         if !json {
@@ -87,6 +86,32 @@ pub fn run_with_repo(repo: &Repository, target: Option<String>, json: bool) -> R
     // Return to stack branch if we switched away
     if let Some(ref branch) = current_branch {
         let _ = git::run_git_command(&["checkout", branch]);
+    }
+
+    // Immutability pre-flight: rebase rewrites every commit in the stack's
+    // parent chain. If any commit is merged or already on the (freshly
+    // fetched) base, refuse without --force. Must run *after* the fetch so
+    // origin/<base> reflects the latest remote state.
+    if let Ok(mut stack) = Stack::load(repo, &config) {
+        if !stack.is_empty() {
+            // Best-effort refresh of mr_state so the guard catches
+            // squash-merged PRs (their merge SHA isn't on origin/<base>, so
+            // the base-ancestor rule misses them). No-op when offline.
+            immutability::refresh_mr_state_for_guard(repo, &mut stack);
+            let policy = ImmutabilityPolicy::for_stack(repo, &stack)?;
+            let report = policy.check_all(&stack);
+            immutability::guard(report, force)?;
+        }
+    }
+
+    // Auto-stash uncommitted changes if present. Done after the guard so we
+    // don't create a stash we'll have to restore if the guard rejects.
+    let needs_stash = !git::is_working_directory_clean(repo)?;
+    if needs_stash {
+        if !json {
+            println!("{}", style("Auto-stashing uncommitted changes...").dim());
+        }
+        git::run_git_command(&["stash", "push", "-m", "gg-rebase-autostash"])?;
     }
 
     // Perform the rebase

@@ -8493,11 +8493,7 @@ fn test_undo_reverses_drop() {
 
     // Build a 3-commit stack.
     for i in 1..=3 {
-        fs::write(
-            repo_path.join(format!("f{i}.txt")),
-            format!("content {i}"),
-        )
-        .unwrap();
+        fs::write(repo_path.join(format!("f{i}.txt")), format!("content {i}")).unwrap();
         run_git(&repo_path, &["add", "."]);
         run_git(&repo_path, &["commit", "-m", &format!("Commit {i}")]);
     }
@@ -8570,11 +8566,7 @@ fn test_undo_list_newest_first_and_limit() {
 
     // Three commits — three separate mutating ops on top of the checkout.
     for i in 1..=3 {
-        fs::write(
-            repo_path.join(format!("f{i}.txt")),
-            format!("content {i}"),
-        )
-        .unwrap();
+        fs::write(repo_path.join(format!("f{i}.txt")), format!("content {i}")).unwrap();
         run_git(&repo_path, &["add", "."]);
         run_git(&repo_path, &["commit", "-m", &format!("Commit {i}")]);
     }

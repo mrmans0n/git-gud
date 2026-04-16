@@ -14,6 +14,7 @@ gg sync [OPTIONS]
 - `-l, --lint`: Run lint before sync (aborts sync on lint failure and restores repository state to the pre-sync snapshot)
 - `--no-lint`: Disable lint before sync (overrides config default)
 - `--no-rebase-check`: Skip checking whether your stack base is behind `origin/<base>`
+- `--no-verify`: Skip the pre-push hook for pushes performed by this sync (forwards `git push --no-verify`). Opt-in per invocation; does not affect other hooks.
 - `-u, --until <UNTIL>`: Sync up to target commit (position, GG-ID, or SHA)
 - `--json`: Output structured JSON for automation (suppresses human/progress output)
 
@@ -49,6 +50,9 @@ gg sync --no-rebase-check
 # Machine-readable output
 # (useful in scripts/agents)
 gg sync --json
+
+# Skip pre-push hooks for this sync only
+gg sync --no-verify
 ```
 
 ## PR/MR Body Ownership

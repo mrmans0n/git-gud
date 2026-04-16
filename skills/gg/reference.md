@@ -75,6 +75,7 @@ Push and create/update PRs/MRs.
 - `-l, --lint` *(aborts sync on lint failure and restores repository state to the pre-sync snapshot)*
 - `--no-lint`
 - `--no-rebase-check`
+- `--no-verify`: Skip the pre-push hook for pushes performed by this sync (forwards `git push --no-verify`)
 - `-u, --until <UNTIL>`
 - `--json`
 
@@ -498,7 +499,7 @@ Create or switch to a stack.
 
 #### `stack_sync`
 Push branches and create/update PRs.
-- **Params:** `draft` (bool), `force` (bool), `update_descriptions` (bool), `no_rebase_check` (bool), `lint` (bool), `until` (string)
+- **Params:** `draft` (bool), `force` (bool), `update_descriptions` (bool), `no_rebase_check` (bool), `lint` (bool), `until` (string), `no_verify` (bool — skip pre-push hook)
 - **Returns:** JSON sync results with PR URLs
 
 #### `stack_land`

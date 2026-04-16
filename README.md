@@ -157,6 +157,7 @@ gg clean
 | `gg ls` | List current stack commits with PR/MR status (shows `↓N` when base is behind `origin/<base>`) |
 | `gg ls --all` | List all stacks in the repository |
 | `gg ls --remote` | List remote stacks not checked out locally |
+| `gg log` | Render the current stack as a smartlog graph (`--json` emits `LogResponse`; `-r` refreshes PR/MR state) |
 | `gg clean` | Remove merged stacks and their remote branches |
 
 ### Syncing

@@ -696,7 +696,7 @@ fn ci_status_to_json(status: &CiStatus) -> String {
     }
 }
 
-fn should_refresh_mr_info(refresh: bool, json: bool) -> bool {
+pub(crate) fn should_refresh_mr_info(refresh: bool, json: bool) -> bool {
     refresh || json
 }
 

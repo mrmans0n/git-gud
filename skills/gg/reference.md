@@ -66,6 +66,12 @@ List current/all/remote stacks.
 - `--remote`
 - `--json`
 
+#### `gg log [OPTIONS]`
+Render the current stack as a smartlog (graph view).
+
+- `-r, --refresh`
+- `--json`
+
 #### `gg sync [OPTIONS]`
 Push and create/update PRs/MRs.
 
@@ -270,6 +276,40 @@ Field types:
 - `ci_status`: `string | null`
 - `in_merge_train`: `boolean` *(GitLab-specific)*
 - `merge_train_position`: `number | null` *(GitLab-specific)*
+
+### `gg log --json` (smartlog)
+
+```json
+{
+  "version": 1,
+  "log": {
+    "stack": "string",
+    "base": "string",
+    "current_position": 2,
+    "entries": [
+      {
+        "position": 1,
+        "sha": "string",
+        "title": "string",
+        "gg_id": "c-...",
+        "gg_parent": "c-...",
+        "pr_number": 123,
+        "pr_state": "open",
+        "approved": false,
+        "ci_status": "success",
+        "is_current": true,
+        "in_merge_train": false,
+        "merge_train_position": null
+      }
+    ]
+  }
+}
+```
+
+Entry shape is identical to `gg ls --json`; the top-level wrapper differs
+(`log` vs `stack`) so the two responses stay distinguishable. `entries` is
+ordered base → head (`position 1` is the oldest commit); `current_position`
+is 1-indexed or `null` when HEAD is at the stack head / detached.
 
 ### `gg ls --all --json` (all local stacks)
 

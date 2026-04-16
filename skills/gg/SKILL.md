@@ -134,6 +134,7 @@ gg land -a -c --json
 - Lint stack: `gg lint --json`
 - Run a command across the stack: `gg run -- <cmd...>` (see below)
 - Clean merged stacks: `gg clean -a --json`
+- Render the stack as a graph: `gg log [--json] [-r]` (same entry shape as `gg ls --json`, wrapped in a `LogResponse`)
 
 ## Running commands across the stack (`gg run`)
 

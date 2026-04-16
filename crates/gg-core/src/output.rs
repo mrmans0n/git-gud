@@ -58,6 +58,21 @@ pub struct StackEntryJson {
 }
 
 #[derive(Serialize)]
+pub struct LogResponse {
+    pub version: u32,
+    pub log: LogJson,
+}
+
+#[derive(Serialize)]
+pub struct LogJson {
+    pub stack: String,
+    pub base: String,
+    /// 1-indexed position of the current commit, `None` if at head or detached.
+    pub current_position: Option<usize>,
+    pub entries: Vec<StackEntryJson>,
+}
+
+#[derive(Serialize)]
 pub struct AllStacksResponse {
     pub version: u32,
     pub current_stack: Option<String>,

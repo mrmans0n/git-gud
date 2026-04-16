@@ -57,6 +57,18 @@ enum Commands {
         json: bool,
     },
 
+    /// Show the current stack as a smartlog graph
+    #[command(name = "log")]
+    Log {
+        /// Refresh PR/MR status from remote
+        #[arg(short, long)]
+        refresh: bool,
+
+        /// Output structured JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Sync stack with remote (push branches and create/update PRs/MRs)
     #[command(name = "sync", alias = "diff")]
     Sync {
@@ -375,6 +387,7 @@ fn main() {
             remote,
             json,
         }) => (gg_core::commands::ls::run(all, refresh, remote, json), json),
+        Some(Commands::Log { refresh, json }) => (gg_core::commands::log::run(json, refresh), json),
         Some(Commands::Sync {
             draft,
             json,

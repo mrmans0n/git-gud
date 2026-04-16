@@ -7,6 +7,7 @@ pub mod completions;
 pub mod drop_cmd;
 pub mod land;
 pub mod lint;
+pub mod log;
 pub mod ls;
 pub mod nav;
 pub mod rebase;

@@ -8252,3 +8252,81 @@ fn test_land_admin_config_enabled() {
         "Config should contain land_admin when enabled"
     );
 }
+
+#[test]
+fn test_gg_log_shows_commits() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", "log-stack"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("file1.txt"), "content1").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Add file1"]);
+
+    fs::write(repo_path.join("file2.txt"), "content2").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Add file2"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["log"]);
+    assert!(success, "gg log failed: {}", stderr);
+
+    assert!(stdout.contains("log-stack"));
+    assert!(stdout.contains("2 commits"));
+    assert!(stdout.contains("Add file1"));
+    assert!(stdout.contains("Add file2"));
+}
+
+#[test]
+fn test_gg_log_json_parses() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", "log-json-stack"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("file1.txt"), "content1").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Add file1\n\nGG-ID: c-abc1234"],
+    );
+
+    fs::write(repo_path.join("file2.txt"), "content2").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Add file2\n\nGG-ID: c-def5678"],
+    );
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["log", "--json"]);
+    assert!(success, "gg log --json failed: {}", stderr);
+
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(parsed["version"], 1);
+    assert_eq!(parsed["log"]["stack"], "log-json-stack");
+
+    let entries = parsed["log"]["entries"]
+        .as_array()
+        .expect("log.entries must be an array");
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0]["position"], 1);
+    assert_eq!(entries[0]["title"], "Add file1");
+    assert_eq!(entries[1]["position"], 2);
+    assert_eq!(entries[1]["title"], "Add file2");
+}

@@ -132,6 +132,13 @@ pub struct StackListParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct StackLogParams {
+    /// Refresh PR/MR status from remote before rendering
+    #[serde(default)]
+    pub refresh: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PrInfoParams {
     /// PR/MR number to look up
     pub number: u64,
@@ -433,6 +440,29 @@ impl GgMcpServer {
 
         let info = build_stack_info(&stack, &repo);
         Ok(to_json(&info))
+    }
+
+    /// Show the current stack as a smartlog: graph view with glyphs, SHAs,
+    /// PR/MR state, and a current-commit marker. Returns the same data shape
+    /// as `gg log --json`.
+    #[tool(
+        description = "Show the current stack as a smartlog (graph view). Returns the same data shape as `gg log --json`."
+    )]
+    fn stack_log(&self, Parameters(params): Parameters<StackLogParams>) -> Result<String, String> {
+        let repo = open_repo()?;
+        let config = load_config(&repo)?;
+        let mut stack = load_stack(&repo, &config)?;
+
+        if params.refresh {
+            let provider =
+                Provider::detect(&repo).map_err(|e| McpToolError::ProviderDetect(e.to_string()))?;
+            stack
+                .refresh_mr_info(&provider)
+                .map_err(McpToolError::ConfigLoad)?;
+        }
+
+        let response = gg_core::commands::log::render_json(&stack);
+        Ok(to_json(&response))
     }
 
     /// List all stacks in the repository with summary information.

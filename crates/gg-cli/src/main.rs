@@ -91,6 +91,10 @@ enum Commands {
         /// Sync only up to this commit (position, GG-ID, or SHA)
         #[arg(short, long)]
         until: Option<String>,
+
+        /// Skip the pre-push hook for pushes performed by this sync
+        #[arg(long = "no-verify")]
+        no_verify: bool,
     },
 
     /// Move to a specific commit in the stack
@@ -384,6 +388,7 @@ fn main() {
             lint,
             no_lint,
             until,
+            no_verify,
         }) => {
             // Determine run_lint based on flags and config
             let run_lint = if lint {
@@ -411,6 +416,7 @@ fn main() {
                     update_descriptions,
                     run_lint,
                     until,
+                    no_verify,
                 ),
                 json,
             )

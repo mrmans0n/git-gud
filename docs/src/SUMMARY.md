@@ -30,6 +30,7 @@
   - [setup](./commands/setup.md)
   - [continue / abort](./commands/continue-abort.md)
   - [reconcile](./commands/reconcile.md)
+  - [restack](./commands/restack.md)
 - [MCP Server](./mcp-server.md)
 - [Configuration](./configuration.md)
 - [Shell Completions](./shell-completions.md)

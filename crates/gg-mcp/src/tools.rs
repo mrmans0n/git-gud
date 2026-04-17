@@ -261,6 +261,16 @@ pub struct StackDropParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct StackRestackParams {
+    /// Show what would be done without making changes
+    #[serde(default)]
+    pub dry_run: bool,
+    /// Repair only from this position, GG-ID, or SHA upward
+    #[serde(default)]
+    pub from: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct StackSplitParams {
     /// Target commit: position (1-indexed), short SHA, or GG-ID (default: current)
     #[serde(default)]
@@ -847,6 +857,25 @@ impl GgMcpServer {
             "-o".to_string(),
             params.order,
         ])
+    }
+
+    /// Repair stack ancestry after manual Git operations.
+    #[tool(
+        description = "Repair stack ancestry after manual Git operations (amend, cherry-pick, rebase). Detects GG-Parent mismatches and rebases commits onto correct parents. Returns JSON with repair plan and results."
+    )]
+    fn stack_restack(
+        &self,
+        Parameters(params): Parameters<StackRestackParams>,
+    ) -> Result<String, String> {
+        let mut args = vec!["restack".to_string(), "--json".to_string()];
+        if params.dry_run {
+            args.push("--dry-run".to_string());
+        }
+        if let Some(ref from) = params.from {
+            args.push("--from".to_string());
+            args.push(from.clone());
+        }
+        run_gg_command(&args)
     }
 }
 

@@ -349,6 +349,20 @@ enum Commands {
         #[arg(short = 'n', long)]
         dry_run: bool,
     },
+
+    /// Repair stack ancestry after manual history changes (amend, cherry-pick, rebase)
+    #[command(name = "restack")]
+    Restack {
+        /// Show what would be done without making changes
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+        /// Repair only from this commit upward (position, SHA, or GG-ID)
+        #[arg(long)]
+        from: Option<String>,
+        /// Output structured JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() {
@@ -575,6 +589,18 @@ fn main() {
         Some(Commands::Reconcile { dry_run }) => {
             (gg_core::commands::reconcile::run(dry_run), false)
         }
+        Some(Commands::Restack {
+            dry_run,
+            from,
+            json,
+        }) => (
+            gg_core::commands::restack::run(gg_core::commands::restack::RestackOptions {
+                dry_run,
+                from,
+                json,
+            }),
+            json,
+        ),
     };
 
     if let Err(e) = result {

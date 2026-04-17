@@ -98,6 +98,7 @@ git commit -m "feat: add input validation"
 ```bash
 gg ls --json        # single-stack details + summary metrics
 gg log --json       # smartlog-style view of the current stack
+gg inbox --json     # actionable triage across all stacks
 ```
 
 4. Publish/update PR/MR chain:
@@ -115,7 +116,7 @@ gg land -a -c --json
 ## Agent operating rules (mandatory)
 
 1. **Never run `gg land` without explicit user confirmation.**
-2. **Always use `--json`** for `gg ls`, `gg sync`, `gg land`, `gg clean -a`, and `gg lint`.
+2. **Always use `--json`** for `gg ls`, `gg log`, `gg inbox`, `gg sync`, `gg land`, `gg clean -a`, and `gg lint`.
 3. **Prefer worktrees** for isolation (`gg co -w <stack>`).
 4. Verify `approved: true` and `ci_status` success before landing. If the user requests `--admin`, skip the approval check (GitHub only — GitLab ignores the flag).
 5. If sync warns stack is behind base, run `gg rebase` first.

@@ -264,6 +264,9 @@ pub fn run(options: RestackOptions) -> Result<()> {
         SnapshotScope::AllUserBranches,
     )?;
 
+    // Remember current branch before rebase (rebase can leave HEAD detached in worktrees)
+    let current_branch = git::current_branch_name(&repo);
+
     // Execute: single git rebase -i
     // Determine base ref for the rebase
     let base_oid = if let Some(from_pos) = from_position {
@@ -329,6 +332,12 @@ pub fn run(options: RestackOptions) -> Result<()> {
             return Err(GgError::RebaseConflict);
         }
         return Err(GgError::Other(format!("Rebase failed: {}", stderr)));
+    }
+
+    // In worktrees, rebase can leave HEAD detached; re-attach it before
+    // loading the stack (which needs HEAD on a branch).
+    if let Some(ref branch) = current_branch {
+        git::ensure_branch_attached(&repo, branch)?;
     }
 
     // Normalize GG metadata after rebase. This normalizes the full stack

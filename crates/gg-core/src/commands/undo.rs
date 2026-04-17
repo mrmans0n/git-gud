@@ -246,33 +246,42 @@ fn build_json_response(outcome: &UndoOutcome) -> UndoResponse {
 }
 
 fn print_list_human(records: &[OperationRecord]) {
+    print!("{}", format_list_human(records, true));
+}
+
+fn format_list_human(records: &[OperationRecord], color: bool) -> String {
     if records.is_empty() {
-        println!("{}", style("No operations recorded yet.").dim());
-        return;
+        return format!("{}\n", style("No operations recorded yet.").dim());
     }
-    println!(
-        "{:<10}  {:<12}  {:<10}  {:<8}  ARGS",
+    let mut out = format!(
+        "{:<10}  {:<12}  {:<10}  {:<8}  ARGS\n",
         "ID", "KIND", "STATUS", "UNDOABLE"
     );
     for r in records {
-        let undoable = if r.is_undoable_locally() {
-            style("yes").green().to_string()
+        let (undoable_text, colorize): (&str, fn(&str) -> String) = if r.is_undoable_locally() {
+            ("yes", |s| style(s).green().to_string())
         } else if r.touched_remote {
-            style("remote").red().to_string()
+            ("remote", |s| style(s).red().to_string())
         } else {
-            style("no").dim().to_string()
+            ("no", |s| style(s).dim().to_string())
+        };
+        let undoable = if color {
+            colorize(&format!("{:<8}", undoable_text))
+        } else {
+            format!("{:<8}", undoable_text)
         };
         let status = format!("{:?}", r.status).to_lowercase();
         let kind = format!("{:?}", r.kind).to_lowercase();
-        println!(
-            "{:<10}  {:<12}  {:<10}  {:<8}  {}",
+        out.push_str(&format!(
+            "{:<10}  {:<12}  {:<10}  {}  {}\n",
             short_id(&r.id),
             kind,
             status,
             undoable,
             short_args(&r.args),
-        );
+        ));
     }
+    out
 }
 
 fn short_id(id: &str) -> String {
@@ -304,6 +313,7 @@ fn short_args(args: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::operations::OperationStatus;
 
     #[test]
     fn short_id_truncates_long_ids() {
@@ -329,5 +339,120 @@ mod tests {
     fn short_args_short_roundtrip() {
         let args = vec!["sync".to_string(), "main".to_string()];
         assert_eq!(short_args(&args), "sync main");
+    }
+
+    fn make_record(
+        id: &str,
+        kind: OperationKind,
+        touched_remote: bool,
+        args: Vec<String>,
+    ) -> OperationRecord {
+        OperationRecord {
+            id: id.to_string(),
+            schema_version: crate::operations::SCHEMA_VERSION,
+            kind,
+            status: OperationStatus::Committed,
+            created_at_ms: 0,
+            args,
+            stack_name: None,
+            refs_before: vec![],
+            refs_after: vec![],
+            remote_effects: vec![],
+            touched_remote,
+            undoes: None,
+            pending_plan: None,
+        }
+    }
+
+    #[test]
+    fn list_table_args_column_alignment() {
+        let records = vec![
+            make_record(
+                "op_0000000000000_aaaa1111bbbb2222",
+                OperationKind::Checkout,
+                false,
+                vec!["co".into(), "fix-LAUNCHER-v2-11W".into()],
+            ),
+            make_record(
+                "op_0000000000001_cccc3333dddd4444",
+                OperationKind::Undo,
+                false,
+                vec!["undo".into()],
+            ),
+            make_record(
+                "op_0000000000002_eeee5555ffff6666",
+                OperationKind::Checkout,
+                false,
+                vec!["co".into(), "ktfmt".into()],
+            ),
+        ];
+        let output = format_list_human(&records, false);
+        let lines: Vec<&str> = output.lines().collect();
+        assert!(
+            lines.len() >= 4,
+            "expected header + 3 rows, got {}",
+            lines.len()
+        );
+
+        let header_args_col = lines[0].find("ARGS").expect("header must contain ARGS");
+        for (i, line) in lines[1..].iter().enumerate() {
+            // The ARGS value starts after the UNDOABLE column. Find its position
+            // by looking for the content after the 4th double-space-separated column.
+            let args_col = find_args_column(line);
+            assert_eq!(
+                args_col, header_args_col,
+                "row {} ARGS column at {} but header at {}: {:?}",
+                i, args_col, header_args_col, line
+            );
+        }
+    }
+
+    #[test]
+    fn list_table_remote_alignment() {
+        let records = vec![
+            make_record(
+                "op_0000000000000_aaaa1111bbbb2222",
+                OperationKind::Checkout,
+                false,
+                vec!["co".into(), "main".into()],
+            ),
+            make_record(
+                "op_0000000000001_cccc3333dddd4444",
+                OperationKind::Land,
+                true,
+                vec!["land".into()],
+            ),
+        ];
+        let output = format_list_human(&records, false);
+        let lines: Vec<&str> = output.lines().collect();
+        assert!(lines.len() >= 3);
+
+        let header_args_col = lines[0].find("ARGS").expect("header must contain ARGS");
+        for (i, line) in lines[1..].iter().enumerate() {
+            let args_col = find_args_column(line);
+            assert_eq!(
+                args_col, header_args_col,
+                "row {} ARGS column at {} but header at {}: {:?}",
+                i, args_col, header_args_col, line
+            );
+        }
+    }
+
+    /// Find the byte offset where the ARGS value starts in a data row.
+    /// The table has 4 columns before ARGS, each separated by two spaces.
+    fn find_args_column(line: &str) -> usize {
+        // Skip 4 column groups (ID, KIND, STATUS, UNDOABLE) each followed by "  "
+        let mut pos = 0;
+        for _ in 0..4 {
+            // Skip non-space content
+            while pos < line.len() && !line[pos..].starts_with("  ") {
+                pos += 1;
+            }
+            // Skip the double-space separator
+            while pos < line.len() && line.as_bytes()[pos] == b' ' {
+                pos += 1;
+            }
+        }
+        pos
     }
 }

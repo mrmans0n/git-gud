@@ -71,7 +71,10 @@ refuse to touch the following by default:
   local commit.
 - **Base-ancestor commits.** Any commit already reachable from `origin/<base>`
   via plain merge or rebase falls in the same bucket. When no `origin/<base>`
-  ref exists, gg falls back to the local base branch.
+  ref exists, gg falls back to the local base branch. **Exception:** `gg rebase`
+  silently skips base-ancestor commits instead of blocking, because `git rebase`
+  naturally drops them. An info line (`→ Skipping N merged commit(s) already on
+  <base>`) is printed when this happens.
 
 Running one of those commands on an immutable target prints a clear error like:
 

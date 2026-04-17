@@ -258,14 +258,13 @@ fn format_list_human(records: &[OperationRecord], color: bool) -> String {
         "ID", "KIND", "STATUS", "UNDOABLE"
     );
     for r in records {
-        let (undoable_text, colorize): (&str, fn(&str) -> String) =
-            if r.is_undoable_locally() {
-                ("yes", |s| style(s).green().to_string())
-            } else if r.touched_remote {
-                ("remote", |s| style(s).red().to_string())
-            } else {
-                ("no", |s| style(s).dim().to_string())
-            };
+        let (undoable_text, colorize): (&str, fn(&str) -> String) = if r.is_undoable_locally() {
+            ("yes", |s| style(s).green().to_string())
+        } else if r.touched_remote {
+            ("remote", |s| style(s).red().to_string())
+        } else {
+            ("no", |s| style(s).dim().to_string())
+        };
         let undoable = if color {
             colorize(&format!("{:<8}", undoable_text))
         } else {
@@ -342,7 +341,12 @@ mod tests {
         assert_eq!(short_args(&args), "sync main");
     }
 
-    fn make_record(id: &str, kind: OperationKind, touched_remote: bool, args: Vec<String>) -> OperationRecord {
+    fn make_record(
+        id: &str,
+        kind: OperationKind,
+        touched_remote: bool,
+        args: Vec<String>,
+    ) -> OperationRecord {
         OperationRecord {
             id: id.to_string(),
             schema_version: crate::operations::SCHEMA_VERSION,
@@ -363,13 +367,32 @@ mod tests {
     #[test]
     fn list_table_args_column_alignment() {
         let records = vec![
-            make_record("op_0000000000000_aaaa1111bbbb2222", OperationKind::Checkout, false, vec!["co".into(), "fix-LAUNCHER-v2-11W".into()]),
-            make_record("op_0000000000001_cccc3333dddd4444", OperationKind::Undo, false, vec!["undo".into()]),
-            make_record("op_0000000000002_eeee5555ffff6666", OperationKind::Checkout, false, vec!["co".into(), "ktfmt".into()]),
+            make_record(
+                "op_0000000000000_aaaa1111bbbb2222",
+                OperationKind::Checkout,
+                false,
+                vec!["co".into(), "fix-LAUNCHER-v2-11W".into()],
+            ),
+            make_record(
+                "op_0000000000001_cccc3333dddd4444",
+                OperationKind::Undo,
+                false,
+                vec!["undo".into()],
+            ),
+            make_record(
+                "op_0000000000002_eeee5555ffff6666",
+                OperationKind::Checkout,
+                false,
+                vec!["co".into(), "ktfmt".into()],
+            ),
         ];
         let output = format_list_human(&records, false);
         let lines: Vec<&str> = output.lines().collect();
-        assert!(lines.len() >= 4, "expected header + 3 rows, got {}", lines.len());
+        assert!(
+            lines.len() >= 4,
+            "expected header + 3 rows, got {}",
+            lines.len()
+        );
 
         let header_args_col = lines[0].find("ARGS").expect("header must contain ARGS");
         for (i, line) in lines[1..].iter().enumerate() {
@@ -387,8 +410,18 @@ mod tests {
     #[test]
     fn list_table_remote_alignment() {
         let records = vec![
-            make_record("op_0000000000000_aaaa1111bbbb2222", OperationKind::Checkout, false, vec!["co".into(), "main".into()]),
-            make_record("op_0000000000001_cccc3333dddd4444", OperationKind::Land, true, vec!["land".into()]),
+            make_record(
+                "op_0000000000000_aaaa1111bbbb2222",
+                OperationKind::Checkout,
+                false,
+                vec!["co".into(), "main".into()],
+            ),
+            make_record(
+                "op_0000000000001_cccc3333dddd4444",
+                OperationKind::Land,
+                true,
+                vec!["land".into()],
+            ),
         ];
         let output = format_list_human(&records, false);
         let lines: Vec<&str> = output.lines().collect();

@@ -121,7 +121,7 @@ gg land -a -c --json
 5. If sync warns stack is behind base, run `gg rebase` first.
 6. Prefer `gg absorb -s` for multi-commit edits.
 7. **Never use `git add -A` blindly.** Review `git status` first and only stage intended files. Use `git add <specific-files>` to avoid leaking secrets, env files, or unrelated changes.
-8. **Respect the immutability guard.** Rewrite-style commands (`gg sc`, `gg absorb`, `gg reorder`/`gg arrange`, `gg split`, `gg drop`, `gg rebase`) refuse to rewrite merged PRs/MRs or commits already on the base branch. If the command exits with `ImmutableTargets`, surface the listed commits and reasons to the user and get explicit confirmation before retrying with `-f` / `--force` (alias `--ignore-immutable`).
+8. **Respect the immutability guard.** Rewrite-style commands (`gg sc`, `gg absorb`, `gg reorder`/`gg arrange`, `gg split`, `gg drop`, `gg rebase`, `gg restack`) refuse to rewrite merged PRs/MRs or commits already on the base branch. If the command exits with `ImmutableTargets`, surface the listed commits and reasons to the user and get explicit confirmation before retrying with `-f` / `--force` (alias `--ignore-immutable`).
 
 ## Common operations
 
@@ -135,6 +135,7 @@ gg land -a -c --json
 - Sync subset: `gg sync -u <position|gg-id|sha> --json`
 - Lint stack: `gg lint --json`
 - Run a command across the stack: `gg run -- <cmd...>` (see below)
+- Repair ancestry drift: `gg restack` / `gg restack --dry-run --json` (see below)
 - Clean merged stacks: `gg clean -a --json`
 - Undo last local mutation: `gg undo` (see below)
 
@@ -154,8 +155,8 @@ gg undo --json       # machine-readable output
 ```
 
 Every mutating command (`sc`, `drop`, `split`, `rebase`, `reorder`,
-`absorb`, `reconcile`, `checkout`, nav, `clean`, `sync`, `land`, and
-`run --amend`) snapshots the refs it will touch before mutating and
+`absorb`, `reconcile`, `restack`, `checkout`, nav, `clean`, `sync`, `land`,
+and `run --amend`) snapshots the refs it will touch before mutating and
 records the operation on success. The log keeps the last 100 records;
 interrupted/pending records are never pruned.
 
@@ -173,6 +174,28 @@ interrupted/pending records are never pruned.
 `gg undo` does **not** restore working-tree content (use `git reflog` or
 `git stash`), does **not** touch remotes, and does **not** support an
 `--all` / `--range` mode.
+
+## Repairing stack ancestry (`gg restack`)
+
+`gg restack` detects and repairs ancestry drift — when a commit's `GG-Parent`
+trailer no longer matches its expected parent in the stack order. This happens
+after manual `git rebase`, `git commit --amend`, cherry-picks, or upstream
+rebases that rewrite commit SHAs without updating GG metadata.
+
+```bash
+gg restack --dry-run        # show plan without changes
+gg restack --dry-run --json # machine-readable plan
+gg restack                  # execute full ancestry repair
+gg restack --from 3         # repair only from position 3 upward
+gg restack --json           # execute with JSON output
+```
+
+Each step in the plan is one of:
+- **ok** — parent already correct, no action needed
+- **reattach** — parent differs, needs rebasing
+- **skip** — below `--from` threshold, not checked
+
+After a successful restack, run `gg sync` to push the repaired commits.
 
 ## Running commands across the stack (`gg run`)
 
@@ -226,7 +249,7 @@ gg refuses by default to rewrite commits that look "already published":
   a fallback).
 
 The guard protects `gg sc`, `gg absorb`, `gg reorder` / `gg arrange`,
-`gg split`, `gg drop`, and `gg rebase`. When it fires, the command exits
+`gg split`, `gg drop`, `gg rebase`, and `gg restack`. When it fires, the command exits
 with an `ImmutableTargets` error listing every affected position, short
 SHA, title, and reason (e.g. `merged as !123`, `already in origin/main`).
 
@@ -317,6 +340,7 @@ The `gg-mcp` binary exposes git-gud as an MCP server (stdio transport). Set `GG_
 - `stack_drop` — remove commits from the stack (always passes `--yes`; set `force: true` only to bypass the immutability guard for merged/base commits; agent confirms with user before any drop)
 - `stack_split` — split a commit using interactive hunk selection (TUI opens by default; pass FILES... to auto-select all hunks for those files)
 - `stack_reorder` — reorder commits with explicit order string (no TUI)
+- `stack_restack` — repair stack ancestry drift (`dry_run`, `from` params)
 - `stack_undo` — reverse the ref/HEAD effects of the most recent mutating `gg` command (refuses on remote-touching ops, returns provider-specific revert hints; agents must surface those hints rather than attempt silent remote rollback)
 
 ### Navigation tools

@@ -8432,6 +8432,114 @@ fn test_land_admin_config_enabled() {
     );
 }
 
+// ── Restack tests ──────────────────────────────────────────────
+
+/// Helper to create a test repo with GG metadata on commits.
+/// Creates commits with GG-ID and GG-Parent trailers baked in.
+/// Returns (TempDir, repo_path).
+fn setup_restack_repo(stack_name: &str, num_commits: usize) -> (TempDir, PathBuf) {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", stack_name]);
+    assert!(success, "co failed: {}", stderr);
+
+    // Position 1 has no GG-Parent (it's the base), subsequent commits
+    // reference the previous commit's GG-ID.
+    let mut prev_gg_id: Option<String> = None;
+    for i in 1..=num_commits {
+        let gg_id = format!("c-{:07x}", i);
+        fs::write(
+            repo_path.join(format!("file{}.txt", i)),
+            format!("content {}", i),
+        )
+        .unwrap();
+        run_git(&repo_path, &["add", "."]);
+
+        let mut msg = format!("Commit {}\n\nGG-ID: {}", i, gg_id);
+        if let Some(ref parent) = prev_gg_id {
+            msg.push_str(&format!("\nGG-Parent: {}", parent));
+        }
+        run_git(&repo_path, &["commit", "-m", &msg]);
+
+        prev_gg_id = Some(gg_id);
+    }
+
+    (_temp_dir, repo_path)
+}
+
+/// Helper to create a repo with a broken GG-Parent chain at a specific position.
+/// Commits above `break_at` (1-indexed) will have stale GG-Parent trailers.
+fn setup_restack_repo_broken(
+    stack_name: &str,
+    num_commits: usize,
+    break_at: usize,
+) -> (TempDir, PathBuf) {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", stack_name]);
+    assert!(success, "co failed: {}", stderr);
+
+    let mut prev_gg_id: Option<String> = None;
+    for i in 1..=num_commits {
+        let gg_id = format!("c-{:07x}", i);
+        fs::write(
+            repo_path.join(format!("file{}.txt", i)),
+            format!("content {}", i),
+        )
+        .unwrap();
+        run_git(&repo_path, &["add", "."]);
+
+        let mut msg = format!("Commit {}\n\nGG-ID: {}", i, gg_id);
+        if let Some(ref parent) = prev_gg_id {
+            if i == break_at + 1 {
+                // Intentionally wrong GG-Parent
+                msg.push_str("\nGG-Parent: c-deadbee");
+            } else {
+                msg.push_str(&format!("\nGG-Parent: {}", parent));
+            }
+        }
+        run_git(&repo_path, &["commit", "-m", &msg]);
+
+        prev_gg_id = Some(gg_id);
+    }
+
+    (_temp_dir, repo_path)
+}
+
+#[test]
+fn test_restack_consistent_stack_is_noop() {
+    let (_temp_dir, repo_path) = setup_restack_repo("restack-noop", 3);
+
+    // Restack should be a no-op
+    let (success, stdout, stderr) = run_gg(&repo_path, &["restack"]);
+    assert!(
+        success,
+        "restack failed. stdout: {}, stderr: {}",
+        stdout, stderr
+    );
+    assert!(
+        stdout.contains("already consistent"),
+        "Expected 'already consistent', got: {}",
+        stdout
+    );
+}
+
 // ===== `gg undo` integration tests =====
 //
 // These cover the end-to-end CLI surface. Ref-level semantics, refusal modes,
@@ -8527,6 +8635,169 @@ fn test_undo_reverses_drop() {
     assert!(
         stdout.contains("Commit 2"),
         "undo should restore Commit 2: {stdout}"
+    );
+}
+
+#[test]
+fn test_restack_dry_run_json() {
+    // Break at position 1: commit 2 has wrong GG-Parent
+    let (_temp_dir, repo_path) = setup_restack_repo_broken("restack-dryrun", 3, 1);
+
+    // Dry-run with JSON
+    let (success, stdout, stderr) = run_gg(&repo_path, &["restack", "--dry-run", "--json"]);
+    assert!(
+        success,
+        "restack dry-run failed. stdout: {}, stderr: {}",
+        stdout, stderr
+    );
+
+    let json: Value = serde_json::from_str(&stdout).expect("Should be valid JSON");
+    assert_eq!(json["version"], 1);
+    assert_eq!(json["restack"]["dry_run"], true);
+    assert!(json["restack"]["total_entries"].as_u64().unwrap() >= 3);
+    let steps = json["restack"]["steps"].as_array().unwrap();
+    let reattach_count = steps.iter().filter(|s| s["action"] == "reattach").count();
+    assert!(
+        reattach_count > 0,
+        "Expected at least one reattach step, got 0. Steps: {:?}",
+        steps
+    );
+}
+
+#[test]
+fn test_restack_repairs_broken_chain() {
+    // Break at position 1: commit 2 has wrong GG-Parent
+    let (_temp_dir, repo_path) = setup_restack_repo_broken("restack-repair", 3, 1);
+
+    // Execute restack
+    let (success, stdout, stderr) = run_gg(&repo_path, &["restack"]);
+    assert!(
+        success,
+        "restack failed. stdout: {}, stderr: {}",
+        stdout, stderr
+    );
+    assert!(
+        stdout.contains("Restacked"),
+        "Expected 'Restacked' in output, got: {}",
+        stdout
+    );
+
+    // Verify: a second restack should now be a no-op
+    let (success, stdout, _) = run_gg(&repo_path, &["restack"]);
+    assert!(success);
+    assert!(
+        stdout.contains("already consistent"),
+        "Expected no-op after repair, got: {}",
+        stdout
+    );
+
+    // Verify all 3 commits are still present
+    let (success, stdout, _) = run_gg(&repo_path, &["ls"]);
+    assert!(success);
+    assert!(stdout.contains("Commit 1"));
+    assert!(stdout.contains("Commit 2"));
+    assert!(stdout.contains("Commit 3"));
+}
+
+#[test]
+fn test_restack_from_partial_repair() {
+    // Break at position 2: commit 3 has wrong GG-Parent
+    let (_temp_dir, repo_path) = setup_restack_repo_broken("restack-from", 4, 2);
+
+    // Partial restack from position 3 (skip position 1-2)
+    let (success, stdout, stderr) = run_gg(&repo_path, &["restack", "--from", "3"]);
+    assert!(
+        success,
+        "restack --from failed. stdout: {}, stderr: {}",
+        stdout, stderr
+    );
+    assert!(
+        stdout.contains("Restacked"),
+        "Expected 'Restacked', got: {}",
+        stdout
+    );
+
+    // Verify all 4 commits survived
+    let (success, stdout, _) = run_gg(&repo_path, &["ls"]);
+    assert!(success);
+    assert!(stdout.contains("Commit 1"));
+    assert!(stdout.contains("Commit 2"));
+    assert!(stdout.contains("Commit 3"));
+    assert!(stdout.contains("Commit 4"));
+}
+
+#[test]
+fn test_restack_json_execution_output() {
+    // Break at position 1: commit 2 has wrong GG-Parent
+    let (_temp_dir, repo_path) = setup_restack_repo_broken("restack-json-exec", 2, 1);
+
+    // Execute with JSON
+    let (success, stdout, stderr) = run_gg(&repo_path, &["restack", "--json"]);
+    assert!(
+        success,
+        "restack --json failed. stdout: {}, stderr: {}",
+        stdout, stderr
+    );
+
+    let json: Value = serde_json::from_str(&stdout).expect("Should be valid JSON");
+    assert_eq!(json["version"], 1);
+    assert_eq!(json["restack"]["dry_run"], false);
+    assert!(json["restack"]["entries_restacked"].as_u64().unwrap() > 0);
+    assert!(json["restack"]["steps"].as_array().unwrap().len() >= 2);
+}
+
+#[test]
+fn test_restack_empty_stack_errors() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "restack-empty"]);
+    assert!(success, "co failed: {}", stderr);
+
+    // Restack with no commits in the stack
+    let (success, _, stderr) = run_gg(&repo_path, &["restack"]);
+    assert!(!success, "Expected failure on empty stack");
+    assert!(
+        stderr.contains("empty") || stderr.contains("Empty"),
+        "Expected 'empty' error, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_restack_missing_gg_ids_errors() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "restack-no-ids"]);
+    assert!(success, "co failed: {}", stderr);
+
+    // Create commits without syncing (so they have no GG-IDs)
+    fs::write(repo_path.join("file1.txt"), "content 1").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 1"]);
+
+    // Restack should fail because there are no GG-IDs
+    let (success, _, stderr) = run_gg(&repo_path, &["restack"]);
+    assert!(!success, "Expected failure without GG-IDs");
+    assert!(
+        stderr.contains("GG-ID") || stderr.contains("reconcile"),
+        "Expected GG-ID or reconcile error, got: {}",
+        stderr
     );
 }
 
@@ -8684,11 +8955,6 @@ fn test_undo_help_mentions_list_and_json() {
 
 #[test]
 fn test_undo_roundtrip_from_worktree() {
-    // Regression coverage for a subtle interaction between `gg undo` and
-    // linked worktrees: the op-log lives under `commondir/gg/operations`
-    // and the op lock under the shared common git dir, so a mutation run
-    // inside a linked worktree must produce a record that a subsequent
-    // `gg undo` invoked from the same worktree can read and replay.
     let (_temp_dir, repo_path) = create_test_repo();
 
     let gg_dir = repo_path.join(".git/gg");
@@ -8703,7 +8969,6 @@ fn test_undo_roundtrip_from_worktree() {
     let (success, _stdout, stderr) = run_gg(&repo_path, &["co", stack_name, "--worktree"]);
     assert!(success, "Failed to create worktree stack: {stderr}");
 
-    // Default worktree layout: ../<repo-dir>.<stack>/
     let worktree_path = repo_path.parent().unwrap().join(format!(
         "{}.{}",
         repo_path.file_name().unwrap().to_string_lossy(),
@@ -8716,7 +8981,6 @@ fn test_undo_roundtrip_from_worktree() {
     );
     let wt = worktree_path.to_path_buf();
 
-    // Build a 3-commit stack inside the worktree.
     for i in 1..=3 {
         fs::write(
             worktree_path.join(format!("f{i}.txt")),
@@ -8728,7 +8992,6 @@ fn test_undo_roundtrip_from_worktree() {
     }
     let head_before_drop = head_sha(&wt);
 
-    // Drop position 2 from inside the worktree.
     let (success, _, stderr) = run_gg(&wt, &["drop", "2", "--force"]);
     assert!(success, "drop from worktree failed: {stderr}");
     assert_ne!(
@@ -8737,8 +9000,6 @@ fn test_undo_roundtrip_from_worktree() {
         "drop should move HEAD in the worktree"
     );
 
-    // `undo --list` run from the worktree must see the drop record. Both
-    // paths share `commondir`, so the op log is visible.
     let (success, stdout, stderr) = run_gg(&wt, &["undo", "--list", "--json"]);
     assert!(success, "undo --list from worktree failed: {stderr}");
     let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
@@ -8750,7 +9011,6 @@ fn test_undo_roundtrip_from_worktree() {
         "worktree op-log should include the drop record: {ops:?}"
     );
 
-    // Undo from the worktree — HEAD should return to the pre-drop sha.
     let (success, stdout, stderr) = run_gg(&wt, &["undo", "--json"]);
     assert!(
         success,

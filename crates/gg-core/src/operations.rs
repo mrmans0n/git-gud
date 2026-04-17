@@ -65,6 +65,7 @@ pub enum OperationKind {
     Land,
     Clean,
     Reconcile,
+    Restack,
     Run,
     Undo,
 }

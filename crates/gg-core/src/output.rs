@@ -312,6 +312,49 @@ mod tests {
     }
 
     #[test]
+    fn restack_response_serializes() {
+        let response = RestackResponse {
+            version: OUTPUT_VERSION,
+            restack: RestackResultJson {
+                stack_name: "my-feature".to_string(),
+                total_entries: 4,
+                entries_restacked: 2,
+                entries_ok: 2,
+                dry_run: false,
+                steps: vec![
+                    RestackStepJson {
+                        position: 1,
+                        gg_id: "c-aaa1111".to_string(),
+                        title: "Add login form".to_string(),
+                        action: "ok".to_string(),
+                        current_parent: None,
+                        expected_parent: None,
+                    },
+                    RestackStepJson {
+                        position: 2,
+                        gg_id: "c-bbb2222".to_string(),
+                        title: "Add validation".to_string(),
+                        action: "reattach".to_string(),
+                        current_parent: Some("c-old1111".to_string()),
+                        expected_parent: Some("c-aaa1111".to_string()),
+                    },
+                ],
+            },
+        };
+
+        let value = serde_json::to_value(&response).expect("should serialize");
+        assert_eq!(value["version"], OUTPUT_VERSION);
+        assert_eq!(value["restack"]["stack_name"], "my-feature");
+        assert_eq!(value["restack"]["entries_restacked"], 2);
+        assert_eq!(value["restack"]["entries_ok"], 2);
+        assert_eq!(value["restack"]["dry_run"], false);
+        assert_eq!(value["restack"]["steps"][0]["action"], "ok");
+        assert_eq!(value["restack"]["steps"][1]["action"], "reattach");
+        assert_eq!(value["restack"]["steps"][1]["current_parent"], "c-old1111");
+        assert_eq!(value["restack"]["steps"][1]["expected_parent"], "c-aaa1111");
+    }
+
+    #[test]
     fn test_sync_entry_nav_comment_action_serializes_when_some() {
         let entry = SyncEntryResultJson {
             position: 1,
@@ -361,6 +404,32 @@ pub struct DroppedEntryJson {
     pub position: usize,
     pub sha: String,
     pub title: String,
+}
+
+#[derive(Serialize)]
+pub struct RestackResponse {
+    pub version: u32,
+    pub restack: RestackResultJson,
+}
+
+#[derive(Serialize)]
+pub struct RestackResultJson {
+    pub stack_name: String,
+    pub total_entries: usize,
+    pub entries_restacked: usize,
+    pub entries_ok: usize,
+    pub dry_run: bool,
+    pub steps: Vec<RestackStepJson>,
+}
+
+#[derive(Serialize)]
+pub struct RestackStepJson {
+    pub position: usize,
+    pub gg_id: String,
+    pub title: String,
+    pub action: String,
+    pub current_parent: Option<String>,
+    pub expected_parent: Option<String>,
 }
 
 #[derive(Serialize)]

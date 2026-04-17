@@ -323,11 +323,14 @@ pub fn run(options: RestackOptions) -> Result<()> {
     execute_plan(&plan, workdir)?;
 
     // Normalize metadata post-rebase, scoped to the affected range.
-    // When --from is used, only normalize entries at or above from_position
-    // to avoid rewriting history below the boundary.
+    // When --from is used, include the predecessor entry (from - 1) so that
+    // normalize_stack_metadata seeds previous_gg_id correctly for the first
+    // restacked entry, but exclude everything below that to avoid rewriting
+    // unrelated history.
     let mut rewritten_stack = Stack::load(&repo, &config)?;
     if let Some(from_pos) = from_position {
-        rewritten_stack.entries.retain(|e| e.position >= from_pos);
+        let cutoff = from_pos.saturating_sub(1).max(1);
+        rewritten_stack.entries.retain(|e| e.position >= cutoff);
     }
     git::normalize_stack_metadata(&repo, &rewritten_stack)?;
 

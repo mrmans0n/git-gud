@@ -350,14 +350,8 @@ mod tests {
         assert_eq!(value["restack"]["dry_run"], false);
         assert_eq!(value["restack"]["steps"][0]["action"], "ok");
         assert_eq!(value["restack"]["steps"][1]["action"], "reattach");
-        assert_eq!(
-            value["restack"]["steps"][1]["current_parent"],
-            "c-old1111"
-        );
-        assert_eq!(
-            value["restack"]["steps"][1]["expected_parent"],
-            "c-aaa1111"
-        );
+        assert_eq!(value["restack"]["steps"][1]["current_parent"], "c-old1111");
+        assert_eq!(value["restack"]["steps"][1]["expected_parent"], "c-aaa1111");
     }
 
     #[test]

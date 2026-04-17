@@ -74,7 +74,9 @@ impl RestackPlan {
                 ))
             })?;
 
-            let expected = stack.expected_parent_gg_id(entry.position).map(String::from);
+            let expected = stack
+                .expected_parent_gg_id(entry.position)
+                .map(String::from);
             let current = entry.gg_parent.clone();
 
             let below_from = from_position.is_some_and(|from_pos| entry.position < from_pos);
@@ -101,7 +103,9 @@ impl RestackPlan {
 
     /// Returns true if any step requires rebasing.
     pub fn needs_rebase(&self) -> bool {
-        self.steps.iter().any(|s| s.action == RestackAction::Reattach)
+        self.steps
+            .iter()
+            .any(|s| s.action == RestackAction::Reattach)
     }
 
     /// Count of entries that need rebasing.
@@ -171,7 +175,11 @@ pub fn run(options: RestackOptions) -> Result<()> {
     let stack_name = stack.name.clone();
     let total = stack.entries.len();
     let reattach_count = plan.reattach_count();
-    let skip_count = plan.steps.iter().filter(|s| s.action == RestackAction::Skip).count();
+    let skip_count = plan
+        .steps
+        .iter()
+        .filter(|s| s.action == RestackAction::Skip)
+        .count();
     let ok_count = total - reattach_count - skip_count;
 
     // No-op: stack is already consistent
@@ -226,12 +234,7 @@ pub fn run(options: RestackOptions) -> Result<()> {
                     RestackAction::Reattach => {
                         let cur = step.current_parent.as_deref().unwrap_or("(none)");
                         let exp = step.expected_parent.as_deref().unwrap_or("(none)");
-                        format!(
-                            "{}    {} → {}",
-                            style("reattach").yellow(),
-                            cur,
-                            exp
-                        )
+                        format!("{}    {} → {}", style("reattach").yellow(), cur, exp)
                     }
                 };
                 println!(
@@ -272,9 +275,9 @@ pub fn run(options: RestackOptions) -> Result<()> {
             base_ref.id()
         } else {
             // Use the commit at from_pos - 1 as the base
-            let base_entry = stack.get_entry_by_position(from_pos - 1).ok_or_else(|| {
-                GgError::Other(format!("Position {} out of range", from_pos - 1))
-            })?;
+            let base_entry = stack
+                .get_entry_by_position(from_pos - 1)
+                .ok_or_else(|| GgError::Other(format!("Position {} out of range", from_pos - 1)))?;
             base_entry.oid
         }
     } else {

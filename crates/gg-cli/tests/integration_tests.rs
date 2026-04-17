@@ -8656,10 +8656,7 @@ fn test_restack_dry_run_json() {
     assert_eq!(json["restack"]["dry_run"], true);
     assert!(json["restack"]["total_entries"].as_u64().unwrap() >= 3);
     let steps = json["restack"]["steps"].as_array().unwrap();
-    let reattach_count = steps
-        .iter()
-        .filter(|s| s["action"] == "reattach")
-        .count();
+    let reattach_count = steps.iter().filter(|s| s["action"] == "reattach").count();
     assert!(
         reattach_count > 0,
         "Expected at least one reattach step, got 0. Steps: {:?}",

@@ -159,6 +159,13 @@ Rebase current stack onto base or explicit target.
 
 - `-f, --force` (alias: `--ignore-immutable`) — bypass the [immutability guard](#immutable-commits)
 
+#### `gg restack [OPTIONS]`
+Repair stack ancestry after manual history changes (amend, cherry-pick, upstream rebase).
+
+- `-n, --dry-run`: Show what would be done without making changes
+- `--from <TARGET>`: Repair only from this commit upward (position, SHA, or GG-ID)
+- `--json`
+
 ### Utilities
 
 #### `gg lint [OPTIONS]`
@@ -202,7 +209,7 @@ command, backed by a per-repo operation log at
 - `--json` — emit machine-readable JSON.
 
 Every mutating command (`sc`, `drop`, `split`, `rebase`, `reorder`,
-`absorb`, `reconcile`, `checkout`, `mv`/`first`/`last`/`prev`/`next`,
+`absorb`, `reconcile`, `restack`, `checkout`, `mv`/`first`/`last`/`prev`/`next`,
 `clean`, `sync`, `land`, `run --amend`) snapshots refs before mutating
 and records the operation on success. A second `gg undo` redoes the
 first — `undo` itself is recorded.
@@ -512,6 +519,41 @@ Field types for `entries`:
 }
 ```
 
+### `gg restack --json`
+
+```json
+{
+  "version": 1,
+  "restack": {
+    "stack_name": "my-feature",
+    "total_entries": 4,
+    "entries_restacked": 2,
+    "entries_ok": 2,
+    "dry_run": false,
+    "steps": [
+      {
+        "position": 1,
+        "gg_id": "c-abc1234",
+        "title": "Add login form",
+        "action": "ok",
+        "current_parent": null,
+        "expected_parent": null
+      },
+      {
+        "position": 2,
+        "gg_id": "c-def5678",
+        "title": "Add validation",
+        "action": "reattach",
+        "current_parent": "c-old1111",
+        "expected_parent": "c-abc1234"
+      }
+    ]
+  }
+}
+```
+
+`action` values: `"ok"`, `"reattach"`, `"skip"` (when `--from` is set, entries below the threshold are `"skip"`).
+
 ### `gg undo --json`
 
 ```json
@@ -584,7 +626,7 @@ with `is_undoable: false` and `touched_remote: true`.
 ## Immutable commits
 
 gg refuses by default to let rewrite-style commands (`gg sc`, `gg absorb`,
-`gg reorder`/`gg arrange`, `gg split`, `gg drop`, `gg rebase`) touch commits
+`gg reorder`/`gg arrange`, `gg split`, `gg drop`, `gg rebase`, `gg restack`) touch commits
 that look "already published". A commit is considered immutable when any of
 these is true:
 
@@ -755,6 +797,13 @@ Reorder commits in the stack.
   - `force` (bool, default false) — bypass the [immutability guard](#immutable-commits)
 - **Notes:** Direct mode only (`--no-tui` implicit). No interactive TUI via MCP.
 - **Returns:** Result of the reorder operation
+
+#### `stack_restack`
+Repair stack ancestry drift after manual history changes.
+- **Params:**
+  - `dry_run` (bool, default false) — show plan without making changes
+  - `from` (string, optional) — repair only from this position, GG-ID, or SHA upward
+- **Returns:** JSON `RestackResponse` with per-step plan and execution results
 
 #### `stack_undo`
 Reverse the ref/HEAD effects of the most recent mutating `gg` command

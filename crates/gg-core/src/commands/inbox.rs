@@ -152,14 +152,6 @@ fn infer_stack_usernames(repo: &git2::Repository, config: &Config) -> Result<Vec
         usernames.push(username);
     }
 
-    if let Ok(provider) = Provider::detect(repo) {
-        if let Ok(username) = provider.whoami() {
-            if !usernames.contains(&username) {
-                usernames.push(username);
-            }
-        }
-    }
-
     for branch_result in repo.branches(Some(git2::BranchType::Local))? {
         let (branch, _) = branch_result?;
         if let Some(name) = branch.name()? {
@@ -171,6 +163,14 @@ fn infer_stack_usernames(repo: &git2::Repository, config: &Config) -> Result<Vec
                 if !usernames.contains(&branch_user) {
                     usernames.push(branch_user);
                 }
+            }
+        }
+    }
+
+    if usernames.is_empty() {
+        if let Ok(provider) = Provider::detect(repo) {
+            if let Ok(username) = provider.whoami() {
+                usernames.push(username);
             }
         }
     }
@@ -218,8 +218,6 @@ pub fn run(all: bool, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    let provider = Provider::detect(&repo)?;
-
     if !json {
         eprint!("{}", style("Refreshing PR status...").dim());
     }
@@ -259,10 +257,16 @@ pub fn run(all: bool, json: bool) -> Result<()> {
             }
         }
 
+        let provider = if entries.iter().any(|entry| entry.mr_number.is_some()) {
+            Provider::detect(&repo).ok()
+        } else {
+            None
+        };
+
         // Refresh MR info from provider and cache URLs (T9 optimization)
         let mut mr_urls: HashMap<u64, String> = HashMap::new();
         for entry in &mut entries {
-            if let Some(pr_num) = entry.mr_number {
+            if let (Some(pr_num), Some(provider)) = (entry.mr_number, provider) {
                 if let Ok(info) = provider.get_pr_info(pr_num) {
                     entry.mr_state = Some(info.state);
                     entry.approved = info.approved;

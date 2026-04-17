@@ -169,8 +169,9 @@ pub fn run(all: bool, json: bool) -> Result<()> {
         let full_branch = git::format_stack_branch(&username, stack_name);
         let base = config
             .get_base_for_stack(stack_name)
-            .unwrap_or("main")
-            .to_string();
+            .map(|s| s.to_string())
+            .or_else(|| git::find_base_branch(&repo).ok())
+            .unwrap_or_else(|| "main".to_string());
 
         // Get commit OIDs for this stack
         let oids = match git::get_stack_commit_oids(&repo, &base, Some(&full_branch)) {

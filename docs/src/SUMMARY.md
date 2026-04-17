@@ -33,6 +33,7 @@
   - [reconcile](./commands/reconcile.md)
   - [restack](./commands/restack.md)
   - [undo](./commands/undo.md)
+  - [inbox](./commands/inbox.md)
 - [MCP Server](./mcp-server.md)
 - [Configuration](./configuration.md)
 - [Shell Completions](./shell-completions.md)

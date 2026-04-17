@@ -205,11 +205,11 @@ pub fn view_pr(pr_number: u64) -> Result<PrInfo> {
         _ => PrState::Open,
     };
 
-    let approved = pr_json
-        .review_decision
-        .as_deref()
-        .map(|d| d == "APPROVED")
-        .unwrap_or_else(|| pr_json.reviews.iter().any(|r| r.state == "APPROVED"));
+    let approved = match pr_json.review_decision.as_deref() {
+        Some("APPROVED") => true,
+        Some(_) => false,
+        None => pr_json.reviews.iter().any(|r| r.state == "APPROVED"),
+    };
 
     let changes_requested = pr_json.review_decision.as_deref() == Some("CHANGES_REQUESTED");
 

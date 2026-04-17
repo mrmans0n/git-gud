@@ -186,6 +186,13 @@ Repair metadata after external branch/PR/MR manipulation.
 - Normalizes `GG-ID` and `GG-Parent` trailers across the stack
 - `-n, --dry-run`
 
+#### `gg restack [OPTIONS]`
+Repair ancestry drift after manual git operations (amend, cherry-pick, interactive rebase).
+
+- `-n, --dry-run` — show plan without executing
+- `--from <TARGET>` — only repair from this entry upward (position, SHA, or GG-ID)
+- `--json`
+
 #### `gg continue` / `gg abort`
 Resume/abort paused operations.
 
@@ -715,6 +722,11 @@ Auto-absorb staged changes into correct commits.
 #### `stack_reconcile`
 Reconcile out-of-sync remote branches.
 - **Params:** `dry_run` (bool)
+
+#### `stack_restack`
+Repair ancestry drift in the current stack.
+- **Params:** `dry_run` (bool), `from` (string, optional — position/SHA/GG-ID)
+- **Returns:** Result with steps showing which entries were repaired
 
 #### `stack_move`
 Move to a specific commit in the stack.

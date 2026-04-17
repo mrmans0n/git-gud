@@ -558,3 +558,33 @@ mod undo_output_tests {
         assert_eq!(v["force"], true);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Restack responses
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct RestackResponse {
+    pub version: u32,
+    pub restack: RestackResultJson,
+}
+
+#[derive(Serialize)]
+pub struct RestackResultJson {
+    pub stack_name: String,
+    pub total_entries: usize,
+    pub entries_restacked: usize,
+    pub entries_ok: usize,
+    pub dry_run: bool,
+    pub steps: Vec<RestackStepJson>,
+}
+
+#[derive(Serialize)]
+pub struct RestackStepJson {
+    pub position: usize,
+    pub gg_id: Option<String>,
+    pub title: String,
+    pub action: String,
+    pub current_parent: Option<String>,
+    pub expected_parent: Option<String>,
+}

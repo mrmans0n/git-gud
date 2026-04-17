@@ -416,6 +416,20 @@ enum Commands {
         #[arg(long, default_value_t = 100, requires = "list")]
         limit: usize,
     },
+
+    /// Repair stack ancestry after manual history changes
+    #[command(name = "restack")]
+    Restack {
+        /// Show plan without executing
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+        /// Only repair from this entry upward (position, SHA, or GG-ID)
+        #[arg(long)]
+        from: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() {
@@ -676,6 +690,18 @@ fn main() {
                 operation_id,
                 json,
                 limit,
+            }),
+            json,
+        ),
+        Some(Commands::Restack {
+            dry_run,
+            from,
+            json,
+        }) => (
+            gg_core::commands::restack::run(gg_core::commands::restack::RestackOptions {
+                dry_run,
+                from,
+                json,
             }),
             json,
         ),

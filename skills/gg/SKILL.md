@@ -132,6 +132,7 @@ gg land -a -c --json
 - Drop commits from stack: `gg drop <position|sha|gg-id>... -y` (alias: `gg abandon`). Use `-y` / `--yes` to skip confirmation; add `-f` / `--force` only to bypass the immutability guard for merged/base-ancestor commits.
 - Reorder/drop stack (TUI): `gg reorder` (or `gg arrange`) — opens interactive TUI for visual reordering and dropping commits. Press `d` to mark a commit for dropping. Use `--no-tui` to fall back to text editor (delete lines to drop).
 - Reorder stack (direct): `gg reorder -o "3,1,2"`
+- Restack (repair ancestry): `gg restack [-n] [--from <target>] [--json]`
 - Sync subset: `gg sync -u <position|gg-id|sha> --json`
 - Lint stack: `gg lint --json`
 - Run a command across the stack: `gg run -- <cmd...>` (see below)

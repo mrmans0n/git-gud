@@ -8766,3 +8766,275 @@ fn test_undo_roundtrip_from_worktree() {
         "undo from worktree should restore pre-drop HEAD"
     );
 }
+
+// ── restack integration tests ──────────────────────────────────────────
+// GG-IDs must be c-[0-9a-f]{7} to pass normalize_gg_id validation.
+
+#[test]
+fn test_restack_noop() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    // Create a stack with 3 properly-chained commits
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "restack-noop"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("a.txt"), "a").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "first\n\nGG-ID: c-aaa1111"],
+    );
+
+    fs::write(repo_path.join("b.txt"), "b").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "second\n\nGG-ID: c-bbb2222\nGG-Parent: c-aaa1111"],
+    );
+
+    fs::write(repo_path.join("c.txt"), "c").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "third\n\nGG-ID: c-ccc3333\nGG-Parent: c-bbb2222"],
+    );
+
+    // Restack should be a no-op
+    let (ok, stdout, stderr) = run_gg(&repo_path, &["restack"]);
+    assert!(ok, "restack failed: stdout={}, stderr={}", stdout, stderr);
+    assert!(
+        stdout.contains("already consistent"),
+        "Expected 'already consistent', got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_restack_after_amend() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    // Create a stack with 3 commits, where commit 3 has a WRONG GG-Parent
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "restack-amend"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("a.txt"), "a").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "first\n\nGG-ID: c-aaa1111"],
+    );
+
+    fs::write(repo_path.join("b.txt"), "b").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "second\n\nGG-ID: c-bbb2222\nGG-Parent: c-aaa1111"],
+    );
+
+    // Commit 3 with WRONG GG-Parent (c-aaa1111 instead of c-bbb2222)
+    fs::write(repo_path.join("c.txt"), "c").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "third\n\nGG-ID: c-ccc3333\nGG-Parent: c-aaa1111"],
+    );
+
+    // Restack should detect the mismatch and repair
+    let (ok, stdout, stderr) = run_gg(&repo_path, &["restack"]);
+    assert!(
+        ok,
+        "restack should succeed. stdout: {} stderr: {}",
+        stdout, stderr
+    );
+    assert!(
+        stdout.contains("repaired") || stdout.contains("Restacked"),
+        "Expected repair message, got: {}",
+        stdout
+    );
+
+    // Verify the stack is now consistent
+    let (ok2, stdout2, _) = run_gg(&repo_path, &["restack", "--dry-run"]);
+    assert!(ok2);
+    assert!(
+        stdout2.contains("already consistent"),
+        "Stack should be consistent after restack, got: {}",
+        stdout2
+    );
+}
+
+#[test]
+fn test_restack_cascading() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    // Create a stack where commits 2 and 3 both have wrong parents
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "restack-cascade"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("a.txt"), "a").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "first\n\nGG-ID: c-aaa1111"],
+    );
+
+    // Commit 2 with missing GG-Parent (should be c-aaa1111)
+    fs::write(repo_path.join("b.txt"), "b").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "second\n\nGG-ID: c-bbb2222"],
+    );
+
+    // Commit 3 with wrong GG-Parent (c-aaa1111 instead of c-bbb2222)
+    fs::write(repo_path.join("c.txt"), "c").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "third\n\nGG-ID: c-ccc3333\nGG-Parent: c-aaa1111"],
+    );
+
+    // Restack should repair both entries
+    let (ok, stdout, stderr) = run_gg(&repo_path, &["restack", "--json"]);
+    assert!(
+        ok,
+        "restack should succeed. stdout: {} stderr: {}",
+        stdout, stderr
+    );
+
+    let json: Value = serde_json::from_str(&stdout).expect("valid JSON output");
+    let restacked = json["restack"]["entries_restacked"]
+        .as_u64()
+        .expect("entries_restacked field");
+    assert!(
+        restacked >= 2,
+        "Expected at least 2 entries restacked, got {}",
+        restacked
+    );
+}
+
+#[test]
+fn test_restack_from_partial() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    // Create a stack where commit 2 has wrong parent AND commit 3 has wrong parent
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "restack-partial"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("a.txt"), "a").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "first\n\nGG-ID: c-aaa1111"],
+    );
+
+    // Commit 2 with missing GG-Parent (wrong — should be c-aaa1111)
+    fs::write(repo_path.join("b.txt"), "b").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "second\n\nGG-ID: c-bbb2222"],
+    );
+
+    // Commit 3 with wrong GG-Parent
+    fs::write(repo_path.join("c.txt"), "c").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "third\n\nGG-ID: c-ccc3333\nGG-Parent: c-aaa1111"],
+    );
+
+    // --from 3 should only include entry 3 in the plan
+    let (ok, stdout, stderr) = run_gg(&repo_path, &["restack", "--from", "3", "--json"]);
+    assert!(
+        ok,
+        "restack --from 3 should succeed. stdout: {} stderr: {}",
+        stdout, stderr
+    );
+
+    let json: Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let steps = json["restack"]["steps"].as_array().expect("steps array");
+    // Only 1 step (position 3)
+    assert_eq!(steps.len(), 1, "Expected 1 step for --from 3");
+    assert_eq!(steps[0]["position"], 3);
+}
+
+#[test]
+fn test_restack_dry_run_no_mutation() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    // Create a stack with broken ancestry
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "restack-dryrun"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("a.txt"), "a").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "first\n\nGG-ID: c-aaa1111"],
+    );
+
+    // Commit 2 with wrong GG-Parent (c-fff9999 doesn't exist)
+    fs::write(repo_path.join("b.txt"), "b").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "second\n\nGG-ID: c-bbb2222\nGG-Parent: c-fff9999"],
+    );
+
+    // Record HEAD SHA before dry-run
+    let (_, sha_before) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    let sha_before = sha_before.trim().to_string();
+
+    // Dry-run should produce JSON with reattach steps but NOT change HEAD
+    let (ok, stdout, _) = run_gg(&repo_path, &["restack", "--dry-run", "--json"]);
+    assert!(ok, "dry-run should succeed");
+
+    let json: Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(json["restack"]["dry_run"], true);
+    assert!(json["restack"]["entries_restacked"].as_u64().unwrap() > 0);
+
+    // Verify HEAD is unchanged
+    let (_, sha_after) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    let sha_after = sha_after.trim().to_string();
+    assert_eq!(sha_before, sha_after, "dry-run must not change HEAD");
+}

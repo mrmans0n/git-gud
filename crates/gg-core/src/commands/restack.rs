@@ -5,7 +5,7 @@
 //! Restack compares the two, builds a plan, and executes a single
 //! `git rebase -i` to realign them.
 
-use std::io::Write;
+use std::path::Path;
 
 use console::style;
 
@@ -129,7 +129,9 @@ pub fn build_plan(
 }
 
 /// Execute a restack plan via `git rebase -i` with GIT_SEQUENCE_EDITOR.
-fn execute_plan(plan: &RestackPlan) -> Result<()> {
+fn execute_plan(plan: &RestackPlan, workdir: &Path) -> Result<()> {
+    use std::io::Write;
+
     // Build the rebase todo — one `pick` per step, in order
     let mut rebase_todo = String::new();
     for step in &plan.steps {
@@ -156,6 +158,7 @@ fn execute_plan(plan: &RestackPlan) -> Result<()> {
     }
 
     let output = std::process::Command::new("git")
+        .current_dir(workdir)
         .env("GIT_SEQUENCE_EDITOR", script_file.to_str().unwrap())
         .args(["rebase", "-i", &plan.base_oid.to_string(), "--keep-empty"])
         .output()?;
@@ -314,10 +317,18 @@ pub fn run(options: RestackOptions) -> Result<()> {
     }
 
     // Execute
-    execute_plan(&plan)?;
+    let workdir = repo.workdir().ok_or_else(|| {
+        GgError::Other("Cannot restack in a bare repository.".to_string())
+    })?;
+    execute_plan(&plan, workdir)?;
 
-    // Normalize metadata post-rebase
-    let rewritten_stack = Stack::load(&repo, &config)?;
+    // Normalize metadata post-rebase, scoped to the affected range.
+    // When --from is used, only normalize entries at or above from_position
+    // to avoid rewriting history below the boundary.
+    let mut rewritten_stack = Stack::load(&repo, &config)?;
+    if let Some(from_pos) = from_position {
+        rewritten_stack.entries.retain(|e| e.position >= from_pos);
+    }
     git::normalize_stack_metadata(&repo, &rewritten_stack)?;
 
     // Output

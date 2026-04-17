@@ -326,6 +326,23 @@ fn rebase_guard_still_blocks_squash_merged_not_on_base() {
 }
 
 #[test]
+fn rebase_guard_keeps_base_ancestors_when_fetch_was_not_fresh() {
+    let temp = tempfile::tempdir().unwrap();
+    let (repo, oids, _) = make_linear_stack(&temp, 2, 1);
+
+    let stack = build_stack(&oids, &[None, None]);
+    let policy = ImmutabilityPolicy::for_stack(&repo, &stack).unwrap();
+    let report = policy.check_all(&stack);
+
+    assert_eq!(report.entries.len(), 1);
+    assert_eq!(report.entries[0].position, 1);
+
+    // If fetch failed and origin/<base> may be stale, rebase should keep the
+    // original guard behavior instead of silently dropping BaseAncestor entries.
+    assert!(guard(report, false).is_err());
+}
+
+#[test]
 fn falls_back_to_local_base_when_origin_ref_is_missing() {
     let temp = tempfile::tempdir().unwrap();
     let repo_path = temp.path();

@@ -93,6 +93,7 @@ fn prepare_rebase(
     // against stale refs can silently pass on a newly-merged commit and
     // then rewrite it after the fetch updates the ref.
     let fetch_result = git::run_git_command(&["fetch", "origin", "--prune"]);
+    let fetch_succeeded = fetch_result.is_ok();
     if let Err(e) = fetch_result {
         if !json {
             println!(
@@ -141,9 +142,14 @@ fn prepare_rebase(
             immutability::refresh_mr_state_for_guard(repo, &mut stack);
             let policy = ImmutabilityPolicy::for_stack(repo, &stack)?;
             let report = policy.check_all(&stack);
-            let pre_filter_count = report.entries.len();
-            let report = report.without_base_ancestors();
-            let dropped = pre_filter_count - report.entries.len();
+            let (report, dropped) = if fetch_succeeded {
+                let pre_filter_count = report.entries.len();
+                let filtered = report.without_base_ancestors();
+                let dropped = pre_filter_count - filtered.entries.len();
+                (filtered, dropped)
+            } else {
+                (report, 0)
+            };
             if dropped > 0 && !json {
                 println!(
                     "{} Skipping {} merged commit(s) already on {}",

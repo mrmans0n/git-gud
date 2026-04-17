@@ -103,9 +103,9 @@ fn resolve_base_branch(
     fn remote_head_base_branch(repo: &git2::Repository) -> Option<String> {
         let head_ref = repo.find_reference("refs/remotes/origin/HEAD").ok()?;
         let target = head_ref.symbolic_target()?;
-        target
-            .strip_prefix("refs/remotes/origin/")
-            .map(str::to_string)
+        let branch = target.strip_prefix("refs/remotes/origin/")?;
+        repo.find_reference(target).ok()?;
+        Some(branch.to_string())
     }
 
     config
@@ -114,6 +114,22 @@ fn resolve_base_branch(
         .or_else(|| remote_head_base_branch(repo))
         .or_else(|| git::find_base_branch(repo).ok())
         .ok_or(GgError::NoBaseBranch)
+}
+
+fn load_stack_entries(
+    repo: &git2::Repository,
+    base: &str,
+    full_branch: &str,
+) -> Result<Vec<stack::StackEntry>> {
+    let oids = git::get_stack_commit_oids(repo, base, Some(full_branch))?;
+
+    oids.iter()
+        .enumerate()
+        .map(|(i, oid)| -> Result<stack::StackEntry> {
+            let commit = repo.find_commit(*oid)?;
+            Ok(stack::StackEntry::from_commit(&commit, i + 1))
+        })
+        .collect()
 }
 
 /// Internal item representing one triaged PR.
@@ -143,8 +159,20 @@ pub fn run(all: bool, json: bool) -> Result<()> {
 
     git::validate_branch_username(&username)?;
 
-    let provider = Provider::detect(&repo)?;
     let stack_names = stack::list_all_stacks(&repo, &config, &username)?;
+    if stack_names.is_empty() {
+        if json {
+            print_json_output(&[]);
+        } else {
+            println!(
+                "{}",
+                style("Inbox is empty — nothing needs attention.").dim()
+            );
+        }
+        return Ok(());
+    }
+
+    let provider = Provider::detect(&repo)?;
 
     if !json {
         eprint!("{}", style("Refreshing PR status...").dim());
@@ -153,28 +181,10 @@ pub fn run(all: bool, json: bool) -> Result<()> {
     let mut items: Vec<InboxItem> = Vec::new();
 
     for stack_name in &stack_names {
-        let base = match resolve_base_branch(&repo, &config, stack_name) {
-            Ok(base) => base,
-            Err(_) => continue,
-        };
-
         let full_branch = git::format_stack_branch(&username, stack_name);
 
-        // Load stack commits from the branch ref
-        let oids = match git::get_stack_commit_oids(&repo, &base, Some(&full_branch)) {
-            Ok(oids) => oids,
-            Err(_) => continue, // Stack branch may have been deleted
-        };
-
-        // Build entries and enrich with config MR numbers
-        let mut entries: Vec<stack::StackEntry> = oids
-            .iter()
-            .enumerate()
-            .map(|(i, oid)| {
-                let commit = repo.find_commit(*oid).expect("commit exists");
-                stack::StackEntry::from_commit(&commit, i + 1)
-            })
-            .collect();
+        let base = resolve_base_branch(&repo, &config, stack_name)?;
+        let mut entries = load_stack_entries(&repo, &base, &full_branch)?;
 
         if let Some(stack_config) = config.get_stack(stack_name) {
             for entry in &mut entries {
@@ -708,5 +718,31 @@ mod tests {
         let config = Config::default();
         let base = resolve_base_branch(&repo, &config, "feature").unwrap();
         assert_eq!(base, "develop");
+    }
+
+    #[test]
+    fn resolve_base_branch_ignores_stale_origin_head_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_oid = {
+            let mut index = repo.index().unwrap();
+            index.write_tree().unwrap()
+        };
+        let tree = repo.find_tree(tree_oid).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+
+        repo.reference_symbolic(
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/develop",
+            true,
+            "test",
+        )
+        .unwrap();
+
+        let config = Config::default();
+        let base = resolve_base_branch(&repo, &config, "feature").unwrap();
+        assert_eq!(base, "master");
     }
 }

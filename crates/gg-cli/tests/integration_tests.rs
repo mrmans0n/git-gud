@@ -249,6 +249,50 @@ fn test_gg_clean_json_no_stacks() {
 }
 
 #[test]
+fn test_gg_inbox_json_no_stacks() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"},"stacks":{}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["inbox", "--json"]);
+    assert!(success, "gg inbox --json failed: {}", stderr);
+    assert!(
+        stderr.trim().is_empty(),
+        "stderr should be empty in JSON mode"
+    );
+
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(parsed["version"], 1);
+    assert_eq!(parsed["total_items"], 0);
+
+    let buckets = parsed["buckets"]
+        .as_object()
+        .expect("buckets must be an object");
+    for key in [
+        "ready_to_land",
+        "changes_requested",
+        "blocked_on_ci",
+        "awaiting_review",
+        "behind_base",
+        "draft",
+    ] {
+        assert!(
+            buckets[key]
+                .as_array()
+                .expect("bucket must be an array")
+                .is_empty(),
+            "bucket {key} should be empty"
+        );
+    }
+}
+
+#[test]
 fn test_gg_clean_json_requires_all() {
     let (_temp_dir, repo_path) = create_test_repo();
 

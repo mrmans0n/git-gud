@@ -147,6 +147,13 @@ pub struct StackLogParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct StackInboxParams {
+    /// Include merged/clean items (default: only actionable items)
+    #[serde(default)]
+    pub all: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PrInfoParams {
     /// PR/MR number to look up
     pub number: u64,
@@ -981,8 +988,15 @@ impl GgMcpServer {
     #[tool(
         description = "Show actionable inbox/triage view across all stacks. Returns items grouped by status: ready_to_land, changes_requested, blocked_on_ci, awaiting_review, behind_base, draft."
     )]
-    fn stack_inbox(&self) -> Result<String, String> {
-        run_gg_command(&["inbox".to_string(), "--json".to_string()])
+    fn stack_inbox(
+        &self,
+        Parameters(params): Parameters<StackInboxParams>,
+    ) -> Result<String, String> {
+        let mut args = vec!["inbox".to_string(), "--json".to_string()];
+        if params.all {
+            args.push("--all".to_string());
+        }
+        run_gg_command(&args)
     }
 
     /// Reorder commits in the stack with explicit order.

@@ -11,7 +11,7 @@ use crate::provider::{CiStatus, PrState, Provider};
 use crate::stack::{self, StackEntry};
 
 /// Action buckets for inbox triage — evaluated in priority order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionBucket {
     ReadyToLand,
@@ -74,8 +74,12 @@ pub fn bucket(input: &BucketInput) -> Option<ActionBucket> {
         return Some(ActionBucket::ChangesRequested);
     }
 
-    if input.approved && matches!(input.ci_status, Some(CiStatus::Success)) && input.mergeable {
-        return Some(ActionBucket::ReadyToLand);
+    if input.approved && input.mergeable {
+        // No CI = treat as green (no branch protection CI requirement)
+        let ci_green = matches!(input.ci_status, Some(CiStatus::Success) | None);
+        if ci_green {
+            return Some(ActionBucket::ReadyToLand);
+        }
     }
 
     if matches!(
@@ -196,10 +200,12 @@ pub fn run(all: bool, json: bool) -> Result<()> {
             }
         }
 
-        // Compute behind_base for this stack
-        let behind =
-            git::count_commits_behind(&repo, &base, &format!("origin/{}", base)).unwrap_or(0);
-        let is_behind_base = behind > 0;
+        // Compute behind_base: how many commits on origin/base are not
+        // reachable from the stack branch (i.e., does the stack need rebasing?)
+        let is_behind_base =
+            git::count_branch_behind_upstream(&repo, &full_branch, &format!("origin/{}", base))
+                .unwrap_or(0)
+                > 0;
 
         // Refresh MR info and bucket each entry
         for entry in &mut entries {
@@ -216,11 +222,6 @@ pub fn run(all: bool, json: bool) -> Result<()> {
                 // Get CI status
                 if let Ok(ci) = provider.get_pr_ci_status(pr_num) {
                     entry.ci_status = Some(ci);
-                }
-
-                // Check approval (overrides view_pr result with reviewDecision)
-                if let Ok(approved) = provider.check_pr_approved(pr_num) {
-                    entry.approved = approved;
                 }
 
                 // Bucket the entry
@@ -474,6 +475,13 @@ mod tests {
             true,
             false,
         );
+        assert_eq!(bucket(&input), Some(ActionBucket::ReadyToLand));
+    }
+
+    #[test]
+    fn ready_to_land_approved_no_ci_mergeable() {
+        // No CI = treat as green (no branch protection CI requirement)
+        let input = make_input(PrState::Open, None, true, false, true, false);
         assert_eq!(bucket(&input), Some(ActionBucket::ReadyToLand));
     }
 

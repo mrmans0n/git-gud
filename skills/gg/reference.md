@@ -74,6 +74,14 @@ badges). Stack-scoped — use `gg ls --all` for cross-stack browsing.
 - `--json` (auto-refreshes PR/MR state; shape mirrors `gg ls --json` entries
   under a `log` key)
 
+#### `gg inbox [OPTIONS]`
+Actionable triage across **all** stacks. Refreshes PR/MR status automatically
+and groups entries into buckets: ready to land, changes requested, blocked on
+CI, awaiting review, behind base, draft, merged.
+
+- `-a, --all`: Include merged items (hidden by default)
+- `--json`
+
 #### `gg sync [OPTIONS]`
 Push and create/update PRs/MRs.
 
@@ -621,6 +629,38 @@ Entries are newest-first. Use `is_undoable` to gate UI/agent actions;
 `is_undo` + `undoes` render redo markers. Remote-touching ops appear
 with `is_undoable: false` and `touched_remote: true`.
 
+### `gg inbox --json`
+
+```json
+{
+  "version": 1,
+  "total_items": 4,
+  "buckets": {
+    "ready_to_land": [
+      {
+        "stack_name": "string",
+        "position": 1,
+        "sha": "string",
+        "title": "string",
+        "pr_number": 123,
+        "pr_url": "string",
+        "ci_status": "success"
+      }
+    ],
+    "changes_requested": [],
+    "blocked_on_ci": [],
+    "awaiting_review": [],
+    "behind_base": [],
+    "draft": [],
+    "merged": []
+  }
+}
+```
+
+`ci_status` is one of `"pending"`, `"running"`, `"success"`, `"failed"`,
+`"canceled"`, `"unknown"`, or `null`. The `merged` bucket is omitted when
+empty (via `skip_serializing_if`). With `--all`, merged entries appear.
+
 ---
 
 ## Immutable commits
@@ -804,6 +844,12 @@ Repair stack ancestry drift after manual history changes.
   - `dry_run` (bool, default false) — show plan without making changes
   - `from` (string, optional) — repair only from this position, GG-ID, or SHA upward
 - **Returns:** JSON `RestackResponse` with per-step plan and execution results
+
+#### `stack_inbox`
+Actionable triage view across all stacks — what's ready to land, what needs attention, and what's blocked.
+- **Params:**
+  - `all` (bool, default false) — include merged items
+- **Returns:** JSON `InboxResponse` with `total_items` and `buckets` (ready_to_land, changes_requested, blocked_on_ci, awaiting_review, behind_base, draft, merged)
 
 #### `stack_undo`
 Reverse the ref/HEAD effects of the most recent mutating `gg` command

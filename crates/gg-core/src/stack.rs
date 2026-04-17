@@ -35,6 +35,10 @@ pub struct StackEntry {
     pub mr_state: Option<PrState>,
     /// Whether the PR is approved
     pub approved: bool,
+    /// Whether changes have been requested on the PR
+    pub changes_requested: bool,
+    /// Whether the PR is mergeable
+    pub mergeable: bool,
     /// CI status
     pub ci_status: Option<CiStatus>,
     /// Position in the stack (1-indexed)
@@ -57,6 +61,8 @@ impl StackEntry {
             mr_number: None,
             mr_state: None,
             approved: false,
+            changes_requested: false,
+            mergeable: false,
             ci_status: None,
             position,
             in_merge_train: false,
@@ -278,6 +284,8 @@ impl Stack {
                     Ok(info) => {
                         entry.mr_state = Some(info.state);
                         entry.approved = info.approved;
+                        entry.changes_requested = info.changes_requested;
+                        entry.mergeable = info.mergeable;
                     }
                     Err(_) => {
                         // PR/MR might have been deleted
@@ -450,6 +458,8 @@ mod tests {
             mr_number: None,
             mr_state: None,
             approved: false,
+            changes_requested: false,
+            mergeable: false,
             ci_status: None,
             position: pos,
             in_merge_train: false,

@@ -28,11 +28,13 @@ pub struct PrInfo {
     pub draft: bool,
     pub approved: bool,
     pub mergeable: bool,
+    pub changes_requested: bool,
 }
 
 /// JSON response from `gh pr view --json`
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct GhPrJson {
     number: u64,
     title: String,
@@ -43,9 +45,11 @@ struct GhPrJson {
     mergeable: Option<String>,
     #[serde(default)]
     reviews: Vec<GhReview>,
+    review_decision: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct GhReview {
     state: String,
 }
@@ -180,7 +184,7 @@ pub fn view_pr(pr_number: u64) -> Result<PrInfo> {
             "view",
             &pr_number.to_string(),
             "--json",
-            "number,title,state,url,isDraft,mergeable,reviews",
+            "number,title,state,url,isDraft,mergeable,reviews,reviewDecision",
         ])
         .output()?;
 
@@ -203,7 +207,8 @@ pub fn view_pr(pr_number: u64) -> Result<PrInfo> {
         _ => PrState::Open,
     };
 
-    let approved = pr_json.reviews.iter().any(|r| r.state == "APPROVED");
+    let approved = pr_json.review_decision.as_deref() == Some("APPROVED");
+    let changes_requested = pr_json.review_decision.as_deref() == Some("CHANGES_REQUESTED");
 
     let mergeable = pr_json.mergeable.as_deref() == Some("MERGEABLE");
 
@@ -215,6 +220,7 @@ pub fn view_pr(pr_number: u64) -> Result<PrInfo> {
         draft: pr_json.is_draft,
         approved,
         mergeable,
+        changes_requested,
     })
 }
 
@@ -666,6 +672,7 @@ mod tests {
             draft: false,
             approved: true,
             mergeable: true,
+            changes_requested: false,
         };
         assert_eq!(info.number, 42);
         assert_eq!(info.title, "Test PR");

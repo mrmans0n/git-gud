@@ -31,6 +31,7 @@ pub struct MrInfo {
     pub draft: bool,
     pub approved: bool,
     pub mergeable: bool,
+    pub changes_requested: bool,
 }
 
 /// JSON response from `glab mr view --json`
@@ -336,6 +337,7 @@ pub fn view_mr(mr_number: u64) -> Result<MrInfo> {
         draft,
         approved: false, // Would need additional API call
         mergeable,
+        changes_requested: false, // GitLab doesn't expose this directly
     })
 }
 

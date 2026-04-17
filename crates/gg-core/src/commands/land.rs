@@ -2362,6 +2362,8 @@ mod tests {
             mr_number: None, // No MR = unsynced
             mr_state: None,
             approved: false,
+            changes_requested: false,
+            mergeable: false,
             ci_status: None,
             position: 1,
             in_merge_train: false,
@@ -2381,6 +2383,8 @@ mod tests {
             mr_number: Some(123), // Has MR = synced
             mr_state: Some(crate::provider::PrState::Merged),
             approved: true,
+            changes_requested: false,
+            mergeable: false,
             ci_status: None,
             position: 2,
             in_merge_train: false,
@@ -2418,6 +2422,8 @@ mod tests {
                 mr_number: Some(1),
                 mr_state: Some(crate::provider::PrState::Merged),
                 approved: true,
+                changes_requested: false,
+                mergeable: false,
                 ci_status: None,
                 position: 1,
                 in_merge_train: false,
@@ -2432,6 +2438,8 @@ mod tests {
                 mr_number: Some(2),
                 mr_state: Some(crate::provider::PrState::Merged),
                 approved: true,
+                changes_requested: false,
+                mergeable: false,
                 ci_status: None,
                 position: 2,
                 in_merge_train: false,
@@ -2446,6 +2454,8 @@ mod tests {
                 mr_number: None, // No MR
                 mr_state: None,
                 approved: false,
+                changes_requested: false,
+                mergeable: false,
                 ci_status: None,
                 position: 3,
                 in_merge_train: false,
@@ -2460,6 +2470,8 @@ mod tests {
                 mr_number: None, // No MR
                 mr_state: None,
                 approved: false,
+                changes_requested: false,
+                mergeable: false,
                 ci_status: None,
                 position: 4,
                 in_merge_train: false,

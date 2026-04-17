@@ -109,6 +109,7 @@ fn build_stack(oids: &[git2::Oid], states: &[Option<PrState>]) -> Stack {
             position: i + 1,
             in_merge_train: false,
             merge_train_position: None,
+            mr_url: None,
         })
         .collect();
 

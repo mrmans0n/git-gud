@@ -266,6 +266,100 @@ fn refresh_mr_state_for_guard_is_noop_without_provider() {
 }
 
 #[test]
+fn rebase_guard_passes_when_only_immutable_is_base_ancestor() {
+    // Repro for #293: 2-commit stack where bottom is already on origin/main.
+    // After without_base_ancestors(), the guard should pass without --force.
+    let temp = tempfile::tempdir().unwrap();
+    let (repo, oids, _) = make_linear_stack(&temp, 2, 1);
+    // origin/main covers stack commit #1.
+
+    let stack = build_stack(&oids, &[None, None]);
+    let policy = ImmutabilityPolicy::for_stack(&repo, &stack).unwrap();
+
+    let report = policy.check_all(&stack);
+    // Pre-filter: commit #1 is immutable (BaseAncestor).
+    assert_eq!(report.entries.len(), 1);
+    assert_eq!(report.entries[0].position, 1);
+
+    // After filtering, the report should be clear.
+    let filtered = report.without_base_ancestors();
+    assert!(
+        filtered.is_clear(),
+        "expected clear report after filtering base ancestors, got {:?}",
+        filtered
+    );
+
+    // Guard passes without --force.
+    assert!(guard(filtered, false).is_ok());
+}
+
+#[test]
+fn rebase_guard_still_blocks_squash_merged_not_on_base() {
+    // A squash-merged PR whose SHA is NOT on origin/main must still block.
+    // This is the case without_base_ancestors() must preserve.
+    let temp = tempfile::tempdir().unwrap();
+    let (repo, oids, _) = make_linear_stack(&temp, 2, 0);
+    // origin/main at base commit — no stack commits are ancestors.
+
+    // Mark commit #1 as squash-merged (MergedPr only, not BaseAncestor).
+    let stack = build_stack(&oids, &[Some(PrState::Merged), None]);
+    let policy = ImmutabilityPolicy::for_stack(&repo, &stack).unwrap();
+
+    let report = policy.check_all(&stack);
+    assert_eq!(report.entries.len(), 1);
+    assert_eq!(report.entries[0].position, 1);
+    assert!(matches!(
+        report.entries[0].reasons[0],
+        ImmutableReason::MergedPr { .. }
+    ));
+
+    // Filtering should NOT remove this entry (no BaseAncestor reason).
+    let filtered = report.without_base_ancestors();
+    assert_eq!(
+        filtered.entries.len(),
+        1,
+        "squash-merged entry must survive filtering"
+    );
+
+    // Guard rejects without --force.
+    assert!(guard(filtered, false).is_err());
+}
+
+#[test]
+fn rebase_guard_keeps_base_ancestors_for_cross_target_rebases() {
+    let temp = tempfile::tempdir().unwrap();
+    let (repo, oids, _) = make_linear_stack(&temp, 2, 1);
+
+    let stack = build_stack(&oids, &[None, None]);
+    let policy = ImmutabilityPolicy::for_stack(&repo, &stack).unwrap();
+    let report = policy.check_all(&stack);
+
+    assert_eq!(report.entries.len(), 1);
+    assert_eq!(report.entries[0].position, 1);
+
+    // Rebasing onto a non-base target must keep BaseAncestor entries, because
+    // the ancestry check was computed against stack.base, not the chosen target.
+    assert!(guard(report, false).is_err());
+}
+
+#[test]
+fn rebase_guard_keeps_base_ancestors_when_fetch_was_not_fresh() {
+    let temp = tempfile::tempdir().unwrap();
+    let (repo, oids, _) = make_linear_stack(&temp, 2, 1);
+
+    let stack = build_stack(&oids, &[None, None]);
+    let policy = ImmutabilityPolicy::for_stack(&repo, &stack).unwrap();
+    let report = policy.check_all(&stack);
+
+    assert_eq!(report.entries.len(), 1);
+    assert_eq!(report.entries[0].position, 1);
+
+    // If fetch failed and origin/<base> may be stale, rebase should keep the
+    // original guard behavior instead of silently dropping BaseAncestor entries.
+    assert!(guard(report, false).is_err());
+}
+
+#[test]
 fn falls_back_to_local_base_when_origin_ref_is_missing() {
     let temp = tempfile::tempdir().unwrap();
     let repo_path = temp.path();

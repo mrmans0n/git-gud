@@ -91,6 +91,29 @@ impl ImmutabilityReport {
         self.entries.is_empty()
     }
 
+    /// Remove entries that have a `BaseAncestor` reason.
+    ///
+    /// If a commit is reachable from `origin/<base>`, `git rebase` skips it
+    /// unconditionally (patch-already-applied detection is SHA-based). So
+    /// base-ancestor entries never need guarding during rebase — even if the
+    /// entry also carries a `MergedPr` reason, the commit won't be rewritten.
+    ///
+    /// Entries with only non-`BaseAncestor` reasons (e.g. squash-merged PRs
+    /// whose SHA isn't on the base) are kept — rebase *would* reapply those.
+    pub fn without_base_ancestors(self) -> Self {
+        Self {
+            entries: self
+                .entries
+                .into_iter()
+                .filter(|e| {
+                    !e.reasons
+                        .iter()
+                        .any(|r| matches!(r, ImmutableReason::BaseAncestor { .. }))
+                })
+                .collect(),
+        }
+    }
+
     /// Format the report as a multi-line string suitable for error messages.
     pub fn format_for_error(&self) -> String {
         let mut out = String::new();
@@ -503,5 +526,96 @@ mod tests {
         let policy = ImmutabilityPolicy::for_stack(&repo, &stack).unwrap();
         let report = policy.check_all(&stack);
         assert_eq!(report.entries.len(), 2);
+    }
+
+    #[test]
+    fn without_base_ancestors_drops_base_only_entries() {
+        let report = ImmutabilityReport {
+            entries: vec![ImmutableEntry {
+                position: 1,
+                short_sha: "aaa".to_string(),
+                title: "merged commit".to_string(),
+                reasons: vec![ImmutableReason::BaseAncestor {
+                    base_ref: "origin/main".to_string(),
+                }],
+            }],
+        };
+        let filtered = report.without_base_ancestors();
+        assert!(filtered.is_clear());
+    }
+
+    #[test]
+    fn without_base_ancestors_keeps_merged_pr_entries() {
+        let report = ImmutabilityReport {
+            entries: vec![ImmutableEntry {
+                position: 1,
+                short_sha: "aaa".to_string(),
+                title: "squash-merged".to_string(),
+                reasons: vec![ImmutableReason::MergedPr { number: Some(42) }],
+            }],
+        };
+        let filtered = report.without_base_ancestors();
+        assert_eq!(filtered.entries.len(), 1);
+    }
+
+    #[test]
+    fn without_base_ancestors_drops_dual_reason_entries() {
+        // If a commit has both MergedPr and BaseAncestor, it IS on the base,
+        // so git rebase will skip it regardless — safe to drop.
+        let report = ImmutabilityReport {
+            entries: vec![ImmutableEntry {
+                position: 1,
+                short_sha: "aaa".to_string(),
+                title: "merged and on base".to_string(),
+                reasons: vec![
+                    ImmutableReason::MergedPr { number: Some(10) },
+                    ImmutableReason::BaseAncestor {
+                        base_ref: "origin/main".to_string(),
+                    },
+                ],
+            }],
+        };
+        let filtered = report.without_base_ancestors();
+        assert!(filtered.is_clear());
+    }
+
+    #[test]
+    fn without_base_ancestors_mixed_stack() {
+        let report = ImmutabilityReport {
+            entries: vec![
+                // Entry 1: base-ancestor only → should be dropped
+                ImmutableEntry {
+                    position: 1,
+                    short_sha: "aaa".to_string(),
+                    title: "on base".to_string(),
+                    reasons: vec![ImmutableReason::BaseAncestor {
+                        base_ref: "origin/main".to_string(),
+                    }],
+                },
+                // Entry 2: merged-pr only → should be kept
+                ImmutableEntry {
+                    position: 2,
+                    short_sha: "bbb".to_string(),
+                    title: "squash-merged".to_string(),
+                    reasons: vec![ImmutableReason::MergedPr { number: Some(99) }],
+                },
+                // Entry 3: both reasons → dropped (BaseAncestor present, rebase skips it)
+                ImmutableEntry {
+                    position: 3,
+                    short_sha: "ccc".to_string(),
+                    title: "merged and on base".to_string(),
+                    reasons: vec![
+                        ImmutableReason::MergedPr { number: Some(100) },
+                        ImmutableReason::BaseAncestor {
+                            base_ref: "origin/main".to_string(),
+                        },
+                    ],
+                },
+            ],
+        };
+        let filtered = report.without_base_ancestors();
+        // Only entry #2 (MergedPr-only, squash-merge) survives.
+        assert_eq!(filtered.entries.len(), 1);
+        assert_eq!(filtered.entries[0].position, 2);
     }
 }

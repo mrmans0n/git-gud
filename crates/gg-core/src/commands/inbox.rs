@@ -9,7 +9,10 @@ use crate::config::Config;
 use crate::error::GgError;
 use crate::error::Result;
 use crate::git;
-use crate::output::{print_json, InboxBucketsJson, InboxEntryJson, InboxResponse, OUTPUT_VERSION};
+use crate::output::{
+    print_json, InboxBucketsJson, InboxEntryJson, InboxResponse, InboxStackErrorJson,
+    OUTPUT_VERSION,
+};
 use crate::provider::{CiStatus, PrState, Provider};
 use crate::stack;
 
@@ -50,13 +53,6 @@ pub struct BucketInput {
 /// 6. CI failed/running/pending → BlockedOnCi
 /// 7. Behind base → BehindBase
 /// 8. Fallthrough → AwaitingReview
-fn normalize_ci_status(ci_status: Option<CiStatus>) -> Option<CiStatus> {
-    match ci_status {
-        Some(CiStatus::Unknown) => None,
-        other => other,
-    }
-}
-
 pub fn bucket(input: &BucketInput) -> Option<ActionBucket> {
     match input.mr_state {
         PrState::Merged => return Some(ActionBucket::Merged),
@@ -69,16 +65,14 @@ pub fn bucket(input: &BucketInput) -> Option<ActionBucket> {
         return Some(ActionBucket::ChangesRequested);
     }
 
-    let ci_status = normalize_ci_status(input.ci_status.clone());
-
     if input.approved && input.mergeable {
-        let ci_green = matches!(ci_status, Some(CiStatus::Success) | None);
+        let ci_green = matches!(input.ci_status, Some(CiStatus::Success) | None);
         if ci_green {
             return Some(ActionBucket::ReadyToLand);
         }
     }
 
-    match ci_status {
+    match input.ci_status {
         Some(CiStatus::Failed)
         | Some(CiStatus::Running)
         | Some(CiStatus::Pending)
@@ -132,6 +126,11 @@ fn load_stack_entries(
         .collect()
 }
 
+struct StackLoadError {
+    stack_name: String,
+    error: String,
+}
+
 /// Internal item representing one triaged PR.
 struct InboxItem {
     stack_name: String,
@@ -162,7 +161,7 @@ pub fn run(all: bool, json: bool) -> Result<()> {
     let stack_names = stack::list_all_stacks(&repo, &config, &username)?;
     if stack_names.is_empty() {
         if json {
-            print_json_output(&[]);
+            print_json_output(&[], &[]);
         } else {
             println!(
                 "{}",
@@ -179,12 +178,31 @@ pub fn run(all: bool, json: bool) -> Result<()> {
     }
 
     let mut items: Vec<InboxItem> = Vec::new();
+    let mut stack_errors: Vec<StackLoadError> = Vec::new();
 
     for stack_name in &stack_names {
         let full_branch = git::format_stack_branch(&username, stack_name);
 
-        let base = resolve_base_branch(&repo, &config, stack_name)?;
-        let mut entries = load_stack_entries(&repo, &base, &full_branch)?;
+        let base = match resolve_base_branch(&repo, &config, stack_name) {
+            Ok(base) => base,
+            Err(err) => {
+                stack_errors.push(StackLoadError {
+                    stack_name: stack_name.clone(),
+                    error: err.to_string(),
+                });
+                continue;
+            }
+        };
+        let mut entries = match load_stack_entries(&repo, &base, &full_branch) {
+            Ok(entries) => entries,
+            Err(err) => {
+                stack_errors.push(StackLoadError {
+                    stack_name: stack_name.clone(),
+                    error: err.to_string(),
+                });
+                continue;
+            }
+        };
 
         if let Some(stack_config) = config.get_stack(stack_name) {
             for entry in &mut entries {
@@ -270,20 +288,31 @@ pub fn run(all: bool, json: bool) -> Result<()> {
     }
 
     if json {
-        print_json_output(&items);
+        print_json_output(&items, &stack_errors);
     } else {
-        print_human_output(&items);
+        print_human_output(&items, &stack_errors);
     }
 
     Ok(())
 }
 
-fn print_human_output(items: &[InboxItem]) {
+fn print_human_output(items: &[InboxItem], stack_errors: &[StackLoadError]) {
     if items.is_empty() {
         println!(
             "{}",
             style("Inbox is empty — nothing needs attention.").dim()
         );
+        if !stack_errors.is_empty() {
+            println!();
+            println!("{}", style("Skipped stacks:").yellow().bold());
+            for stack_error in stack_errors {
+                println!(
+                    "  {} {}",
+                    style(&stack_error.stack_name).dim(),
+                    stack_error.error
+                );
+            }
+        }
         return;
     }
 
@@ -342,6 +371,18 @@ fn print_human_output(items: &[InboxItem]) {
         }
         println!();
     }
+
+    if !stack_errors.is_empty() {
+        println!("{}", style("Skipped stacks:").yellow().bold());
+        for stack_error in stack_errors {
+            println!(
+                "  {} {}",
+                style(&stack_error.stack_name).dim(),
+                stack_error.error
+            );
+        }
+        println!();
+    }
 }
 
 fn bucket_label(b: ActionBucket) -> &'static str {
@@ -368,7 +409,7 @@ fn styled_bucket_label(b: ActionBucket) -> console::StyledObject<&'static str> {
     }
 }
 
-fn print_json_output(items: &[InboxItem]) {
+fn print_json_output(items: &[InboxItem], stack_errors: &[StackLoadError]) {
     let mut buckets = InboxBucketsJson {
         ready_to_land: vec![],
         changes_requested: vec![],
@@ -406,6 +447,13 @@ fn print_json_output(items: &[InboxItem]) {
         version: OUTPUT_VERSION,
         total_items: items.len(),
         buckets,
+        stack_errors: stack_errors
+            .iter()
+            .map(|stack_error| InboxStackErrorJson {
+                stack_name: stack_error.stack_name.clone(),
+                error: stack_error.error.clone(),
+            })
+            .collect(),
     });
 }
 
@@ -612,7 +660,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_ci_is_treated_like_absent_ci_for_ready_to_land() {
+    fn unknown_ci_is_not_treated_like_green_for_ready_to_land() {
         let input = make_input(
             PrState::Open,
             Some(CiStatus::Unknown),
@@ -621,7 +669,7 @@ mod tests {
             true,
             false,
         );
-        assert_eq!(bucket(&input), Some(ActionBucket::ReadyToLand));
+        assert_eq!(bucket(&input), Some(ActionBucket::AwaitingReview));
     }
 
     #[test]

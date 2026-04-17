@@ -231,6 +231,8 @@ pub struct InboxResponse {
     pub version: u32,
     pub total_items: usize,
     pub buckets: InboxBucketsJson,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub stack_errors: Vec<InboxStackErrorJson>,
 }
 
 #[derive(Serialize)]
@@ -255,6 +257,12 @@ pub struct InboxEntryJson {
     pub pr_url: String,
     pub ci_status: Option<String>,
     pub behind_base: Option<usize>,
+}
+
+#[derive(Serialize)]
+pub struct InboxStackErrorJson {
+    pub stack_name: String,
+    pub error: String,
 }
 
 #[cfg(test)]
@@ -346,6 +354,7 @@ mod tests {
                 draft: vec![],
                 merged: vec![],
             },
+            stack_errors: vec![],
         };
 
         let value = serde_json::to_value(&response).expect("should serialize");

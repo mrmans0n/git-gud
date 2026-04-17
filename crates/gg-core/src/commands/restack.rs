@@ -12,6 +12,7 @@ use console::style;
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
+use crate::immutability::{self, ImmutabilityPolicy};
 use crate::output::{
     print_json, RestackResponse, RestackResultJson, RestackStepJson, OUTPUT_VERSION,
 };
@@ -24,6 +25,8 @@ pub struct RestackOptions {
     pub dry_run: bool,
     /// Starting position/SHA/GG-ID — only repair from this entry upward.
     pub from: Option<String>,
+    /// Override the immutability check for merged/base-ancestor commits.
+    pub force: bool,
     /// Output as JSON.
     pub json: bool,
 }
@@ -197,7 +200,10 @@ pub fn run(options: RestackOptions) -> Result<()> {
     git::require_clean_working_directory(&repo)?;
 
     // Load stack
-    let stack = Stack::load(&repo, &config)?;
+    let mut stack = Stack::load(&repo, &config)?;
+    // Best-effort refresh of mr_state for the immutability guard (catches
+    // squash-merged PRs that base-ancestor would otherwise miss).
+    immutability::refresh_mr_state_for_guard(&repo, &mut stack);
 
     if stack.is_empty() {
         if options.json {
@@ -316,6 +322,15 @@ pub fn run(options: RestackOptions) -> Result<()> {
         return Ok(());
     }
 
+    // Immutability pre-flight: restack rewrites every entry in the plan,
+    // so check the affected range for merged/base-ancestor commits.
+    {
+        let targets: Vec<usize> = plan.steps.iter().map(|s| s.position).collect();
+        let policy = ImmutabilityPolicy::for_stack(&repo, &stack)?;
+        let report = policy.check_positions(&stack, &targets);
+        immutability::guard(report, options.force)?;
+    }
+
     // Execute
     let workdir = repo
         .workdir()
@@ -323,16 +338,23 @@ pub fn run(options: RestackOptions) -> Result<()> {
     execute_plan(&plan, workdir)?;
 
     // Normalize metadata post-rebase, scoped to the affected range.
-    // When --from is used, include the predecessor entry (from - 1) so that
-    // normalize_stack_metadata seeds previous_gg_id correctly for the first
-    // restacked entry, but exclude everything below that to avoid rewriting
-    // unrelated history.
+    // When --from is used, only normalize entries at or above from_position
+    // to avoid rewriting history below the boundary. We pass the predecessor's
+    // GG-ID so the first restacked entry's GG-Parent is set correctly.
     let mut rewritten_stack = Stack::load(&repo, &config)?;
+    let predecessor_gg_id = from_position.and_then(|from_pos| {
+        rewritten_stack
+            .get_entry_by_position(from_pos.saturating_sub(1))
+            .and_then(|e| e.gg_id.clone())
+    });
     if let Some(from_pos) = from_position {
-        let cutoff = from_pos.saturating_sub(1).max(1);
-        rewritten_stack.entries.retain(|e| e.position >= cutoff);
+        rewritten_stack.entries.retain(|e| e.position >= from_pos);
     }
-    git::normalize_stack_metadata(&repo, &rewritten_stack)?;
+    git::normalize_stack_metadata_with_predecessor(
+        &repo,
+        &rewritten_stack,
+        predecessor_gg_id.as_deref(),
+    )?;
 
     // Output
     let reattach_count = plan.reattach_count();

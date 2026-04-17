@@ -561,6 +561,17 @@ pub fn normalize_stack_metadata(
     repo: &Repository,
     stack: &crate::stack::Stack,
 ) -> Result<MetadataRewriteCounts> {
+    normalize_stack_metadata_with_predecessor(repo, stack, None)
+}
+
+/// Like `normalize_stack_metadata`, but accepts an optional GG-ID of the
+/// predecessor entry so that the first entry's GG-Parent is set correctly
+/// when normalizing a partial stack (e.g. `--from N` where N > 1).
+pub fn normalize_stack_metadata_with_predecessor(
+    repo: &Repository,
+    stack: &crate::stack::Stack,
+    initial_previous_gg_id: Option<&str>,
+) -> Result<MetadataRewriteCounts> {
     if stack.entries.is_empty() {
         return Ok(MetadataRewriteCounts::default());
     }
@@ -574,7 +585,7 @@ pub fn normalize_stack_metadata(
     };
 
     let mut rewritten_oids = std::collections::HashMap::<Oid, Oid>::new();
-    let mut previous_gg_id: Option<String> = None;
+    let mut previous_gg_id: Option<String> = initial_previous_gg_id.map(String::from);
     let mut counts = MetadataRewriteCounts::default();
     let mut tip_oid: Option<Oid> = None;
 

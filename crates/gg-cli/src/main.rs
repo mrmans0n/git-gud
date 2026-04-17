@@ -426,6 +426,9 @@ enum Commands {
         /// Only repair from this entry upward (position, SHA, or GG-ID)
         #[arg(long)]
         from: Option<String>,
+        /// Override the immutability check for merged/base-ancestor commits
+        #[arg(short, long)]
+        force: bool,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -696,11 +699,13 @@ fn main() {
         Some(Commands::Restack {
             dry_run,
             from,
+            force,
             json,
         }) => (
             gg_core::commands::restack::run(gg_core::commands::restack::RestackOptions {
                 dry_run,
                 from,
+                force,
                 json,
             }),
             json,

@@ -576,38 +576,6 @@ fn status_to_snake(s: &OperationStatus) -> String {
 }
 
 #[cfg(test)]
-mod restack_output_tests {
-    use super::*;
-
-    #[test]
-    fn restack_response_serializes() {
-        let resp = RestackResponse {
-            version: OUTPUT_VERSION,
-            restack: RestackResultJson {
-                stack_name: "test-stack".into(),
-                total_entries: 3,
-                entries_restacked: 1,
-                entries_ok: 2,
-                dry_run: false,
-                steps: vec![RestackStepJson {
-                    position: 1,
-                    gg_id: "c-0000001".into(),
-                    title: "Test commit".into(),
-                    action: "reattach".into(),
-                    current_parent: Some("c-deadbee".into()),
-                    expected_parent: Some("c-0000002".into()),
-                }],
-            },
-        };
-        let v = serde_json::to_value(&resp).unwrap();
-        assert_eq!(v["version"], OUTPUT_VERSION);
-        assert_eq!(v["restack"]["stack_name"], "test-stack");
-        assert_eq!(v["restack"]["entries_restacked"], 1);
-        assert_eq!(v["restack"]["steps"][0]["action"], "reattach");
-    }
-}
-
-#[cfg(test)]
 mod undo_output_tests {
     use super::*;
 

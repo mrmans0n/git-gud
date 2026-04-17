@@ -50,6 +50,13 @@ pub struct BucketInput {
 /// 6. CI failed/running/pending → BlockedOnCi
 /// 7. Behind base → BehindBase
 /// 8. Fallthrough → AwaitingReview
+fn normalize_ci_status(ci_status: Option<CiStatus>) -> Option<CiStatus> {
+    match ci_status {
+        Some(CiStatus::Unknown) => None,
+        other => other,
+    }
+}
+
 pub fn bucket(input: &BucketInput) -> Option<ActionBucket> {
     match input.mr_state {
         PrState::Merged => return Some(ActionBucket::Merged),
@@ -62,14 +69,16 @@ pub fn bucket(input: &BucketInput) -> Option<ActionBucket> {
         return Some(ActionBucket::ChangesRequested);
     }
 
+    let ci_status = normalize_ci_status(input.ci_status.clone());
+
     if input.approved && input.mergeable {
-        let ci_green = matches!(input.ci_status, Some(CiStatus::Success) | None);
+        let ci_green = matches!(ci_status, Some(CiStatus::Success) | None);
         if ci_green {
             return Some(ActionBucket::ReadyToLand);
         }
     }
 
-    match input.ci_status {
+    match ci_status {
         Some(CiStatus::Failed)
         | Some(CiStatus::Running)
         | Some(CiStatus::Pending)
@@ -581,6 +590,32 @@ mod tests {
             false,
         );
         assert_eq!(bucket(&input), Some(ActionBucket::BlockedOnCi));
+    }
+
+    #[test]
+    fn unknown_ci_is_treated_like_absent_ci_for_ready_to_land() {
+        let input = make_input(
+            PrState::Open,
+            Some(CiStatus::Unknown),
+            true,
+            false,
+            true,
+            false,
+        );
+        assert_eq!(bucket(&input), Some(ActionBucket::ReadyToLand));
+    }
+
+    #[test]
+    fn unknown_ci_is_treated_like_absent_ci_for_review_bucket() {
+        let input = make_input(
+            PrState::Open,
+            Some(CiStatus::Unknown),
+            false,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(bucket(&input), Some(ActionBucket::AwaitingReview));
     }
 
     #[test]

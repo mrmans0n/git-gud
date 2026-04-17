@@ -100,9 +100,18 @@ fn resolve_base_branch(
     config: &Config,
     stack_name: &str,
 ) -> Result<String> {
+    fn remote_head_base_branch(repo: &git2::Repository) -> Option<String> {
+        let head_ref = repo.find_reference("refs/remotes/origin/HEAD").ok()?;
+        let target = head_ref.symbolic_target()?;
+        target
+            .strip_prefix("refs/remotes/origin/")
+            .map(str::to_string)
+    }
+
     config
         .get_base_for_stack(stack_name)
         .map(|base| base.to_string())
+        .or_else(|| remote_head_base_branch(repo))
         .or_else(|| git::find_base_branch(repo).ok())
         .ok_or(GgError::NoBaseBranch)
 }
@@ -669,5 +678,35 @@ mod tests {
         let config = Config::default();
         let base = resolve_base_branch(&repo, &config, "feature").unwrap();
         assert_eq!(base, "master");
+    }
+
+    #[test]
+    fn resolve_base_branch_uses_origin_head_for_custom_default_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_oid = {
+            let mut index = repo.index().unwrap();
+            index.write_tree().unwrap()
+        };
+        let tree = repo.find_tree(tree_oid).unwrap();
+        let commit_oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        let commit = repo.find_commit(commit_oid).unwrap();
+
+        repo.reference("refs/remotes/origin/develop", commit.id(), true, "test")
+            .unwrap();
+        repo.reference_symbolic(
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/develop",
+            true,
+            "test",
+        )
+        .unwrap();
+
+        let config = Config::default();
+        let base = resolve_base_branch(&repo, &config, "feature").unwrap();
+        assert_eq!(base, "develop");
     }
 }

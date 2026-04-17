@@ -184,9 +184,15 @@ pub fn run(all: bool, json: bool) -> Result<()> {
 
     let usernames = infer_stack_usernames(&repo, &config)?;
     if usernames.is_empty() {
-        return Err(GgError::Config(
-            "Missing branch_username and could not infer one from provider or local stack branches. Set defaults.branch_username in config.".to_string(),
-        ));
+        if json {
+            print_json_output(&[], &[]);
+        } else {
+            println!(
+                "{}",
+                style("Inbox is empty — nothing needs attention.").dim()
+            );
+        }
+        return Ok(());
     }
 
     for username in &usernames {

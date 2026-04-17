@@ -6,6 +6,7 @@ use console::style;
 use serde::Serialize;
 
 use crate::config::Config;
+use crate::error::GgError;
 use crate::error::Result;
 use crate::git;
 use crate::output::{print_json, InboxBucketsJson, InboxEntryJson, InboxResponse, OUTPUT_VERSION};
@@ -85,6 +86,18 @@ pub fn bucket(input: &BucketInput) -> Option<ActionBucket> {
     Some(ActionBucket::AwaitingReview)
 }
 
+fn resolve_base_branch(
+    repo: &git2::Repository,
+    config: &Config,
+    stack_name: &str,
+) -> Result<String> {
+    config
+        .get_base_for_stack(stack_name)
+        .map(|base| base.to_string())
+        .or_else(|| git::find_base_branch(repo).ok())
+        .ok_or(GgError::NoBaseBranch)
+}
+
 /// Internal item representing one triaged PR.
 struct InboxItem {
     stack_name: String,
@@ -122,10 +135,10 @@ pub fn run(all: bool, json: bool) -> Result<()> {
     let mut items: Vec<InboxItem> = Vec::new();
 
     for stack_name in &stack_names {
-        let base = config
-            .get_base_for_stack(stack_name)
-            .unwrap_or("main")
-            .to_string();
+        let base = match resolve_base_branch(&repo, &config, stack_name) {
+            Ok(base) => base,
+            Err(_) => continue,
+        };
 
         let full_branch = git::format_stack_branch(&username, stack_name);
 
@@ -591,5 +604,35 @@ mod tests {
         assert!(ActionBucket::AwaitingReview < ActionBucket::BehindBase);
         assert!(ActionBucket::BehindBase < ActionBucket::Draft);
         assert!(ActionBucket::Draft < ActionBucket::Merged);
+    }
+
+    #[test]
+    fn resolve_base_branch_prefers_stack_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let mut config = Config::default();
+        config.defaults.base = Some("develop".to_string());
+        config.get_or_create_stack("feature").base = Some("release".to_string());
+
+        let base = resolve_base_branch(&repo, &config, "feature").unwrap();
+        assert_eq!(base, "release");
+    }
+
+    #[test]
+    fn resolve_base_branch_falls_back_to_detected_repo_base() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_oid = {
+            let mut index = repo.index().unwrap();
+            index.write_tree().unwrap()
+        };
+        let tree = repo.find_tree(tree_oid).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+
+        let config = Config::default();
+        let base = resolve_base_branch(&repo, &config, "feature").unwrap();
+        assert_eq!(base, "master");
     }
 }

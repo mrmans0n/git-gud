@@ -197,6 +197,12 @@ pub fn run(all: bool, json: bool) -> Result<()> {
     for username in &usernames {
         for stack_name in stack::list_all_stacks(&repo, &config, username)? {
             let full_branch = git::format_stack_branch(username, &stack_name);
+            if repo
+                .find_branch(&full_branch, git2::BranchType::Local)
+                .is_err()
+            {
+                continue;
+            }
             if !stack_branches
                 .iter()
                 .any(|(name, branch)| name == &stack_name && branch == &full_branch)

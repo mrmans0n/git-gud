@@ -329,23 +329,8 @@ fn test_gg_inbox_json_reports_skipped_stacks_without_failing() {
         .as_array()
         .expect("stack_errors must be an array");
     assert!(
-        !stack_errors.is_empty(),
-        "expected at least one skipped stack to be reported"
-    );
-
-    let stale_error = stack_errors
-        .iter()
-        .find(|entry| entry["stack_name"] == "stale")
-        .expect("stale stack error must be present");
-    assert!(
-        stale_error["error"]
-            .as_str()
-            .expect("error must be a string")
-            .contains("revspec")
-            || stale_error["error"]
-                .as_str()
-                .expect("error must be a string")
-                .contains("not found")
+        stack_errors.is_empty(),
+        "stale config without a matching local stack branch should be ignored, got: {stack_errors:?}"
     );
 }
 

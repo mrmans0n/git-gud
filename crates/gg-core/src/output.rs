@@ -231,7 +231,6 @@ pub struct InboxResponse {
     pub version: u32,
     pub total_items: usize,
     pub buckets: InboxBucketsJson,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub stack_errors: Vec<InboxStackErrorJson>,
 }
 

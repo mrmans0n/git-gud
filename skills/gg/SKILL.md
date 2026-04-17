@@ -122,7 +122,7 @@ gg land -a -c --json
 5. If sync warns stack is behind base, run `gg rebase` first.
 6. Prefer `gg absorb -s` for multi-commit edits.
 7. **Never use `git add -A` blindly.** Review `git status` first and only stage intended files. Use `git add <specific-files>` to avoid leaking secrets, env files, or unrelated changes.
-8. **Respect the immutability guard.** Rewrite-style commands (`gg sc`, `gg absorb`, `gg reorder`/`gg arrange`, `gg split`, `gg drop`, `gg rebase`, `gg restack`) refuse to rewrite merged PRs/MRs or commits already on the base branch. If the command exits with `ImmutableTargets`, surface the listed commits and reasons to the user and get explicit confirmation before retrying with `-f` / `--force` (alias `--ignore-immutable`).
+8. **Respect the immutability guard.** Rewrite-style commands (`gg sc`, `gg absorb`, `gg reorder`/`gg arrange`, `gg split`, `gg drop`, `gg rebase`, `gg restack`) refuse to rewrite merged PRs/MRs or commits already on the base branch, except that `gg rebase` silently skips base-ancestor commits that naturally drop out when rebasing onto the refreshed base. If a command exits with `ImmutableTargets`, surface the listed commits and reasons to the user and get explicit confirmation before retrying with `-f` / `--force` (alias `--ignore-immutable`).
 
 ## Common operations
 
@@ -251,9 +251,7 @@ gg refuses by default to rewrite commits that look "already published":
   a fallback).
 
 The guard protects `gg sc`, `gg absorb`, `gg reorder` / `gg arrange`,
-`gg split`, `gg drop`, `gg rebase`, and `gg restack`. When it fires, the command exits
-with an `ImmutableTargets` error listing every affected position, short
-SHA, title, and reason (e.g. `merged as !123`, `already in origin/main`).
+`gg split`, `gg drop`, `gg rebase`, and `gg restack`. `gg rebase` is a special case: commits already reachable from the refreshed base are silently skipped because `git rebase` would drop them naturally instead of rewriting them. For the remaining commands, or for non-base-ancestor immutable commits during `gg rebase`, the command exits with an `ImmutableTargets` error listing every affected position, short SHA, title, and reason (e.g. `merged as !123`, `already in origin/main`).
 
 To bypass it intentionally, pass `-f` / `--force` (long alias
 `--ignore-immutable`). Always surface the listed commits and reasons to the

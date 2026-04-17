@@ -35,6 +35,14 @@ pub fn open_repo() -> Result<Repository> {
     Repository::discover(".").map_err(|_| GgError::NotInRepo)
 }
 
+/// Per-clone gg state directory at `<commondir>/gg`.
+///
+/// Uses `commondir()` (not `path()`) so worktrees share a single operation
+/// log and config with the main working copy.
+pub fn gg_dir(repo: &Repository) -> std::path::PathBuf {
+    repo.commondir().join("gg")
+}
+
 /// Operation lock handle that automatically releases on drop
 #[derive(Debug)]
 pub struct OperationLock {
@@ -146,6 +154,94 @@ pub(crate) fn acquire_operation_lock_with_timeout(
             Err(e) => return Err(e.into()),
         }
     }
+}
+
+/// Acquire the operation lock AND write a `Pending` operation record.
+///
+/// The returned [`crate::operations::OperationGuard`] must have `finalize`
+/// called on the success path. Dropping without finalize leaves the record
+/// `Pending` on disk; the sweep promotes it to `Interrupted` on the next
+/// lock acquisition (after `PENDING_STALENESS_MS`).
+///
+/// This is the instrumentation sibling of [`acquire_operation_lock`]. The
+/// original function stays unchanged for callers that do not need to
+/// record (e.g. `gg continue` / `gg abort`).
+///
+/// Callers that need to gate recording on pre-mutation validation (e.g.
+/// the immutability guard) should instead use [`acquire_operation_lock`]
+/// combined with [`begin_recorded_op`] so that rejected operations never
+/// pollute the op log.
+pub fn acquire_operation_lock_and_record(
+    repo: &Repository,
+    config: &crate::config::Config,
+    kind: crate::operations::OperationKind,
+    args: Vec<String>,
+    stack_name: Option<String>,
+    scope: crate::operations::SnapshotScope<'_>,
+) -> Result<(OperationLock, crate::operations::OperationGuard)> {
+    let op_name = format!("{kind:?}").to_lowercase();
+    let lock = acquire_operation_lock(repo, &op_name)?;
+    let guard = begin_recorded_op(repo, config, kind, args, stack_name, scope)?;
+    Ok((lock, guard))
+}
+
+/// Write a `Pending` operation record, assuming the caller already holds
+/// the operation lock (via [`acquire_operation_lock`]).
+///
+/// This is the half of [`acquire_operation_lock_and_record`] that runs
+/// *after* lock acquisition. Split out so instrumented commands can do
+/// pre-mutation validation (e.g. immutability checks) without polluting
+/// the op log with rejected operations: acquire the lock first, validate,
+/// then call this helper immediately before mutating.
+///
+/// The returned guard MUST be `finalize`d on the success path — dropping
+/// it leaves the record `Pending` on disk for the sweep to promote to
+/// `Interrupted`.
+pub fn begin_recorded_op(
+    repo: &Repository,
+    config: &crate::config::Config,
+    kind: crate::operations::OperationKind,
+    args: Vec<String>,
+    stack_name: Option<String>,
+    scope: crate::operations::SnapshotScope<'_>,
+) -> Result<crate::operations::OperationGuard> {
+    use crate::operations::{
+        self, new_id, now_ms, OperationGuard, OperationRecord, OperationStatus, OperationStore,
+        SCHEMA_VERSION,
+    };
+
+    // 1. Sweep stale Pending records. Swallows all errors.
+    let gg_dir_path = gg_dir(repo);
+    let store = OperationStore::new(&gg_dir_path);
+    store.sweep_pending(now_ms());
+
+    // 2. Capture refs_before. Snapshot errors propagate — if we can't read
+    //    refs we can't safely record anything.
+    let refs_before = operations::snapshot_refs(repo, config, scope)?;
+
+    // 3. Write the Pending record.
+    let record = OperationRecord {
+        id: new_id(),
+        schema_version: SCHEMA_VERSION,
+        kind,
+        status: OperationStatus::Pending,
+        created_at_ms: now_ms(),
+        args,
+        stack_name,
+        refs_before,
+        refs_after: vec![],
+        remote_effects: vec![],
+        touched_remote: false,
+        undoes: None,
+        pending_plan: None,
+    };
+    store.save(&record)?;
+
+    Ok(OperationGuard {
+        record,
+        store,
+        finalized: false,
+    })
 }
 
 /// Find the base branch (main, master, or trunk)
@@ -725,20 +821,47 @@ pub fn count_branch_behind_upstream(
     Ok(behind)
 }
 
+/// Build the argv passed to `git push`.
+///
+/// Order: `push [--force | --force-with-lease] [--no-verify] origin <branch>`.
+/// `hard_force` wins over `force_with_lease` when both are true, matching
+/// `push_branch`'s existing contract.
+fn build_push_args(
+    branch_name: &str,
+    force_with_lease: bool,
+    hard_force: bool,
+    no_verify: bool,
+) -> Vec<&str> {
+    let mut args: Vec<&str> = vec!["push"];
+    if hard_force {
+        args.push("--force");
+    } else if force_with_lease {
+        args.push("--force-with-lease");
+    }
+    if no_verify {
+        args.push("--no-verify");
+    }
+    args.push("origin");
+    args.push(branch_name);
+    args
+}
+
 /// Push a branch to origin
 ///
 /// - `force_with_lease`: Use --force-with-lease (safe force, recommended for stacked diffs)
 /// - `hard_force`: Use --force (overrides force_with_lease, use only as escape hatch)
+/// - `no_verify`: Forward `--no-verify` to `git push` (skips the `pre-push` hook only)
 ///
 /// If force_with_lease fails with "stale info", retries without lease since
-/// the remote branch may have been deleted (e.g., after a PR was merged)
-pub fn push_branch(branch_name: &str, force_with_lease: bool, hard_force: bool) -> Result<()> {
-    let mut args = vec!["push", "origin", branch_name];
-    if hard_force {
-        args.insert(1, "--force");
-    } else if force_with_lease {
-        args.insert(1, "--force-with-lease");
-    }
+/// the remote branch may have been deleted (e.g., after a PR was merged).
+/// The retry path honors `no_verify` the same way.
+pub fn push_branch(
+    branch_name: &str,
+    force_with_lease: bool,
+    hard_force: bool,
+    no_verify: bool,
+) -> Result<()> {
+    let args = build_push_args(branch_name, force_with_lease, hard_force, no_verify);
 
     let output = Command::new("git").args(&args).output()?;
 
@@ -795,7 +918,7 @@ pub fn push_branch(branch_name: &str, force_with_lease: bool, hard_force: bool) 
 
         // User confirmed, proceed with force push
         eprintln!("{}", console::style("Force-pushing...").dim());
-        let retry_args = vec!["push", "--force", "origin", branch_name];
+        let retry_args = build_push_args(branch_name, false, true, no_verify);
         return run_git_command(&retry_args).map(|_| ());
     }
 
@@ -2059,6 +2182,52 @@ mod tests {
 
         // Clean up
         std::fs::remove_file(&index_lock).ok();
+    }
+
+    #[test]
+    #[allow(clippy::type_complexity)]
+    fn test_build_push_args_matrix() {
+        let cases: &[((bool, bool, bool), &[&str])] = &[
+            (
+                (true, false, false),
+                &["push", "--force-with-lease", "origin", "feat/x"],
+            ),
+            (
+                (true, false, true),
+                &[
+                    "push",
+                    "--force-with-lease",
+                    "--no-verify",
+                    "origin",
+                    "feat/x",
+                ],
+            ),
+            (
+                (false, true, false),
+                &["push", "--force", "origin", "feat/x"],
+            ),
+            (
+                (false, true, true),
+                &["push", "--force", "--no-verify", "origin", "feat/x"],
+            ),
+            ((false, false, false), &["push", "origin", "feat/x"]),
+            (
+                (false, false, true),
+                &["push", "--no-verify", "origin", "feat/x"],
+            ),
+        ];
+
+        for ((fwl, hard, no_verify), expected) in cases {
+            let got = build_push_args("feat/x", *fwl, *hard, *no_verify);
+            assert_eq!(
+                got.as_slice(),
+                *expected,
+                "mismatch for (fwl={}, hard={}, no_verify={})",
+                fwl,
+                hard,
+                no_verify
+            );
+        }
     }
 }
 

@@ -63,6 +63,11 @@ pub enum GgError {
     #[error("No rebase in progress")]
     NoRebaseInProgress,
 
+    #[error(
+        "cannot rewrite immutable commits (pass --force / --ignore-immutable to override):\n{0}"
+    )]
+    ImmutableTargets(String),
+
     #[error("Git error: {0}")]
     Git(#[from] git2::Error),
 
@@ -75,11 +80,34 @@ pub enum GgError {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
+    #[error("No operation record found with id '{0}'")]
+    OperationRecordNotFound(String),
+
+    #[error("Operation '{id}' is not undoable: {reason}")]
+    OperationNotUndoable { id: String, reason: String },
+
+    #[error("Cannot undo: ref '{ref_name}' has moved since the operation (expected {expected}, actually {actual}). Run `gg undo --list` to see a safe candidate.")]
+    StaleUndo {
+        ref_name: String,
+        expected: String,
+        actual: String,
+    },
+
+    #[error("Cannot locally undo '{kind}': it touched a remote.\n{hint}")]
+    RemoteUndoUnsupported { kind: String, hint: String },
+
     #[error("{0}")]
     Other(String),
 
     #[error("A git operation is currently in progress.\n{0}\nIf no other process is running, remove the stale lock:\n  rm {1}")]
     GitOperationInProgress(String, String),
+
+    /// Marker error for commands that have already printed their own human-
+    /// readable diagnostic and just need the process to exit non-zero. The
+    /// CLI top-level handler recognises this and suppresses the generic
+    /// "error: ..." prefix to avoid double-printing.
+    #[error("")]
+    Silenced,
 }
 
 pub type Result<T> = std::result::Result<T, GgError>;

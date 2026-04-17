@@ -66,6 +66,14 @@ List current/all/remote stacks.
 - `--remote`
 - `--json`
 
+#### `gg log [OPTIONS]`
+Smartlog-style view of the **current** stack (tree with HEAD marker, PR/CI
+badges). Stack-scoped — use `gg ls --all` for cross-stack browsing.
+
+- `-r, --refresh`
+- `--json` (auto-refreshes PR/MR state; shape mirrors `gg ls --json` entries
+  under a `log` key)
+
 #### `gg sync [OPTIONS]`
 Push and create/update PRs/MRs.
 
@@ -75,6 +83,7 @@ Push and create/update PRs/MRs.
 - `-l, --lint` *(aborts sync on lint failure and restores repository state to the pre-sync snapshot)*
 - `--no-lint`
 - `--no-rebase-check`
+- `--no-verify`: Skip the pre-push hook for pushes performed by this sync (forwards `git push --no-verify`)
 - `-u, --until <UNTIL>`
 - `--json`
 
@@ -106,6 +115,7 @@ Move around stack entries.
 Squash changes into current stack commit.
 
 - `-a, --all`
+- `-f, --force` (alias: `--ignore-immutable`) — bypass the [immutability guard](#immutable-commits)
 
 #### `gg absorb [OPTIONS]`
 Auto-distribute staged changes to matching commits.
@@ -116,13 +126,15 @@ Auto-distribute staged changes to matching commits.
 - `--one-fixup-per-commit`
 - `-n, --no-limit`
 - `-s, --squash`
+- `-f, --force` (alias: `--ignore-immutable`) — bypass the [immutability guard](#immutable-commits)
 
 #### `gg reorder [OPTIONS]` (alias: `gg arrange`)
 Reorder and/or drop stack entries. Opens an interactive TUI by default where you can move commits with `J`/`K` (or Shift+arrows) and mark commits for dropping with `d`.
 #### `gg drop <TARGET>...` *(alias: `gg abandon`)*
 Remove one or more commits from the stack. Targets can be positions (1-indexed), short SHAs, or GG-IDs.
 
-- `-f, --force` — skip confirmation
+- `-y, --yes` — skip the confirmation prompt without bypassing the [immutability guard](#immutable-commits). Use this for non-interactive callers (CI, MCP) that still want merged/base commits protected.
+- `-f, --force` (alias: `--ignore-immutable`) — bypass the [immutability guard](#immutable-commits). Implies `--yes`.
 - `--json`
 
 #### `gg reorder [OPTIONS]`
@@ -130,6 +142,7 @@ Reorder stack entries. Opens an interactive TUI by default where you can move co
 
 - `-o, --order <ORDER>` — reorder only (no dropping via CLI flag)
 - `--no-tui` — disable TUI, use text editor instead (delete lines to drop commits)
+- `-f, --force` (alias: `--ignore-immutable`) — bypass the [immutability guard](#immutable-commits)
 
 #### `gg split [OPTIONS] [FILES...]`
 Split a commit into two. Selected files/hunks become a new commit inserted before the original.
@@ -138,10 +151,13 @@ Split a commit into two. Selected files/hunks become a new commit inserted befor
 - `-m, --message <MSG>` — message for the new commit
 - `--no-edit` — keep original message for remainder, don't prompt
 - `--no-tui` — disable TUI, use sequential prompt instead (legacy `git add -p` style)
+- `-f, --force` (alias: `--ignore-immutable`) — bypass the [immutability guard](#immutable-commits)
 - `FILES...` — auto-select all hunks from these files (opens interactive hunk picker if omitted)
 
 #### `gg rebase [TARGET]`
 Rebase current stack onto base or explicit target.
+
+- `-f, --force` (alias: `--ignore-immutable`) — bypass the [immutability guard](#immutable-commits)
 
 ### Utilities
 
@@ -172,6 +188,37 @@ Repair metadata after external branch/PR/MR manipulation.
 
 #### `gg continue` / `gg abort`
 Resume/abort paused operations.
+
+#### `gg undo [OPERATION_ID] [--json]` / `gg undo --list [--limit N] [--json]`
+Reverse the local ref/HEAD effects of the most recent mutating `gg`
+command, backed by a per-repo operation log at
+`<commondir>/gg/operations/*.json` (ring buffer, 100 records;
+`Pending`/`Interrupted` records never pruned).
+
+- `OPERATION_ID` — target a specific record (`op_…`). When omitted,
+  undoes the most recent locally-undoable operation.
+- `--list` — show recent operations newest-first.
+- `--limit N` — cap `--list` output (default: 20).
+- `--json` — emit machine-readable JSON.
+
+Every mutating command (`sc`, `drop`, `split`, `rebase`, `reorder`,
+`absorb`, `reconcile`, `checkout`, `mv`/`first`/`last`/`prev`/`next`,
+`clean`, `sync`, `land`, `run --amend`) snapshots refs before mutating
+and records the operation on success. A second `gg undo` redoes the
+first — `undo` itself is recorded.
+
+**Refusals** (exit 1, no refs touched):
+
+| `refusal.reason` | Condition | Handling |
+|---|---|---|
+| `remote` | Op pushed/merged/closed/created a PR or MR | Use the printed provider hint (`gh pr close <n>`, `glab mr close <n>`, `git push --delete …`). |
+| `interrupted` | Op was Ctrl-C'd or crashed mid-flight | Fix state manually; stale Pending records are swept on the next lock-acquiring op. |
+| `stale` | Refs moved since the target op finalised | Run `gg undo --list` and pick a more recent record. Error names the ref, expected OID, actual OID. |
+| `unsupported_schema` | Record was written by a newer `gg` binary | Upgrade `gg` or delete the record. |
+
+`gg undo` never touches the working tree, index, untracked files, or
+remotes. It does not support `--all` / `--range` — one operation per
+call.
 
 #### `gg setup`
 Interactive config wizard.
@@ -308,6 +355,37 @@ Field types:
 }
 ```
 
+### `gg log --json`
+
+```json
+{
+  "version": 1,
+  "log": {
+    "stack": "feature-auth",
+    "base": "main",
+    "current_position": 2,
+    "entries": [
+      {
+        "position": 1,
+        "sha": "abc1234",
+        "title": "feat: add parser",
+        "gg_id": "c-abc1234",
+        "gg_parent": null,
+        "pr_number": 101,
+        "pr_state": "open",
+        "approved": false,
+        "ci_status": "success",
+        "is_current": false,
+        "in_merge_train": false,
+        "merge_train_position": null
+      }
+    ]
+  }
+}
+```
+
+Entry fields match `gg ls --json` so consumers can share parsers.
+
 ### `gg sync --json`
 
 ```json
@@ -434,7 +512,112 @@ Field types for `entries`:
 }
 ```
 
+### `gg undo --json`
+
+```json
+{
+  "version": 1,
+  "status": "succeeded",
+  "undone": {
+    "id": "op_0000001750000000_018f…",
+    "kind": "drop",
+    "status": "committed",
+    "created_at_ms": 1750000000000,
+    "args": ["drop", "3"],
+    "stack_name": "feature-auth",
+    "touched_remote": false,
+    "is_undoable": true,
+    "is_undo": false,
+    "remote_effects": []
+  }
+}
+```
+
+On refusal:
+
+```json
+{
+  "version": 1,
+  "status": "refused",
+  "refusal": {
+    "reason": "remote",
+    "message": "Cannot locally undo 'sync': it touched a remote.",
+    "target": { "id": "op_…", "kind": "sync", "touched_remote": true },
+    "hints": [
+      "Close PR #42: gh pr close 42",
+      "Delete remote branch: git push --delete origin user/feature-auth--c-abc1234"
+    ]
+  }
+}
+```
+
+`refusal.reason` values: `"remote" | "interrupted" | "stale" | "unsupported_schema"`.
+
+### `gg undo --list --json`
+
+```json
+{
+  "version": 1,
+  "operations": [
+    {
+      "id": "op_…",
+      "kind": "undo",
+      "status": "committed",
+      "created_at_ms": 1750000100000,
+      "args": ["undo"],
+      "stack_name": "feature-auth",
+      "touched_remote": false,
+      "is_undoable": true,
+      "is_undo": true,
+      "undoes": "op_previous…"
+    }
+  ]
+}
+```
+
+Entries are newest-first. Use `is_undoable` to gate UI/agent actions;
+`is_undo` + `undoes` render redo markers. Remote-touching ops appear
+with `is_undoable: false` and `touched_remote: true`.
+
 ---
+
+## Immutable commits
+
+gg refuses by default to let rewrite-style commands (`gg sc`, `gg absorb`,
+`gg reorder`/`gg arrange`, `gg split`, `gg drop`, `gg rebase`) touch commits
+that look "already published". A commit is considered immutable when any of
+these is true:
+
+- **Merged PR/MR** — the entry's tracked PR/MR state is `merged`.
+- **Base ancestor** — the commit is already reachable from `origin/<base>`
+  (falling back to the local base branch when the remote ref isn't
+  available). Covers anything already landed on the trunk.
+
+When the guard fires, the command exits with an `ImmutableTargets` error
+listing each affected position, short SHA, title, and reason, for example:
+
+```
+error: cannot rewrite immutable commits (use --force / --ignore-immutable to override):
+  #2  abc1234  Fix typo in parser          (merged as !123)
+  #3  def5678  Bump dependency             (already in origin/main)
+```
+
+To override intentionally, pass `-f` / `--force` (or the longer alias
+`--ignore-immutable`) to the command. The override emits a warning listing
+what is being rewritten and then proceeds.
+
+Notes for agents:
+
+- Before offering `--force`, surface the guard output to the user and get
+  explicit confirmation — bypassing is a footgun.
+- `gg rebase` and `gg sync`'s internal auto-rebase only consider a commit a
+  base ancestor **after** the remote ref is fetched, so the guard reflects
+  freshly-updated state rather than stale local refs.
+- `gg sync`'s other paths (push, PR create/update) are not guarded; only
+  history-rewriting commands are.
+- `gg land` performs a post-merge cleanup rebase with the guard
+  intentionally bypassed (the commits it touches are by definition just
+  merged).
 
 ## Operational guardrails for agents
 
@@ -443,6 +626,7 @@ Field types for `entries`:
 - Always parse `--json` output, do not scrape text.
 - If `gg sync --json` includes warnings about stale base, run `gg rebase`.
 - For GitLab merge trains, monitor `in_merge_train` and `merge_train_position` in `gg ls --json`.
+- If a rewrite command fails with `ImmutableTargets`, explain to the user which commits are immutable and why before offering `--force`.
 
 ---
 
@@ -465,6 +649,11 @@ Transport: stdio (JSON-RPC over stdin/stdout).
 List the current stack with commit entries and PR/MR status.
 - **Params:** `refresh` (bool, default false) — refresh PR status from remote
 - **Returns:** `{ name, base, total_commits, synced_commits, current_position, entries: [{ position, sha, title, gg_id, gg_parent, pr_number, pr_state, approved, ci_status, is_current }] }`
+
+#### `stack_log`
+Smartlog-style view of the current stack (stack-scoped). Mirrors `gg log --json`.
+- **Params:** `refresh` (bool, default false) — refresh PR status from remote
+- **Returns:** `{ stack, base, current_position, entries: [...] }` (entry fields match `stack_list`)
 
 #### `stack_list_all`
 List all stacks in the repository.
@@ -498,7 +687,7 @@ Create or switch to a stack.
 
 #### `stack_sync`
 Push branches and create/update PRs.
-- **Params:** `draft` (bool), `force` (bool), `update_descriptions` (bool), `no_rebase_check` (bool), `lint` (bool), `until` (string)
+- **Params:** `draft` (bool), `force` (bool), `update_descriptions` (bool), `no_rebase_check` (bool), `lint` (bool), `until` (string), `no_verify` (bool — skip pre-push hook)
 - **Returns:** JSON sync results with PR URLs
 
 #### `stack_land`
@@ -513,15 +702,15 @@ Clean up merged stacks.
 
 #### `stack_rebase`
 Rebase stack onto latest base.
-- **Params:** `target` (string, optional)
+- **Params:** `target` (string, optional), `force` (bool, default false) — bypass the [immutability guard](#immutable-commits)
 
 #### `stack_squash`
 Squash staged changes into current commit.
-- **Params:** `all` (bool)
+- **Params:** `all` (bool), `force` (bool, default false) — bypass the [immutability guard](#immutable-commits)
 
 #### `stack_absorb`
 Auto-absorb staged changes into correct commits.
-- **Params:** `dry_run` (bool), `and_rebase` (bool), `whole_file` (bool), `one_fixup_per_commit` (bool), `squash` (bool)
+- **Params:** `dry_run` (bool), `and_rebase` (bool), `whole_file` (bool), `one_fixup_per_commit` (bool), `squash` (bool), `force` (bool, default false) — bypass the [immutability guard](#immutable-commits)
 
 #### `stack_reconcile`
 Reconcile out-of-sync remote branches.
@@ -542,8 +731,10 @@ Run lint on stack commits.
 
 #### `stack_drop`
 Remove commits from the stack.
-- **Params:** `targets` (string[], required) — commits to drop: positions (1-indexed), short SHAs, or GG-IDs
-- **Notes:** Always uses `--force` (no interactive confirmation). Agent should confirm with user before calling.
+- **Params:**
+  - `targets` (string[], required) — commits to drop: positions (1-indexed), short SHAs, or GG-IDs
+  - `force` (bool, optional, default `false`) — bypass the [immutability guard](#immutable-commits) for merged/base-ancestor commits. When `false`, drops still succeed for regular commits; merged/base commits are refused with `ImmutableTargets`.
+- **Notes:** Always passes `--yes` to skip the interactive prompt (MCP is non-interactive). `force` is a separate opt-in so MCP drop does not silently rewrite already-published commits. Agent must confirm any drop with the user beforehand, and must surface the merged/base-ancestor reasons before retrying with `force: true`.
 - **Returns:** JSON with dropped commits and remaining count
 
 #### `stack_split`
@@ -553,11 +744,40 @@ Split a commit by moving specified files to a new commit.
   - `files` (string[], required) — files to include in the new commit
   - `message` (string, optional) — message for the new commit
   - `no_edit` (bool, default false) — skip prompt for remainder commit message
+  - `force` (bool, default false) — bypass the [immutability guard](#immutable-commits)
 - **Notes:** File-level only (`--no-tui` implicit). Hunk-level selection not available via MCP.
 - **Returns:** Result of the split operation
 
 #### `stack_reorder`
 Reorder commits in the stack.
-- **Params:** `order` (string, required) — new order as positions (1-indexed), e.g., "3,1,2" or "3 1 2". Position 1 = bottom (closest to base).
+- **Params:**
+  - `order` (string, required) — new order as positions (1-indexed), e.g., "3,1,2" or "3 1 2". Position 1 = bottom (closest to base).
+  - `force` (bool, default false) — bypass the [immutability guard](#immutable-commits)
 - **Notes:** Direct mode only (`--no-tui` implicit). No interactive TUI via MCP.
 - **Returns:** Result of the reorder operation
+
+#### `stack_undo`
+Reverse the ref/HEAD effects of the most recent mutating `gg` command
+(or a specific op by id). Shell-out wrapper around `gg undo --json`.
+- **Params:**
+  - `operation_id` (string, optional) — target a specific record from
+    `stack_undo_list`. Defaults to the most-recent-undoable operation.
+- **Notes:** Refuses on remote-touching ops (`sync`, `land`) and on
+  `interrupted`, `stale`, or `unsupported_schema` records. On refusal
+  the payload includes `refusal.reason` plus provider-specific revert
+  hints (`gh pr close <n>`, `glab mr close <n>`, `git push --delete …`).
+  Agents must surface the hints to the user rather than attempt silent
+  remote rollback. Working tree is never modified.
+- **Returns:** `{ status: "succeeded", undone: {…} }` or
+  `{ status: "refused", refusal: { reason, message, target, hints } }`.
+
+#### `stack_undo_list`
+List recent operations from the per-repo operation log, newest-first.
+Shell-out wrapper around `gg undo --list --json`.
+- **Params:**
+  - `limit` (usize, optional) — cap output (default: 20)
+- **Notes:** Each entry carries `is_undoable` (gate for safe local
+  replay), `is_undo` + `undoes` (redo markers), and `touched_remote`
+  (set on remote-touching ops, which appear with `is_undoable: false`).
+- **Returns:** `{ operations: [{ id, kind, status, created_at_ms, args,
+  stack_name, touched_remote, is_undoable, is_undo, undoes? }] }`.

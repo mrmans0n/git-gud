@@ -9,6 +9,7 @@ use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git::{self, get_commit_description, strip_gg_id_from_message};
 use crate::managed_body;
+use crate::operations::{OperationKind, RemoteEffect, SnapshotScope};
 use crate::output::{
     print_json, SyncEntryResultJson, SyncMetadataJson, SyncResponse, SyncResultJson, OUTPUT_VERSION,
 };
@@ -66,7 +67,10 @@ fn maybe_rebase_if_base_is_behind(
                 prs_label
             );
         }
-        crate::commands::rebase::run_with_repo(repo, None, json)?;
+        // Internal auto-rebase during sync: the user hasn't been asked to
+        // --force, so respect the immutability guard rather than silently
+        // bypassing it.
+        crate::commands::rebase::run_with_repo(repo, None, json, false)?;
         return Ok(true);
     }
 
@@ -91,7 +95,7 @@ fn maybe_rebase_if_base_is_behind(
         .unwrap_or(true);
 
     if should_rebase {
-        crate::commands::rebase::run_with_repo(repo, None, json)?;
+        crate::commands::rebase::run_with_repo(repo, None, json, false)?;
         return Ok(true);
     }
 
@@ -162,6 +166,7 @@ fn format_push_error(error: &GgError, branch_name: &str) {
 }
 
 /// Run the sync command
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     draft: bool,
     json: bool,
@@ -170,14 +175,29 @@ pub fn run(
     update_descriptions: bool,
     run_lint: bool,
     until: Option<String>,
+    no_verify: bool,
 ) -> Result<()> {
     let repo = git::open_repo()?;
 
-    // Acquire operation lock to prevent concurrent operations
-    let _lock = git::acquire_operation_lock(&repo, "sync")?;
-
     let git_dir = repo.commondir();
     let mut config = Config::load_with_global(git_dir)?;
+
+    // Acquire operation lock + record a Pending op for the undo log.
+    let (_lock, mut guard) = git::acquire_operation_lock_and_record(
+        &repo,
+        &config,
+        OperationKind::Sync,
+        std::env::args().skip(1).collect(),
+        None,
+        SnapshotScope::AllUserBranches,
+    )?;
+
+    // Remote effects are persisted incrementally via `guard.record_remote_effect`
+    // / `guard.mark_touched_remote` so a mid-loop failure leaves an accurate
+    // trail (design §4.4). These locals mirror what has been recorded so the
+    // success-path finalize can replay the same values without a disk read.
+    let mut remote_effects: Vec<RemoteEffect> = Vec::new();
+    let mut touched_remote = false;
 
     // Apply config defaults to CLI flags:
     // - draft: CLI flag OR config setting (either one enables drafts)
@@ -204,6 +224,13 @@ pub fn run(
         } else {
             println!("{}", style("Stack is empty. Nothing to sync.").dim());
         }
+        guard.finalize_with_scope(
+            &repo,
+            &config,
+            SnapshotScope::AllUserBranches,
+            vec![],
+            false,
+        )?;
         return Ok(());
     }
 
@@ -285,6 +312,13 @@ pub fn run(
         } else {
             println!("{}", style("Stack is empty. Nothing to sync.").dim());
         }
+        guard.finalize_with_scope(
+            &repo,
+            &config,
+            SnapshotScope::AllUserBranches,
+            remote_effects,
+            touched_remote,
+        )?;
         return Ok(());
     }
 
@@ -383,7 +417,7 @@ pub fn run(
             // Push the branch (always force-push with lease because rebases change commit SHAs)
             // This is safe because each entry branch is owned by this stack
             // If --force is passed, use hard force as an escape hatch
-            let push_result = git::push_branch(&entry_branch, true, force);
+            let push_result = git::push_branch(&entry_branch, true, force, no_verify);
             if let Err(e) = push_result {
                 pb.finish_and_clear();
                 if json {
@@ -411,6 +445,18 @@ pub fn run(
                 format_push_error(&e, &entry_branch);
                 return Err(e);
             }
+
+            // Record the push as a remote effect. `sync` always pushes with
+            // force-with-lease because rebases rewrite entry-branch history;
+            // the `force` field here reflects the hard --force escape hatch.
+            let effect = RemoteEffect::Pushed {
+                remote: "origin".to_string(),
+                branch: entry_branch.clone(),
+                force,
+            };
+            remote_effects.push(effect.clone());
+            touched_remote = true;
+            guard.record_remote_effect(effect);
         }
 
         // Determine target branch for MR
@@ -551,20 +597,32 @@ pub fn run(
                         }
                     }
 
-                    // Update PR/MR base if needed
-                    if let Err(e) = provider.update_pr_base(pr_num, &target_branch) {
-                        if !json {
-                            pb.println(format!(
-                                "{} Could not update {} {}{}: {}",
-                                style("Warning:").yellow(),
-                                provider.pr_label(),
-                                provider.pr_number_prefix(),
-                                pr_num,
-                                e
-                            ));
+                    // Update PR/MR base if needed. A successful `update_pr_base`
+                    // call mutates remote state — even if the new base matches
+                    // what the API already had, we've made a request that the
+                    // provider treats as an authoritative update. Mark
+                    // `touched_remote` so `gg undo` refuses to replay this sync
+                    // locally (there's no safe local inverse for a remote base
+                    // change).
+                    match provider.update_pr_base(pr_num, &target_branch) {
+                        Ok(()) => {
+                            touched_remote = true;
+                            guard.mark_touched_remote();
                         }
-                        if entry_error.is_none() {
-                            entry_error = Some(format!("Could not update base: {e}"));
+                        Err(e) => {
+                            if !json {
+                                pb.println(format!(
+                                    "{} Could not update {} {}{}: {}",
+                                    style("Warning:").yellow(),
+                                    provider.pr_label(),
+                                    provider.pr_number_prefix(),
+                                    pr_num,
+                                    e
+                                ));
+                            }
+                            if entry_error.is_none() {
+                                entry_error = Some(format!("Could not update base: {e}"));
+                            }
                         }
                     }
 
@@ -609,6 +667,18 @@ pub fn run(
                             Some(result.url.clone())
                         };
                         action = "created".to_string();
+
+                        // Record the PR creation as a remote effect so `gg undo`
+                        // can surface a provider-specific revert hint. Persist
+                        // immediately so a mid-sequence failure still leaves an
+                        // accurate record on disk.
+                        let effect = RemoteEffect::PrCreated {
+                            number: result.number,
+                            url: result.url.clone(),
+                        };
+                        remote_effects.push(effect.clone());
+                        touched_remote = true;
+                        guard.record_remote_effect(effect);
 
                         if !json {
                             let draft_label = if entry_draft { " (draft)" } else { "" };
@@ -884,6 +954,14 @@ pub fn run(
             entries_to_sync.len()
         );
     }
+
+    guard.finalize_with_scope(
+        &repo,
+        &config,
+        SnapshotScope::AllUserBranches,
+        remote_effects,
+        touched_remote,
+    )?;
 
     Ok(())
 }

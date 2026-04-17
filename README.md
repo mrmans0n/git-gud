@@ -157,6 +157,9 @@ gg clean
 | `gg ls` | List current stack commits with PR/MR status (shows `↓N` when base is behind `origin/<base>`) |
 | `gg ls --all` | List all stacks in the repository |
 | `gg ls --remote` | List remote stacks not checked out locally |
+| `gg log` | Smartlog tree view of the current stack, with PR/MR status, CI badges, and `<- HEAD` marker |
+| `gg log --json` | Machine-readable stack snapshot (same shape as `gg ls --json`, always refreshes PR/MR state) |
+| `gg log --refresh` | Refresh PR/MR state from the provider before rendering the tree |
 | `gg clean` | Remove merged stacks and their remote branches |
 
 ### Syncing
@@ -225,8 +228,12 @@ gg clean
 | `gg run [OPTIONS] -- <CMD>...` | Run an arbitrary command on each commit (read-only, `--amend`, `--discard`, `--jobs N`) |
 | `gg reconcile` | Reconcile stacks that were pushed without using `gg sync` |
 | `gg reconcile --dry-run` | Show what reconcile would do without making changes |
+| `gg restack` | Repair stack ancestry after manual history changes (amend, cherry-pick, rebase) |
+| `gg restack --dry-run` | Show what restack would do without making changes |
 | `gg continue` | Continue after resolving conflicts |
 | `gg abort` | Abort current operation |
+| `gg undo [OP_ID]` | Reverse the local ref/HEAD effects of the most recent mutating `gg` command (refuses on remote-touching ops) |
+| `gg undo --list` | Show recent operations from the per-repo operation log |
 | `gg completions <shell>` | Generate shell completions |
 
 ## Configuration

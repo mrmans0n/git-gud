@@ -97,6 +97,14 @@ struct StackInfo {
 }
 
 #[derive(Debug, Serialize)]
+struct StackLogInfo {
+    stack: String,
+    base: String,
+    current_position: Option<usize>,
+    entries: Vec<StackEntryInfo>,
+}
+
+#[derive(Debug, Serialize)]
 struct StackSummary {
     name: String,
     base: String,
@@ -127,6 +135,13 @@ struct ConfigInfo {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct StackListParams {
     /// Refresh PR/MR status from remote before listing
+    #[serde(default)]
+    pub refresh: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct StackLogParams {
+    /// Refresh PR/MR status from remote before rendering
     #[serde(default)]
     pub refresh: bool,
 }
@@ -169,6 +184,9 @@ pub struct StackSyncParams {
     /// Only sync up to this position, GG-ID, or SHA
     #[serde(default)]
     pub until: Option<String>,
+    /// Skip the pre-push hook (forwards `--no-verify` to `gg sync`)
+    #[serde(default)]
+    pub no_verify: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -199,6 +217,10 @@ pub struct StackRebaseParams {
     /// Target branch to rebase onto (default: base branch)
     #[serde(default)]
     pub target: Option<String>,
+    /// Bypass the immutability guard on merged / base-ancestor commits.
+    /// Only set after surfacing the affected commits to the user.
+    #[serde(default)]
+    pub force: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -206,6 +228,10 @@ pub struct StackSquashParams {
     /// Stage all changes before squashing (like git add -A)
     #[serde(default)]
     pub all: bool,
+    /// Bypass the immutability guard on merged / base-ancestor commits.
+    /// Only set after surfacing the affected commits to the user.
+    #[serde(default)]
+    pub force: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -225,6 +251,10 @@ pub struct StackAbsorbParams {
     /// Squash fixup commits immediately
     #[serde(default)]
     pub squash: bool,
+    /// Bypass the immutability guard on merged / base-ancestor commits.
+    /// Only set after surfacing the affected commits to the user.
+    #[serde(default)]
+    pub force: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -258,6 +288,13 @@ pub struct StackDropParams {
     /// Commits to drop: position (1-indexed), short SHA, or GG-ID
     #[serde(default)]
     pub targets: Vec<String>,
+    /// Bypass the immutability guard and drop merged/base-ancestor commits
+    /// anyway. Defaults to false so the MCP tool does not silently rewrite
+    /// already-published history. The confirmation prompt is always skipped
+    /// (MCP is non-interactive); only set this when the user has explicitly
+    /// approved rewriting immutable commits.
+    #[serde(default)]
+    pub force: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -284,12 +321,35 @@ pub struct StackSplitParams {
     /// Don't prompt for the remainder commit message
     #[serde(default)]
     pub no_edit: bool,
+    /// Bypass the immutability guard on merged / base-ancestor commits.
+    /// Only set after surfacing the affected commits to the user.
+    #[serde(default)]
+    pub force: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct StackReorderParams {
     /// New order as positions (1-indexed), e.g., "3,1,2" or "3 1 2"
     pub order: String,
+    /// Bypass the immutability guard on merged / base-ancestor commits.
+    /// Only set after surfacing the affected commits to the user.
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct StackUndoParams {
+    /// Target operation id (e.g. `op_0000001750000000_abcd…`). When
+    /// omitted, undoes the most recent locally-undoable operation.
+    #[serde(default)]
+    pub operation_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct StackUndoListParams {
+    /// Cap the number of records returned (newest-first).
+    #[serde(default)]
+    pub limit: Option<usize>,
 }
 
 // --- Helper functions ---
@@ -394,6 +454,30 @@ fn to_json<T: Serialize>(value: &T) -> String {
     serde_json::to_string_pretty(value).unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e))
 }
 
+/// Build the argv for `gg undo [--json] [<operation_id>]`.
+/// Extracted for unit testing — see `build_stack_undo_args_*` tests.
+fn build_stack_undo_args(operation_id: Option<String>) -> Vec<String> {
+    let mut args = vec!["undo".to_string(), "--json".to_string()];
+    if let Some(id) = operation_id {
+        args.push(id);
+    }
+    args
+}
+
+/// Build the argv for `gg undo --list --json [--limit N]`.
+fn build_stack_undo_list_args(limit: Option<usize>) -> Vec<String> {
+    let mut args = vec![
+        "undo".to_string(),
+        "--list".to_string(),
+        "--json".to_string(),
+    ];
+    if let Some(n) = limit {
+        args.push("--limit".to_string());
+        args.push(n.to_string());
+    }
+    args
+}
+
 // --- MCP Server ---
 
 #[derive(Debug, Clone)]
@@ -443,6 +527,36 @@ impl GgMcpServer {
 
         let info = build_stack_info(&stack, &repo);
         Ok(to_json(&info))
+    }
+
+    /// Render the current stack as a smartlog-style view.
+    /// Returns a stack-scoped view with positions, SHAs, titles, GG-IDs,
+    /// PR/MR state, CI status, and a flag marking the HEAD entry. Use
+    /// `stack_list_all` for cross-stack browsing.
+    #[tool(
+        description = "Show a smartlog-style view of the current stack (positions, SHAs, titles, PR/MR status, HEAD marker). Stack-scoped — use stack_list_all for all stacks."
+    )]
+    fn stack_log(&self, Parameters(params): Parameters<StackLogParams>) -> Result<String, String> {
+        let repo = open_repo()?;
+        let config = load_config(&repo)?;
+        let mut stack = load_stack(&repo, &config)?;
+
+        if params.refresh {
+            let provider =
+                Provider::detect(&repo).map_err(|e| McpToolError::ProviderDetect(e.to_string()))?;
+            stack
+                .refresh_mr_info(&provider)
+                .map_err(McpToolError::ConfigLoad)?;
+        }
+
+        let info = build_stack_info(&stack, &repo);
+        let log_info = StackLogInfo {
+            stack: info.name,
+            base: info.base,
+            current_position: info.current_position,
+            entries: info.entries,
+        };
+        Ok(to_json(&log_info))
     }
 
     /// List all stacks in the repository with summary information.
@@ -630,6 +744,9 @@ impl GgMcpServer {
             args.push("--until".to_string());
             args.push(until.clone());
         }
+        if params.no_verify {
+            args.push("--no-verify".to_string());
+        }
         run_gg_command(&args)
     }
 
@@ -682,6 +799,9 @@ impl GgMcpServer {
         Parameters(params): Parameters<StackRebaseParams>,
     ) -> Result<String, String> {
         let mut args = vec!["rebase".to_string()];
+        if params.force {
+            args.push("--force".to_string());
+        }
         if let Some(ref target) = params.target {
             args.push(target.clone());
         }
@@ -699,6 +819,9 @@ impl GgMcpServer {
         let mut args = vec!["sc".to_string()];
         if params.all {
             args.push("--all".to_string());
+        }
+        if params.force {
+            args.push("--force".to_string());
         }
         run_gg_command(&args)
     }
@@ -726,6 +849,9 @@ impl GgMcpServer {
         }
         if params.squash {
             args.push("-s".to_string());
+        }
+        if params.force {
+            args.push("--force".to_string());
         }
         run_gg_command(&args)
     }
@@ -798,7 +924,7 @@ impl GgMcpServer {
 
     /// Drop (remove) commits from the stack.
     #[tool(
-        description = "Remove commits from the stack. Targets can be positions (1-indexed), short SHAs, or GG-IDs. Always uses --force (agent confirms with user). Returns JSON with dropped commits."
+        description = "Remove commits from the stack. Targets can be positions (1-indexed), short SHAs, or GG-IDs. Always passes --yes (MCP is non-interactive); set `force: true` only to bypass the immutability guard for merged/base-ancestor commits. Returns JSON with dropped commits."
     )]
     fn stack_drop(
         &self,
@@ -807,11 +933,15 @@ impl GgMcpServer {
         if params.targets.is_empty() {
             return Err("At least one target is required".to_string());
         }
-        let mut args = vec![
-            "drop".to_string(),
-            "--force".to_string(),
-            "--json".to_string(),
-        ];
+        // Always pass `--yes` to skip the interactive prompt. Only add
+        // `--force` when the caller has explicitly opted into rewriting
+        // merged/base-ancestor commits — otherwise the immutability guard
+        // keeps already-published history safe.
+        let mut args = vec!["drop".to_string(), "--yes".to_string()];
+        if params.force {
+            args.push("--force".to_string());
+        }
+        args.push("--json".to_string());
         args.extend(params.targets);
         run_gg_command(&args)
     }
@@ -839,6 +969,9 @@ impl GgMcpServer {
         if params.no_edit {
             args.push("--no-edit".to_string());
         }
+        if params.force {
+            args.push("--force".to_string());
+        }
         args.extend(params.files);
         run_gg_command(&args)
     }
@@ -851,12 +984,39 @@ impl GgMcpServer {
         &self,
         Parameters(params): Parameters<StackReorderParams>,
     ) -> Result<String, String> {
-        run_gg_command(&[
+        let mut args = vec![
             "reorder".to_string(),
             "--no-tui".to_string(),
             "-o".to_string(),
             params.order,
-        ])
+        ];
+        if params.force {
+            args.push("--force".to_string());
+        }
+        run_gg_command(&args)
+    }
+
+    /// Reverse the local ref/HEAD effects of the most recent mutating
+    /// `gg` command (or a specific operation by id).
+    #[tool(
+        description = "Reverse the local ref/HEAD effects of the most recent mutating gg command. Pass operation_id to target a specific record (see stack_undo_list). Refuses on remote-touching operations (sync, land) — you will get a provider-specific revert hint, not an automated revert. `gg undo` is itself recorded, so calling twice in a row redoes the original operation. Working tree changes are NOT reverted."
+    )]
+    fn stack_undo(
+        &self,
+        Parameters(params): Parameters<StackUndoParams>,
+    ) -> Result<String, String> {
+        run_gg_command(&build_stack_undo_args(params.operation_id))
+    }
+
+    /// List recent operations from the per-repo operation log.
+    #[tool(
+        description = "List recent operations from the per-repo operation log (newest-first). Each entry shows id, kind, status, timestamp, stack, args, and whether it is locally undoable. Use the id with stack_undo to target a specific record. Remote-touching operations appear with is_undoable=false and a red `remote` marker."
+    )]
+    fn stack_undo_list(
+        &self,
+        Parameters(params): Parameters<StackUndoListParams>,
+    ) -> Result<String, String> {
+        run_gg_command(&build_stack_undo_list_args(params.limit))
     }
 
     /// Repair stack ancestry after manual Git operations.
@@ -909,6 +1069,30 @@ mod tests {
         assert_eq!(ci_status_str(&CiStatus::Failed), "failed");
         assert_eq!(ci_status_str(&CiStatus::Canceled), "canceled");
         assert_eq!(ci_status_str(&CiStatus::Unknown), "unknown");
+    }
+
+    #[test]
+    fn stack_undo_builds_expected_gg_args_with_id() {
+        let args = build_stack_undo_args(Some("op_123".to_string()));
+        assert_eq!(args, vec!["undo", "--json", "op_123"]);
+    }
+
+    #[test]
+    fn stack_undo_builds_expected_gg_args_without_id() {
+        let args = build_stack_undo_args(None);
+        assert_eq!(args, vec!["undo", "--json"]);
+    }
+
+    #[test]
+    fn stack_undo_list_builds_expected_gg_args_with_limit() {
+        let args = build_stack_undo_list_args(Some(10));
+        assert_eq!(args, vec!["undo", "--list", "--json", "--limit", "10"]);
+    }
+
+    #[test]
+    fn stack_undo_list_builds_expected_gg_args_without_limit() {
+        let args = build_stack_undo_list_args(None);
+        assert_eq!(args, vec!["undo", "--list", "--json"]);
     }
 
     #[test]
@@ -1020,6 +1204,7 @@ mod tests {
         assert!(!params.no_rebase_check);
         assert!(!params.lint);
         assert!(params.until.is_none());
+        assert!(!params.no_verify);
     }
 
     #[test]
@@ -1039,6 +1224,7 @@ mod tests {
         assert!(!params.whole_file);
         assert!(!params.one_fixup_per_commit);
         assert!(!params.squash);
+        assert!(!params.force);
     }
 
     #[test]
@@ -1046,6 +1232,9 @@ mod tests {
         // Empty targets array should deserialize
         let params: StackDropParams = serde_json::from_str("{}").unwrap();
         assert!(params.targets.is_empty());
+        // force must default to false so MCP drop does not silently bypass
+        // the immutability guard for merged/base commits.
+        assert!(!params.force);
     }
 
     #[test]
@@ -1056,6 +1245,14 @@ mod tests {
         assert_eq!(params.targets[0], "1");
         assert_eq!(params.targets[1], "c-abc1234");
         assert_eq!(params.targets[2], "abc1234");
+        assert!(!params.force);
+    }
+
+    #[test]
+    fn test_drop_params_with_force() {
+        let params: StackDropParams =
+            serde_json::from_str(r#"{"targets": ["1"], "force": true}"#).unwrap();
+        assert!(params.force);
     }
 
     #[test]
@@ -1065,6 +1262,7 @@ mod tests {
         assert!(params.files.is_empty());
         assert!(params.message.is_none());
         assert!(!params.no_edit);
+        assert!(!params.force);
     }
 
     #[test]
@@ -1084,12 +1282,17 @@ mod tests {
         // Order is required for MCP (no TUI)
         let params: StackReorderParams = serde_json::from_str(r#"{"order": "3,1,2"}"#).unwrap();
         assert_eq!(params.order, "3,1,2");
+        // force defaults to false
+        assert!(!params.force);
     }
 
     #[test]
     fn test_stack_drop_requires_targets() {
         let server = GgMcpServer::new();
-        let params = StackDropParams { targets: vec![] };
+        let params = StackDropParams {
+            targets: vec![],
+            force: false,
+        };
         let result = server.stack_drop(Parameters(params));
         assert!(result.is_err());
         assert_eq!(
@@ -1106,6 +1309,7 @@ mod tests {
             files: vec![],
             message: None,
             no_edit: false,
+            force: false,
         };
         let result = server.stack_split(Parameters(params));
         assert!(result.is_err());

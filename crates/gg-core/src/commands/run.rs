@@ -8,6 +8,7 @@ use git2::Oid;
 
 use crate::error::{GgError, Result};
 use crate::git;
+use crate::operations::{OperationKind, SnapshotScope};
 use crate::output::{
     self, RunCommandResult, RunCommitResult, RunResponse, RunResultJson, OUTPUT_VERSION,
 };
@@ -109,12 +110,54 @@ pub struct RunResult {
 
 /// Run commands on each commit in the stack and print output.
 ///
+/// Top-level CLI entry for `gg run`. In Amend mode this acquires an
+/// operation lock and records the op so `gg undo` can reverse it.
+/// Internal callers (e.g. `gg lint`, `gg sync --lint`) must use
+/// [`execute_raw`] directly — they are already inside a recorded op or
+/// intentionally unrecorded, so they must not acquire the lock again.
+///
 /// Returns `Ok(true)` when all commands passed on all commits,
 /// `Ok(false)` when one or more had failures.
 pub fn execute(options: RunOptions) -> Result<bool> {
     let json = options.json;
     let emit_json_output = options.emit_json_output;
-    let result = execute_raw(options)?;
+
+    let repo = git::open_repo()?;
+    let config = crate::config::Config::load_with_global(repo.commondir())?;
+
+    // In Amend mode, `gg run` rewrites commits — acquire an operation lock
+    // and record the op so `gg undo` can reverse it. Behaviour change: prior
+    // versions had no lock for this path. Read-only/Discard don't mutate the
+    // stack's commit graph, so they skip the record.
+    let recorded = if options.change_mode == ChangeMode::Amend {
+        Some(git::acquire_operation_lock_and_record(
+            &repo,
+            &config,
+            OperationKind::Run,
+            std::env::args().skip(1).collect(),
+            None,
+            SnapshotScope::AllUserBranches,
+        )?)
+    } else {
+        None
+    };
+
+    let result = execute_raw(options);
+
+    // Finalize only on success. On error the guard is dropped without
+    // finalize; the sweep promotes the Pending record to Interrupted on the
+    // next lock acquisition.
+    if let (Ok(_), Some((_lock, guard))) = (&result, recorded) {
+        guard.finalize_with_scope(
+            &repo,
+            &config,
+            SnapshotScope::AllUserBranches,
+            vec![],
+            false,
+        )?;
+    }
+
+    let result = result?;
 
     if json && emit_json_output {
         output::print_json(&RunResponse {
@@ -129,7 +172,9 @@ pub fn execute(options: RunOptions) -> Result<bool> {
     Ok(result.all_passed)
 }
 
-/// Execute and return raw results (for `gg lint` to wrap in LintResponse).
+/// Execute and return raw results (for `gg lint` and `gg sync --lint`
+/// to wrap). Does NOT acquire the operation lock — callers that need
+/// recording must go through [`execute`] instead.
 pub fn execute_raw(options: RunOptions) -> Result<RunResult> {
     let repo = git::open_repo()?;
 
@@ -138,7 +183,18 @@ pub fn execute_raw(options: RunOptions) -> Result<RunResult> {
 
     // Load stack
     let config = crate::config::Config::load_with_global(repo.commondir())?;
-    let stack = Stack::load(&repo, &config)?;
+
+    execute_raw_body(&repo, &config, options)
+}
+
+/// Execute body (without lock/record). Split out so `execute_raw` can manage
+/// the operation guard around it cleanly.
+fn execute_raw_body(
+    repo: &git2::Repository,
+    config: &crate::config::Config,
+    options: RunOptions,
+) -> Result<RunResult> {
+    let stack = Stack::load(repo, config)?;
 
     if stack.is_empty() {
         if !options.json {
@@ -182,7 +238,7 @@ pub fn execute_raw(options: RunOptions) -> Result<RunResult> {
             println!("{}", style(header).dim());
         }
 
-        return run_on_commits_parallel(&repo, &stack, &options, end_pos);
+        return run_on_commits_parallel(repo, &stack, &options, end_pos);
     }
 
     // --- Sequential path ---
@@ -219,14 +275,14 @@ pub fn execute_raw(options: RunOptions) -> Result<RunResult> {
         );
     }
 
-    let original_branch = git::current_branch_name(&repo);
+    let original_branch = git::current_branch_name(repo);
     let original_head = repo.head()?.peel_to_commit()?.id();
 
-    let result = run_on_commits(&repo, stack, &options, end_pos);
+    let result = run_on_commits(repo, stack, &options, end_pos);
 
-    if result.is_err() && !git::is_rebase_in_progress(&repo) {
+    if result.is_err() && !git::is_rebase_in_progress(repo) {
         restore_original_position(
-            &repo,
+            repo,
             original_branch.as_deref(),
             original_head,
             options.json,
@@ -1186,10 +1242,8 @@ fn restore_original_position(
 pub(crate) fn resolve_git_path(cmd: &str, repo: &git2::Repository) -> Option<PathBuf> {
     let remainder = if let Some(rest) = cmd.strip_prefix("./.git/") {
         rest
-    } else if let Some(rest) = cmd.strip_prefix(".git/") {
-        rest
     } else {
-        return None;
+        cmd.strip_prefix(".git/")?
     };
 
     Some(repo.commondir().join(remainder))

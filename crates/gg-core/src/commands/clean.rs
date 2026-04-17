@@ -8,6 +8,7 @@ use std::path::Path;
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
+use crate::operations::{OperationKind, SnapshotScope};
 use crate::output::{print_json, CleanResponse, CleanResultJson, OUTPUT_VERSION};
 use crate::provider::{PrState, Provider};
 use crate::stack;
@@ -16,11 +17,27 @@ use crate::stack;
 #[allow(dead_code)]
 pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
     let repo = git::open_repo()?;
+    let config = Config::load_with_global(repo.commondir())?;
 
-    // Acquire operation lock to prevent concurrent operations
-    let _lock = git::acquire_operation_lock(&repo, "clean")?;
+    // Acquire operation lock + record a Pending op for the undo log.
+    let (_lock, guard) = git::acquire_operation_lock_and_record(
+        &repo,
+        &config,
+        OperationKind::Clean,
+        std::env::args().skip(1).collect(),
+        Some(stack_name.to_string()),
+        SnapshotScope::AllUserBranches,
+    )?;
 
-    run_for_stack_with_repo(&repo, stack_name, force)
+    run_for_stack_with_repo(&repo, stack_name, force)?;
+
+    guard.finalize_with_scope(
+        &repo,
+        &config,
+        SnapshotScope::AllUserBranches,
+        vec![],
+        false,
+    )
 }
 
 /// Run clean for a stack with an already-open repository (no lock acquisition)
@@ -152,9 +169,6 @@ pub fn run_for_stack_with_repo(repo: &Repository, stack_name: &str, force: bool)
 pub fn run(clean_all: bool, json: bool) -> Result<()> {
     let repo = git::open_repo()?;
 
-    // Acquire operation lock to prevent concurrent operations
-    let _lock = git::acquire_operation_lock(&repo, "clean")?;
-
     if json && !clean_all {
         crate::output::print_json_error(
             "--json requires --all (cannot show interactive prompts in JSON mode)",
@@ -164,6 +178,16 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
 
     let git_dir = repo.commondir();
     let mut config = Config::load_with_global(git_dir)?;
+
+    // Acquire operation lock + record a Pending op for the undo log.
+    let (_lock, guard) = git::acquire_operation_lock_and_record(
+        &repo,
+        &config,
+        OperationKind::Clean,
+        std::env::args().skip(1).collect(),
+        None,
+        SnapshotScope::AllUserBranches,
+    )?;
 
     // Detect provider (best-effort).
     // Some repos (e.g. local remotes in tests) won't match GitHub/GitLab.
@@ -194,6 +218,13 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
         } else {
             println!("{}", style("No stacks to clean.").dim());
         }
+        guard.finalize_with_scope(
+            &repo,
+            &config,
+            SnapshotScope::AllUserBranches,
+            vec![],
+            false,
+        )?;
         return Ok(());
     }
 
@@ -370,6 +401,14 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
     } else {
         println!("{}", style("No stacks to clean.").dim());
     }
+
+    guard.finalize_with_scope(
+        &repo,
+        &config,
+        SnapshotScope::AllUserBranches,
+        vec![],
+        false,
+    )?;
 
     Ok(())
 }

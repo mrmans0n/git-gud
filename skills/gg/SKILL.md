@@ -96,7 +96,8 @@ git commit -m "feat: add input validation"
 3. Check stack state:
 
 ```bash
-gg ls --json
+gg ls --json        # single-stack details + summary metrics
+gg log --json       # smartlog-style view of the current stack
 ```
 
 4. Publish/update PR/MR chain:
@@ -120,6 +121,7 @@ gg land -a -c --json
 5. If sync warns stack is behind base, run `gg rebase` first.
 6. Prefer `gg absorb -s` for multi-commit edits.
 7. **Never use `git add -A` blindly.** Review `git status` first and only stage intended files. Use `git add <specific-files>` to avoid leaking secrets, env files, or unrelated changes.
+8. **Respect the immutability guard.** Rewrite-style commands (`gg sc`, `gg absorb`, `gg reorder`/`gg arrange`, `gg split`, `gg drop`, `gg rebase`) refuse to rewrite merged PRs/MRs or commits already on the base branch. If the command exits with `ImmutableTargets`, surface the listed commits and reasons to the user and get explicit confirmation before retrying with `-f` / `--force` (alias `--ignore-immutable`).
 
 ## Common operations
 
@@ -127,13 +129,50 @@ gg land -a -c --json
 - Amend current commit: `gg sc` / `gg sc -a`
 - Auto-distribute staged hunks: `gg absorb -s`
 - Split a commit into two: `gg split` — opens a two-panel TUI for hunk selection (files on the left, colored diff on the right), followed by inline commit message inputs for both the new and remainder commits. Use `--no-tui` to fall back to sequential `git add -p` style prompts. The `-m` flag bypasses the TUI message input for the new commit. The `--no-edit` flag skips the remainder message input. Pass `FILES...` to auto-select all hunks from those files (e.g., `gg split -c 3 file1.rs file2.rs`).
-- Drop commits from stack: `gg drop <position|sha|gg-id>... --force` (alias: `gg abandon`)
+- Drop commits from stack: `gg drop <position|sha|gg-id>... -y` (alias: `gg abandon`). Use `-y` / `--yes` to skip confirmation; add `-f` / `--force` only to bypass the immutability guard for merged/base-ancestor commits.
 - Reorder/drop stack (TUI): `gg reorder` (or `gg arrange`) — opens interactive TUI for visual reordering and dropping commits. Press `d` to mark a commit for dropping. Use `--no-tui` to fall back to text editor (delete lines to drop).
 - Reorder stack (direct): `gg reorder -o "3,1,2"`
 - Sync subset: `gg sync -u <position|gg-id|sha> --json`
 - Lint stack: `gg lint --json`
 - Run a command across the stack: `gg run -- <cmd...>` (see below)
 - Clean merged stacks: `gg clean -a --json`
+- Undo last local mutation: `gg undo` (see below)
+
+## Undoing local mutations (`gg undo`)
+
+`gg undo` reverses the ref/`HEAD` effects of the most recent mutating
+`gg` command by replaying a snapshot from the per-repo operation log at
+`<commondir>/gg/operations/*.json`. It never touches the working tree,
+index, or untracked files — only refs move.
+
+```bash
+gg undo              # reverse the most recent local operation
+gg undo --list       # see recent operations (newest-first)
+gg undo <op_id>      # target a specific record from --list
+gg undo; gg undo     # redo: a second undo reverses the first
+gg undo --json       # machine-readable output
+```
+
+Every mutating command (`sc`, `drop`, `split`, `rebase`, `reorder`,
+`absorb`, `reconcile`, `checkout`, nav, `clean`, `sync`, `land`, and
+`run --amend`) snapshots the refs it will touch before mutating and
+records the operation on success. The log keeps the last 100 records;
+interrupted/pending records are never pruned.
+
+**Refusal modes** (exit 1, no refs touched, JSON includes `refusal.reason`):
+
+- `remote` — target operation pushed/merged/closed/created a PR/MR.
+  gg prints a provider-specific revert hint (`gh pr close <n>`,
+  `glab mr close <n>`, `git push --delete …`). Agents must surface the
+  hint to the user rather than attempt silent remote rollback.
+- `interrupted` — operation crashed or was Ctrl-C'd mid-flight.
+- `stale` — refs moved since the target operation finalised. The error
+  names the ref, expected OID, and actual OID.
+- `unsupported_schema` — record was written by a newer `gg` binary.
+
+`gg undo` does **not** restore working-tree content (use `git reflog` or
+`git stash`), does **not** touch remotes, and does **not** support an
+`--all` / `--range` mode.
 
 ## Running commands across the stack (`gg run`)
 
@@ -177,6 +216,27 @@ subsequent tokens as the command, not as `gg run` flags.
 For repeatable linter runs with commands configured in `.git/gg/config.json`,
 prefer `gg lint` — it's `gg run --amend` with the command list coming from
 config.
+
+## Immutable commits
+
+gg refuses by default to rewrite commits that look "already published":
+
+- the tracked PR/MR is merged, or
+- the commit is already reachable from `origin/<base>` (or the local base, as
+  a fallback).
+
+The guard protects `gg sc`, `gg absorb`, `gg reorder` / `gg arrange`,
+`gg split`, `gg drop`, and `gg rebase`. When it fires, the command exits
+with an `ImmutableTargets` error listing every affected position, short
+SHA, title, and reason (e.g. `merged as !123`, `already in origin/main`).
+
+To bypass it intentionally, pass `-f` / `--force` (long alias
+`--ignore-immutable`). Always surface the listed commits and reasons to the
+user first; the override still emits a warning and proceeds.
+
+`gg land`'s post-merge cleanup bypasses the guard by design, and
+`gg absorb --dry-run` skips it (no rewrite happens). See
+`reference.md` → "Immutable commits" for details.
 
 ## PR/MR body ownership
 
@@ -241,9 +301,10 @@ Reconcile is skipped under `--until` to avoid partial-stack inconsistencies.
 The `gg-mcp` binary exposes git-gud as an MCP server (stdio transport). Set `GG_REPO_PATH` to the target repo.
 
 ### Read-only tools (safe, no side effects)
-- `stack_list` / `stack_list_all` / `stack_status` — inspect stacks
+- `stack_list` / `stack_log` / `stack_list_all` / `stack_status` — inspect stacks (`stack_log` gives a smartlog-style view of the current stack; `stack_list_all` is cross-stack)
 - `pr_info` — check PR state, CI, approval
 - `config_show` — read repo configuration
+- `stack_undo_list` — list recent operations from the per-repo operation log
 
 ### Write tools (mutating, use with care)
 - `stack_checkout` — create or switch stacks
@@ -253,9 +314,10 @@ The `gg-mcp` binary exposes git-gud as an MCP server (stdio transport). Set `GG_
 - `stack_rebase` — rebase onto latest base
 - `stack_squash` / `stack_absorb` — amend commits
 - `stack_reconcile` — fix out-of-sync remote branches
-- `stack_drop` — remove commits from the stack (always uses `--force`; agent confirms with user)
+- `stack_drop` — remove commits from the stack (always passes `--yes`; set `force: true` only to bypass the immutability guard for merged/base commits; agent confirms with user before any drop)
 - `stack_split` — split a commit using interactive hunk selection (TUI opens by default; pass FILES... to auto-select all hunks for those files)
 - `stack_reorder` — reorder commits with explicit order string (no TUI)
+- `stack_undo` — reverse the ref/HEAD effects of the most recent mutating `gg` command (refuses on remote-touching ops, returns provider-specific revert hints; agents must surface those hints rather than attempt silent remote rollback)
 
 ### Navigation tools
 - `stack_move` — jump to a commit by position, GG-ID, or SHA
@@ -267,3 +329,4 @@ The `gg-mcp` binary exposes git-gud as an MCP server (stdio transport). Set `GG_
 - **Never call `stack_land` without explicit user approval.**
 - Parse JSON output from `stack_sync`, `stack_land`, `stack_clean`, and `stack_lint`.
 - If `stack_status` shows `behind_base > 0`, run `stack_rebase` before syncing.
+- Rewrite tools (`stack_squash`, `stack_absorb`, `stack_reorder`, `stack_split`, `stack_drop`, `stack_rebase`) will fail with `ImmutableTargets` when a target commit is merged or already on the base branch. Each tool accepts a `force: bool` parameter that maps to `--force` / `--ignore-immutable`. Only set `force: true` after surfacing the affected commits to the user and getting explicit approval. `stack_drop` always passes `--yes` (MCP is non-interactive), but its `force: bool` param is separate from the confirmation-skip — leave it `false` unless the user has approved rewriting merged/base commits.

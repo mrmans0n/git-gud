@@ -10,6 +10,8 @@ use dialoguer::Editor;
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
+use crate::immutability::{self, ImmutabilityPolicy};
+use crate::operations::{OperationKind, SnapshotScope};
 use crate::stack::{self, Stack};
 
 /// Options for the split command
@@ -25,6 +27,8 @@ pub struct SplitOptions {
     pub no_edit: bool,
     /// If true, disable TUI and use sequential prompt instead.
     pub no_tui: bool,
+    /// If true, override the immutability check.
+    pub force: bool,
 }
 
 /// A single line in a diff hunk
@@ -81,12 +85,18 @@ impl std::fmt::Display for ChangedFile {
 /// Run the split command
 pub fn run(options: SplitOptions) -> Result<()> {
     let repo = git::open_repo()?;
-    let _lock = git::acquire_operation_lock(&repo, "split")?;
     let config = Config::load_with_global(repo.commondir())?;
+    // Acquire the operation lock up-front but defer writing the op-log
+    // record until after all validation (including the immutability guard)
+    // so refused operations never leak into `gg undo --list` (design §4.6).
+    let _lock = git::acquire_operation_lock(&repo, "split")?;
 
     git::require_clean_working_directory(&repo)?;
 
-    let stack = Stack::load(&repo, &config)?;
+    let mut stack = Stack::load(&repo, &config)?;
+    // Best-effort refresh of mr_state for the immutability guard (catches
+    // squash-merged PRs that base-ancestor would otherwise miss).
+    immutability::refresh_mr_state_for_guard(&repo, &mut stack);
 
     // Resolve target commit position (1-indexed)
     let target_pos = match &options.target {
@@ -107,6 +117,16 @@ pub fn run(options: SplitOptions) -> Result<()> {
     let target_oid = entry.oid;
     let target_commit = repo.find_commit(target_oid)?;
     let original_gg_id = entry.gg_id.clone();
+
+    // Immutability pre-flight: splitting rewrites the target commit and every
+    // commit above it (they get a new parent). Guard against splitting a
+    // merged or base-ancestor commit unless the user explicitly overrides.
+    {
+        let targets: Vec<usize> = (target_pos..=stack.len()).collect();
+        let policy = ImmutabilityPolicy::for_stack(&repo, &stack)?;
+        let report = policy.check_positions(&stack, &targets);
+        immutability::guard(report, options.force)?;
+    }
 
     println!(
         "Splitting commit {}: {} ({})",
@@ -244,6 +264,19 @@ pub fn run(options: SplitOptions) -> Result<()> {
         get_remainder_message(&options, &target_commit)?
     };
 
+    // All validation passed — write the Pending op-log record now, right
+    // before the first actual repo mutation. A failure beyond this point
+    // leaves a Pending record the sweep promotes to Interrupted, which
+    // `gg undo` refuses (avoiding an unsafe partial-state rewind).
+    let guard = git::begin_recorded_op(
+        &repo,
+        &config,
+        OperationKind::Split,
+        std::env::args().skip(1).collect(),
+        None,
+        SnapshotScope::AllUserBranches,
+    )?;
+
     // 2. Create the first (new, lower) commit
     let sig = git::get_signature(&repo)?;
     let new_gg_id = git::generate_gg_id();
@@ -307,6 +340,14 @@ pub fn run(options: SplitOptions) -> Result<()> {
             if num_rebased == 1 { "" } else { "s" }
         );
     }
+
+    guard.finalize_with_scope(
+        &repo,
+        &config,
+        SnapshotScope::AllUserBranches,
+        vec![],
+        false,
+    )?;
 
     Ok(())
 }
@@ -1183,12 +1224,10 @@ fn apply_hunks_to_content(parent_content: &str, hunks: &[&DiffHunk]) -> Result<S
                     // Skip (delete) line from parent
                     parent_idx += 1;
                 }
-                ' ' => {
+                ' ' if parent_idx < parent_lines.len() => {
                     // Context - should match, advance parent
-                    if parent_idx < parent_lines.len() {
-                        result_lines.push(parent_lines[parent_idx].to_string());
-                        parent_idx += 1;
-                    }
+                    result_lines.push(parent_lines[parent_idx].to_string());
+                    parent_idx += 1;
                 }
                 _ => {}
             }

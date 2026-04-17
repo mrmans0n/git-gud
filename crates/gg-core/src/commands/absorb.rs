@@ -12,6 +12,8 @@ use slog::{o, Drain, Logger};
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
+use crate::immutability::{self, ImmutabilityPolicy};
+use crate::operations::{OperationKind, SnapshotScope};
 use crate::stack::Stack;
 
 /// Options for the absorb command
@@ -29,12 +31,21 @@ pub struct AbsorbOptions {
     pub no_limit: bool,
     /// Squash absorbed changes directly instead of creating fixup commits
     pub squash: bool,
+    /// Override the immutability check (any stack commit being flagged as
+    /// merged or base-ancestor would otherwise abort the operation).
+    pub force: bool,
 }
 
 /// Run the absorb command
 pub fn run(options: AbsorbOptions) -> Result<()> {
     let repo = git::open_repo()?;
     let gg_config = Config::load_with_global(repo.commondir())?;
+
+    // Acquire the operation lock for validation, but defer writing the
+    // op-log record until after the immutability guard passes so refused
+    // operations never pollute `gg undo --list` (design §4.6).
+    // NOTE: behaviour change — absorb previously had no lock.
+    let _lock = git::acquire_operation_lock(&repo, "absorb")?;
 
     // Check if there are staged changes
     let statuses = repo.statuses(None)?;
@@ -66,17 +77,48 @@ pub fn run(options: AbsorbOptions) -> Result<()> {
         } else {
             println!("{}", style("No changes to absorb.").dim());
         }
+        // No mutation — no record needed.
         return Ok(());
     }
 
     // Load stack to get the base
-    let stack = Stack::load(&repo, &gg_config)?;
+    let mut stack = Stack::load(&repo, &gg_config)?;
+    // Best-effort refresh of mr_state for the immutability guard (catches
+    // squash-merged PRs that base-ancestor would otherwise miss).
+    immutability::refresh_mr_state_for_guard(&repo, &mut stack);
 
     if stack.is_empty() {
         return Err(GgError::Other(
             "Stack is empty. Use `git commit` to create commits first.".to_string(),
         ));
     }
+
+    // Immutability pre-flight: enumerating exactly which commits git-absorb
+    // will target requires re-running its scoring logic. v1 is conservative:
+    // if any commit in the stack is immutable, refuse unless --force. Skip
+    // the check on dry-run so users can inspect the would-be-changes.
+    if !options.dry_run {
+        let policy = ImmutabilityPolicy::for_stack(&repo, &stack)?;
+        let report = policy.check_all(&stack);
+        immutability::guard(report, options.force)?;
+    }
+
+    // All validation passed and we are about to mutate: write the Pending
+    // op-log record now so a failure beyond this point leaves a record the
+    // sweep can promote to Interrupted. Dry-run mutates nothing, so skip
+    // recording entirely in that branch.
+    let guard = if options.dry_run {
+        None
+    } else {
+        Some(git::begin_recorded_op(
+            &repo,
+            &gg_config,
+            OperationKind::Absorb,
+            std::env::args().skip(1).collect(),
+            None,
+            SnapshotScope::AllUserBranches,
+        )?)
+    };
 
     // Determine the base reference for absorb
     // We want to absorb into commits between base and HEAD
@@ -113,7 +155,7 @@ pub fn run(options: AbsorbOptions) -> Result<()> {
 
     // Run git-absorb
     let _env_guard = prepare_git_absorb_env(&repo);
-    match git_absorb::run(&logger, &absorb_config) {
+    let outcome = match git_absorb::run(&logger, &absorb_config) {
         Ok(()) => {
             if options.dry_run {
                 println!(
@@ -164,7 +206,20 @@ pub fn run(options: AbsorbOptions) -> Result<()> {
                 Err(GgError::Other(format!("git-absorb failed: {}", error_msg)))
             }
         }
+    };
+    outcome?;
+
+    if let Some(guard) = guard {
+        guard.finalize_with_scope(
+            &repo,
+            &gg_config,
+            SnapshotScope::AllUserBranches,
+            vec![],
+            false,
+        )?;
     }
+
+    Ok(())
 }
 
 /// Create a slog logger for git-absorb output

@@ -55,3 +55,23 @@ Increase timeout in config:
 
 - Use `gg sc` when you're on the exact commit you want to modify.
 - Use `gg absorb` when staged edits belong to multiple commits and you want git-gud to distribute them.
+
+## How do I undo a `gg` command?
+
+Run [`gg undo`](./commands/undo.md). It reverses the local ref/HEAD
+effects of the most recent mutating `gg` command (drop, squash, split,
+rebase, reorder, absorb, reconcile, checkout, nav, clean, sync, land,
+or `run --amend`). Working-tree changes are not touched.
+
+```bash
+gg undo              # reverse the last local operation
+gg undo --list       # see the recent operation log
+gg undo <op_id>      # target a specific record
+gg undo; gg undo     # undo then redo — a second undo reverses the first
+```
+
+Remote-touching operations (`sync`, `land`) are recorded but refused
+for local replay. `gg undo` prints a provider-specific revert hint
+(e.g. `gh pr close <n>`, `git push --delete …`) instead of silently
+rewriting published history. See [`gg undo`](./commands/undo.md) for
+the full refusal matrix and JSON schema.

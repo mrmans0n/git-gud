@@ -8,6 +8,8 @@ use dialoguer::Select;
 use crate::config::{Config, UnstagedAction};
 use crate::error::{GgError, Result};
 use crate::git;
+use crate::immutability::{self, ImmutabilityPolicy};
+use crate::operations::{OperationKind, SnapshotScope};
 use crate::stack;
 use crate::stack::Stack;
 
@@ -70,21 +72,27 @@ fn has_untracked_files() -> Result<bool> {
 }
 
 /// Run the squash command
-pub fn run(all: bool) -> Result<()> {
+pub fn run(all: bool, force: bool) -> Result<()> {
     let repo = git::open_repo()?;
-
-    // Acquire operation lock to prevent concurrent operations
-    let _lock = git::acquire_operation_lock(&repo, "squash")?;
-
     let config = Config::load_with_global(repo.commondir())?;
 
+    // Acquire the operation lock for validation, but defer writing the
+    // op-log record until after the immutability guard passes so refused
+    // operations never pollute `gg undo --list` (design §4.6).
+    let _lock = git::acquire_operation_lock(&repo, "squash")?;
+
     // Verify we're on a stack
-    let stack = Stack::load(&repo, &config)?;
+    let mut stack = Stack::load(&repo, &config)?;
+    // Best-effort refresh of mr_state so the immutability guard can catch
+    // squash-merged PRs (their merge SHA isn't on origin/<base>, so the
+    // base-ancestor rule misses them). No-op when offline / no provider.
+    immutability::refresh_mr_state_for_guard(&repo, &mut stack);
 
     // Check if we have changes to squash
     let statuses = repo.statuses(None)?;
     if statuses.is_empty() {
         println!("{}", style("No changes to squash.").dim());
+        // No mutation — no record needed.
         return Ok(());
     }
 
@@ -98,6 +106,23 @@ pub fn run(all: bool) -> Result<()> {
         .current_position
         .map(|p| p < stack.len() - 1)
         .unwrap_or(false);
+
+    // Immutability pre-flight: squash amends the current commit (position =
+    // current_position + 1, or stack head) and rebases every position above
+    // it when `needs_rebase` is true. Guard against rewriting merged/
+    // base-ancestor commits unless the user explicitly overrides.
+    if !stack.is_empty() {
+        let head_pos = stack.current_position.map(|p| p + 1).unwrap_or(stack.len());
+        let mut targets = vec![head_pos];
+        if needs_rebase {
+            for pos in (head_pos + 1)..=stack.len() {
+                targets.push(pos);
+            }
+        }
+        let policy = ImmutabilityPolicy::for_stack(&repo, &stack)?;
+        let report = policy.check_positions(&stack, &targets);
+        immutability::guard(report, force)?;
+    }
 
     let has_unstaged = has_unstaged_changes()?;
     let has_untracked = has_untracked_files()?;
@@ -151,7 +176,12 @@ pub fn run(all: bool) -> Result<()> {
                         auto_stashed = true;
                     }
                     2 => {}
-                    _ => return Ok(()),
+                    _ => {
+                        // User aborted: no mutation occurred and no record
+                        // has been written yet. Exit clean — the op log
+                        // stays untouched.
+                        return Ok(());
+                    }
                 }
             }
             UnstagedAction::Add => {
@@ -195,6 +225,18 @@ pub fn run(all: bool) -> Result<()> {
             ));
         }
     }
+
+    // All validation passed and we are about to mutate: write the Pending
+    // op-log record now so a failure beyond this point leaves a record the
+    // sweep can promote to Interrupted.
+    let guard = git::begin_recorded_op(
+        &repo,
+        &config,
+        OperationKind::Squash,
+        std::env::args().skip(1).collect(),
+        None,
+        SnapshotScope::AllUserBranches,
+    )?;
 
     // Perform the squash using git command (more reliable for amend)
     let mut args = vec!["commit", "--amend", "--no-edit"];
@@ -319,6 +361,15 @@ pub fn run(all: bool) -> Result<()> {
     if auto_stashed {
         restore_auto_stash();
     }
+
+    // Finalize op record — purely local mutation.
+    guard.finalize_with_scope(
+        &repo,
+        &config,
+        SnapshotScope::AllUserBranches,
+        vec![],
+        false,
+    )?;
 
     Ok(())
 }

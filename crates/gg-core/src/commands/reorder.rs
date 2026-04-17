@@ -9,6 +9,8 @@ use super::reorder_tui::{self, ReorderEntry};
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
+use crate::immutability::{self, ImmutabilityPolicy};
+use crate::operations::{OperationKind, SnapshotScope};
 use crate::stack::Stack;
 
 /// Options for the reorder command
@@ -19,6 +21,8 @@ pub struct ReorderOptions {
     pub order: Option<String>,
     /// If true, disable TUI and use editor fallback
     pub no_tui: bool,
+    /// If true, override the immutability check
+    pub force: bool,
 }
 
 /// Run the reorder command
@@ -26,11 +30,20 @@ pub fn run(options: ReorderOptions) -> Result<()> {
     let repo = git::open_repo()?;
     let config = Config::load_with_global(repo.commondir())?;
 
+    // Acquire the operation lock now but defer writing the op-log record
+    // until all validation (including the immutability guard) passes so
+    // refused or cancelled operations never leak into `gg undo --list`.
+    // NOTE: this is a behaviour change — reorder previously had no lock.
+    let _lock = git::acquire_operation_lock(&repo, "reorder")?;
+
     // Require clean working directory
     git::require_clean_working_directory(&repo)?;
 
     // Load stack
-    let stack = Stack::load(&repo, &config)?;
+    let mut stack = Stack::load(&repo, &config)?;
+    // Best-effort refresh of mr_state for the immutability guard (catches
+    // squash-merged PRs that base-ancestor would otherwise miss).
+    immutability::refresh_mr_state_for_guard(&repo, &mut stack);
 
     if stack.len() < 2 {
         println!("{}", style("Need at least 2 commits to reorder.").dim());
@@ -71,6 +84,29 @@ pub fn run(options: ReorderOptions) -> Result<()> {
         return Ok(());
     }
 
+    // Immutability pre-flight: the rebase rewrites parents for every commit
+    // from the lowest changed position upward, so check that span. Dropped
+    // commits count as "changes" too (anything missing from new_order needs
+    // to be included in the check).
+    let min_change = lowest_change_position(&old_order, &new_order);
+    if let Some(min) = min_change {
+        let targets: Vec<usize> = (min..=stack.len()).collect();
+        let policy = ImmutabilityPolicy::for_stack(&repo, &stack)?;
+        let report = policy.check_positions(&stack, &targets);
+        immutability::guard(report, options.force)?;
+    }
+
+    // All validation passed — write the Pending op-log record immediately
+    // before the actual rebase.
+    let guard = git::begin_recorded_op(
+        &repo,
+        &config,
+        OperationKind::Reorder,
+        std::env::args().skip(1).collect(),
+        None,
+        SnapshotScope::AllUserBranches,
+    )?;
+
     let dropped_count = stack.len() - new_order.len();
     if dropped_count > 0 {
         println!(
@@ -108,7 +144,34 @@ pub fn run(options: ReorderOptions) -> Result<()> {
         );
     }
 
+    guard.finalize_with_scope(
+        &repo,
+        &config,
+        SnapshotScope::AllUserBranches,
+        vec![],
+        false,
+    )?;
+
     Ok(())
+}
+
+/// Find the lowest (1-indexed) stack position whose SHA differs between the
+/// old and new orderings. If positions match up to the shorter length but
+/// the new order is shorter (commits dropped from the tail), the first
+/// missing position is returned. Returns `None` if nothing changed.
+fn lowest_change_position(old_order: &[&str], new_order: &[String]) -> Option<usize> {
+    for i in 0..new_order.len().min(old_order.len()) {
+        if new_order[i].as_str() != old_order[i] {
+            return Some(i + 1);
+        }
+    }
+    if new_order.len() != old_order.len() {
+        // Either extra entries in new_order (unreachable in reorder) or
+        // trailing entries were dropped.
+        Some(new_order.len().min(old_order.len()) + 1)
+    } else {
+        None
+    }
 }
 
 /// Parse order from a string like "3,1,2" or "3 1 2" (positions) or "abc123,def456" (SHAs)
@@ -425,5 +488,83 @@ mod tests {
                 "bbb2222".to_string()
             ])
         );
+    }
+
+    #[test]
+    fn lowest_change_position_returns_none_for_identical_orderings() {
+        let old_order = ["aaa1111", "bbb2222", "ccc3333"];
+        let new_order = vec![
+            "aaa1111".to_string(),
+            "bbb2222".to_string(),
+            "ccc3333".to_string(),
+        ];
+        assert_eq!(lowest_change_position(&old_order, &new_order), None);
+    }
+
+    #[test]
+    fn lowest_change_position_detects_first_element_change() {
+        let old_order = ["aaa1111", "bbb2222", "ccc3333"];
+        let new_order = vec![
+            "ccc3333".to_string(),
+            "bbb2222".to_string(),
+            "aaa1111".to_string(),
+        ];
+        assert_eq!(lowest_change_position(&old_order, &new_order), Some(1));
+    }
+
+    #[test]
+    fn lowest_change_position_detects_middle_element_change() {
+        let old_order = ["aaa1111", "bbb2222", "ccc3333"];
+        let new_order = vec![
+            "aaa1111".to_string(),
+            "ccc3333".to_string(),
+            "bbb2222".to_string(),
+        ];
+        assert_eq!(lowest_change_position(&old_order, &new_order), Some(2));
+    }
+
+    #[test]
+    fn lowest_change_position_detects_last_element_change() {
+        let old_order = ["aaa1111", "bbb2222", "ccc3333"];
+        let new_order = vec![
+            "aaa1111".to_string(),
+            "bbb2222".to_string(),
+            "ddd4444".to_string(),
+        ];
+        assert_eq!(lowest_change_position(&old_order, &new_order), Some(3));
+    }
+
+    #[test]
+    fn lowest_change_position_detects_tail_drop_with_matching_prefix() {
+        // Prefix matches, new_order dropped the tail entry.
+        let old_order = ["aaa1111", "bbb2222", "ccc3333"];
+        let new_order = vec!["aaa1111".to_string(), "bbb2222".to_string()];
+        // First missing position (length + 1 of the shorter list).
+        assert_eq!(lowest_change_position(&old_order, &new_order), Some(3));
+    }
+
+    #[test]
+    fn lowest_change_position_detects_tail_drop_with_earlier_change() {
+        // Prefix differs at position 2 AND the tail is dropped. The earlier
+        // change wins (the helper returns the lowest changed position).
+        let old_order = ["aaa1111", "bbb2222", "ccc3333"];
+        let new_order = vec!["aaa1111".to_string(), "zzz9999".to_string()];
+        assert_eq!(lowest_change_position(&old_order, &new_order), Some(2));
+    }
+
+    #[test]
+    fn lowest_change_position_detects_drop_of_first_entry() {
+        let old_order = ["aaa1111", "bbb2222", "ccc3333"];
+        let new_order = vec!["bbb2222".to_string(), "ccc3333".to_string()];
+        // First differing position is the first slot.
+        assert_eq!(lowest_change_position(&old_order, &new_order), Some(1));
+    }
+
+    #[test]
+    fn lowest_change_position_handles_empty_new_order() {
+        // All commits dropped → "first missing position" is position 1.
+        let old_order = ["aaa1111", "bbb2222"];
+        let new_order: Vec<String> = vec![];
+        assert_eq!(lowest_change_position(&old_order, &new_order), Some(1));
     }
 }

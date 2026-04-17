@@ -7,6 +7,7 @@ use console::style;
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
+use crate::operations::{OperationKind, SnapshotScope};
 use crate::output::{
     print_json, RestackResponse, RestackResultJson, RestackStepJson, OUTPUT_VERSION,
 };
@@ -30,6 +31,8 @@ pub enum RestackAction {
     Ok,
     /// Entry's GG-Parent differs from expected — needs rebasing onto correct parent.
     Reattach,
+    /// Entry is below the `--from` threshold and was not checked.
+    Skip,
 }
 
 /// A single step in a restack plan.
@@ -74,8 +77,10 @@ impl RestackPlan {
             let expected = stack.expected_parent_gg_id(entry.position).map(String::from);
             let current = entry.gg_parent.clone();
 
-            let skip = from_position.is_some_and(|from_pos| entry.position < from_pos);
-            let action = if skip || current == expected {
+            let below_from = from_position.is_some_and(|from_pos| entry.position < from_pos);
+            let action = if below_from {
+                RestackAction::Skip
+            } else if current == expected {
                 RestackAction::Ok
             } else {
                 RestackAction::Reattach
@@ -118,6 +123,7 @@ impl RestackPlan {
                 action: match s.action {
                     RestackAction::Ok => "ok".to_string(),
                     RestackAction::Reattach => "reattach".to_string(),
+                    RestackAction::Skip => "skip".to_string(),
                 },
                 current_parent: s.current_parent.clone(),
                 expected_parent: s.expected_parent.clone(),
@@ -131,8 +137,10 @@ pub fn run(options: RestackOptions) -> Result<()> {
     let repo = git::open_repo()?;
     let config = Config::load_with_global(repo.commondir())?;
 
-    // Acquire operation lock
+    // Acquire operation lock (recording deferred until after validation)
     let _lock = git::acquire_operation_lock(&repo, "restack")?;
+    // The op-log record is written just before mutation (below) so that
+    // rejected/dry-run invocations do not pollute the operation log.
 
     // Check for rebase-in-progress
     if git::is_rebase_in_progress(&repo) {
@@ -163,7 +171,8 @@ pub fn run(options: RestackOptions) -> Result<()> {
     let stack_name = stack.name.clone();
     let total = stack.entries.len();
     let reattach_count = plan.reattach_count();
-    let ok_count = total - reattach_count;
+    let skip_count = plan.steps.iter().filter(|s| s.action == RestackAction::Skip).count();
+    let ok_count = total - reattach_count - skip_count;
 
     // No-op: stack is already consistent
     if !plan.needs_rebase() {
@@ -212,6 +221,7 @@ pub fn run(options: RestackOptions) -> Result<()> {
             );
             for step in &plan.steps {
                 let action_str = match step.action {
+                    RestackAction::Skip => style("skip").dim().to_string(),
                     RestackAction::Ok => style("ok").green().to_string(),
                     RestackAction::Reattach => {
                         let cur = step.current_parent.as_deref().unwrap_or("(none)");
@@ -239,6 +249,17 @@ pub fn run(options: RestackOptions) -> Result<()> {
         }
         return Ok(());
     }
+
+    // All validation passed — write the Pending op-log record immediately
+    // before the actual rebase.
+    let guard = git::begin_recorded_op(
+        &repo,
+        &config,
+        OperationKind::Restack,
+        std::env::args().skip(1).collect(),
+        None,
+        SnapshotScope::AllUserBranches,
+    )?;
 
     // Execute: single git rebase -i
     // Determine base ref for the rebase
@@ -307,9 +328,21 @@ pub fn run(options: RestackOptions) -> Result<()> {
         return Err(GgError::Other(format!("Rebase failed: {}", stderr)));
     }
 
-    // Normalize GG metadata after rebase
+    // Normalize GG metadata after rebase. This normalizes the full stack
+    // (not just from --from) because entries below --from are only rewritten
+    // if their metadata is genuinely stale — correct entries are left as-is.
     let rewritten_stack = Stack::load(&repo, &config)?;
     git::normalize_stack_metadata(&repo, &rewritten_stack)?;
+
+    // Finalize the op record with post-mutation refs. Restack is purely
+    // local; no remote effects.
+    guard.finalize_with_scope(
+        &repo,
+        &config,
+        SnapshotScope::AllUserBranches,
+        vec![],
+        false,
+    )?;
 
     // Output result
     if options.json {
@@ -356,6 +389,8 @@ mod tests {
     fn test_restack_action_equality() {
         assert_eq!(RestackAction::Ok, RestackAction::Ok);
         assert_eq!(RestackAction::Reattach, RestackAction::Reattach);
+        assert_eq!(RestackAction::Skip, RestackAction::Skip);
         assert_ne!(RestackAction::Ok, RestackAction::Reattach);
+        assert_ne!(RestackAction::Ok, RestackAction::Skip);
     }
 }

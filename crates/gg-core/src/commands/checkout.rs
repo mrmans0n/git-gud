@@ -7,6 +7,7 @@ use git2::BranchType;
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
+use crate::operations::{OperationKind, SnapshotScope};
 use crate::provider::Provider;
 use crate::stack;
 
@@ -17,12 +18,18 @@ use std::process::Command;
 /// Run the checkout command
 pub fn run(stack_name: Option<String>, base: Option<String>, use_worktree: bool) -> Result<()> {
     let repo = git::open_repo()?;
-
-    // Acquire operation lock to prevent concurrent operations
-    let _lock = git::acquire_operation_lock(&repo, "checkout")?;
-
     let git_dir = repo.commondir();
     let mut config = Config::load_with_global(git_dir)?;
+
+    // Acquire operation lock + record a Pending op for the undo log.
+    let (_lock, guard) = git::acquire_operation_lock_and_record(
+        &repo,
+        &config,
+        OperationKind::Checkout,
+        std::env::args().skip(1).collect(),
+        stack_name.clone(),
+        SnapshotScope::AllUserBranches,
+    )?;
 
     // Get username from config or provider
     let username = config
@@ -269,6 +276,14 @@ pub fn run(stack_name: Option<String>, base: Option<String>, use_worktree: bool)
             }
         }
     }
+
+    guard.finalize_with_scope(
+        &repo,
+        &config,
+        SnapshotScope::AllUserBranches,
+        vec![],
+        false,
+    )?;
 
     Ok(())
 }

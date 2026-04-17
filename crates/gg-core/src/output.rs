@@ -437,3 +437,231 @@ pub struct RestackStepJson {
     pub current_parent: Option<String>,
     pub expected_parent: Option<String>,
 }
+
+#[derive(Serialize)]
+pub struct LogResponse {
+    pub version: u32,
+    pub log: LogJson,
+}
+
+#[derive(Serialize)]
+pub struct LogJson {
+    pub stack: String,
+    pub base: String,
+    pub current_position: Option<usize>,
+    pub entries: Vec<StackEntryJson>,
+}
+
+// ---------------------------------------------------------------------------
+// Undo responses (task #5)
+// ---------------------------------------------------------------------------
+
+use serde_json::Value as JsonValue;
+
+use crate::operations::{OperationKind, OperationRecord, OperationStatus, RemoteEffect};
+
+#[derive(Serialize)]
+pub struct UndoResponse {
+    pub version: u32,
+    pub status: UndoJsonStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub undone: Option<OperationSummaryJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<UndoRefusalJson>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UndoJsonStatus {
+    Succeeded,
+    Refused,
+}
+
+#[derive(Serialize)]
+pub struct UndoRefusalJson {
+    pub reason: UndoRefusalReason,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<OperationSummaryJson>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hints: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UndoRefusalReason {
+    Remote,
+    Interrupted,
+    Stale,
+    UnsupportedSchema,
+}
+
+#[derive(Serialize)]
+pub struct UndoListResponse {
+    pub version: u32,
+    pub operations: Vec<OperationSummaryJson>,
+}
+
+#[derive(Serialize)]
+pub struct OperationSummaryJson {
+    pub id: String,
+    pub kind: String,
+    pub status: String,
+    pub created_at_ms: u64,
+    pub args: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stack_name: Option<String>,
+    pub touched_remote: bool,
+    pub is_undoable: bool,
+    #[serde(default)]
+    pub is_undo: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub undoes: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remote_effects: Vec<RemoteEffectJson>,
+}
+
+#[derive(Serialize)]
+pub struct RemoteEffectJson {
+    pub kind: String,
+    #[serde(flatten)]
+    pub data: JsonValue,
+}
+
+impl From<&OperationRecord> for OperationSummaryJson {
+    fn from(r: &OperationRecord) -> Self {
+        Self {
+            id: r.id.clone(),
+            kind: kind_to_snake(&r.kind),
+            status: status_to_snake(&r.status),
+            created_at_ms: r.created_at_ms,
+            args: r.args.clone(),
+            stack_name: r.stack_name.clone(),
+            touched_remote: r.touched_remote,
+            is_undoable: r.is_undoable_locally(),
+            is_undo: matches!(r.kind, OperationKind::Undo),
+            undoes: r.undoes.clone(),
+            remote_effects: r.remote_effects.iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<&RemoteEffect> for RemoteEffectJson {
+    fn from(eff: &RemoteEffect) -> Self {
+        let mut v = serde_json::to_value(eff).unwrap_or(JsonValue::Null);
+        let kind = v
+            .get("kind")
+            .and_then(|k| k.as_str())
+            .unwrap_or("")
+            .to_string();
+        if let Some(obj) = v.as_object_mut() {
+            obj.remove("kind");
+        }
+        Self { kind, data: v }
+    }
+}
+
+fn kind_to_snake(k: &OperationKind) -> String {
+    serde_json::to_value(k)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+fn status_to_snake(s: &OperationStatus) -> String {
+    serde_json::to_value(s)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod restack_output_tests {
+    use super::*;
+
+    #[test]
+    fn restack_response_serializes() {
+        let resp = RestackResponse {
+            version: OUTPUT_VERSION,
+            restack: RestackResultJson {
+                stack_name: "test-stack".into(),
+                total_entries: 3,
+                entries_restacked: 1,
+                entries_ok: 2,
+                dry_run: false,
+                steps: vec![RestackStepJson {
+                    position: 1,
+                    gg_id: "c-0000001".into(),
+                    title: "Test commit".into(),
+                    action: "reattach".into(),
+                    current_parent: Some("c-deadbee".into()),
+                    expected_parent: Some("c-0000002".into()),
+                }],
+            },
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["version"], OUTPUT_VERSION);
+        assert_eq!(v["restack"]["stack_name"], "test-stack");
+        assert_eq!(v["restack"]["entries_restacked"], 1);
+        assert_eq!(v["restack"]["steps"][0]["action"], "reattach");
+    }
+}
+
+#[cfg(test)]
+mod undo_output_tests {
+    use super::*;
+
+    #[test]
+    fn operation_summary_json_marks_undo_entry() {
+        let summary = OperationSummaryJson {
+            id: "op_1_a".into(),
+            kind: "undo".into(),
+            status: "committed".into(),
+            created_at_ms: 1,
+            args: vec!["undo".into()],
+            stack_name: None,
+            touched_remote: false,
+            is_undoable: false,
+            is_undo: true,
+            undoes: Some("op_0_b".into()),
+            remote_effects: vec![],
+        };
+        let v = serde_json::to_value(&summary).unwrap();
+        assert_eq!(v["is_undo"], true);
+        assert_eq!(v["undoes"], "op_0_b");
+    }
+
+    #[test]
+    fn undo_response_refused_includes_hints() {
+        let resp = UndoResponse {
+            version: OUTPUT_VERSION,
+            status: UndoJsonStatus::Refused,
+            undone: None,
+            refusal: Some(UndoRefusalJson {
+                reason: UndoRefusalReason::Remote,
+                message: "sync touched a remote".into(),
+                target: None,
+                hints: vec!["gh pr close 42".into()],
+            }),
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["status"], "refused");
+        assert_eq!(v["refusal"]["reason"], "remote");
+        assert_eq!(v["refusal"]["hints"][0], "gh pr close 42");
+    }
+
+    #[test]
+    fn remote_effect_json_flattens_data_fields() {
+        let eff = RemoteEffect::Pushed {
+            remote: "origin".into(),
+            branch: "nacho/x/1".into(),
+            force: true,
+        };
+        let rej: RemoteEffectJson = (&eff).into();
+        let v = serde_json::to_value(&rej).unwrap();
+        assert_eq!(v["kind"], "pushed");
+        assert_eq!(v["remote"], "origin");
+        assert_eq!(v["branch"], "nacho/x/1");
+        assert_eq!(v["force"], true);
+    }
+}

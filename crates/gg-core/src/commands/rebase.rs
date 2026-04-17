@@ -142,7 +142,7 @@ fn prepare_rebase(
             immutability::refresh_mr_state_for_guard(repo, &mut stack);
             let policy = ImmutabilityPolicy::for_stack(repo, &stack)?;
             let report = policy.check_all(&stack);
-            let (report, dropped) = if fetch_succeeded {
+            let (report, dropped) = if fetch_succeeded && target_branch == stack.base {
                 let pre_filter_count = report.entries.len();
                 let filtered = report.without_base_ancestors();
                 let dropped = pre_filter_count - filtered.entries.len();

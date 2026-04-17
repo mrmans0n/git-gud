@@ -141,6 +141,17 @@ fn prepare_rebase(
             immutability::refresh_mr_state_for_guard(repo, &mut stack);
             let policy = ImmutabilityPolicy::for_stack(repo, &stack)?;
             let report = policy.check_all(&stack);
+            let pre_filter_count = report.entries.len();
+            let report = report.without_base_ancestors();
+            let dropped = pre_filter_count - report.entries.len();
+            if dropped > 0 && !json {
+                println!(
+                    "{} Skipping {} merged commit(s) already on {}",
+                    style("→").cyan(),
+                    dropped,
+                    policy.base_ref()
+                );
+            }
             immutability::guard(report, force)?;
         }
     }

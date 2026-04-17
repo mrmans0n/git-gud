@@ -418,17 +418,15 @@ fn test_gg_inbox_json_handles_same_stack_name_across_usernames() {
     assert!(success, "gg inbox --json failed: {}", stderr);
 
     let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(parsed["total_items"], 0);
+
     let stack_errors = parsed
         .get("stack_errors")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    assert!(
-        stack_errors
-            .iter()
-            .any(|entry| entry["stack_name"] == "demo"),
-        "expected stale mapping to be reported as skipped"
-    );
+    assert_eq!(stack_errors.len(), 1);
+    assert_eq!(stack_errors[0]["stack_name"], "demo");
 }
 
 #[test]

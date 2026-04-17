@@ -949,14 +949,41 @@ fn draw_status_bar(f: &mut Frame, state: &SplitTuiState, area: Rect) {
     let selected = state.total_selected();
     let total = state.hunks.len();
 
-    let status_text = format!(
-        " {}/{} hunks selected │ [Space] toggle · [Tab] switch panel · [a]ll · [n]one · [s]plit · [Enter] confirm · [q]uit ",
-        selected, total
-    );
+    let key_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let desc_style = Style::default().fg(Color::Gray);
+    let sep_style = Style::default().fg(Color::DarkGray);
 
-    let paragraph = Paragraph::new(status_text)
-        .style(Style::default().bg(Color::DarkGray).fg(Color::White))
-        .wrap(Wrap { trim: true });
+    let line = Line::from(vec![
+        Span::styled(
+            format!(" {}/{} hunks selected", selected, total),
+            desc_style,
+        ),
+        Span::styled(" │ ", sep_style),
+        Span::styled("Space", key_style),
+        Span::styled(" toggle", desc_style),
+        Span::styled(" · ", sep_style),
+        Span::styled("Tab", key_style),
+        Span::styled(" switch panel", desc_style),
+        Span::styled(" · ", sep_style),
+        Span::styled("a", key_style),
+        Span::styled("ll", desc_style),
+        Span::styled(" · ", sep_style),
+        Span::styled("n", key_style),
+        Span::styled("one", desc_style),
+        Span::styled(" · ", sep_style),
+        Span::styled("s", key_style),
+        Span::styled("plit", desc_style),
+        Span::styled(" · ", sep_style),
+        Span::styled("Enter", key_style),
+        Span::styled(" confirm", desc_style),
+        Span::styled(" · ", sep_style),
+        Span::styled("q", key_style),
+        Span::styled("uit", desc_style),
+    ]);
+
+    let paragraph = Paragraph::new(line).wrap(Wrap { trim: true });
 
     f.render_widget(paragraph, area);
 }
@@ -994,9 +1021,20 @@ fn draw_message_input(f: &mut Frame, state: &SplitTuiState, area: Rect) {
         ),
         Span::raw(&after),
         Span::styled(
-            "  [Enter] confirm · [Esc] back",
-            Style::default().fg(Color::DarkGray),
+            "  Enter",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
+        Span::styled(" confirm", Style::default().fg(Color::Gray)),
+        Span::styled(" · ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            "Esc",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" back", Style::default().fg(Color::Gray)),
     ]);
 
     let paragraph = Paragraph::new(line)
@@ -1039,9 +1077,20 @@ fn draw_remainder_input(f: &mut Frame, state: &SplitTuiState, area: Rect) {
         ),
         Span::raw(&after),
         Span::styled(
-            "  [Enter] confirm · [Esc] back",
-            Style::default().fg(Color::DarkGray),
+            "  Enter",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
+        Span::styled(" confirm", Style::default().fg(Color::Gray)),
+        Span::styled(" · ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            "Esc",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" back", Style::default().fg(Color::Gray)),
     ]);
 
     let paragraph = Paragraph::new(line)

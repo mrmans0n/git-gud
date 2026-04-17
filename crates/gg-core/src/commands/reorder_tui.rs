@@ -357,12 +357,38 @@ fn draw_commit_list(f: &mut Frame, state: &ReorderTuiState, area: ratatui::layou
 
 /// Draw the status bar
 fn draw_status_bar(f: &mut Frame, _state: &ReorderTuiState, area: ratatui::layout::Rect) {
-    let status_text =
-        " j/k:navigate  J/K:move commit  d:drop/undrop  Enter/s:confirm  q/Esc:cancel ";
+    let key_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let desc_style = Style::default().fg(Color::Gray);
+    let sep_style = Style::default().fg(Color::DarkGray);
 
-    let paragraph = Paragraph::new(status_text)
-        .style(Style::default().bg(Color::DarkGray).fg(Color::White))
-        .wrap(Wrap { trim: true });
+    let line = Line::from(vec![
+        Span::styled(" j", key_style),
+        Span::styled("/", sep_style),
+        Span::styled("k", key_style),
+        Span::styled(" navigate", desc_style),
+        Span::styled("  ", sep_style),
+        Span::styled("J", key_style),
+        Span::styled("/", sep_style),
+        Span::styled("K", key_style),
+        Span::styled(" move commit", desc_style),
+        Span::styled("  ", sep_style),
+        Span::styled("d", key_style),
+        Span::styled(" drop/undrop", desc_style),
+        Span::styled("  ", sep_style),
+        Span::styled("Enter", key_style),
+        Span::styled("/", sep_style),
+        Span::styled("s", key_style),
+        Span::styled(" confirm", desc_style),
+        Span::styled("  ", sep_style),
+        Span::styled("q", key_style),
+        Span::styled("/", sep_style),
+        Span::styled("Esc", key_style),
+        Span::styled(" cancel", desc_style),
+    ]);
+
+    let paragraph = Paragraph::new(line).wrap(Wrap { trim: true });
 
     f.render_widget(paragraph, area);
 }

@@ -160,6 +160,7 @@ gg clean
 | `gg log` | Smartlog tree view of the current stack, with PR/MR status, CI badges, and `<- HEAD` marker |
 | `gg log --json` | Machine-readable stack snapshot (same shape as `gg ls --json`, always refreshes PR/MR state) |
 | `gg log --refresh` | Refresh PR/MR state from the provider before rendering the tree |
+| `gg inbox` | Cross-stack triage view that groups PRs/MRs by action needed (ready, blocked, review, behind base, draft) |
 | `gg clean` | Remove merged stacks and their remote branches |
 
 ### Syncing

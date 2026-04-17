@@ -249,6 +249,180 @@ fn test_gg_clean_json_no_stacks() {
 }
 
 #[test]
+fn test_gg_inbox_json_no_stacks() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"},"stacks":{}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["inbox", "--json"]);
+    assert!(success, "gg inbox --json failed: {}", stderr);
+    assert!(
+        stderr.trim().is_empty(),
+        "stderr should be empty in JSON mode"
+    );
+
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(parsed["version"], 1);
+    assert_eq!(parsed["total_items"], 0);
+
+    let buckets = parsed["buckets"]
+        .as_object()
+        .expect("buckets must be an object");
+    for key in [
+        "ready_to_land",
+        "changes_requested",
+        "blocked_on_ci",
+        "awaiting_review",
+        "behind_base",
+        "draft",
+    ] {
+        assert!(
+            buckets[key]
+                .as_array()
+                .expect("bucket must be an array")
+                .is_empty(),
+            "bucket {key} should be empty"
+        );
+    }
+}
+
+#[test]
+fn test_gg_inbox_json_reports_skipped_stacks_without_failing() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"},"stacks":{"stale":{"base":"main","mrs":{}}}}"#,
+    )
+    .expect("Failed to write config");
+
+    run_git(
+        &repo_path,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/test/repo.git",
+        ],
+    );
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["inbox", "--json"]);
+    assert!(success, "gg inbox --json failed: {}", stderr);
+    assert!(
+        stderr.trim().is_empty(),
+        "stderr should be empty in JSON mode"
+    );
+
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(parsed["version"], 1);
+    assert_eq!(parsed["total_items"], 0);
+
+    let stack_errors = parsed["stack_errors"]
+        .as_array()
+        .expect("stack_errors must be an array");
+    assert!(
+        stack_errors.is_empty(),
+        "stale config without a matching local stack branch should be ignored, got: {stack_errors:?}"
+    );
+}
+
+#[test]
+fn test_gg_inbox_json_finds_stack_branch_without_configured_username() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    run_git(&repo_path, &["checkout", "-b", "alice/demo"]);
+    fs::write(repo_path.join("demo.txt"), "demo").expect("Failed to write demo file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Demo commit"]);
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(gg_dir.join("config.json"), r#"{"stacks":{}}"#).expect("Failed to write config");
+    run_git(
+        &repo_path,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/test/repo.git",
+        ],
+    );
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["inbox", "--json"]);
+    assert!(success, "gg inbox --json failed: {}", stderr);
+
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(parsed["total_items"], 0);
+    assert!(
+        parsed.get("stack_errors").is_none()
+            || parsed["stack_errors"]
+                .as_array()
+                .expect("stack_errors must be an array")
+                .is_empty()
+    );
+}
+
+#[test]
+fn test_gg_inbox_json_handles_same_stack_name_across_usernames() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    run_git(&repo_path, &["checkout", "-b", "stale/demo"]);
+    fs::write(repo_path.join("stale.txt"), "stale").expect("Failed to write stale file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Stale commit"]);
+
+    run_git(&repo_path, &["checkout", "main"]);
+    run_git(&repo_path, &["checkout", "-b", "real/demo"]);
+    fs::write(repo_path.join("real.txt"), "real").expect("Failed to write real file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Real commit"]);
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"stale"},"stacks":{"demo":{"base":"main","mrs":{}}}}"#,
+    )
+    .expect("Failed to write config");
+    run_git(
+        &repo_path,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/test/repo.git",
+        ],
+    );
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["inbox", "--json"]);
+    assert!(success, "gg inbox --json failed: {}", stderr);
+
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(parsed["total_items"], 0);
+
+    let stack_errors = parsed
+        .get("stack_errors")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        stack_errors.len() <= 1,
+        "expected at most one skipped stack for this setup"
+    );
+    if let Some(first_error) = stack_errors.first() {
+        assert_eq!(first_error["stack_name"], "demo");
+    }
+}
+
+#[test]
 fn test_gg_clean_json_requires_all() {
     let (_temp_dir, repo_path) = create_test_repo();
 

@@ -396,6 +396,18 @@ enum Commands {
         dry_run: bool,
     },
 
+    /// Show actionable inbox triage across all stacks
+    #[command(name = "inbox")]
+    Inbox {
+        /// Include merged/clean items
+        #[arg(short, long)]
+        all: bool,
+
+        /// Output structured JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Repair stack ancestry after manual history changes (amend, cherry-pick, rebase)
     #[command(name = "restack")]
     Restack {
@@ -679,6 +691,7 @@ fn main() {
         Some(Commands::Reconcile { dry_run }) => {
             (gg_core::commands::reconcile::run(dry_run), false)
         }
+        Some(Commands::Inbox { all, json }) => (gg_core::commands::inbox::run(all, json), json),
         Some(Commands::Restack {
             dry_run,
             from,

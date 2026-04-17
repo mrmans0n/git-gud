@@ -222,6 +222,48 @@ pub struct LandedEntryJson {
     pub error: Option<String>,
 }
 
+// ---------------------------------------------------------------------------
+// Inbox responses
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct InboxResponse {
+    pub version: u32,
+    pub total_items: usize,
+    pub buckets: InboxBucketsJson,
+    pub stack_errors: Vec<InboxStackErrorJson>,
+}
+
+#[derive(Serialize)]
+pub struct InboxBucketsJson {
+    pub ready_to_land: Vec<InboxEntryJson>,
+    pub changes_requested: Vec<InboxEntryJson>,
+    pub blocked_on_ci: Vec<InboxEntryJson>,
+    pub awaiting_review: Vec<InboxEntryJson>,
+    pub behind_base: Vec<InboxEntryJson>,
+    pub draft: Vec<InboxEntryJson>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub merged: Vec<InboxEntryJson>,
+}
+
+#[derive(Serialize)]
+pub struct InboxEntryJson {
+    pub stack_name: String,
+    pub position: usize,
+    pub sha: String,
+    pub title: String,
+    pub pr_number: u64,
+    pub pr_url: String,
+    pub ci_status: Option<String>,
+    pub behind_base: Option<usize>,
+}
+
+#[derive(Serialize)]
+pub struct InboxStackErrorJson {
+    pub stack_name: String,
+    pub error: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,6 +328,40 @@ mod tests {
             value["lint"]["results"][0]["commands"][0]["output"],
             "error: warning denied"
         );
+    }
+
+    #[test]
+    fn inbox_response_serializes() {
+        let response = InboxResponse {
+            version: OUTPUT_VERSION,
+            total_items: 1,
+            buckets: InboxBucketsJson {
+                ready_to_land: vec![InboxEntryJson {
+                    stack_name: "auth".to_string(),
+                    position: 1,
+                    sha: "abc1234".to_string(),
+                    title: "Add login".to_string(),
+                    pr_number: 42,
+                    pr_url: "https://github.com/org/repo/pull/42".to_string(),
+                    ci_status: Some("success".to_string()),
+                    behind_base: None,
+                }],
+                changes_requested: vec![],
+                blocked_on_ci: vec![],
+                awaiting_review: vec![],
+                behind_base: vec![],
+                draft: vec![],
+                merged: vec![],
+            },
+            stack_errors: vec![],
+        };
+
+        let value = serde_json::to_value(&response).expect("should serialize");
+        assert_eq!(value["version"], OUTPUT_VERSION);
+        assert_eq!(value["total_items"], 1);
+        assert_eq!(value["buckets"]["ready_to_land"][0]["pr_number"], 42);
+        // merged bucket should be omitted when empty
+        assert!(value["buckets"].get("merged").is_none());
     }
 
     #[test]

@@ -265,6 +265,8 @@ mod tests {
             mr_number: None,
             mr_state: None,
             approved: false,
+            changes_requested: false,
+            mergeable: false,
             ci_status: None,
             position,
             in_merge_train: false,

@@ -213,6 +213,13 @@ pub struct StackCleanParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct StackInboxParams {
+    /// Include merged/clean items
+    #[serde(default)]
+    pub all: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct StackRebaseParams {
     /// Target branch to rebase onto (default: base branch)
     #[serde(default)]
@@ -973,6 +980,21 @@ impl GgMcpServer {
             args.push("--force".to_string());
         }
         args.extend(params.files);
+        run_gg_command(&args)
+    }
+
+    /// Show actionable inbox triage across all stacks.
+    #[tool(
+        description = "Actionable triage across all stacks — shows what's ready to land, what needs attention, and what's blocked. Returns bucketed JSON."
+    )]
+    fn stack_inbox(
+        &self,
+        Parameters(params): Parameters<StackInboxParams>,
+    ) -> Result<String, String> {
+        let mut args = vec!["inbox".to_string(), "--json".to_string()];
+        if params.all {
+            args.push("--all".to_string());
+        }
         run_gg_command(&args)
     }
 

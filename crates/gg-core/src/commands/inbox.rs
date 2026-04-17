@@ -195,12 +195,25 @@ pub fn run(all: bool, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    for username in &usernames {
-        git::validate_branch_username(username)?;
+    let valid_usernames: Vec<String> = usernames
+        .into_iter()
+        .filter(|username| git::validate_branch_username(username).is_ok())
+        .collect();
+
+    if valid_usernames.is_empty() {
+        if json {
+            print_json_output(&[], &[]);
+        } else {
+            println!(
+                "{}",
+                style("Inbox is empty — nothing needs attention.").dim()
+            );
+        }
+        return Ok(());
     }
 
     let mut stack_branches: Vec<(String, String)> = Vec::new();
-    for username in &usernames {
+    for username in &valid_usernames {
         for stack_name in stack::list_all_stacks(&repo, &config, username)? {
             let full_branch = git::format_stack_branch(username, &stack_name);
             if repo

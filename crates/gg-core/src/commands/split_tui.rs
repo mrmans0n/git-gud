@@ -1037,7 +1037,9 @@ fn draw_message_input(f: &mut Frame, state: &SplitTuiState, area: Rect) {
         Span::styled(" back", Style::default().fg(Color::Gray)),
     ]);
 
-    let paragraph = Paragraph::new(line).wrap(Wrap { trim: false });
+    let paragraph = Paragraph::new(line)
+        .style(Style::default().bg(Color::DarkGray).fg(Color::White))
+        .wrap(Wrap { trim: false });
 
     f.render_widget(paragraph, area);
 }
@@ -1091,7 +1093,9 @@ fn draw_remainder_input(f: &mut Frame, state: &SplitTuiState, area: Rect) {
         Span::styled(" back", Style::default().fg(Color::Gray)),
     ]);
 
-    let paragraph = Paragraph::new(line).wrap(Wrap { trim: false });
+    let paragraph = Paragraph::new(line)
+        .style(Style::default().bg(Color::DarkGray).fg(Color::White))
+        .wrap(Wrap { trim: false });
 
     f.render_widget(paragraph, area);
 }

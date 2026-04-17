@@ -343,6 +343,42 @@ fn test_gg_inbox_json_reports_skipped_stacks_without_failing() {
 }
 
 #[test]
+fn test_gg_inbox_json_finds_stack_branch_without_configured_username() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    run_git(&repo_path, &["checkout", "-b", "alice/demo"]);
+    fs::write(repo_path.join("demo.txt"), "demo").expect("Failed to write demo file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Demo commit"]);
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(gg_dir.join("config.json"), r#"{"stacks":{}}"#).expect("Failed to write config");
+    run_git(
+        &repo_path,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/test/repo.git",
+        ],
+    );
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["inbox", "--json"]);
+    assert!(success, "gg inbox --json failed: {}", stderr);
+
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(parsed["total_items"], 0);
+    assert!(
+        parsed.get("stack_errors").is_none()
+            || parsed["stack_errors"]
+                .as_array()
+                .expect("stack_errors must be an array")
+                .is_empty()
+    );
+}
+
+#[test]
 fn test_gg_clean_json_requires_all() {
     let (_temp_dir, repo_path) = create_test_repo();
 

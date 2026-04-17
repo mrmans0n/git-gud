@@ -145,20 +145,64 @@ struct InboxItem {
 }
 
 /// Run the inbox command.
+fn infer_stack_usernames(repo: &git2::Repository, config: &Config) -> Result<Vec<String>> {
+    let mut usernames = Vec::new();
+
+    if let Some(username) = config.defaults.branch_username.clone() {
+        usernames.push(username);
+    }
+
+    if let Ok(provider) = Provider::detect(repo) {
+        if let Ok(username) = provider.whoami() {
+            if !usernames.contains(&username) {
+                usernames.push(username);
+            }
+        }
+    }
+
+    for branch_result in repo.branches(Some(git2::BranchType::Local))? {
+        let (branch, _) = branch_result?;
+        if let Some(name) = branch.name()? {
+            if let Some((branch_user, _)) = git::parse_stack_branch(name) {
+                if !usernames.contains(&branch_user) {
+                    usernames.push(branch_user);
+                }
+            } else if let Some((branch_user, _, _)) = git::parse_entry_branch(name) {
+                if !usernames.contains(&branch_user) {
+                    usernames.push(branch_user);
+                }
+            }
+        }
+    }
+
+    Ok(usernames)
+}
+
 pub fn run(all: bool, json: bool) -> Result<()> {
     let repo = git::open_repo()?;
     let config = Config::load_with_global(repo.commondir())?;
 
-    let username = config
-        .defaults
-        .branch_username
-        .clone()
-        .or_else(|| Provider::detect(&repo).ok().and_then(|p| p.whoami().ok()))
-        .unwrap_or_else(|| "unknown".to_string());
+    let usernames = infer_stack_usernames(&repo, &config)?;
+    if usernames.is_empty() {
+        return Err(GgError::Config(
+            "Missing branch_username and could not infer one from provider or local stack branches. Set defaults.branch_username in config.".to_string(),
+        ));
+    }
 
-    git::validate_branch_username(&username)?;
+    for username in &usernames {
+        git::validate_branch_username(username)?;
+    }
 
-    let stack_names = stack::list_all_stacks(&repo, &config, &username)?;
+    let mut stack_branches: HashMap<String, String> = HashMap::new();
+    for username in &usernames {
+        for stack_name in stack::list_all_stacks(&repo, &config, username)? {
+            stack_branches
+                .entry(stack_name.clone())
+                .or_insert_with(|| git::format_stack_branch(username, &stack_name));
+        }
+    }
+
+    let stack_names: Vec<String> = stack_branches.keys().cloned().collect();
     if stack_names.is_empty() {
         if json {
             print_json_output(&[], &[]);
@@ -181,7 +225,10 @@ pub fn run(all: bool, json: bool) -> Result<()> {
     let mut stack_errors: Vec<StackLoadError> = Vec::new();
 
     for stack_name in &stack_names {
-        let full_branch = git::format_stack_branch(&username, stack_name);
+        let full_branch = stack_branches
+            .get(stack_name)
+            .cloned()
+            .unwrap_or_else(|| stack_name.clone());
 
         let base = match resolve_base_branch(&repo, &config, stack_name) {
             Ok(base) => base,
@@ -229,7 +276,9 @@ pub fn run(all: bool, json: bool) -> Result<()> {
                     entry.ci_status = Some(ci);
                 }
                 if let Ok(approved) = provider.check_pr_approved(pr_num) {
-                    entry.approved = approved;
+                    if approved || !entry.approved {
+                        entry.approved = approved;
+                    }
                 }
             }
         }

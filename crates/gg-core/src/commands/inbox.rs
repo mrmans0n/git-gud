@@ -193,17 +193,20 @@ pub fn run(all: bool, json: bool) -> Result<()> {
         git::validate_branch_username(username)?;
     }
 
-    let mut stack_branches: HashMap<String, String> = HashMap::new();
+    let mut stack_branches: Vec<(String, String)> = Vec::new();
     for username in &usernames {
         for stack_name in stack::list_all_stacks(&repo, &config, username)? {
-            stack_branches
-                .entry(stack_name.clone())
-                .or_insert_with(|| git::format_stack_branch(username, &stack_name));
+            let full_branch = git::format_stack_branch(username, &stack_name);
+            if !stack_branches
+                .iter()
+                .any(|(name, branch)| name == &stack_name && branch == &full_branch)
+            {
+                stack_branches.push((stack_name, full_branch));
+            }
         }
     }
 
-    let stack_names: Vec<String> = stack_branches.keys().cloned().collect();
-    if stack_names.is_empty() {
+    if stack_branches.is_empty() {
         if json {
             print_json_output(&[], &[]);
         } else {
@@ -224,12 +227,7 @@ pub fn run(all: bool, json: bool) -> Result<()> {
     let mut items: Vec<InboxItem> = Vec::new();
     let mut stack_errors: Vec<StackLoadError> = Vec::new();
 
-    for stack_name in &stack_names {
-        let full_branch = stack_branches
-            .get(stack_name)
-            .cloned()
-            .unwrap_or_else(|| stack_name.clone());
-
+    for (stack_name, full_branch) in &stack_branches {
         let base = match resolve_base_branch(&repo, &config, stack_name) {
             Ok(base) => base,
             Err(err) => {
@@ -240,7 +238,7 @@ pub fn run(all: bool, json: bool) -> Result<()> {
                 continue;
             }
         };
-        let mut entries = match load_stack_entries(&repo, &base, &full_branch) {
+        let mut entries = match load_stack_entries(&repo, &base, full_branch) {
             Ok(entries) => entries,
             Err(err) => {
                 stack_errors.push(StackLoadError {
@@ -287,7 +285,7 @@ pub fn run(all: bool, json: bool) -> Result<()> {
         // This avoids false positives when local `<base>` is stale but the stack
         // itself has already been rebased onto `origin/<base>`.
         let behind =
-            git::count_branch_behind_upstream(&repo, &full_branch, &format!("origin/{}", base))
+            git::count_branch_behind_upstream(&repo, full_branch, &format!("origin/{}", base))
                 .ok()
                 .filter(|&b| b > 0);
 

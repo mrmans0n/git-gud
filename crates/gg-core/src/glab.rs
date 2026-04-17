@@ -337,7 +337,7 @@ pub fn view_mr(mr_number: u64) -> Result<MrInfo> {
         draft,
         approved: false, // Would need additional API call
         mergeable,
-        changes_requested: false, // GitLab doesn't expose this directly; set via check_mr_approved
+        changes_requested: false, // TODO: GitLab approvals API doesn't directly expose changes_requested
     })
 }
 

@@ -8788,23 +8788,28 @@ fn test_restack_noop() {
 
     fs::write(repo_path.join("a.txt"), "a").unwrap();
     run_git(&repo_path, &["add", "."]);
-    run_git(
-        &repo_path,
-        &["commit", "-m", "first\n\nGG-ID: c-aaa1111"],
-    );
+    run_git(&repo_path, &["commit", "-m", "first\n\nGG-ID: c-aaa1111"]);
 
     fs::write(repo_path.join("b.txt"), "b").unwrap();
     run_git(&repo_path, &["add", "."]);
     run_git(
         &repo_path,
-        &["commit", "-m", "second\n\nGG-ID: c-bbb2222\nGG-Parent: c-aaa1111"],
+        &[
+            "commit",
+            "-m",
+            "second\n\nGG-ID: c-bbb2222\nGG-Parent: c-aaa1111",
+        ],
     );
 
     fs::write(repo_path.join("c.txt"), "c").unwrap();
     run_git(&repo_path, &["add", "."]);
     run_git(
         &repo_path,
-        &["commit", "-m", "third\n\nGG-ID: c-ccc3333\nGG-Parent: c-bbb2222"],
+        &[
+            "commit",
+            "-m",
+            "third\n\nGG-ID: c-ccc3333\nGG-Parent: c-bbb2222",
+        ],
     );
 
     // Restack should be a no-op
@@ -8835,16 +8840,17 @@ fn test_restack_after_amend() {
 
     fs::write(repo_path.join("a.txt"), "a").unwrap();
     run_git(&repo_path, &["add", "."]);
-    run_git(
-        &repo_path,
-        &["commit", "-m", "first\n\nGG-ID: c-aaa1111"],
-    );
+    run_git(&repo_path, &["commit", "-m", "first\n\nGG-ID: c-aaa1111"]);
 
     fs::write(repo_path.join("b.txt"), "b").unwrap();
     run_git(&repo_path, &["add", "."]);
     run_git(
         &repo_path,
-        &["commit", "-m", "second\n\nGG-ID: c-bbb2222\nGG-Parent: c-aaa1111"],
+        &[
+            "commit",
+            "-m",
+            "second\n\nGG-ID: c-bbb2222\nGG-Parent: c-aaa1111",
+        ],
     );
 
     // Commit 3 with WRONG GG-Parent (c-aaa1111 instead of c-bbb2222)
@@ -8852,7 +8858,11 @@ fn test_restack_after_amend() {
     run_git(&repo_path, &["add", "."]);
     run_git(
         &repo_path,
-        &["commit", "-m", "third\n\nGG-ID: c-ccc3333\nGG-Parent: c-aaa1111"],
+        &[
+            "commit",
+            "-m",
+            "third\n\nGG-ID: c-ccc3333\nGG-Parent: c-aaa1111",
+        ],
     );
 
     // Restack should detect the mismatch and repair
@@ -8896,25 +8906,23 @@ fn test_restack_cascading() {
 
     fs::write(repo_path.join("a.txt"), "a").unwrap();
     run_git(&repo_path, &["add", "."]);
-    run_git(
-        &repo_path,
-        &["commit", "-m", "first\n\nGG-ID: c-aaa1111"],
-    );
+    run_git(&repo_path, &["commit", "-m", "first\n\nGG-ID: c-aaa1111"]);
 
     // Commit 2 with missing GG-Parent (should be c-aaa1111)
     fs::write(repo_path.join("b.txt"), "b").unwrap();
     run_git(&repo_path, &["add", "."]);
-    run_git(
-        &repo_path,
-        &["commit", "-m", "second\n\nGG-ID: c-bbb2222"],
-    );
+    run_git(&repo_path, &["commit", "-m", "second\n\nGG-ID: c-bbb2222"]);
 
     // Commit 3 with wrong GG-Parent (c-aaa1111 instead of c-bbb2222)
     fs::write(repo_path.join("c.txt"), "c").unwrap();
     run_git(&repo_path, &["add", "."]);
     run_git(
         &repo_path,
-        &["commit", "-m", "third\n\nGG-ID: c-ccc3333\nGG-Parent: c-aaa1111"],
+        &[
+            "commit",
+            "-m",
+            "third\n\nGG-ID: c-ccc3333\nGG-Parent: c-aaa1111",
+        ],
     );
 
     // Restack should repair both entries
@@ -8954,25 +8962,23 @@ fn test_restack_from_partial() {
 
     fs::write(repo_path.join("a.txt"), "a").unwrap();
     run_git(&repo_path, &["add", "."]);
-    run_git(
-        &repo_path,
-        &["commit", "-m", "first\n\nGG-ID: c-aaa1111"],
-    );
+    run_git(&repo_path, &["commit", "-m", "first\n\nGG-ID: c-aaa1111"]);
 
     // Commit 2 with missing GG-Parent (wrong — should be c-aaa1111)
     fs::write(repo_path.join("b.txt"), "b").unwrap();
     run_git(&repo_path, &["add", "."]);
-    run_git(
-        &repo_path,
-        &["commit", "-m", "second\n\nGG-ID: c-bbb2222"],
-    );
+    run_git(&repo_path, &["commit", "-m", "second\n\nGG-ID: c-bbb2222"]);
 
     // Commit 3 with wrong GG-Parent
     fs::write(repo_path.join("c.txt"), "c").unwrap();
     run_git(&repo_path, &["add", "."]);
     run_git(
         &repo_path,
-        &["commit", "-m", "third\n\nGG-ID: c-ccc3333\nGG-Parent: c-aaa1111"],
+        &[
+            "commit",
+            "-m",
+            "third\n\nGG-ID: c-ccc3333\nGG-Parent: c-aaa1111",
+        ],
     );
 
     // --from 3 should only include entry 3 in the plan
@@ -9008,17 +9014,18 @@ fn test_restack_dry_run_no_mutation() {
 
     fs::write(repo_path.join("a.txt"), "a").unwrap();
     run_git(&repo_path, &["add", "."]);
-    run_git(
-        &repo_path,
-        &["commit", "-m", "first\n\nGG-ID: c-aaa1111"],
-    );
+    run_git(&repo_path, &["commit", "-m", "first\n\nGG-ID: c-aaa1111"]);
 
     // Commit 2 with wrong GG-Parent (c-fff9999 doesn't exist)
     fs::write(repo_path.join("b.txt"), "b").unwrap();
     run_git(&repo_path, &["add", "."]);
     run_git(
         &repo_path,
-        &["commit", "-m", "second\n\nGG-ID: c-bbb2222\nGG-Parent: c-fff9999"],
+        &[
+            "commit",
+            "-m",
+            "second\n\nGG-ID: c-bbb2222\nGG-Parent: c-fff9999",
+        ],
     );
 
     // Record HEAD SHA before dry-run

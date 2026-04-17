@@ -317,9 +317,9 @@ pub fn run(options: RestackOptions) -> Result<()> {
     }
 
     // Execute
-    let workdir = repo.workdir().ok_or_else(|| {
-        GgError::Other("Cannot restack in a bare repository.".to_string())
-    })?;
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| GgError::Other("Cannot restack in a bare repository.".to_string()))?;
     execute_plan(&plan, workdir)?;
 
     // Normalize metadata post-rebase, scoped to the affected range.
@@ -405,8 +405,7 @@ mod tests {
             make_entry(3, Some("c-ccc3333"), Some("c-bbb2222")),
         ];
         let stack = make_stack(entries);
-        let base_oid =
-            git2::Oid::from_str("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
+        let base_oid = git2::Oid::from_str("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
 
         let plan = build_plan(&stack, None, base_oid).unwrap();
 
@@ -424,8 +423,7 @@ mod tests {
             make_entry(3, Some("c-ccc3333"), Some("c-aaa1111")),
         ];
         let stack = make_stack(entries);
-        let base_oid =
-            git2::Oid::from_str("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
+        let base_oid = git2::Oid::from_str("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
 
         let plan = build_plan(&stack, None, base_oid).unwrap();
 
@@ -447,8 +445,7 @@ mod tests {
             make_entry(3, Some("c-ccc3333"), Some("c-bbb2222")),
         ];
         let stack = make_stack(entries);
-        let base_oid =
-            git2::Oid::from_str("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
+        let base_oid = git2::Oid::from_str("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
 
         // --from 3: only entry 3 is in the plan
         let plan = build_plan(&stack, Some(3), base_oid).unwrap();

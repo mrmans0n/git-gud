@@ -103,6 +103,8 @@ fn build_stack(oids: &[git2::Oid], states: &[Option<PrState>]) -> Stack {
             mr_number: state.as_ref().map(|_| (i as u64) + 100),
             mr_state: state.clone(),
             approved: false,
+            changes_requested: false,
+            mergeable: false,
             ci_status: None,
             position: i + 1,
             in_merge_train: false,

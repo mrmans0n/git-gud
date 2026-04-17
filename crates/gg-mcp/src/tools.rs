@@ -976,6 +976,15 @@ impl GgMcpServer {
         run_gg_command(&args)
     }
 
+    /// Show actionable triage view across all stacks — what's ready to land,
+    /// what needs attention, and what's blocked.
+    #[tool(
+        description = "Show actionable inbox/triage view across all stacks. Returns items grouped by status: ready_to_land, changes_requested, blocked_on_ci, awaiting_review, behind_base, draft."
+    )]
+    fn stack_inbox(&self) -> Result<String, String> {
+        run_gg_command(&["inbox".to_string(), "--json".to_string()])
+    }
+
     /// Reorder commits in the stack with explicit order.
     #[tool(
         description = "Reorder commits in the stack. Order is specified as positions (1-indexed), e.g., '3,1,2' moves commit 3 to bottom, then 1, then 2 on top. No TUI via MCP."

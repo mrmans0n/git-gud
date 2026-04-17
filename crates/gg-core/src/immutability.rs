@@ -293,10 +293,13 @@ mod tests {
             mr_number: None,
             mr_state: None,
             approved: false,
+            changes_requested: false,
+            mergeable: false,
             ci_status: None,
             position: pos,
             in_merge_train: false,
             merge_train_position: None,
+            mr_url: None,
         }
     }
 

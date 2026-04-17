@@ -410,6 +410,18 @@ enum Commands {
         json: bool,
     },
 
+    /// Show actionable triage view across all stacks
+    #[command(name = "inbox")]
+    Inbox {
+        /// Include merged/clean items (default: only actionable items)
+        #[arg(short, long)]
+        all: bool,
+
+        /// Output structured JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Undo the last local-only gg operation (see `gg undo --list`)
     #[command(name = "undo")]
     Undo {
@@ -691,6 +703,7 @@ fn main() {
             }),
             json,
         ),
+        Some(Commands::Inbox { all, json }) => (gg_core::commands::inbox::run(all, json), json),
         Some(Commands::Undo {
             list,
             operation_id,

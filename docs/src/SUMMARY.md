@@ -16,6 +16,7 @@
   - [co (checkout)](./commands/co.md)
   - [ls](./commands/ls.md)
   - [log](./commands/log.md)
+  - [inbox](./commands/inbox.md)
   - [sync](./commands/sync.md)
   - [Navigation (mv / first / last / prev / next)](./commands/navigation.md)
   - [sc (squash/amend)](./commands/sc.md)

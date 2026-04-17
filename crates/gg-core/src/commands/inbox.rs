@@ -175,10 +175,13 @@ pub fn run(all: bool, json: bool) -> Result<()> {
             }
         }
 
-        // Compute behind-base for the stack
-        let behind = git::count_commits_behind(&repo, &base, &format!("origin/{}", base))
-            .ok()
-            .filter(|&b| b > 0);
+        // Compute behind-base from the actual stack tip, not the local base branch.
+        // This avoids false positives when local `<base>` is stale but the stack
+        // itself has already been rebased onto `origin/<base>`.
+        let behind =
+            git::count_branch_behind_upstream(&repo, &full_branch, &format!("origin/{}", base))
+                .ok()
+                .filter(|&b| b > 0);
 
         // Bucket each entry with a PR
         for entry in &entries {

@@ -63,6 +63,15 @@ List all stacks in the repository with summary information.
 
 **Returns:** Current stack name and a list of all stacks with name, base branch, commit count, and whether each is the current stack.
 
+### `stack_inbox`
+
+Show actionable triage across local stacks. Mirrors `gg inbox --json` and groups PRs/MRs into action buckets like ready to land, blocked on CI, awaiting review, behind base, draft, and optionally merged.
+
+**Parameters:**
+- `all` (boolean, optional): Include merged items as well.
+
+**Returns:** A versioned JSON payload with `total_items` and `buckets`, where each bucket contains entries with stack name, position, SHA, title, PR/MR number, URL, CI status, and optional behind-base count.
+
 ### `stack_status`
 
 Get a quick status summary of the current stack.

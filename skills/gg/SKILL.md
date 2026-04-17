@@ -98,6 +98,7 @@ git commit -m "feat: add input validation"
 ```bash
 gg ls --json        # single-stack details + summary metrics
 gg log --json       # smartlog-style view of the current stack
+gg inbox --json     # cross-stack triage buckets for action needed
 ```
 
 4. Publish/update PR/MR chain:
@@ -135,6 +136,7 @@ gg land -a -c --json
 - Sync subset: `gg sync -u <position|gg-id|sha> --json`
 - Lint stack: `gg lint --json`
 - Run a command across the stack: `gg run -- <cmd...>` (see below)
+- Triage multiple stacks at once: `gg inbox --json`
 - Repair ancestry drift: `gg restack` / `gg restack --dry-run --json` (see below)
 - Clean merged stacks: `gg clean -a --json`
 - Undo last local mutation: `gg undo` (see below)

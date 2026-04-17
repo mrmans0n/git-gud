@@ -74,6 +74,21 @@ badges). Stack-scoped — use `gg ls --all` for cross-stack browsing.
 - `--json` (auto-refreshes PR/MR state; shape mirrors `gg ls --json` entries
   under a `log` key)
 
+#### `gg inbox [OPTIONS]`
+Cross-stack actionable triage view for local stacks.
+
+- `-a, --all` — include merged items too
+- `--json` — emit `InboxResponse` with bucketed entries
+
+Buckets are priority-ordered and mutually exclusive:
+`ready_to_land`, `changes_requested`, `blocked_on_ci`,
+`awaiting_review`, `behind_base`, `draft`, `merged`.
+
+Notes:
+- canceled CI is treated as blocked
+- transient PR refresh failures keep the entry visible instead of dropping it
+- `behind_base` compares the stack tip against `origin/<base>` rather than the local base branch
+
 #### `gg sync [OPTIONS]`
 Push and create/update PRs/MRs.
 
@@ -701,6 +716,11 @@ Smartlog-style view of the current stack (stack-scoped). Mirrors `gg log --json`
 List all stacks in the repository.
 - **Params:** none
 - **Returns:** `{ current_stack, stacks: [{ name, base, commit_count, is_current }] }`
+
+#### `stack_inbox`
+Show actionable triage across local stacks. Mirrors `gg inbox --json`.
+- **Params:** `all` (bool, default false) — include merged items too
+- **Returns:** `{ version, total_items, buckets: { ready_to_land, changes_requested, blocked_on_ci, awaiting_review, behind_base, draft, merged } }` where each bucket entry is `{ stack_name, position, sha, title, pr_number, pr_url, ci_status, behind_base }`
 
 #### `stack_status`
 Quick status summary of the current stack.

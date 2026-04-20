@@ -11,11 +11,10 @@ gg rebase [TARGET]
 ## Options
 
 - `-f, --force` (alias `--ignore-immutable`): Override the immutability guard.
-  Rebase rewrites the parent of every commit in the stack; if any commit is
-  merged (via squash-merge), gg refuses by default to avoid producing local
-  duplicates of upstream history. Commits already reachable from
-  `origin/<base>` are silently skipped — `git rebase` drops them automatically,
-  so `--force` is not required. See
+  Rebase rewrites the parent of every commit in the stack; merged commits
+  (including squash-merged PRs) and commits already reachable from
+  `origin/<base>` are silently skipped — `git rebase` drops them automatically
+  via patch-id matching, so `--force` is not required for these. See
   [Core concepts · Immutable commits](../core-concepts.md#immutable-commits).
 
 ## Examples

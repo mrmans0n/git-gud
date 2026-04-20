@@ -114,6 +114,47 @@ impl ImmutabilityReport {
         }
     }
 
+    /// Remove the contiguous run of `MergedPr` entries from the very bottom
+    /// of the stack (starting at position 1).
+    ///
+    /// In stacked workflows PRs are landed bottom-up: #1 merges into the
+    /// base, #2 gets retargeted to the base and merges next, etc. A
+    /// contiguous run of merged PRs from position 1 therefore all had their
+    /// content land on `origin/<base>`, and `git rebase` drops them via
+    /// patch-id matching.
+    ///
+    /// The run stops at the first position that either (a) is missing from
+    /// the report, or (b) does not carry a `MergedPr` reason. Entries above
+    /// the break may target a parent branch whose content isn't on the base,
+    /// so they stay in the report.
+    ///
+    /// This covers squash-merged PRs whose local SHA isn't an ancestor of
+    /// `origin/<base>` — the case that [`without_base_ancestors`] cannot
+    /// catch.
+    pub fn without_bottom_merged_prs(self) -> Self {
+        // Find the contiguous run of MergedPr entries from position 1.
+        let mut max_merged_pos: usize = 0;
+        for entry in &self.entries {
+            let is_merged = entry
+                .reasons
+                .iter()
+                .any(|r| matches!(r, ImmutableReason::MergedPr { .. }));
+            if is_merged && entry.position == max_merged_pos + 1 {
+                max_merged_pos = entry.position;
+            } else {
+                break;
+            }
+        }
+
+        Self {
+            entries: self
+                .entries
+                .into_iter()
+                .filter(|e| e.position > max_merged_pos)
+                .collect(),
+        }
+    }
+
     /// Format the report as a multi-line string suitable for error messages.
     pub fn format_for_error(&self) -> String {
         let mut out = String::new();
@@ -576,6 +617,133 @@ mod tests {
             }],
         };
         let filtered = report.without_base_ancestors();
+        assert!(filtered.is_clear());
+    }
+
+    #[test]
+    fn without_bottom_merged_prs_drops_merged_at_position_1() {
+        let report = ImmutabilityReport {
+            entries: vec![ImmutableEntry {
+                position: 1,
+                short_sha: "aaa".to_string(),
+                title: "squash-merged".to_string(),
+                reasons: vec![ImmutableReason::MergedPr { number: Some(42) }],
+            }],
+        };
+        let filtered = report.without_bottom_merged_prs();
+        assert!(filtered.is_clear());
+    }
+
+    #[test]
+    fn without_bottom_merged_prs_keeps_base_ancestor_only_entries() {
+        let report = ImmutabilityReport {
+            entries: vec![ImmutableEntry {
+                position: 1,
+                short_sha: "aaa".to_string(),
+                title: "on base".to_string(),
+                reasons: vec![ImmutableReason::BaseAncestor {
+                    base_ref: "origin/main".to_string(),
+                }],
+            }],
+        };
+        let filtered = report.without_bottom_merged_prs();
+        assert_eq!(filtered.entries.len(), 1);
+    }
+
+    #[test]
+    fn without_bottom_merged_prs_drops_dual_reason_entries() {
+        let report = ImmutabilityReport {
+            entries: vec![ImmutableEntry {
+                position: 1,
+                short_sha: "aaa".to_string(),
+                title: "merged and on base".to_string(),
+                reasons: vec![
+                    ImmutableReason::MergedPr { number: Some(10) },
+                    ImmutableReason::BaseAncestor {
+                        base_ref: "origin/main".to_string(),
+                    },
+                ],
+            }],
+        };
+        let filtered = report.without_bottom_merged_prs();
+        assert!(filtered.is_clear());
+    }
+
+    #[test]
+    fn without_bottom_merged_prs_keeps_upper_merged_after_gap() {
+        // Stack: #1 mutable, #2 merged. Since #1 is not in the report,
+        // #2 is NOT in the contiguous prefix → must be kept.
+        let report = ImmutabilityReport {
+            entries: vec![ImmutableEntry {
+                position: 2,
+                short_sha: "bbb".to_string(),
+                title: "upper merged".to_string(),
+                reasons: vec![ImmutableReason::MergedPr { number: Some(99) }],
+            }],
+        };
+        let filtered = report.without_bottom_merged_prs();
+        assert_eq!(filtered.entries.len(), 1, "upper merged entry must survive");
+    }
+
+    #[test]
+    fn without_bottom_merged_prs_stops_at_non_merged() {
+        // Stack: #1 merged, #2 base-ancestor only, #3 merged.
+        // The MergedPr run is [#1]. #2 breaks the run (no MergedPr reason).
+        // #3 is above the break → kept.
+        let report = ImmutabilityReport {
+            entries: vec![
+                ImmutableEntry {
+                    position: 1,
+                    short_sha: "aaa".to_string(),
+                    title: "bottom merged".to_string(),
+                    reasons: vec![ImmutableReason::MergedPr { number: Some(10) }],
+                },
+                ImmutableEntry {
+                    position: 2,
+                    short_sha: "bbb".to_string(),
+                    title: "also on base".to_string(),
+                    reasons: vec![ImmutableReason::BaseAncestor {
+                        base_ref: "origin/main".to_string(),
+                    }],
+                },
+                ImmutableEntry {
+                    position: 3,
+                    short_sha: "ccc".to_string(),
+                    title: "upper merged".to_string(),
+                    reasons: vec![ImmutableReason::MergedPr { number: Some(11) }],
+                },
+            ],
+        };
+        let filtered = report.without_bottom_merged_prs();
+        // #1 (merged, in run) → dropped
+        // #2 (base-ancestor only, breaks run) → kept
+        // #3 (merged, above break) → kept
+        assert_eq!(filtered.entries.len(), 2);
+        assert_eq!(filtered.entries[0].position, 2);
+        assert_eq!(filtered.entries[1].position, 3);
+    }
+
+    #[test]
+    fn without_bottom_merged_prs_contiguous_merged_run() {
+        // Stack: #1 merged, #2 merged, #3 mutable (not in report).
+        // Both #1 and #2 form a contiguous MergedPr run → both dropped.
+        let report = ImmutabilityReport {
+            entries: vec![
+                ImmutableEntry {
+                    position: 1,
+                    short_sha: "aaa".to_string(),
+                    title: "bottom merged".to_string(),
+                    reasons: vec![ImmutableReason::MergedPr { number: Some(10) }],
+                },
+                ImmutableEntry {
+                    position: 2,
+                    short_sha: "bbb".to_string(),
+                    title: "also merged".to_string(),
+                    reasons: vec![ImmutableReason::MergedPr { number: Some(11) }],
+                },
+            ],
+        };
+        let filtered = report.without_bottom_merged_prs();
         assert!(filtered.is_clear());
     }
 

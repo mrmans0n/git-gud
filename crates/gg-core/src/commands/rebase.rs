@@ -144,7 +144,11 @@ fn prepare_rebase(
             let report = policy.check_all(&stack);
             let (report, dropped) = if fetch_succeeded && target_branch == stack.base {
                 let pre_filter_count = report.entries.len();
-                let filtered = report.without_base_ancestors();
+                // Both filters require a fresh fetch: without_base_ancestors
+                // needs up-to-date origin/<base> for ancestry checks, and
+                // without_bottom_merged_prs needs it to confirm that the
+                // contiguous bottom of the stack actually landed on the base.
+                let filtered = report.without_bottom_merged_prs().without_base_ancestors();
                 let dropped = pre_filter_count - filtered.entries.len();
                 (filtered, dropped)
             } else {

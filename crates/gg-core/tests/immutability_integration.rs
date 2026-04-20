@@ -294,9 +294,10 @@ fn rebase_guard_passes_when_only_immutable_is_base_ancestor() {
 }
 
 #[test]
-fn rebase_guard_still_blocks_squash_merged_not_on_base() {
-    // A squash-merged PR whose SHA is NOT on origin/main must still block.
-    // This is the case without_base_ancestors() must preserve.
+fn rebase_guard_passes_squash_merged_not_on_base() {
+    // A squash-merged PR whose SHA is NOT on origin/main should pass during
+    // rebase: git rebase drops it via patch-id matching. The
+    // without_bottom_merged_prs() filter removes it.
     let temp = tempfile::tempdir().unwrap();
     let (repo, oids, _) = make_linear_stack(&temp, 2, 0);
     // origin/main at base commit — no stack commits are ancestors.
@@ -313,16 +314,40 @@ fn rebase_guard_still_blocks_squash_merged_not_on_base() {
         ImmutableReason::MergedPr { .. }
     ));
 
-    // Filtering should NOT remove this entry (no BaseAncestor reason).
+    // without_base_ancestors does NOT remove this entry (no BaseAncestor reason).
     let filtered = report.without_base_ancestors();
     assert_eq!(
         filtered.entries.len(),
         1,
-        "squash-merged entry must survive filtering"
+        "squash-merged entry must survive without_base_ancestors filtering"
     );
 
-    // Guard rejects without --force.
-    assert!(guard(filtered, false).is_err());
+    // But without_bottom_merged_prs DOES remove it (position 1, contiguous prefix).
+    let filtered = filtered.without_bottom_merged_prs();
+    assert!(
+        filtered.is_clear(),
+        "squash-merged entry at bottom should be removed by without_bottom_merged_prs"
+    );
+
+    // Guard passes without --force.
+    assert!(guard(filtered, false).is_ok());
+}
+
+#[test]
+fn squash_merged_still_blocks_non_rebase_commands() {
+    // Squash-merged entries must still block non-rebase commands (squash,
+    // reorder, drop, etc.) that don't apply without_bottom_merged_prs().
+    let temp = tempfile::tempdir().unwrap();
+    let (repo, oids, _) = make_linear_stack(&temp, 2, 0);
+
+    let stack = build_stack(&oids, &[Some(PrState::Merged), None]);
+    let policy = ImmutabilityPolicy::for_stack(&repo, &stack).unwrap();
+
+    let report = policy.check_all(&stack);
+    assert_eq!(report.entries.len(), 1);
+
+    // Guard rejects without --force (simulates non-rebase command path).
+    assert!(guard(report, false).is_err());
 }
 
 #[test]

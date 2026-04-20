@@ -103,7 +103,7 @@ Push and create/update PRs/MRs.
 - `--json`
 
 #### `gg land [OPTIONS]`
-Merge approved PRs/MRs from bottom up.
+Merge approved PRs/MRs from bottom up. Automatically retargets downstream MRs after each merge (next entry for single land, all remaining for `--all`).
 
 - `-a, --all`
 - `--auto-merge` *(GitLab only)*

@@ -116,9 +116,28 @@ fn should_count_merge_train_status_as_api_error(train_info: &crate::glab::MergeT
         && train_info.position.is_none()
 }
 
+/// Compute the range of entries that need retargeting after a merge.
+///
+/// When `land_all` is true, returns all entries after `current_index`.
+/// When `land_all` is false (single land), returns only the immediate next entry.
+/// This ensures downstream MRs are retargeted away from the merged branch (#297).
+fn retarget_range(
+    current_index: usize,
+    total_entries: usize,
+    land_all: bool,
+) -> std::ops::Range<usize> {
+    if land_all {
+        current_index + 1..total_entries
+    } else if current_index + 1 < total_entries {
+        current_index + 1..current_index + 2
+    } else {
+        0..0 // empty range
+    }
+}
+
 /// Cleanup after successfully merging a PR/MR:
 /// - Remove the PR/MR mapping from config
-/// - Update the base of remaining PRs/MRs if landing all
+/// - Update the base of remaining PRs/MRs (all for land_all, next entry for single land)
 fn cleanup_after_merge(
     config: &mut Config,
     stack: &Stack,
@@ -131,42 +150,41 @@ fn cleanup_after_merge(
     // Remove PR/MR mapping from config
     config.remove_mr_for_entry(&stack.name, gg_id);
 
-    // Update the base of remaining PRs/MRs to point to the main branch
+    // Update the base of remaining PRs/MRs to point to the main branch.
     // This is critical for stacked PRs - after merging PR #1, PR #2 should
-    // point to main instead of PR #1's branch (which no longer exists)
-    if land_all {
-        let current_index = stack
-            .entries
-            .iter()
-            .position(|e| e.mr_number == Some(pr_num))
-            .unwrap_or(0);
+    // point to main instead of PR #1's branch (which no longer exists).
+    let current_index = stack
+        .entries
+        .iter()
+        .position(|e| e.mr_number == Some(pr_num))
+        .unwrap_or(0);
 
-        for remaining_entry in stack.entries.iter().skip(current_index + 1) {
-            if let Some(remaining_pr) = remaining_entry.mr_number {
+    let range = retarget_range(current_index, stack.entries.len(), land_all);
+    for remaining_entry in &stack.entries[range] {
+        if let Some(remaining_pr) = remaining_entry.mr_number {
+            if !json {
+                println!(
+                    "{}",
+                    style(format!(
+                        "  Updating {} {}{} base to {}...",
+                        provider.pr_label(),
+                        provider.pr_number_prefix(),
+                        remaining_pr,
+                        stack.base
+                    ))
+                    .dim()
+                );
+            }
+            if let Err(e) = provider.update_pr_base(remaining_pr, &stack.base) {
                 if !json {
                     println!(
-                        "{}",
-                        style(format!(
-                            "  Updating {} {}{} base to {}...",
-                            provider.pr_label(),
-                            provider.pr_number_prefix(),
-                            remaining_pr,
-                            stack.base
-                        ))
-                        .dim()
+                        "{} Warning: Failed to update {} {}{} base: {}",
+                        style("⚠").yellow(),
+                        provider.pr_label(),
+                        provider.pr_number_prefix(),
+                        remaining_pr,
+                        e
                     );
-                }
-                if let Err(e) = provider.update_pr_base(remaining_pr, &stack.base) {
-                    if !json {
-                        println!(
-                            "{} Warning: Failed to update {} {}{} base: {}",
-                            style("⚠").yellow(),
-                            provider.pr_label(),
-                            provider.pr_number_prefix(),
-                            remaining_pr,
-                            e
-                        );
-                    }
                 }
             }
         }
@@ -2735,5 +2753,42 @@ mod tests {
             !actually_skip,
             "Approval should not be skipped without --all"
         );
+    }
+
+    // --- Tests for retarget_range (#297) ---
+
+    #[test]
+    fn test_retarget_range_land_all_retargets_all_remaining() {
+        // 4 entries, landing entry at index 1 with land_all=true
+        let range = super::retarget_range(1, 4, true);
+        assert_eq!(range, 2..4);
+    }
+
+    #[test]
+    fn test_retarget_range_single_land_retargets_next_only() {
+        // 4 entries, landing entry at index 1 with land_all=false
+        let range = super::retarget_range(1, 4, false);
+        assert_eq!(range, 2..3);
+    }
+
+    #[test]
+    fn test_retarget_range_single_land_last_entry_empty() {
+        // 3 entries, landing the last entry (index 2) with land_all=false
+        let range = super::retarget_range(2, 3, false);
+        assert_eq!(range, 0..0);
+    }
+
+    #[test]
+    fn test_retarget_range_land_all_last_entry_empty() {
+        // 3 entries, landing the last entry (index 2) with land_all=true
+        let range = super::retarget_range(2, 3, true);
+        assert_eq!(range, 3..3); // empty range
+    }
+
+    #[test]
+    fn test_retarget_range_single_land_first_of_two() {
+        // 2 entries, landing entry at index 0 with land_all=false
+        let range = super::retarget_range(0, 2, false);
+        assert_eq!(range, 1..2);
     }
 }

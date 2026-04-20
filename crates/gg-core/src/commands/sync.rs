@@ -165,6 +165,30 @@ fn format_push_error(error: &GgError, branch_name: &str) {
     }
 }
 
+/// Compute the target branch for entry at position `i` in a sync loop.
+///
+/// Walks backwards through `entry_is_closed` to find the nearest predecessor
+/// that is not merged/closed. If all predecessors are merged, returns `base`.
+/// This ensures downstream MRs are retargeted away from merged intermediate
+/// branches (fixes GitLab stacked MR retargeting — see #297).
+fn compute_target_branch(
+    i: usize,
+    base: &str,
+    entries: &[crate::stack::StackEntry],
+    entry_is_closed: &[bool],
+    stack: &Stack,
+) -> String {
+    if i == 0 {
+        return base.to_string();
+    }
+    for j in (0..i).rev() {
+        if !entry_is_closed[j] {
+            return stack.entry_branch_name(&entries[j]).unwrap();
+        }
+    }
+    base.to_string()
+}
+
 /// Run the sync command
 #[allow(clippy::too_many_arguments)]
 pub fn run(
@@ -373,6 +397,9 @@ pub fn run(
     let mut force_draft = draft;
     let mut json_entries: Vec<SyncEntryResultJson> = Vec::new();
     let mut nav_snapshots: Vec<Option<NavEntrySnapshot>> = Vec::new();
+    // Track which entries are closed/merged so downstream entries can skip them
+    // when computing their target branch (walk-back algorithm for stacked MRs).
+    let mut entry_is_closed: Vec<bool> = Vec::with_capacity(entries_to_sync.len());
 
     for (i, entry) in entries_to_sync.iter().enumerate() {
         let gg_id = entry.gg_id.as_ref().unwrap();
@@ -393,6 +420,7 @@ pub fn run(
         let mut pushed = false;
         let mut entry_error: Option<String> = None;
         let mut pr_state_cached: Option<crate::stack_nav::PrEntryState> = None;
+        let mut is_entry_closed = false;
 
         let (title, description) = build_pr_payload(
             &title,
@@ -439,6 +467,7 @@ pub fn run(
                         nav_comment_action: None,
                     });
                     nav_snapshots.push(None);
+                    entry_is_closed.push(false);
                     continue;
                 }
 
@@ -459,15 +488,9 @@ pub fn run(
             guard.record_remote_effect(effect);
         }
 
-        // Determine target branch for MR
-        let target_branch = if i == 0 {
-            // First commit targets base branch
-            stack.base.clone()
-        } else {
-            // Subsequent commits target previous entry's branch
-            let prev_entry = &stack.entries[i - 1];
-            stack.entry_branch_name(prev_entry).unwrap()
-        };
+        // Determine target branch for MR — uses walk-back to skip merged predecessors.
+        let target_branch =
+            compute_target_branch(i, &stack.base, entries_to_sync, &entry_is_closed, &stack);
 
         // Create or update PR
         let existing_pr = config.get_mr_for_entry(&stack.name, gg_id);
@@ -495,6 +518,7 @@ pub fn run(
                         )
                     })
                     .unwrap_or(false);
+                is_entry_closed = is_closed;
 
                 if is_closed {
                     action = "skipped_closed".to_string();
@@ -773,6 +797,7 @@ pub fn run(
             None
         };
         nav_snapshots.push(nav_snapshot);
+        entry_is_closed.push(is_entry_closed);
 
         pb.inc(1);
     }
@@ -1082,7 +1107,8 @@ fn create_entry_branch(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_pr_payload, clean_title, ensure_draft_prefix_for_gitlab, is_wip_or_draft_prefix,
+        build_pr_payload, clean_title, compute_target_branch, ensure_draft_prefix_for_gitlab,
+        is_wip_or_draft_prefix,
     };
     use crate::git;
     use crate::output::{
@@ -1385,5 +1411,97 @@ mod tests {
         assert_eq!(entry["pr_number"], 42);
         assert_eq!(entry["pushed"], true);
         assert!(entry["error"].is_null());
+    }
+
+    // --- Tests for compute_target_branch (walk-back algorithm) ---
+
+    fn make_test_stack(entries: Vec<crate::stack::StackEntry>) -> crate::stack::Stack {
+        crate::stack::Stack {
+            name: "test-stack".to_string(),
+            username: "user".to_string(),
+            base: "main".to_string(),
+            entries,
+            current_position: None,
+        }
+    }
+
+    fn make_test_entry(gg_id: &str) -> crate::stack::StackEntry {
+        crate::stack::StackEntry {
+            oid: git2::Oid::zero(),
+            short_sha: "abc1234".to_string(),
+            title: "Test entry".to_string(),
+            gg_id: Some(gg_id.to_string()),
+            gg_parent: None,
+            mr_number: None,
+            mr_state: None,
+            approved: false,
+            ci_status: None,
+            position: 1,
+            in_merge_train: false,
+            merge_train_position: None,
+            changes_requested: false,
+            mergeable: false,
+        }
+    }
+
+    #[test]
+    fn test_compute_target_branch_first_entry_targets_base() {
+        let entries = vec![make_test_entry("c-aaa1111")];
+        let stack = make_test_stack(entries.clone());
+        let closed = vec![false];
+        let result = compute_target_branch(0, "main", &entries, &closed, &stack);
+        assert_eq!(result, "main");
+    }
+
+    #[test]
+    fn test_compute_target_branch_targets_previous_when_open() {
+        let entries = vec![make_test_entry("c-aaa1111"), make_test_entry("c-bbb2222")];
+        let stack = make_test_stack(entries.clone());
+        let closed = vec![false];
+        let result = compute_target_branch(1, "main", &entries, &closed, &stack);
+        // Should target the branch for entries[0]
+        let expected = stack.entry_branch_name(&entries[0]).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_compute_target_branch_skips_merged_predecessor() {
+        let entries = vec![make_test_entry("c-aaa1111"), make_test_entry("c-bbb2222")];
+        let stack = make_test_stack(entries.clone());
+        // entries[0] is merged
+        let closed = vec![true];
+        let result = compute_target_branch(1, "main", &entries, &closed, &stack);
+        // All predecessors merged → falls back to base
+        assert_eq!(result, "main");
+    }
+
+    #[test]
+    fn test_compute_target_branch_skips_multiple_merged_predecessors() {
+        let entries = vec![
+            make_test_entry("c-aaa1111"),
+            make_test_entry("c-bbb2222"),
+            make_test_entry("c-ccc3333"),
+        ];
+        let stack = make_test_stack(entries.clone());
+        // entries[0] and entries[1] are both merged
+        let closed = vec![true, true];
+        let result = compute_target_branch(2, "main", &entries, &closed, &stack);
+        assert_eq!(result, "main");
+    }
+
+    #[test]
+    fn test_compute_target_branch_finds_nearest_open_ancestor() {
+        let entries = vec![
+            make_test_entry("c-aaa1111"),
+            make_test_entry("c-bbb2222"),
+            make_test_entry("c-ccc3333"),
+        ];
+        let stack = make_test_stack(entries.clone());
+        // entries[0] is open, entries[1] is merged
+        let closed = vec![false, true];
+        let result = compute_target_branch(2, "main", &entries, &closed, &stack);
+        // Should skip entries[1] (merged) and target entries[0]
+        let expected = stack.entry_branch_name(&entries[0]).unwrap();
+        assert_eq!(result, expected);
     }
 }

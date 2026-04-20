@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-04-20
+
 ### Added
 - `gg undo` command: reverses the local ref/HEAD effects of the most recent
   mutating `gg` command. `gg undo --list` shows the recent operation log
@@ -28,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refuse by default to rewrite commits whose PR/MR is already merged or which
   are already reachable from `origin/<base>`. A new `-f, --force` flag (alias
   `--ignore-immutable`) bypasses the check for each of these commands.
+- `gg log` smartlog view plus the `stack_log` MCP tool (#279).
+- `gg sync --no-verify` to skip pre-push hooks when explicitly requested (#283).
+- `gg restack` ancestry repair command (#289).
+- `gg inbox` command for multi-stack actionable triage (#292).
 
 ### Changed
 - **Behavior change — new lock acquisition.** `gg reorder`, `gg absorb`,
@@ -41,6 +47,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to skipping the existing confirmation prompt. Scripts that previously
   relied on `--force` to silently rewrite merged commits will continue to
   succeed; interactive users get a stronger safety net before they opt in.
+- Updated dependencies including `uuid`, `tokio`, and `rmcp` (#278, #284, #287).
+- TUI polish including lazygit-style bottom bar key hints (#295).
+
+### Fixed
+- `gg rebase` now allows stacks with squash-merged commits to refresh cleanly,
+  including cases where merged commits drop only after fetching the latest base
+  branch (#294, #296).
+- `gg sync` / `gg land` now retarget downstream GitLab MRs after a parent merge (#298).
+- `gg undo --list` aligns the ARGS column correctly (#290).
+- Removed stale research/docs cruft from the repo.
 
 ## [0.8.3] - 2026-04-16
 
@@ -401,8 +417,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.8.1...HEAD
-[0.8.1]: https://github.com/mrmans0n/git-gud/compare/v0.8.0...v0.8.1
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/mrmans0n/git-gud/compare/v0.8.3...v0.9.0
+[0.8.3]: https://github.com/mrmans0n/git-gud/compare/v0.8.2...v0.8.3
+[0.8.2]: https://github.com/mrmans0n/git-gud/compare/v0.8.0...v0.8.2
+[0.8.0]: https://github.com/mrmans0n/git-gud/compare/v0.7.4...v0.8.0
 [0.7.4]: https://github.com/mrmans0n/git-gud/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/mrmans0n/git-gud/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/mrmans0n/git-gud/compare/v0.7.1...v0.7.2
@@ -417,6 +436,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.5.5]: https://github.com/mrmans0n/git-gud/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/mrmans0n/git-gud/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/mrmans0n/git-gud/compare/v0.5.2...v0.5.3
+[0.5.2]: https://github.com/mrmans0n/git-gud/compare/v0.4.2...v0.5.2
 [0.4.2]: https://github.com/mrmans0n/git-gud/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/mrmans0n/git-gud/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/mrmans0n/git-gud/compare/v0.3.3...v0.4.0
@@ -438,6 +458,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.7]: https://github.com/mrmans0n/git-gud/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/mrmans0n/git-gud/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/mrmans0n/git-gud/releases/tag/v0.1.5
-
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.8.2...HEAD
-[0.8.2]: https://github.com/mrmans0n/git-gud/compare/v0.8.0...v0.8.2

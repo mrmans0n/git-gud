@@ -142,9 +142,20 @@ fn prepare_rebase(
             immutability::refresh_mr_state_for_guard(repo, &mut stack);
             let policy = ImmutabilityPolicy::for_stack(repo, &stack)?;
             let report = policy.check_all(&stack);
-            let (report, dropped) = if fetch_succeeded && target_branch == stack.base {
+            let (report, dropped) = if target_branch == stack.base {
                 let pre_filter_count = report.entries.len();
-                let filtered = report.without_base_ancestors();
+                // Merged PRs are safe to rebase over: git rebase drops them
+                // via patch-id matching (the content is already on the target).
+                // This covers squash-merged PRs whose local SHA isn't an
+                // ancestor of origin/<base>.
+                let filtered = report.without_merged_prs();
+                // Base-ancestor filtering requires a fresh fetch so
+                // origin/<base> reflects the latest remote state.
+                let filtered = if fetch_succeeded {
+                    filtered.without_base_ancestors()
+                } else {
+                    filtered
+                };
                 let dropped = pre_filter_count - filtered.entries.len();
                 (filtered, dropped)
             } else {

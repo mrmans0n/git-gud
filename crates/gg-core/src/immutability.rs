@@ -114,6 +114,28 @@ impl ImmutabilityReport {
         }
     }
 
+    /// Remove entries that have a `MergedPr` reason.
+    ///
+    /// During `gg rebase`, commits whose PR/MR is already merged are safe to
+    /// include in the rebase: `git rebase` detects that the patch content is
+    /// already applied on the target branch (via patch-id matching) and drops
+    /// them automatically. This covers squash-merged PRs whose local SHA
+    /// isn't an ancestor of `origin/<base>` — the case that
+    /// [`without_base_ancestors`] cannot catch.
+    pub fn without_merged_prs(self) -> Self {
+        Self {
+            entries: self
+                .entries
+                .into_iter()
+                .filter(|e| {
+                    !e.reasons
+                        .iter()
+                        .any(|r| matches!(r, ImmutableReason::MergedPr { .. }))
+                })
+                .collect(),
+        }
+    }
+
     /// Format the report as a multi-line string suitable for error messages.
     pub fn format_for_error(&self) -> String {
         let mut out = String::new();
@@ -576,6 +598,55 @@ mod tests {
             }],
         };
         let filtered = report.without_base_ancestors();
+        assert!(filtered.is_clear());
+    }
+
+    #[test]
+    fn without_merged_prs_drops_merged_only_entries() {
+        let report = ImmutabilityReport {
+            entries: vec![ImmutableEntry {
+                position: 1,
+                short_sha: "aaa".to_string(),
+                title: "squash-merged".to_string(),
+                reasons: vec![ImmutableReason::MergedPr { number: Some(42) }],
+            }],
+        };
+        let filtered = report.without_merged_prs();
+        assert!(filtered.is_clear());
+    }
+
+    #[test]
+    fn without_merged_prs_keeps_base_ancestor_only_entries() {
+        let report = ImmutabilityReport {
+            entries: vec![ImmutableEntry {
+                position: 1,
+                short_sha: "aaa".to_string(),
+                title: "on base".to_string(),
+                reasons: vec![ImmutableReason::BaseAncestor {
+                    base_ref: "origin/main".to_string(),
+                }],
+            }],
+        };
+        let filtered = report.without_merged_prs();
+        assert_eq!(filtered.entries.len(), 1);
+    }
+
+    #[test]
+    fn without_merged_prs_drops_dual_reason_entries() {
+        let report = ImmutabilityReport {
+            entries: vec![ImmutableEntry {
+                position: 1,
+                short_sha: "aaa".to_string(),
+                title: "merged and on base".to_string(),
+                reasons: vec![
+                    ImmutableReason::MergedPr { number: Some(10) },
+                    ImmutableReason::BaseAncestor {
+                        base_ref: "origin/main".to_string(),
+                    },
+                ],
+            }],
+        };
+        let filtered = report.without_merged_prs();
         assert!(filtered.is_clear());
     }
 

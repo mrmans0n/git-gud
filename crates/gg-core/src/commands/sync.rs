@@ -1439,6 +1439,8 @@ mod tests {
             position: 1,
             in_merge_train: false,
             merge_train_position: None,
+            changes_requested: false,
+            mergeable: false,
         }
     }
 

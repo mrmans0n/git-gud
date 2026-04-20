@@ -53,6 +53,15 @@ On GitLab, `--admin` is a no-op — `glab mr merge` has no equivalent flag. A wa
 
 A warning (`⚠ Merging with admin override`) is printed before each admin-elevated merge.
 
+## Downstream MR Retargeting
+
+After landing an entry, `gg land` automatically retargets the next MR in the stack so it no longer points at the now-merged intermediate branch:
+
+- **Single entry** (`gg land`): retargets the immediate next MR to `stack.base`.
+- **All entries** (`gg land --all`): retargets all remaining MRs to `stack.base` as each entry is landed.
+
+This applies to both GitHub PRs and GitLab MRs. No manual retargeting in the provider UI is needed after landing.
+
 ## Merge Trains (GitLab)
 
 When merge trains are enabled on the target branch, `gg land` automatically adds MRs to the merge train instead of merging directly.

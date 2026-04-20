@@ -303,6 +303,7 @@ Reconcile is skipped under `--until` to avoid partial-stack inconsistencies.
   - `merge_train_position`
 - Land action values on GitLab may include `queued` / `already_queued` (in addition to `merged`).
 - When `--wait` detects CI failure, the error message includes the names and stages of failed pipeline jobs (fetched from the MR's head pipeline).
+- After landing an MR, downstream MRs are automatically retargeted away from the merged branch — no manual retargeting in GitLab UI is needed. `gg sync` also handles this if an MR was merged directly in the UI.
 - Use `glab` for auxiliary GitLab checks/actions.
 - JSON fields always use `pr_*` naming, even for GitLab MRs (`pr_number`, `pr_state`).
 

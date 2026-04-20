@@ -55,6 +55,10 @@ gg sync --json
 gg sync --no-verify
 ```
 
+## Target Branch Resolution
+
+When computing the target branch for each PR/MR, `gg sync` walks backwards through predecessor entries and skips any that are already merged or closed. If all predecessors have been merged, the target falls back to `stack.base`. This ensures downstream MRs are correctly retargeted after an upstream MR is merged — whether merged via `gg land` or directly in the provider UI.
+
 ## PR/MR Body Ownership
 
 When `gg sync` creates a new PR/MR, the generated description is wrapped in invisible HTML comment markers:

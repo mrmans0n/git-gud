@@ -114,23 +114,42 @@ impl ImmutabilityReport {
         }
     }
 
-    /// Remove entries that have a `MergedPr` reason.
+    /// Remove `MergedPr` entries from the contiguous immutable prefix at the
+    /// bottom of the stack.
     ///
-    /// During `gg rebase`, commits whose PR/MR is already merged are safe to
-    /// include in the rebase: `git rebase` detects that the patch content is
-    /// already applied on the target branch (via patch-id matching) and drops
-    /// them automatically. This covers squash-merged PRs whose local SHA
-    /// isn't an ancestor of `origin/<base>` — the case that
-    /// [`without_base_ancestors`] cannot catch.
-    pub fn without_merged_prs(self) -> Self {
+    /// In stacked workflows, only the bottom PR targets `origin/<base>`
+    /// directly; upper PRs target the previous entry's branch. When PRs are
+    /// landed bottom-up, each subsequent PR gets retargeted to the base, so a
+    /// contiguous run of immutable entries from position 1 all had their
+    /// content merged into the base. Above a gap (a mutable commit), merged
+    /// PRs may still target a parent branch whose content isn't on
+    /// `origin/<base>`, so we keep those in the report.
+    ///
+    /// This covers squash-merged PRs whose local SHA isn't an ancestor of
+    /// `origin/<base>` — the case that [`without_base_ancestors`] cannot
+    /// catch.
+    pub fn without_bottom_merged_prs(self) -> Self {
+        // Find the contiguous immutable prefix from position 1.
+        let mut max_contiguous_pos: usize = 0;
+        for entry in &self.entries {
+            if entry.position == max_contiguous_pos + 1 {
+                max_contiguous_pos = entry.position;
+            } else {
+                break;
+            }
+        }
+
         Self {
             entries: self
                 .entries
                 .into_iter()
                 .filter(|e| {
-                    !e.reasons
+                    let dominated = e.position <= max_contiguous_pos;
+                    let is_merged = e
+                        .reasons
                         .iter()
-                        .any(|r| matches!(r, ImmutableReason::MergedPr { .. }))
+                        .any(|r| matches!(r, ImmutableReason::MergedPr { .. }));
+                    !(dominated && is_merged)
                 })
                 .collect(),
         }
@@ -602,7 +621,7 @@ mod tests {
     }
 
     #[test]
-    fn without_merged_prs_drops_merged_only_entries() {
+    fn without_bottom_merged_prs_drops_merged_at_position_1() {
         let report = ImmutabilityReport {
             entries: vec![ImmutableEntry {
                 position: 1,
@@ -611,12 +630,12 @@ mod tests {
                 reasons: vec![ImmutableReason::MergedPr { number: Some(42) }],
             }],
         };
-        let filtered = report.without_merged_prs();
+        let filtered = report.without_bottom_merged_prs();
         assert!(filtered.is_clear());
     }
 
     #[test]
-    fn without_merged_prs_keeps_base_ancestor_only_entries() {
+    fn without_bottom_merged_prs_keeps_base_ancestor_only_entries() {
         let report = ImmutabilityReport {
             entries: vec![ImmutableEntry {
                 position: 1,
@@ -627,12 +646,12 @@ mod tests {
                 }],
             }],
         };
-        let filtered = report.without_merged_prs();
+        let filtered = report.without_bottom_merged_prs();
         assert_eq!(filtered.entries.len(), 1);
     }
 
     #[test]
-    fn without_merged_prs_drops_dual_reason_entries() {
+    fn without_bottom_merged_prs_drops_dual_reason_entries() {
         let report = ImmutabilityReport {
             entries: vec![ImmutableEntry {
                 position: 1,
@@ -646,8 +665,60 @@ mod tests {
                 ],
             }],
         };
-        let filtered = report.without_merged_prs();
+        let filtered = report.without_bottom_merged_prs();
         assert!(filtered.is_clear());
+    }
+
+    #[test]
+    fn without_bottom_merged_prs_keeps_upper_merged_after_gap() {
+        // Stack: #1 mutable, #2 merged. Since #1 is not in the report,
+        // #2 is NOT in the contiguous prefix → must be kept.
+        let report = ImmutabilityReport {
+            entries: vec![ImmutableEntry {
+                position: 2,
+                short_sha: "bbb".to_string(),
+                title: "upper merged".to_string(),
+                reasons: vec![ImmutableReason::MergedPr { number: Some(99) }],
+            }],
+        };
+        let filtered = report.without_bottom_merged_prs();
+        assert_eq!(filtered.entries.len(), 1, "upper merged entry must survive");
+    }
+
+    #[test]
+    fn without_bottom_merged_prs_contiguous_prefix() {
+        // Stack: #1 merged, #2 base-ancestor, #3 merged (after gap in immutables at #2's position).
+        // Positions 1 and 2 form contiguous prefix. #3 is also contiguous.
+        let report = ImmutabilityReport {
+            entries: vec![
+                ImmutableEntry {
+                    position: 1,
+                    short_sha: "aaa".to_string(),
+                    title: "bottom merged".to_string(),
+                    reasons: vec![ImmutableReason::MergedPr { number: Some(10) }],
+                },
+                ImmutableEntry {
+                    position: 2,
+                    short_sha: "bbb".to_string(),
+                    title: "also on base".to_string(),
+                    reasons: vec![ImmutableReason::BaseAncestor {
+                        base_ref: "origin/main".to_string(),
+                    }],
+                },
+                ImmutableEntry {
+                    position: 3,
+                    short_sha: "ccc".to_string(),
+                    title: "upper merged".to_string(),
+                    reasons: vec![ImmutableReason::MergedPr { number: Some(11) }],
+                },
+            ],
+        };
+        let filtered = report.without_bottom_merged_prs();
+        // #1 (merged, in prefix) → dropped
+        // #2 (base-ancestor only, in prefix, not MergedPr) → kept
+        // #3 (merged, in prefix) → dropped
+        assert_eq!(filtered.entries.len(), 1);
+        assert_eq!(filtered.entries[0].position, 2);
     }
 
     #[test]

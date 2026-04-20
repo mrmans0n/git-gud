@@ -297,7 +297,7 @@ fn rebase_guard_passes_when_only_immutable_is_base_ancestor() {
 fn rebase_guard_passes_squash_merged_not_on_base() {
     // A squash-merged PR whose SHA is NOT on origin/main should pass during
     // rebase: git rebase drops it via patch-id matching. The
-    // without_merged_prs() filter removes it.
+    // without_bottom_merged_prs() filter removes it.
     let temp = tempfile::tempdir().unwrap();
     let (repo, oids, _) = make_linear_stack(&temp, 2, 0);
     // origin/main at base commit — no stack commits are ancestors.
@@ -322,11 +322,11 @@ fn rebase_guard_passes_squash_merged_not_on_base() {
         "squash-merged entry must survive without_base_ancestors filtering"
     );
 
-    // But without_merged_prs DOES remove it — safe for rebase.
-    let filtered = filtered.without_merged_prs();
+    // But without_bottom_merged_prs DOES remove it (position 1, contiguous prefix).
+    let filtered = filtered.without_bottom_merged_prs();
     assert!(
         filtered.is_clear(),
-        "squash-merged entry should be removed by without_merged_prs"
+        "squash-merged entry at bottom should be removed by without_bottom_merged_prs"
     );
 
     // Guard passes without --force.
@@ -336,7 +336,7 @@ fn rebase_guard_passes_squash_merged_not_on_base() {
 #[test]
 fn squash_merged_still_blocks_non_rebase_commands() {
     // Squash-merged entries must still block non-rebase commands (squash,
-    // reorder, drop, etc.) that don't apply without_merged_prs().
+    // reorder, drop, etc.) that don't apply without_bottom_merged_prs().
     let temp = tempfile::tempdir().unwrap();
     let (repo, oids, _) = make_linear_stack(&temp, 2, 0);
 

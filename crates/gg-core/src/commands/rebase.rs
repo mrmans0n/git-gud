@@ -146,10 +146,9 @@ fn prepare_rebase(
                 let pre_filter_count = report.entries.len();
                 // Both filters require a fresh fetch: without_base_ancestors
                 // needs up-to-date origin/<base> for ancestry checks, and
-                // without_merged_prs needs it to ensure the merge actually
-                // landed on the base (in stacked PRs, an upper PR can be
-                // merged into a parent branch, not the base).
-                let filtered = report.without_merged_prs().without_base_ancestors();
+                // without_bottom_merged_prs needs it to confirm that the
+                // contiguous bottom of the stack actually landed on the base.
+                let filtered = report.without_bottom_merged_prs().without_base_ancestors();
                 let dropped = pre_filter_count - filtered.entries.len();
                 (filtered, dropped)
             } else {

@@ -251,7 +251,7 @@ gg refuses by default to rewrite commits that look "already published":
   a fallback).
 
 The guard protects `gg sc`, `gg absorb`, `gg reorder` / `gg arrange`,
-`gg split`, `gg drop`, `gg rebase`, and `gg restack`. `gg rebase` is a special case: commits already reachable from the refreshed base are silently skipped because `git rebase` would drop them naturally instead of rewriting them. For the remaining commands, or for non-base-ancestor immutable commits during `gg rebase`, the command exits with an `ImmutableTargets` error listing every affected position, short SHA, title, and reason (e.g. `merged as !123`, `already in origin/main`).
+`gg split`, `gg drop`, `gg rebase`, and `gg restack`. `gg rebase` is a special case: merged commits (both base-ancestor commits and squash-merged PRs) are silently skipped because `git rebase` would drop them naturally via patch-id matching instead of rewriting them. For the remaining commands the command exits with an `ImmutableTargets` error listing every affected position, short SHA, title, and reason (e.g. `merged as !123`, `already in origin/main`).
 
 To bypass it intentionally, pass `-f` / `--force` (long alias
 `--ignore-immutable`). Always surface the listed commits and reasons to the

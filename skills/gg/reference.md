@@ -667,11 +667,10 @@ Notes for agents:
 
 - Before offering `--force`, surface the guard output to the user and get
   explicit confirmation — bypassing is a footgun.
-- `gg rebase` silently skips base-ancestor commits (printing
-  `→ Skipping N merged commit(s) already on <base>`) instead of blocking,
-  because `git rebase` naturally drops patches already applied upstream.
-  The guard still blocks squash-merged PRs (`MergedPr` reason without
-  `BaseAncestor`) since those would be replayed as duplicates.
+- `gg rebase` silently skips merged commits — both base-ancestor commits and
+  squash-merged PRs (printing `→ Skipping N merged commit(s) already on <base>`)
+  — because `git rebase` naturally drops patches already applied upstream via
+  patch-id matching.
 - `gg sync`'s internal auto-rebase only considers a commit a
   base ancestor **after** the remote ref is fetched, so the guard reflects
   freshly-updated state rather than stale local refs.

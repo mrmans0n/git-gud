@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-70e91662.js";
+            window.path_to_searchindex_js = "../searchindex-d9a11bb4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-da2cf2da.js"></script>
@@ -217,6 +217,13 @@ gg land --all --wait --admin
 <p>Use <code>--wait --admin</code> if you want to wait for CI to pass before merging while still bypassing approval requirements. Without <code>--wait</code>, no client-side CI validation is performed.</p>
 <p>On GitLab, <code>--admin</code> is a no-op — <code>glab mr merge</code> has no equivalent flag. A warning is printed and the merge proceeds normally.</p>
 <p>A warning (<code>⚠ Merging with admin override</code>) is printed before each admin-elevated merge.</p>
+<h2 id="downstream-mr-retargeting"><a class="header" href="#downstream-mr-retargeting">Downstream MR Retargeting</a></h2>
+<p>After landing an entry, <code>gg land</code> automatically retargets the next MR in the stack so it no longer points at the now-merged intermediate branch:</p>
+<ul>
+<li><strong>Single entry</strong> (<code>gg land</code>): retargets the immediate next MR to <code>stack.base</code>.</li>
+<li><strong>All entries</strong> (<code>gg land --all</code>): retargets all remaining MRs to <code>stack.base</code> as each entry is landed.</li>
+</ul>
+<p>This applies to both GitHub PRs and GitLab MRs. No manual retargeting in the provider UI is needed after landing.</p>
 <h2 id="merge-trains-gitlab"><a class="header" href="#merge-trains-gitlab">Merge Trains (GitLab)</a></h2>
 <p>When merge trains are enabled on the target branch, <code>gg land</code> automatically adds MRs to the merge train instead of merging directly.</p>
 <p><strong>Approval is always required</strong> before an MR can enter the merge train queue — even with <code>--all</code>. If using <code>--wait</code>, the command will show “Waiting for approval…” until a reviewer approves the MR.</p>

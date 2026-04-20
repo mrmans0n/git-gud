@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-70e91662.js";
+            window.path_to_searchindex_js = "../searchindex-d9a11bb4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-da2cf2da.js"></script>
@@ -221,6 +221,8 @@ gg sync --json
 # Skip pre-push hooks for this sync only
 gg sync --no-verify
 </code></pre>
+<h2 id="target-branch-resolution"><a class="header" href="#target-branch-resolution">Target Branch Resolution</a></h2>
+<p>When computing the target branch for each PR/MR, <code>gg sync</code> walks backwards through predecessor entries and skips any that are already merged or closed. If all predecessors have been merged, the target falls back to <code>stack.base</code>. This ensures downstream MRs are correctly retargeted after an upstream MR is merged — whether merged via <code>gg land</code> or directly in the provider UI.</p>
 <h2 id="prmr-body-ownership"><a class="header" href="#prmr-body-ownership">PR/MR Body Ownership</a></h2>
 <p>When <code>gg sync</code> creates a new PR/MR, the generated description is wrapped in invisible HTML comment markers:</p>
 <pre><code>&lt;!-- gg:managed:start --&gt;

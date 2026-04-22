@@ -161,6 +161,11 @@ fn prompt_defaults_full(
         .default(existing.sync_update_descriptions)
         .interact()
         .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?;
+    defaults.sync_update_title = Confirm::with_theme(theme)
+        .with_prompt("Update PR/MR titles on re-sync?")
+        .default(existing.sync_update_title)
+        .interact()
+        .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?;
     defaults.stack_nav_comments = Confirm::with_theme(theme)
         .with_prompt("Post a navigation comment on each PR/MR in a stack (links to other PRs/MRs)?")
         .default(existing.stack_nav_comments)

@@ -34,7 +34,7 @@ gg setup --all  # Full mode: all settings organized by category
 
 **Quick mode** prompts for: provider, base branch, username.
 
-**Full mode** organizes all settings into groups: General, Sync, Land, Lint, Worktrees, and GitLab (if applicable). Includes sync_draft and sync_update_descriptions options.
+**Full mode** organizes all settings into groups: General, Sync, Land, Lint, Worktrees, and GitLab (if applicable). Includes sync_draft, sync_update_descriptions, and sync_update_title options.
 
 ### Global config
 
@@ -55,6 +55,7 @@ Store shared defaults in `~/.config/gg/config.json` that apply to all repos. Loc
     "sync_auto_lint": false,
     "sync_draft": false,
     "sync_update_descriptions": true,
+    "sync_update_title": false,
     "land_auto_clean": false,
     "land_wait_timeout_minutes": 30,
     "unstaged_action": "ask"

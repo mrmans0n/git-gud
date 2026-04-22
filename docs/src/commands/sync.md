@@ -10,7 +10,8 @@ gg sync [OPTIONS]
 
 - `-d, --draft`: Create new PRs/MRs as draft (does not affect existing PRs/MRs)
 - `-f, --force`: Force push even if remote is ahead
-- `--update-descriptions`: Update PR/MR title/body from commit messages
+- `--update-descriptions`: Update PR/MR descriptions from commit messages
+- `--update-title`: Update PR/MR titles from commit messages
 - `-l, --lint`: Run lint before sync (aborts sync on lint failure and restores repository state to the pre-sync snapshot)
 - `--no-lint`: Disable lint before sync (overrides config default)
 - `--no-rebase-check`: Skip checking whether your stack base is behind `origin/<base>`
@@ -41,6 +42,9 @@ gg sync --until 2
 # Refresh PR/MR descriptions after commit message edits
 gg sync --update-descriptions
 
+# Also update PR/MR titles to match commit subjects
+gg sync --update-title
+
 # Run lint as part of sync
 gg sync --lint
 
@@ -69,7 +73,7 @@ When `gg sync` creates a new PR/MR, the generated description is wrapped in invi
 <!-- gg:managed:end -->
 ```
 
-On subsequent syncs with `--update-descriptions`, only the content inside the managed block is regenerated. Any text you add **above or below** the markers on GitHub/GitLab is preserved across syncs.
+On subsequent syncs with `--update-descriptions` (or when `sync_update_descriptions` is enabled in config), only the content inside the managed block is regenerated. Any text you add **above or below** the markers on GitHub/GitLab is preserved across syncs.
 
 This means you can safely:
 

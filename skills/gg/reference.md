@@ -27,7 +27,8 @@ Example local config:
     "branch_username": "your-github-user",
     "lint": ["cargo fmt --all --check"],
     "sync_draft": false,
-    "sync_update_descriptions": true
+    "sync_update_descriptions": true,
+    "sync_update_title": false
   }
 }
 ```
@@ -94,7 +95,8 @@ Push and create/update PRs/MRs.
 
 - `-d, --draft`: Create new PRs/MRs as draft (does not convert existing PRs to draft)
 - `-f, --force`
-- `--update-descriptions`: Update PR/MR titles and descriptions. On update, only the managed block (`<!-- gg:managed:start/end -->`) is replaced — user content outside the markers is preserved. Legacy PRs without markers skip the body update with a warning.
+- `--update-descriptions`: Update PR/MR descriptions. On update, only the managed block (`<!-- gg:managed:start/end -->`) is replaced — user content outside the markers is preserved. Legacy PRs without markers skip the body update with a warning.
+- `--update-title`: Update PR/MR titles from commit messages.
 - `-l, --lint` *(aborts sync on lint failure and restores repository state to the pre-sync snapshot)*
 - `--no-lint`
 - `--no-rebase-check`
@@ -247,7 +249,7 @@ Interactive config wizard.
 - **Quick mode** (`gg setup`): Essential settings (provider, base, username)
 - **Full mode** (`gg setup --all`): All settings organized by category (General, Sync, Land, Lint, Worktrees, GitLab)
 
-Supports global config at `~/.config/gg/config.json` for shared defaults across repos. New fields: `sync_draft` (create PRs as drafts) and `sync_update_descriptions` (update PR descriptions on re-sync).
+Supports global config at `~/.config/gg/config.json` for shared defaults across repos. Config fields include `sync_draft` (create PRs as drafts), `sync_update_descriptions` (update PR descriptions on re-sync), and `sync_update_title` (update PR titles on re-sync, default false).
 
 #### `defaults.stack_nav_comments`
 
@@ -753,7 +755,7 @@ Create or switch to a stack.
 
 #### `stack_sync`
 Push branches and create/update PRs.
-- **Params:** `draft` (bool), `force` (bool), `update_descriptions` (bool), `no_rebase_check` (bool), `lint` (bool), `until` (string), `no_verify` (bool — skip pre-push hook)
+- **Params:** `draft` (bool), `force` (bool), `update_descriptions` (bool), `update_title` (bool), `no_rebase_check` (bool), `lint` (bool), `until` (string), `no_verify` (bool — skip pre-push hook)
 - **Returns:** JSON sync results with PR URLs
 
 #### `stack_land`

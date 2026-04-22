@@ -175,6 +175,9 @@ pub struct StackSyncParams {
     /// Update PR descriptions from commit messages
     #[serde(default)]
     pub update_descriptions: bool,
+    /// Update PR titles from commit messages
+    #[serde(default)]
+    pub update_title: bool,
     /// Skip rebase-needed check
     #[serde(default)]
     pub no_rebase_check: bool,
@@ -740,6 +743,9 @@ impl GgMcpServer {
         }
         if params.update_descriptions {
             args.push("--update-descriptions".to_string());
+        }
+        if params.update_title {
+            args.push("--update-title".to_string());
         }
         if params.no_rebase_check {
             args.push("--no-rebase-check".to_string());

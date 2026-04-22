@@ -535,6 +535,9 @@ pub fn run(
                         ));
                     }
                 } else {
+                    // Existing PRs keep their current draft/ready state.
+                    // --draft only applies when creating NEW PRs/MRs.
+
                     // Title update — gated independently from descriptions
                     if update_title {
                         if let Err(e) = provider.update_pr_title(pr_num, &title) {
@@ -671,6 +674,7 @@ pub fn run(
                             pr_num
                         ));
                     }
+                    // Any remote mutation counts as an update
                     if needs_push || update_descriptions || update_title {
                         action = "updated".to_string();
                     }

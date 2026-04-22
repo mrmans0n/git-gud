@@ -249,7 +249,7 @@ Interactive config wizard.
 - **Quick mode** (`gg setup`): Essential settings (provider, base, username)
 - **Full mode** (`gg setup --all`): All settings organized by category (General, Sync, Land, Lint, Worktrees, GitLab)
 
-Supports global config at `~/.config/gg/config.json` for shared defaults across repos. New fields: `sync_draft` (create PRs as drafts) and `sync_update_descriptions` (update PR descriptions on re-sync).
+Supports global config at `~/.config/gg/config.json` for shared defaults across repos. Config fields include `sync_draft` (create PRs as drafts), `sync_update_descriptions` (update PR descriptions on re-sync), and `sync_update_title` (update PR titles on re-sync, default false).
 
 #### `defaults.stack_nav_comments`
 

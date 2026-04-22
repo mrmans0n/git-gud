@@ -42,7 +42,7 @@ gg sync --until 2
 # Refresh PR/MR descriptions after commit message edits
 gg sync --update-descriptions
 
-# Also update PR/MR titles to match commit messages
+# Also update PR/MR titles to match commit subjects
 gg sync --update-title
 
 # Run lint as part of sync

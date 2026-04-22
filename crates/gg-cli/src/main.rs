@@ -88,9 +88,13 @@ enum Commands {
         #[arg(short, long)]
         force: bool,
 
-        /// Update PR/MR titles and descriptions to match commit messages
+        /// Update PR/MR descriptions to match commit messages
         #[arg(long)]
         update_descriptions: bool,
+
+        /// Update PR/MR titles to match commit messages
+        #[arg(long)]
+        update_title: bool,
 
         /// Run lint before sync
         #[arg(short, long, conflicts_with = "no_lint")]
@@ -475,6 +479,7 @@ fn main() {
             no_rebase_check,
             force,
             update_descriptions,
+            update_title,
             lint,
             no_lint,
             until,
@@ -504,6 +509,7 @@ fn main() {
                     no_rebase_check,
                     force,
                     update_descriptions,
+                    update_title,
                     run_lint,
                     until,
                     no_verify,

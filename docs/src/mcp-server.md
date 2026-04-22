@@ -116,6 +116,7 @@ Push branches and create/update PRs/MRs for the current stack.
 - `draft` (boolean, optional): Create PRs as draft.
 - `force` (boolean, optional): Force-push branches.
 - `update_descriptions` (boolean, optional): Update PR descriptions from commit messages.
+- `update_title` (boolean, optional): Update PR titles from commit messages.
 - `no_rebase_check` (boolean, optional): Skip rebase-needed check.
 - `lint` (boolean, optional): Run lint before syncing.
 - `until` (string, optional): Only sync up to this position/GG-ID/SHA.

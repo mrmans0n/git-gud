@@ -75,6 +75,10 @@ pub struct Defaults {
     #[serde(default = "default_true")]
     pub sync_update_descriptions: bool,
 
+    /// Update PR/MR titles on re-sync (default: false)
+    #[serde(default)]
+    pub sync_update_title: bool,
+
     /// Post and maintain a managed navigation comment on each PR/MR in a
     /// multi-entry stack. Default: false (opt-in).
     #[serde(default)]
@@ -124,6 +128,7 @@ impl Default for Defaults {
             unstaged_action: UnstagedAction::Ask,
             sync_draft: false,
             sync_update_descriptions: true,
+            sync_update_title: false,
             stack_nav_comments: false,
         }
     }
@@ -371,6 +376,11 @@ impl Config {
     /// Get whether to update PR/MR descriptions on re-sync (default: true)
     pub fn get_sync_update_descriptions(&self) -> bool {
         self.defaults.sync_update_descriptions
+    }
+
+    /// Get whether to update PR/MR titles on re-sync (default: false)
+    pub fn get_sync_update_title(&self) -> bool {
+        self.defaults.sync_update_title
     }
 
     /// Whether to post and maintain stack-navigation comments on PRs/MRs.
@@ -839,6 +849,41 @@ mod tests {
     fn test_sync_update_descriptions_deserializes_to_default_when_missing() {
         let config: Config = serde_json::from_str(r#"{"defaults":{"base":"main"}}"#).unwrap();
         assert!(config.get_sync_update_descriptions());
+    }
+
+    // ============ Tests for sync_update_title ============
+
+    #[test]
+    fn test_sync_update_title_default_is_false() {
+        let config = Config::default();
+        assert!(!config.get_sync_update_title());
+    }
+
+    #[test]
+    fn test_sync_update_title_enabled() {
+        let mut config = Config::default();
+        config.defaults.sync_update_title = true;
+        assert!(config.get_sync_update_title());
+    }
+
+    #[test]
+    fn test_sync_update_title_roundtrip() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_dir = temp_dir.path();
+
+        let mut config = Config::default();
+        config.defaults.sync_update_title = true;
+
+        config.save(git_dir).unwrap();
+
+        let loaded = Config::load(git_dir).unwrap();
+        assert!(loaded.get_sync_update_title());
+    }
+
+    #[test]
+    fn test_sync_update_title_deserializes_to_false_when_missing() {
+        let config: Config = serde_json::from_str(r#"{"defaults":{"base":"main"}}"#).unwrap();
+        assert!(!config.get_sync_update_title());
     }
 
     // ============ Tests for stack_nav_comments ============

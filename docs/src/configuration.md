@@ -40,6 +40,7 @@ For global config, manually create `~/.config/gg/config.json` with your preferre
     "sync_behind_threshold": 1,
     "sync_draft": false,
     "sync_update_descriptions": true,
+    "sync_update_title": false,
     "worktree_base_path": "/tmp/gg-worktrees",
     "gitlab": {
       "auto_merge_on_land": false
@@ -66,6 +67,7 @@ For global config, manually create `~/.config/gg/config.json` with your preferre
 | `sync_behind_threshold` | `number` | Warn/rebase in `gg sync` when base is at least this many commits behind `origin/<base>` (`0` disables check) | `1` |
 | `sync_draft` | `boolean` | Create new PRs/MRs as drafts by default | `false` |
 | `sync_update_descriptions` | `boolean` | Update PR/MR descriptions on re-sync | `true` |
+| `sync_update_title` | `boolean` | Update PR/MR titles on re-sync | `false` |
 | `stack_nav_comments` | `boolean` | Post a managed navigation comment on each open PR/MR in a multi-entry stack, listing all entries with a 👉 marker on the current one. When set back to `false`, the next `gg sync` removes any previously-posted managed comments. Skipped for single-entry stacks and when `--until` limits a sync. | `false` |
 | `worktree_base_path` | `string` | Base directory for managed worktrees | Parent of repo |
 | `gitlab.auto_merge_on_land` | `boolean` | Default GitLab auto-merge behavior for `gg land` | `false` |

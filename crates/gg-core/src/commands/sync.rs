@@ -197,6 +197,7 @@ pub fn run(
     no_rebase_check: bool,
     force: bool,
     update_descriptions: bool,
+    update_title: bool,
     run_lint: bool,
     until: Option<String>,
     no_verify: bool,
@@ -229,6 +230,7 @@ pub fn run(
     //   set sync_update_descriptions: false in config to opt out)
     let draft = draft || config.get_sync_draft();
     let update_descriptions = update_descriptions || config.get_sync_update_descriptions();
+    let update_title = update_title || config.get_sync_update_title();
 
     // Load stack early to validate --until
     let initial_stack = Stack::load(&repo, &config)?;
@@ -533,9 +535,7 @@ pub fn run(
                         ));
                     }
                 } else {
-                    if update_descriptions {
-                        // Existing PRs keep their current draft/ready state.
-                        // --draft only applies when creating NEW PRs/MRs.
+                    if update_title {
                         if let Err(e) = provider.update_pr_title(pr_num, &title) {
                             if !json {
                                 pb.println(format!(
@@ -551,6 +551,11 @@ pub fn run(
                                 entry_error = Some(format!("Could not update title: {e}"));
                             }
                         }
+                    }
+
+                    if update_descriptions {
+                        // Existing PRs keep their current draft/ready state.
+                        // --draft only applies when creating NEW PRs/MRs.
 
                         // Fetch current remote body and merge only the managed block,
                         // preserving user edits outside the markers.
@@ -667,7 +672,7 @@ pub fn run(
                             pr_num
                         ));
                     }
-                    if needs_push || update_descriptions {
+                    if needs_push || update_descriptions || update_title {
                         action = "updated".to_string();
                     }
                 }

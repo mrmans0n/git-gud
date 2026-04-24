@@ -1,6 +1,6 @@
 [package]
 name = "gg-cli"
-version = "0.9.1"
+version = "0.9.2-dev"
 edition = "2021"
 description = "CLI binary for git-gud (gg) stacked-diffs tool"
 authors = ["Nacho Lopez"]

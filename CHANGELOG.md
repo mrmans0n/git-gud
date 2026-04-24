@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-04-24
+
+### Changed
+- `gg sync` now decouples title updates from description updates, avoiding unnecessary title churn during sync (#302).
+
+### Fixed
+- `gg sync` / `gg land` now retarget downstream GitLab MRs after a parent merge (#298).
+- `gg rebase` now allows stacks with squash-merged commits (#296).
+
 ## [0.9.0] - 2026-04-20
 
 ### Added
@@ -417,7 +426,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/mrmans0n/git-gud/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/mrmans0n/git-gud/compare/v0.8.3...v0.9.0
 [0.8.3]: https://github.com/mrmans0n/git-gud/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/mrmans0n/git-gud/compare/v0.8.0...v0.8.2

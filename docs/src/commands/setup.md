@@ -35,7 +35,7 @@ Full mode organizes all settings into logical groups:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `provider` | select | auto-detect | GitHub or GitLab |
+| `provider` | select | auto-detect | GitHub or GitLab (auto-detects `github.com` and `gitlab.com` remotes; self-hosted instances require manual selection) |
 | `base` | string | auto-detect | Default base branch (main/master/trunk) |
 | `branch_username` | string | from CLI auth | Username for branch naming |
 | `unstaged_action` | select | ask | Action for `gg amend` with unstaged changes |

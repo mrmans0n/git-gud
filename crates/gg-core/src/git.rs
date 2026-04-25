@@ -2232,11 +2232,50 @@ mod tests {
 }
 
 /// Remote provider type
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum RemoteProvider {
     GitHub,
     GitLab,
+}
+
+/// Detect the remote provider based on a remote URL
+#[allow(dead_code)]
+pub fn detect_remote_provider_from_url(url: &str) -> Option<RemoteProvider> {
+    match remote_url_host(url)?.to_ascii_lowercase().as_str() {
+        "github.com" => Some(RemoteProvider::GitHub),
+        "gitlab.com" => Some(RemoteProvider::GitLab),
+        _ => None,
+    }
+}
+
+fn remote_url_host(url: &str) -> Option<&str> {
+    let url = url.trim();
+    if url.is_empty() {
+        return None;
+    }
+
+    let authority = if let Some((_, rest)) = url.split_once("://") {
+        rest.split(['/', '?', '#']).next()?
+    } else if let Some((authority, _)) = url.split_once(':') {
+        authority
+    } else if url.contains('@') {
+        url.split('/').next()?
+    } else {
+        return None;
+    };
+
+    let host_with_port = authority.rsplit('@').next()?;
+    let host = host_with_port
+        .strip_prefix('[')
+        .and_then(|host| host.split_once(']').map(|(host, _)| host))
+        .unwrap_or_else(|| host_with_port.split(':').next().unwrap_or(host_with_port));
+
+    if host.is_empty() {
+        None
+    } else {
+        Some(host)
+    }
 }
 
 /// Detect the remote provider based on the remote URL
@@ -2250,15 +2289,67 @@ pub fn detect_remote_provider(repo: &Repository) -> Result<RemoteProvider> {
         .url()
         .ok_or_else(|| GgError::Other("Origin remote has no URL".to_string()))?;
 
-    if url.contains("github.com") {
-        Ok(RemoteProvider::GitHub)
-    } else if url.contains("gitlab.com") {
-        Ok(RemoteProvider::GitLab)
-    } else {
-        // Default to GitLab for self-hosted instances
-        Err(GgError::Other(format!(
+    detect_remote_provider_from_url(url).ok_or_else(|| {
+        GgError::Other(format!(
             "Could not detect remote provider from URL: {}. Supported: github.com, gitlab.com",
             url
-        )))
+        ))
+    })
+}
+
+#[cfg(test)]
+mod remote_provider_tests {
+    use super::{detect_remote_provider_from_url, RemoteProvider};
+
+    #[test]
+    fn detects_github_remotes() {
+        for url in [
+            "git@github.com:mrmans0n/zjctl.git",
+            "https://github.com/user/repo.git",
+            "ssh://git@github.com/user/repo.git",
+            "git@github.com/user/repo.git",
+            "https://github.com:443/user/repo.git",
+            "GIT@GITHUB.COM:user/repo.git",
+        ] {
+            assert_eq!(
+                detect_remote_provider_from_url(url),
+                Some(RemoteProvider::GitHub),
+                "url: {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn detects_gitlab_remotes() {
+        for url in [
+            "git@gitlab.com:user/repo.git",
+            "https://gitlab.com/user/repo.git",
+            "ssh://git@gitlab.com/user/repo.git",
+            "git@gitlab.com/user/repo.git",
+            "https://gitlab.com:443/user/repo.git",
+            "GIT@GITLAB.COM:user/repo.git",
+        ] {
+            assert_eq!(
+                detect_remote_provider_from_url(url),
+                Some(RemoteProvider::GitLab),
+                "url: {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn ignores_unknown_self_hosted_and_false_positive_remotes() {
+        for url in [
+            "git@custom-host.com:user/repo.git",
+            "https://example.com/user/repo.git",
+            "git@gitlab.mycompany.com:user/repo.git",
+            "https://github.enterprise.local/org/repo.git",
+            "git@notgithub.com:user/repo.git",
+            "https://example.com/github.com/user/repo.git",
+            "https://gitlab.com.example.com/user/repo.git",
+            "",
+        ] {
+            assert_eq!(detect_remote_provider_from_url(url), None, "url: {url}");
+        }
     }
 }

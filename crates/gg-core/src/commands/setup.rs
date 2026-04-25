@@ -300,13 +300,10 @@ fn prompt_provider(
         .and_then(|r| r.url().map(|s| s.to_string()));
 
     let detected_default = remote_url.as_ref().and_then(|url| {
-        if url.contains("github.com") {
-            Some(0usize) // GitHub
-        } else if url.to_lowercase().contains("gitlab") {
-            Some(1usize) // GitLab (any domain containing "gitlab")
-        } else {
-            None
-        }
+        git::detect_remote_provider_from_url(url).map(|provider| match provider {
+            git::RemoteProvider::GitHub => 0usize,
+            git::RemoteProvider::GitLab => 1usize,
+        })
     });
 
     let providers = &["GitHub", "GitLab"];

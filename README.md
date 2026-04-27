@@ -483,16 +483,26 @@ OK Reconciliation complete!
 
 ## AI Agent Integration: Skills
 
-git-gud ships as a [Claude Code plugin](https://code.claude.com/docs/en/plugins) following the open [Agent Skills](https://agentskills.io) standard. AI coding agents — Claude Code, Cursor, Gemini CLI, OpenAI Codex, and others — can use `gg` for stacked-diff workflows.
+git-gud includes [Agent Skills](https://agentskills.io) for AI coding agents with shell access. Codex, Claude Code, Cursor, Gemini CLI, and other compatible tools can use `gg` for stacked-diff workflows.
 
 ### Quick setup
 
 ```bash
-# Install from the Claude Code marketplace
+# Install for your current project or agent
+npx skills add mrmans0n/git-gud
+
+# Or choose a specific agent
+npx skills add mrmans0n/git-gud --agent codex
+npx skills add mrmans0n/git-gud --agent claude-code
+```
+
+Claude Code users can also install from the plugin marketplace:
+
+```bash
 claude plugin marketplace add https://github.com/mrmans0n/git-gud
 claude plugin install git-gud
 
-# Or load directly
+# Or load a local checkout directly
 claude --plugin-dir /path/to/git-gud
 ```
 
@@ -524,7 +534,7 @@ git-gud includes an MCP (Model Context Protocol) server that lets AI assistants 
 |---|---|---|
 | **Best for** | AI apps (Claude Desktop, Cursor, Windsurf) | Coding agents with shell access |
 | **How it works** | Structured tool calls over JSON-RPC | Agent reads SKILL.md, runs `gg` CLI directly |
-| **Setup** | Add `gg-mcp` to MCP client config | Drop `skills/gg/` into the project |
+| **Setup** | Add `gg-mcp` to MCP client config | `npx skills add mrmans0n/git-gud` |
 | **Output** | Typed JSON responses | Parses CLI text or `--json` output |
 
 Use **MCP** when your AI client supports it. Use **Skills** when the agent has direct terminal access and you want zero extra setup.

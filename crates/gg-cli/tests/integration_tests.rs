@@ -422,6 +422,68 @@ fn test_gg_inbox_json_handles_same_stack_name_across_usernames() {
     }
 }
 
+fn create_repo_with_inbox_item(provider: &str, mr_number: u64) -> (TempDir, PathBuf) {
+    let (temp_dir, repo_path) = create_test_repo();
+
+    run_git(&repo_path, &["checkout", "-b", "testuser/inbox-copy"]);
+    fs::write(repo_path.join("inbox.txt"), "inbox item").expect("Failed to write inbox file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Inbox item\n\nGG-ID: c-abc1234"],
+    );
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        format!(
+            r#"{{"defaults":{{"branch_username":"testuser","provider":"{provider}"}},"stacks":{{"inbox-copy":{{"base":"main","mrs":{{"c-abc1234":{mr_number}}}}}}}}}"#
+        ),
+    )
+    .expect("Failed to write config");
+
+    (temp_dir, repo_path)
+}
+
+#[test]
+fn test_gg_inbox_human_uses_gitlab_mr_label() {
+    let (_temp_dir, repo_path) = create_repo_with_inbox_item("gitlab", 42);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["inbox"]);
+    assert!(success, "gg inbox failed: {}", stderr);
+
+    assert!(
+        stderr.contains("Refreshing MR status"),
+        "stderr should use MR wording for GitLab, got: {stderr}"
+    );
+    assert!(
+        stdout.contains("MR !42"),
+        "stdout should use MR !number for GitLab, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("PR #42"),
+        "stdout should not use GitHub PR wording for GitLab, got: {stdout}"
+    );
+}
+
+#[test]
+fn test_gg_inbox_human_uses_github_pr_label() {
+    let (_temp_dir, repo_path) = create_repo_with_inbox_item("github", 43);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["inbox"]);
+    assert!(success, "gg inbox failed: {}", stderr);
+
+    assert!(
+        stderr.contains("Refreshing PR status"),
+        "stderr should use PR wording for GitHub, got: {stderr}"
+    );
+    assert!(
+        stdout.contains("PR #43"),
+        "stdout should use PR #number for GitHub, got: {stdout}"
+    );
+}
+
 #[test]
 fn test_gg_clean_json_requires_all() {
     let (_temp_dir, repo_path) = create_test_repo();

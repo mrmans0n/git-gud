@@ -1,0 +1,2412 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>git-gud</title>
+        <meta name="robots" content="noindex">
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="stylesheet" href="css/variables-8adf115d.css">
+        <link rel="stylesheet" href="css/general-2459343d.css">
+        <link rel="stylesheet" href="css/chrome-ae938929.css">
+        <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "searchindex-9b78073d.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc-da2cf2da.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">git-gud</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
+<p><code>git-gud</code> (<code>gg</code>) is a stacked-diffs CLI for GitHub and GitLab.</p>
+<p>It helps you split large changes into a sequence of small commits that reviewers can understand quickly. In git-gud, each commit in your stack maps to its own PR/MR, and dependencies are wired automatically.</p>
+<h2 id="why-this-workflow-exists"><a class="header" href="#why-this-workflow-exists">Why this workflow exists</a></h2>
+<p>Stacked diffs solve a common problem: features are often too large for a single review, but splitting work manually into many dependent branches is painful.</p>
+<p>With git-gud, you can:</p>
+<ul>
+<li>Keep reviews small and focused</li>
+<li>Keep moving while earlier changes are in review</li>
+<li>Preserve clean, logical commit history</li>
+<li>Land big projects incrementally without long-lived feature branches</li>
+</ul>
+<h2 id="learn-more-about-stacked-diffs"><a class="header" href="#learn-more-about-stacked-diffs">Learn more about stacked diffs</a></h2>
+<ul>
+<li>
+<p><a href="https://newsletter.pragmaticengineer.com/p/stacked-diffs">Pragmatic Engineer: Stacked Diffs</a></p>
+</li>
+<li>
+<p><a href="https://graphite.com/guides/stacked-diffs">Graphite Guide: What are stacked diffs?</a></p>
+</li>
+<li>
+<p><a href="https://nlopez.io/introducing-git-gud-a-stacked-diffs-cli-for-github-and-gitlab/">Introducing git-gud</a> — the story behind this tool, by its author</p>
+</li>
+</ul>
+<h2 id="provider-support"><a class="header" href="#provider-support">Provider support</a></h2>
+<p>git-gud supports:</p>
+<ul>
+<li><strong>GitHub</strong> through <code>gh</code></li>
+<li><strong>GitLab</strong> through <code>glab</code></li>
+</ul>
+<p>Provider selection is auto-detected from your remote URL (<code>github.com</code> / <code>gitlab.com</code>). For self-hosted instances, run <code>gg setup</code> and select the provider explicitly.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="getting-started"><a class="header" href="#getting-started">Getting Started</a></h1>
+<h2 id="installation"><a class="header" href="#installation">Installation</a></h2>
+<h3 id="homebrew-macoslinux"><a class="header" href="#homebrew-macoslinux">Homebrew (macOS/Linux)</a></h3>
+<pre><code class="language-bash">brew install mrmans0n/tap/gg-stack
+</code></pre>
+<h3 id="cratesio"><a class="header" href="#cratesio">crates.io</a></h3>
+<pre><code class="language-bash">cargo install gg-stack
+</code></pre>
+<h3 id="from-source"><a class="header" href="#from-source">From source</a></h3>
+<pre><code class="language-bash">cargo install --path .
+</code></pre>
+<h2 id="prerequisites"><a class="header" href="#prerequisites">Prerequisites</a></h2>
+<p>Before using git-gud, make sure you have:</p>
+<ul>
+<li>Git 2.x+</li>
+<li><a href="https://cli.github.com/">GitHub CLI (<code>gh</code>)</a> for GitHub repositories</li>
+<li><a href="https://gitlab.com/gitlab-org/cli">GitLab CLI (<code>glab</code>)</a> for GitLab repositories</li>
+</ul>
+<h2 id="authentication"><a class="header" href="#authentication">Authentication</a></h2>
+<p>Authenticate with your provider CLI first:</p>
+<pre><code class="language-bash"># GitHub
+gh auth login
+
+# GitLab
+glab auth login
+</code></pre>
+<p>If authentication is missing, <code>gg sync</code> and <code>gg land</code> cannot create or merge PRs/MRs.</p>
+<blockquote>
+<p><strong>Note:</strong> If the auth check fails due to a network error (e.g., DNS resolution failure, connection timeout), gg will print a warning and continue. The operation may still fail later if authentication is actually required.</p>
+</blockquote>
+<h2 id="initial-setup"><a class="header" href="#initial-setup">Initial setup</a></h2>
+<p>After installing, run the setup wizard in any git repository to configure git-gud:</p>
+<pre><code class="language-bash">gg setup
+</code></pre>
+<p>This interactively sets your base branch, username for branch naming, provider (auto-detected for github.com/gitlab.com), and optional lint commands. Configuration is stored per-repo in <code>.git/gg/config.json</code>.</p>
+<blockquote>
+<p><strong>Tip:</strong> <code>gg setup</code> is optional — git-gud auto-detects sensible defaults. But it’s useful for setting lint commands, customizing your username prefix, or configuring self-hosted GitHub Enterprise / GitLab instances.</p>
+</blockquote>
+<p>See <a href="#configuration-1">Configuration</a> for all available options.</p>
+<h2 id="quick-start-first-stack-in-2-minutes"><a class="header" href="#quick-start-first-stack-in-2-minutes">Quick start: first stack in 2 minutes</a></h2>
+<pre><code class="language-bash"># 1) Create a stack
+gg co my-feature
+
+# 2) Commit in small slices
+git add . &amp;&amp; git commit -m "Add data model"
+git add . &amp;&amp; git commit -m "Add API endpoint"
+git add . &amp;&amp; git commit -m "Add UI"
+
+# 3) Inspect current stack
+gg ls
+
+# 4) Push branches and create PRs/MRs
+gg sync --draft
+
+# 5) Navigate to edit an earlier commit
+gg mv 1
+# ...make changes...
+gg sc
+
+# 6) Re-sync after changes
+gg sync
+
+# 7) Land approved changes
+gg land --all
+
+# 8) Clean merged stack
+gg clean
+</code></pre>
+<p>For a full walkthrough with expected outputs and decision points, see <a href="#your-first-stack">Your First Stack</a>.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="core-concepts"><a class="header" href="#core-concepts">Core Concepts</a></h1>
+<h2 id="stacked-diffs-in-one-sentence"><a class="header" href="#stacked-diffs-in-one-sentence">Stacked diffs in one sentence</a></h2>
+<p>A stack is a series of commits where each commit is reviewed as its own PR/MR, and each PR/MR depends on the previous one.</p>
+<h2 id="the-git-gud-model-one-commit--one-prmr"><a class="header" href="#the-git-gud-model-one-commit--one-prmr">The git-gud model: one commit = one PR/MR</a></h2>
+<p>In git-gud, each commit is an “entry” in the stack:</p>
+<ul>
+<li>Entry 1 targets your base branch (for example, <code>main</code>)</li>
+<li>Entry 2 targets entry 1’s branch</li>
+<li>Entry 3 targets entry 2’s branch</li>
+<li>…and so on</li>
+</ul>
+<p>That gives reviewers small units, while preserving execution order.</p>
+<h2 id="gg-metadata-trailers"><a class="header" href="#gg-metadata-trailers">GG metadata trailers</a></h2>
+<p>Each stack commit carries stable trailers, for example:</p>
+<pre><code class="language-text">GG-ID: c-abc1234
+GG-Parent: c-1234567
+</code></pre>
+<ul>
+<li><code>GG-ID</code> identifies the commit itself.</li>
+<li><code>GG-Parent</code> points to the previous stack entry’s <code>GG-ID</code>.</li>
+<li>The first stack entry has no <code>GG-Parent</code>.</li>
+</ul>
+<p>Why this matters:</p>
+<ul>
+<li>Commit-to-PR/MR mappings stay stable across rebases</li>
+<li>Stack topology is recoverable from commit-local metadata</li>
+<li><code>gg sync</code> and <code>gg reconcile</code> can auto-heal metadata drift after history edits</li>
+</ul>
+<h2 id="branch-naming-convention"><a class="header" href="#branch-naming-convention">Branch naming convention</a></h2>
+<p>git-gud uses predictable branch names:</p>
+<ul>
+<li><strong>Stack branch</strong>: <code>&lt;username&gt;/&lt;stack-name&gt;</code></li>
+<li><strong>Entry branch</strong>: <code>&lt;username&gt;/&lt;stack-name&gt;--&lt;gg-id&gt;</code></li>
+</ul>
+<p>Example:</p>
+<ul>
+<li><code>nacho/user-auth</code></li>
+<li><code>nacho/user-auth--c-abc1234</code></li>
+</ul>
+<p>This convention is what makes remote discovery (<code>gg ls --remote</code>) and reconciliation possible.</p>
+<h2 id="prmr-dependency-chains"><a class="header" href="#prmr-dependency-chains">PR/MR dependency chains</a></h2>
+<p>Dependency chaining is automatic during <code>gg sync</code>:</p>
+<ul>
+<li>First PR/MR targets <code>main</code> (or your configured base)</li>
+<li>Next PR/MR targets previous entry branch</li>
+<li>This continues until stack head</li>
+</ul>
+<p>Result: reviewers can review from bottom to top, and <code>gg land</code> can merge safely in order.</p>
+<h2 id="immutable-commits"><a class="header" href="#immutable-commits">Immutable commits</a></h2>
+<p>Some commits should not be casually rewritten. History-rewriting commands —
+<code>gg squash</code>, <code>gg drop</code>, <code>gg reorder</code>, <code>gg split</code>, <code>gg absorb</code>, and <code>gg rebase</code> —
+refuse to touch the following by default:</p>
+<ul>
+<li><strong>Merged PR/MR commits.</strong> If an entry’s PR/MR state is <code>Merged</code>, rewriting it
+locally produces a duplicate of something already upstream. This is the only
+rule that catches <strong>squash-merged</strong> PRs, because their merge commit on
+<code>origin/&lt;base&gt;</code> has a brand-new SHA that doesn’t share ancestry with your
+local commit.</li>
+<li><strong>Base-ancestor commits.</strong> Any commit already reachable from <code>origin/&lt;base&gt;</code>
+via plain merge or rebase falls in the same bucket. When no <code>origin/&lt;base&gt;</code>
+ref exists, gg falls back to the local base branch.</li>
+</ul>
+<p><strong>Exception:</strong> <code>gg rebase</code> silently skips both merged-PR commits and
+base-ancestor commits instead of blocking, because <code>git rebase</code> naturally drops
+them via patch-id matching. An info line (<code>→ Skipping N merged commit(s) already on &lt;base&gt;</code>) is printed when this happens.</p>
+<p>Running one of those commands on an immutable target prints a clear error like:</p>
+<pre><code class="language-text">error: cannot rewrite immutable commits (pass --force / --ignore-immutable to override):
+  #2  abc1234  Fix typo in parser  (merged as !123)
+  #3  def5678  Bump dependency     (already in origin/main)
+</code></pre>
+<p>If you genuinely want to rewrite history anyway, pass <code>--force</code> (or
+<code>--ignore-immutable</code> if you prefer the longer, self-describing name). Every
+rewrite command accepts both spellings. The guard still emits a warning so
+scripts see that they are bypassing a safety check.</p>
+<h3 id="keeping-pr-state-fresh"><a class="header" href="#keeping-pr-state-fresh">Keeping PR state fresh</a></h3>
+<p>Each rewrite command runs a best-effort PR-state refresh against the
+configured provider just before the immutability check, so the merged-PR rule
+fires even when nothing in the session has touched provider state yet. The
+refresh is silent when offline / no auth is configured, in which case the
+base-ancestor rule remains the only protection. Note that base-ancestor does
+<strong>not</strong> catch squash-merges (those produce a new SHA on <code>origin/&lt;base&gt;</code>), so
+working offline against a repo that uses squash-merge is the one case where
+you can still rewrite a “merged” commit without <code>--force</code>. A working provider
+closes that gap automatically.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="guides"><a class="header" href="#guides">Guides</a></h1>
+<p>This section is practical and task-oriented.</p>
+<p>If you’re new to stacked diffs, start with <a href="#your-first-stack">Your First Stack</a>. If you’re already using git-gud day-to-day, jump to the workflow you need (editing, remote collaboration, worktrees, landing, linting, reconcile).</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="your-first-stack"><a class="header" href="#your-first-stack">Your First Stack</a></h1>
+<p>This walkthrough covers the full lifecycle: create → commit → sync → edit → land → clean.</p>
+<h2 id="1-create-a-stack"><a class="header" href="#1-create-a-stack">1) Create a stack</a></h2>
+<pre><code class="language-bash">gg co user-auth
+</code></pre>
+<p>This creates/switches to stack branch <code>your-user/user-auth</code>.</p>
+<h2 id="2-build-the-feature-in-reviewable-commits"><a class="header" href="#2-build-the-feature-in-reviewable-commits">2) Build the feature in reviewable commits</a></h2>
+<pre><code class="language-bash">git add . &amp;&amp; git commit -m "Add user model"
+git add . &amp;&amp; git commit -m "Add auth endpoints"
+git add . &amp;&amp; git commit -m "Add login UI"
+</code></pre>
+<p>Keep each commit small and self-contained.</p>
+<h2 id="3-inspect-stack-structure"><a class="header" href="#3-inspect-stack-structure">3) Inspect stack structure</a></h2>
+<pre><code class="language-bash">gg ls
+</code></pre>
+<p>You should see ordered entries, each with a GG-ID.</p>
+<h2 id="4-publish-review-chain"><a class="header" href="#4-publish-review-chain">4) Publish review chain</a></h2>
+<pre><code class="language-bash">gg sync --draft
+</code></pre>
+<p>This pushes one branch per entry and creates one PR/MR per commit, chained by dependencies.</p>
+<h2 id="5-address-feedback-in-an-older-commit"><a class="header" href="#5-address-feedback-in-an-older-commit">5) Address feedback in an older commit</a></h2>
+<pre><code class="language-bash">gg mv 1
+# edit files
+git add .
+gg sc
+</code></pre>
+<p><code>gg sc</code> amends the current entry and rebases subsequent entries automatically.</p>
+<h2 id="6-update-remote-prsmrs"><a class="header" href="#6-update-remote-prsmrs">6) Update remote PRs/MRs</a></h2>
+<pre><code class="language-bash">gg sync
+</code></pre>
+<p>If your stack base is behind <code>origin/&lt;base&gt;</code>, <code>gg sync</code> warns and suggests running <code>gg rebase</code> first.
+Use <code>--no-rebase-check</code> to skip this check once.</p>
+<h2 id="7-land-approved-entries"><a class="header" href="#7-land-approved-entries">7) Land approved entries</a></h2>
+<pre><code class="language-bash">gg land --all
+</code></pre>
+<p>Use <code>--wait</code> if you want git-gud to wait for CI/approvals:</p>
+<pre><code class="language-bash">gg land --all --wait
+</code></pre>
+<h2 id="8-cleanup"><a class="header" href="#8-cleanup">8) Cleanup</a></h2>
+<pre><code class="language-bash">gg clean
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="editing-commits-in-a-stack"><a class="header" href="#editing-commits-in-a-stack">Editing Commits in a Stack</a></h1>
+<p>The most common stacked-diff operation is “change commit N without losing N+1, N+2…”.</p>
+<h2 id="navigate-to-target-commit"><a class="header" href="#navigate-to-target-commit">Navigate to target commit</a></h2>
+<pre><code class="language-bash">gg mv 2
+# or use gg first / gg next / gg prev / gg last
+</code></pre>
+<h2 id="make-changes-and-fold-them-in"><a class="header" href="#make-changes-and-fold-them-in">Make changes and fold them in</a></h2>
+<pre><code class="language-bash"># after editing files
+git add .
+gg sc
+</code></pre>
+<p>Use <code>gg sc --all</code> to include unstaged changes too.</p>
+<h2 id="reorder-commits"><a class="header" href="#reorder-commits">Reorder commits</a></h2>
+<p>Interactive:</p>
+<pre><code class="language-bash">gg reorder
+</code></pre>
+<p>Explicit order:</p>
+<pre><code class="language-bash">gg reorder --order "3,1,2"
+</code></pre>
+<h2 id="absorb-scattered-staged-edits-automatically"><a class="header" href="#absorb-scattered-staged-edits-automatically">Absorb scattered staged edits automatically</a></h2>
+<pre><code class="language-bash">gg absorb
+</code></pre>
+<p>Useful flags:</p>
+<ul>
+<li><code>--dry-run</code>: preview only</li>
+<li><code>--and-rebase</code>: absorb and rebase in one step</li>
+<li><code>--whole-file</code>: match whole-file changes instead of hunks</li>
+<li><code>--squash</code>: squash fixups directly</li>
+</ul>
+<p>After major edits, run:</p>
+<pre><code class="language-bash">gg sync
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="working-with-remote-stacks"><a class="header" href="#working-with-remote-stacks">Working with Remote Stacks</a></h1>
+<p>Use this when a stack exists on origin but not in your local checkout (new machine, pairing, takeover).</p>
+<h2 id="discover-remote-only-stacks"><a class="header" href="#discover-remote-only-stacks">Discover remote-only stacks</a></h2>
+<pre><code class="language-bash">gg ls --remote
+</code></pre>
+<p>Active stacks are shown first. Stacks whose PRs/MRs have all been merged appear in a separate “Landed” section at the bottom, so you can focus on work that still needs attention.</p>
+<h2 id="check-out-a-remote-stack"><a class="header" href="#check-out-a-remote-stack">Check out a remote stack</a></h2>
+<pre><code class="language-bash">gg co user-auth
+</code></pre>
+<p>If a local stack doesn’t exist, git-gud can reconstruct it from remote entry branches and mappings.</p>
+<h2 id="typical-collaboration-loop"><a class="header" href="#typical-collaboration-loop">Typical collaboration loop</a></h2>
+<pre><code class="language-bash">gg co teammate-feature
+gg ls
+# make changes
+gg sync
+</code></pre>
+<p>Tips:</p>
+<ul>
+<li>Prefer <code>gg sync</code> over manual <code>git push</code> to keep mappings healthy</li>
+<li>If mappings drift, use <a href="#reconciling-out-of-sync-stacks">Reconciling Out-of-Sync Stacks</a></li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="using-worktrees"><a class="header" href="#using-worktrees">Using Worktrees</a></h1>
+<p>Worktrees let you keep your main checkout clean while developing a stack in a dedicated directory.</p>
+<h2 id="create-stack-in-a-managed-worktree"><a class="header" href="#create-stack-in-a-managed-worktree">Create stack in a managed worktree</a></h2>
+<pre><code class="language-bash">gg co user-auth --worktree
+</code></pre>
+<p>Short flag:</p>
+<pre><code class="language-bash">gg co user-auth -w
+</code></pre>
+<h2 id="why-use-worktrees"><a class="header" href="#why-use-worktrees">Why use worktrees</a></h2>
+<ul>
+<li>Keep your main checkout untouched</li>
+<li>Work on multiple stacks side by side</li>
+<li>Avoid stashing/switching overhead</li>
+</ul>
+<h2 id="default-path-behavior"><a class="header" href="#default-path-behavior">Default path behavior</a></h2>
+<p>By default git-gud creates:</p>
+<p><code>../&lt;repo-name&gt;.&lt;stack-name&gt;</code></p>
+<p>You can change this with <code>defaults.worktree_base_path</code> in <code>.git/gg/config.json</code>.</p>
+<h2 id="cleanup-behavior"><a class="header" href="#cleanup-behavior">Cleanup behavior</a></h2>
+<p><code>gg clean</code> removes merged stacks and associated managed worktrees.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="landing-and-cleanup"><a class="header" href="#landing-and-cleanup">Landing and Cleanup</a></h1>
+<p>Use <code>gg land</code> to merge entries in order, from the bottom of the stack upward.</p>
+<h2 id="land-one-approved-entry"><a class="header" href="#land-one-approved-entry">Land one approved entry</a></h2>
+<pre><code class="language-bash">gg land
+</code></pre>
+<h2 id="land-the-whole-stack"><a class="header" href="#land-the-whole-stack">Land the whole stack</a></h2>
+<pre><code class="language-bash">gg land --all
+</code></pre>
+<h2 id="wait-for-ci-and-approvals"><a class="header" href="#wait-for-ci-and-approvals">Wait for CI and approvals</a></h2>
+<pre><code class="language-bash">gg land --all --wait
+</code></pre>
+<h2 id="land-only-part-of-a-stack"><a class="header" href="#land-only-part-of-a-stack">Land only part of a stack</a></h2>
+<pre><code class="language-bash">gg land --until 2
+# or by GG-ID / SHA
+</code></pre>
+<h2 id="merge-strategy-and-provider-specific-behavior"><a class="header" href="#merge-strategy-and-provider-specific-behavior">Merge strategy and provider-specific behavior</a></h2>
+<pre><code class="language-bash">gg land --no-squash
+</code></pre>
+<p>GitLab auto-merge queue:</p>
+<pre><code class="language-bash">gg land --auto-merge
+</code></pre>
+<h2 id="auto-clean-after-landing"><a class="header" href="#auto-clean-after-landing">Auto-clean after landing</a></h2>
+<p>One-off:</p>
+<pre><code class="language-bash">gg land --all --clean
+</code></pre>
+<p>Or make it default with <code>land_auto_clean</code> in config.</p>
+<p>Manual cleanup remains available:</p>
+<pre><code class="language-bash">gg clean
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="linting-your-stack"><a class="header" href="#linting-your-stack">Linting Your Stack</a></h1>
+<p><code>gg lint</code> runs your configured lint commands commit-by-commit across the stack.</p>
+<h2 id="configure-lint-commands"><a class="header" href="#configure-lint-commands">Configure lint commands</a></h2>
+<p>In <code>.git/gg/config.json</code>:</p>
+<pre><code class="language-json">{
+  "defaults": {
+    "lint": [
+      "cargo fmt --check",
+      "cargo clippy -- -D warnings"
+    ]
+  }
+}
+</code></pre>
+<h2 id="run-lint-manually"><a class="header" href="#run-lint-manually">Run lint manually</a></h2>
+<pre><code class="language-bash">gg lint
+</code></pre>
+<p>Run only up to a specific entry:</p>
+<pre><code class="language-bash">gg lint --until 2
+</code></pre>
+<h2 id="run-lint-during-sync"><a class="header" href="#run-lint-during-sync">Run lint during sync</a></h2>
+<pre><code class="language-bash">gg sync --lint
+</code></pre>
+<p>If lint fails during <code>gg sync --lint</code>, sync is aborted and git-gud restores repository state to the pre-sync snapshot.</p>
+<p>Skip lint for one sync (even if enabled by default):</p>
+<pre><code class="language-bash">gg sync --no-lint
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="reconciling-out-of-sync-stacks"><a class="header" href="#reconciling-out-of-sync-stacks">Reconciling Out-of-Sync Stacks</a></h1>
+<p>Use reconcile when stack metadata and remote state diverge.</p>
+<p>Common causes:</p>
+<ul>
+<li>Someone pushed with <code>git push</code> instead of <code>gg sync</code></li>
+<li>A stack was edited across machines and mappings got stale</li>
+<li>Commits exist without GG-ID trailers</li>
+</ul>
+<h2 id="preview-changes-safely"><a class="header" href="#preview-changes-safely">Preview changes safely</a></h2>
+<pre><code class="language-bash">gg reconcile --dry-run
+</code></pre>
+<h2 id="apply-reconciliation"><a class="header" href="#apply-reconciliation">Apply reconciliation</a></h2>
+<pre><code class="language-bash">gg reconcile
+</code></pre>
+<p>Reconcile can:</p>
+<ol>
+<li>Add missing GG-IDs to stack commits (via rebase)</li>
+<li>Map existing PRs/MRs to the right GG-IDs in config</li>
+</ol>
+<p>After reconciling, run:</p>
+<pre><code class="language-bash">gg ls --refresh
+gg sync
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="agent-skills"><a class="header" href="#agent-skills">Agent Skills</a></h1>
+<p>git-gud follows the open <a href="https://agentskills.io">Agent Skills</a> standard. AI coding agents with shell access — including Codex, Claude Code, Cursor, Gemini CLI, VS Code integrations, and others — can use <code>gg</code> for stacked-diff workflows.</p>
+<h2 id="whats-included"><a class="header" href="#whats-included">What’s included</a></h2>
+<p>The integration provides one unified skill:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Skill</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>gg</code></td><td>Use gg with GitHub PRs (<code>gh</code> CLI) or GitLab MRs (<code>glab</code> CLI, merge trains)</td></tr>
+</tbody>
+</table>
+</div>
+<p>Each skill includes:</p>
+<ul>
+<li><strong>SKILL.md</strong> — concise instructions with agent operating rules</li>
+<li><strong>reference.md</strong> — command reference and JSON schemas</li>
+<li><strong>examples/</strong> — step-by-step workflow walkthroughs</li>
+</ul>
+<h2 id="installation-1"><a class="header" href="#installation-1">Installation</a></h2>
+<h3 id="1-generic-install-recommended"><a class="header" href="#1-generic-install-recommended">1) Generic install (recommended)</a></h3>
+<pre><code class="language-bash">npx skills add mrmans0n/git-gud
+</code></pre>
+<p>The <code>skills</code> CLI installs the skill into the agent setup it detects. If it cannot decide, it prompts you to choose where to install it.</p>
+<h3 id="2-install-for-a-specific-agent"><a class="header" href="#2-install-for-a-specific-agent">2) Install for a specific agent</a></h3>
+<p>Use <code>--agent</code> when you already know the host you want to target:</p>
+<pre><code class="language-bash">npx skills add mrmans0n/git-gud --agent codex
+npx skills add mrmans0n/git-gud --agent claude-code
+npx skills add mrmans0n/git-gud --agent cursor
+npx skills add mrmans0n/git-gud --agent gemini-cli
+</code></pre>
+<p>For a shared repository setup, run the command from the project root. For a user-level install, add <code>--global</code>.</p>
+<h3 id="3-claude-code-marketplace"><a class="header" href="#3-claude-code-marketplace">3) Claude Code marketplace</a></h3>
+<p>Claude Code users can also install git-gud as a plugin:</p>
+<pre><code class="language-bash">claude plugin marketplace add https://github.com/mrmans0n/git-gud
+claude plugin install git-gud
+</code></pre>
+<h3 id="4-claude-code-local-checkout"><a class="header" href="#4-claude-code-local-checkout">4) Claude Code local checkout</a></h3>
+<p>Use this when launching Claude Code directly from a local git-gud checkout:</p>
+<pre><code class="language-bash">claude --plugin-dir /path/to/git-gud
+</code></pre>
+<h3 id="5-claude-code-project-level-config-claudesettingsjson"><a class="header" href="#5-claude-code-project-level-config-claudesettingsjson">5) Claude Code project-level config (<code>.claude/settings.json</code>)</a></h3>
+<p>Use this when you want the local checkout enabled by default for a repository:</p>
+<pre><code class="language-json">{
+  "plugins": [
+    {
+      "name": "git-gud",
+      "path": "/path/to/git-gud"
+    }
+  ]
+}
+</code></pre>
+<h3 id="6-manual-setup-for-compatible-tools"><a class="header" href="#6-manual-setup-for-compatible-tools">6) Manual setup for compatible tools</a></h3>
+<p>Tools that support Agent Skills can also load the repo’s <code>skills/gg/</code> directory directly. Use this fallback if your agent does not use the <code>skills</code> CLI yet, or if you want to manage skill files yourself.</p>
+<h2 id="how-agents-typically-use-gg"><a class="header" href="#how-agents-typically-use-gg">How agents typically use gg</a></h2>
+<p>A practical AI-assisted stacked-diff workflow looks like this:</p>
+<ol>
+<li>Agent creates or switches to a stack (<code>gg co ...</code>, ideally with a worktree)</li>
+<li>Agent makes small commits and keeps each commit focused</li>
+<li>Agent syncs the stack (<code>gg sync</code>) so PRs/MRs are created/updated in order</li>
+<li>Agent iterates on review feedback (amend/reorder/re-sync)</li>
+<li>Agent asks for explicit user confirmation before <code>gg land</code></li>
+</ol>
+<p>This keeps work reviewable while preserving user control over merges.</p>
+<h2 id="json-output-for-tool-driven-agents"><a class="header" href="#json-output-for-tool-driven-agents">JSON output for tool-driven agents</a></h2>
+<p>For machine-readable parsing, <code>gg</code> supports <code>--json</code> on key commands:</p>
+<ul>
+<li><code>gg ls --json</code></li>
+<li><code>gg sync --json</code></li>
+<li><code>gg land --json</code></li>
+<li><code>gg clean --json</code></li>
+<li><code>gg lint --json</code></li>
+</ul>
+<p>Use these outputs in agents and automation for reliable state checks and decisions. For full response schemas, see each skill’s <code>reference.md</code>.</p>
+<h2 id="safety-model-required-behavior"><a class="header" href="#safety-model-required-behavior">Safety model (required behavior)</a></h2>
+<p>When using AI agents with <code>gg</code>, keep these rules:</p>
+<ol>
+<li><strong>Never land without explicit user confirmation</strong></li>
+<li><strong>Never run <code>git add -A</code> blindly</strong> (stage only reviewed/intended files)</li>
+<li><strong>Prefer worktrees</strong> for isolation (<code>gg co --wt</code>)</li>
+<li><strong>Use structured output (<code>--json</code>)</strong> when automation must parse command results</li>
+</ol>
+<h2 id="skill-references"><a class="header" href="#skill-references">Skill references</a></h2>
+<p>For full operational details, prompts, and examples:</p>
+<ul>
+<li>Unified skill: <a href="https://github.com/mrmans0n/git-gud/blob/main/skills/gg/SKILL.md"><code>skills/gg/SKILL.md</code></a></li>
+</ul>
+<h2 id="file-structure"><a class="header" href="#file-structure">File structure</a></h2>
+<pre><code>.claude-plugin/
+  plugin.json           # Plugin manifest
+skills/
+  gg/
+    SKILL.md            # Unified GitHub + GitLab skill
+    reference.md        # Command reference + JSON schemas
+    examples/
+      basic-flow.md     # Provider-agnostic feature workflow
+      multi-commit.md   # Absorb, reorder, lint
+      merge-train.md    # GitLab merge train workflow
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="command-reference"><a class="header" href="#command-reference">Command Reference</a></h1>
+<p>This section is a command-by-command reference based on <code>gg --help</code> and <code>gg &lt;command&gt; --help</code>.</p>
+<p>Unlike the guides, this section is organized by command surface and flags. Each page still includes practical examples.</p>
+<h2 id="command-groups"><a class="header" href="#command-groups">Command groups</a></h2>
+<ul>
+<li>Stack lifecycle: <code>co</code>, <code>ls</code>, <code>sync</code>, <code>land</code>, <code>clean</code></li>
+<li>Editing: <code>mv</code>, <code>first</code>, <code>last</code>, <code>prev</code>, <code>next</code>, <code>sc</code>, <code>absorb</code>, <code>reorder</code>, <code>rebase</code></li>
+<li>Utilities: <code>lint</code>, <code>setup</code>, <code>reconcile</code>, <code>continue</code>, <code>abort</code>, <code>completions</code></li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="gg-co"><a class="header" href="#gg-co"><code>gg co</code></a></h1>
+<p>Create a new stack, switch to an existing local stack, or check out a remote stack by name.</p>
+<pre><code class="language-bash">gg co [OPTIONS] [STACK_NAME]
+</code></pre>
+<h2 id="options"><a class="header" href="#options">Options</a></h2>
+<ul>
+<li><code>-b, --base &lt;BASE&gt;</code>: Base branch to use (default auto-detected: main/master/trunk)</li>
+<li><code>-w, --worktree</code>: Create or reuse a managed worktree for this stack</li>
+</ul>
+<h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
+<pre><code class="language-bash"># Create/switch stack
+gg co user-auth
+
+# Create stack based on a specific branch
+gg co user-auth --base develop
+
+# Create stack in worktree
+gg co user-auth --worktree
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="gg-ls"><a class="header" href="#gg-ls"><code>gg ls</code></a></h1>
+<p>List the current stack, all local stacks, or remote-only stacks.</p>
+<p>When the stack base is behind <code>origin/&lt;base&gt;</code>, output includes a <code>↓N</code> indicator (<code>N</code> = commits behind).</p>
+<pre><code class="language-bash">gg ls [OPTIONS]
+</code></pre>
+<h2 id="options-1"><a class="header" href="#options-1">Options</a></h2>
+<ul>
+<li><code>-a, --all</code>: Show all local stacks</li>
+<li><code>-r, --refresh</code>: Refresh PR/MR status from remote</li>
+<li><code>--remote</code>: List remote stacks not checked out locally. Stacks whose PRs/MRs are all merged are shown in a separate “Landed” section at the bottom with a <code>✓</code> marker</li>
+<li><code>--json</code>: Print structured JSON output (for scripts and automation). Automatically performs a best-effort refresh of PR/MR state from the provider API, so <code>pr_state</code> and <code>ci_status</code> fields are populated without needing <code>--refresh</code>.</li>
+</ul>
+<h2 id="examples-1"><a class="header" href="#examples-1">Examples</a></h2>
+<pre><code class="language-bash"># Current stack status
+gg ls
+
+# All local stacks
+gg ls --all
+
+# Remote stacks (active first, then landed)
+gg ls --remote
+
+# Refresh status badges from provider
+gg ls --refresh
+
+# Structured JSON for automation
+gg ls --json
+gg ls --all --json
+gg ls --remote --json
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="gg-log"><a class="header" href="#gg-log"><code>gg log</code></a></h1>
+<p>Show a smartlog-style view of the current stack.</p>
+<p><code>gg log</code> is <strong>stack-scoped</strong>: it renders just the current stack as a tree,
+with each commit’s position, short SHA, title, PR/MR state, CI badge, and a
+<code>&lt;- HEAD</code> marker on the currently-checked-out commit. For a cross-stack
+overview use <a href="#gg-ls"><code>gg ls --all</code></a>.</p>
+<pre><code class="language-bash">gg log [OPTIONS]
+</code></pre>
+<h2 id="options-2"><a class="header" href="#options-2">Options</a></h2>
+<ul>
+<li><code>-r, --refresh</code>: Refresh PR/MR status from the remote before rendering.</li>
+<li><code>--json</code>: Print structured JSON output (for scripts and automation).
+Automatically performs a best-effort refresh of PR/MR state from the
+provider API, so <code>pr_state</code> and <code>ci_status</code> fields are populated without
+needing <code>--refresh</code>.</li>
+</ul>
+<h2 id="example-output"><a class="header" href="#example-output">Example output</a></h2>
+<pre><code class="language-text">my-feature (3 commits, base: main)
+
+  ├── [1] abc1234 feat: add parser open #101 ✓
+  │        #101
+  ├── [2] def5678 feat: wire CLI flag open #102 ●
+  │        #102
+  └── [3] 9abcdef test: coverage for edge cases not pushed  &lt;- HEAD
+</code></pre>
+<h2 id="json-shape"><a class="header" href="#json-shape">JSON shape</a></h2>
+<pre><code class="language-json">{
+  "version": 1,
+  "log": {
+    "stack": "my-feature",
+    "base": "main",
+    "current_position": 3,
+    "entries": [
+      {
+        "position": 1,
+        "sha": "abc1234",
+        "title": "feat: add parser",
+        "gg_id": "c-abc1234",
+        "gg_parent": null,
+        "pr_number": 101,
+        "pr_state": "open",
+        "approved": false,
+        "ci_status": "success",
+        "is_current": false,
+        "in_merge_train": false,
+        "merge_train_position": null
+      }
+    ]
+  }
+}
+</code></pre>
+<p>Entry fields match <a href="#gg-ls"><code>gg ls --json</code></a> so consumers can share
+parsers across both commands.</p>
+<h2 id="see-also"><a class="header" href="#see-also">See also</a></h2>
+<ul>
+<li><a href="#gg-ls"><code>gg ls</code></a> — current stack details with more summary metrics, plus
+<code>--all</code> and <code>--remote</code> modes.</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="gg-inbox"><a class="header" href="#gg-inbox">gg inbox</a></h1>
+<p><code>gg inbox</code> shows an actionable repository-wide triage view for all local stacks. Instead of inspecting stacks one by one, it groups PRs or MRs by what they need right now.</p>
+<p>Use it when you want quick answers to questions like:</p>
+<ul>
+<li>which PRs are ready to land</li>
+<li>which ones are blocked on CI</li>
+<li>where changes were requested</li>
+<li>which stacks have fallen behind their base</li>
+</ul>
+<h2 id="usage"><a class="header" href="#usage">Usage</a></h2>
+<pre><code class="language-bash">gg inbox
+gg inbox --all
+gg inbox --json
+</code></pre>
+<h2 id="buckets"><a class="header" href="#buckets">Buckets</a></h2>
+<p><code>gg inbox</code> classifies each PR or MR into exactly one bucket, in priority order:</p>
+<ol>
+<li><code>ready_to_land</code></li>
+<li><code>changes_requested</code></li>
+<li><code>blocked_on_ci</code></li>
+<li><code>awaiting_review</code></li>
+<li><code>behind_base</code></li>
+<li><code>draft</code></li>
+<li><code>merged</code> (only with <code>--all</code>)</li>
+</ol>
+<h3 id="classification-notes"><a class="header" href="#classification-notes">Classification notes</a></h3>
+<ul>
+<li>A canceled CI run counts as <code>blocked_on_ci</code>.</li>
+<li>If remote refresh fails transiently, the entry stays visible instead of disappearing, so the inbox does not look empty because of a temporary provider error.</li>
+<li><code>behind_base</code> is computed from the real stack tip versus <code>origin/&lt;base&gt;</code>, not from the state of your local base branch.</li>
+</ul>
+<h2 id="example-human-output"><a class="header" href="#example-human-output">Example human output</a></h2>
+<p>The labels and number prefixes adapt to the detected provider.</p>
+<p><strong>GitHub:</strong></p>
+<pre><code class="language-text">Inbox (3 items across 2 stacks)
+
+Ready to land (1):
+  auth #2  abc1234  Add login button  stack/auth  PR #41
+
+Blocked on CI (1):
+  auth #3  def5678  Add login API  stack/auth  PR #42 ⏳
+
+Awaiting review (1):
+  billing #1  9876abc  Add invoice export  stack/billing  PR #51
+</code></pre>
+<p><strong>GitLab:</strong></p>
+<pre><code class="language-text">Inbox (2 items across 1 stack)
+
+Ready to land (1):
+  auth #2  abc1234  Add login button  stack/auth  MR !41
+
+Awaiting review (1):
+  auth #3  def5678  Add login API  stack/auth  MR !42
+</code></pre>
+<h2 id="json"><a class="header" href="#json">JSON</a></h2>
+<p>With <code>--json</code>, <code>gg inbox</code> returns a versioned response designed for automation and MCP.</p>
+<p>Example:</p>
+<pre><code class="language-json">{
+  "version": 1,
+  "total_items": 2,
+  "buckets": {
+    "ready_to_land": [
+      {
+        "stack_name": "auth",
+        "position": 1,
+        "sha": "abc1234",
+        "title": "Add login",
+        "pr_number": 42,
+        "pr_url": "https://github.com/org/repo/pull/42",
+        "ci_status": "success",
+        "behind_base": null
+      }
+    ],
+    "blocked_on_ci": [
+      {
+        "stack_name": "auth",
+        "position": 2,
+        "sha": "def5678",
+        "title": "Add login API",
+        "pr_number": 43,
+        "pr_url": "https://github.com/org/repo/pull/43",
+        "ci_status": "running",
+        "behind_base": 2
+      }
+    ]
+  }
+}
+</code></pre>
+<h3 id="per-entry-fields"><a class="header" href="#per-entry-fields">Per-entry fields</a></h3>
+<ul>
+<li><code>stack_name</code>: stack name</li>
+<li><code>position</code>: commit position inside the stack</li>
+<li><code>sha</code>: short SHA</li>
+<li><code>title</code>: commit title</li>
+<li><code>pr_number</code>: PR or MR number</li>
+<li><code>pr_url</code>: PR or MR URL</li>
+<li><code>ci_status</code>: <code>pending</code>, <code>running</code>, <code>success</code>, <code>failed</code>, <code>canceled</code>, <code>unknown</code>, or omitted</li>
+<li><code>behind_base</code>: number of commits behind <code>origin/&lt;base&gt;</code>, or <code>null</code></li>
+</ul>
+<h2 id="flags"><a class="header" href="#flags">Flags</a></h2>
+<ul>
+<li><code>--all</code>: include items already marked as <code>merged</code></li>
+<li><code>--json</code>: emit structured output for tooling and MCP</li>
+</ul>
+<h2 id="relationship-to-other-commands"><a class="header" href="#relationship-to-other-commands">Relationship to other commands</a></h2>
+<ul>
+<li><code>gg ls</code> shows detailed status for the current stack</li>
+<li><code>gg log</code> gives you a smartlog view of the current stack</li>
+<li><code>gg inbox</code> is for cross-stack triage across multiple stacks</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="gg-sync"><a class="header" href="#gg-sync"><code>gg sync</code></a></h1>
+<p>Push entry branches and create/update PRs/MRs for the current stack.</p>
+<pre><code class="language-bash">gg sync [OPTIONS]
+</code></pre>
+<h2 id="options-3"><a class="header" href="#options-3">Options</a></h2>
+<ul>
+<li><code>-d, --draft</code>: Create new PRs/MRs as draft (does not affect existing PRs/MRs)</li>
+<li><code>-f, --force</code>: Force push even if remote is ahead</li>
+<li><code>--update-descriptions</code>: Update PR/MR descriptions from commit messages</li>
+<li><code>--update-title</code>: Update PR/MR titles from commit messages</li>
+<li><code>-l, --lint</code>: Run lint before sync (aborts sync on lint failure and restores repository state to the pre-sync snapshot)</li>
+<li><code>--no-lint</code>: Disable lint before sync (overrides config default)</li>
+<li><code>--no-rebase-check</code>: Skip checking whether your stack base is behind <code>origin/&lt;base&gt;</code></li>
+<li><code>--no-verify</code>: Skip the pre-push hook for pushes performed by this sync (forwards <code>git push --no-verify</code>). Opt-in per invocation; does not affect other hooks.</li>
+<li><code>-u, --until &lt;UNTIL&gt;</code>: Sync up to target commit (position, GG-ID, or SHA)</li>
+<li><code>--json</code>: Output structured JSON for automation (suppresses human/progress output)</li>
+</ul>
+<p>Before pushing, <code>gg sync</code> checks whether your stack base is behind <code>origin/&lt;base&gt;</code>. If it is behind by at least the configured threshold, git-gud warns and suggests rebasing first (<code>gg rebase</code>).</p>
+<p>When you run <code>gg sync --lint</code>, lint runs before any push/PR updates. If lint fails, sync aborts immediately and git-gud restores your repository to the pre-sync snapshot.</p>
+<p>Before pushing, <code>gg sync</code> also normalizes commit metadata (<code>GG-ID</code> and <code>GG-Parent</code>) for the whole stack. This normalization is always enforced during sync (including adding missing <code>GG-ID</code> trailers) to keep stack identity and PR/MR mappings stable.</p>
+<p>You can control this behavior with config:</p>
+<ul>
+<li><code>defaults.sync_auto_rebase</code> (<code>sync.auto_rebase</code>): automatically run <code>gg rebase</code> before sync when behind threshold is reached</li>
+<li><code>defaults.sync_behind_threshold</code> (<code>sync.behind_threshold</code>): minimum number of commits behind before warning/rebase logic applies (<code>0</code> disables the check)</li>
+</ul>
+<h2 id="examples-2"><a class="header" href="#examples-2">Examples</a></h2>
+<pre><code class="language-bash"># First publish as drafts
+gg sync --draft
+
+# Sync only first two entries
+gg sync --until 2
+
+# Refresh PR/MR descriptions after commit message edits
+gg sync --update-descriptions
+
+# Also update PR/MR titles to match commit subjects
+gg sync --update-title
+
+# Run lint as part of sync
+gg sync --lint
+
+# Skip behind-base check once
+gg sync --no-rebase-check
+
+# Machine-readable output
+# (useful in scripts/agents)
+gg sync --json
+
+# Skip pre-push hooks for this sync only
+gg sync --no-verify
+</code></pre>
+<h2 id="target-branch-resolution"><a class="header" href="#target-branch-resolution">Target Branch Resolution</a></h2>
+<p>When computing the target branch for each PR/MR, <code>gg sync</code> walks backwards through predecessor entries and skips any that are already merged or closed. If all predecessors have been merged, the target falls back to <code>stack.base</code>. This ensures downstream MRs are correctly retargeted after an upstream MR is merged — whether merged via <code>gg land</code> or directly in the provider UI.</p>
+<h2 id="prmr-body-ownership"><a class="header" href="#prmr-body-ownership">PR/MR Body Ownership</a></h2>
+<p>When <code>gg sync</code> creates a new PR/MR, the generated description is wrapped in invisible HTML comment markers:</p>
+<pre><code>&lt;!-- gg:managed:start --&gt;
+(generated content from commit message / template)
+&lt;!-- gg:managed:end --&gt;
+</code></pre>
+<p>On subsequent syncs with <code>--update-descriptions</code> (or when <code>sync_update_descriptions</code> is enabled in config), only the content inside the managed block is regenerated. Any text you add <strong>above or below</strong> the markers on GitHub/GitLab is preserved across syncs.</p>
+<p>This means you can safely:</p>
+<ul>
+<li>Add review checklists above or below the managed block</li>
+<li>Write reviewer notes that survive re-syncs</li>
+<li>Check/uncheck task boxes outside the managed section</li>
+</ul>
+<p>Content <strong>inside</strong> the managed block (the generated description) is regenerated on every sync. If your PR template includes a checklist, place persistent checklists outside the markers after creation.</p>
+<p><strong>Legacy PRs</strong> (created before this feature) have no managed markers. <code>gg sync</code> will skip body updates for these PRs and log a warning, to avoid overwriting manual edits.</p>
+<h2 id="stack-navigation-comments"><a class="header" href="#stack-navigation-comments">Stack navigation comments</a></h2>
+<p>If <code>defaults.stack_nav_comments</code> is enabled in <code>.git/gg/config.json</code>, every
+full <code>gg sync</code> (no <code>--until</code>) reconciles a managed comment on each PR/MR in
+the stack. The comment shows all entries in the stack in bottom-up order,
+with a 👉 marker on the entry that PR corresponds to — letting reviewers see
+where they are in the chain and click through to siblings.</p>
+<p>The comment is identified by a hidden HTML marker (<code>&lt;!-- gg:stack-nav --&gt;</code>)
+and never touches comments git-gud didn’t create. Disabling the setting and
+re-syncing cleans up any previously-posted comments automatically.</p>
+<p>Merged or closed PRs are left alone — <code>gg sync</code> never modifies comments on
+historical PRs.</p>
+<p>When running with <code>--json</code>, each entry includes an optional <code>nav_comment_action</code>
+field (one of <code>"created"</code>, <code>"updated"</code>, <code>"unchanged"</code>, <code>"deleted"</code>, <code>"error"</code>)
+when a reconcile decision was made.</p>
+<p>Example JSON (shape):</p>
+<pre><code class="language-json">{
+  "version": 1,
+  "sync": {
+    "stack": "my-stack",
+    "base": "main",
+    "rebased_before_sync": false,
+    "metadata": {
+      "gg_ids_added": 0,
+      "gg_parents_updated": 1,
+      "gg_parents_removed": 0
+    },
+    "entries": [
+      {
+        "position": 1,
+        "sha": "abc1234",
+        "title": "Add feature",
+        "gg_id": "c-abc1234",
+        "branch": "user/my-stack--c-abc1234",
+        "action": "created",
+        "pr_number": 42,
+        "pr_url": "https://github.com/org/repo/pull/42",
+        "draft": false,
+        "pushed": true,
+        "error": null
+      }
+    ]
+  }
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="navigation-mv-first-last-prev-next"><a class="header" href="#navigation-mv-first-last-prev-next">Navigation (<code>mv</code>, <code>first</code>, <code>last</code>, <code>prev</code>, <code>next</code>)</a></h1>
+<p>These commands move HEAD within your stack without manual rebase gymnastics.</p>
+<h2 id="gg-mv-target"><a class="header" href="#gg-mv-target"><code>gg mv &lt;TARGET&gt;</code></a></h2>
+<p>Move to a specific entry by:</p>
+<ul>
+<li>Position (1-indexed)</li>
+<li>GG-ID (<code>c-...</code>)</li>
+<li>Commit SHA</li>
+</ul>
+<pre><code class="language-bash">gg mv 1
+gg mv c-abc1234
+gg mv a1b2c3d
+</code></pre>
+<h2 id="relative-navigation"><a class="header" href="#relative-navigation">Relative navigation</a></h2>
+<pre><code class="language-bash">gg first   # first entry
+gg last    # stack head
+gg prev    # previous entry
+gg next    # next entry
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="gg-sc"><a class="header" href="#gg-sc"><code>gg sc</code></a></h1>
+<p>Squash local changes into the current stack commit.</p>
+<pre><code class="language-bash">gg sc [OPTIONS]
+</code></pre>
+<h2 id="options-4"><a class="header" href="#options-4">Options</a></h2>
+<ul>
+<li><code>-a, --all</code>: Include staged and unstaged changes</li>
+<li><code>-f, --force</code> (alias <code>--ignore-immutable</code>): Override the immutability guard.
+By default <code>gg sc</code> refuses to amend a commit whose PR is merged or which is
+already reachable from <code>origin/&lt;base&gt;</code>. See
+<a href="#immutable-commits">Core concepts · Immutable commits</a>.</li>
+</ul>
+<p>When unstaged changes are present, behavior is controlled by <code>defaults.unstaged_action</code> in <code>.git/gg/config.json</code>:</p>
+<ul>
+<li><code>ask</code> (default): prompt to stage all, stash, continue, or abort</li>
+<li><code>add</code>: auto-stage all changes (<code>git add -A</code>) and continue</li>
+<li><code>stash</code>: auto-stash and continue</li>
+<li><code>continue</code>: continue without including unstaged changes</li>
+<li><code>abort</code>: fail immediately</li>
+</ul>
+<h2 id="examples-3"><a class="header" href="#examples-3">Examples</a></h2>
+<pre><code class="language-bash"># Standard amend-like flow
+git add .
+gg sc
+
+# Include unstaged changes too
+gg sc --all
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="gg-absorb"><a class="header" href="#gg-absorb"><code>gg absorb</code></a></h1>
+<p>Automatically distribute staged changes to the most appropriate commits in your stack.</p>
+<pre><code class="language-bash">gg absorb [OPTIONS]
+</code></pre>
+<h2 id="options-5"><a class="header" href="#options-5">Options</a></h2>
+<ul>
+<li><code>--dry-run</code>: Preview actions without changing commits</li>
+<li><code>-a, --and-rebase</code>: Rebase automatically after creating fixups</li>
+<li><code>-w, --whole-file</code>: Match and absorb by whole file rather than hunks</li>
+<li><code>--one-fixup-per-commit</code>: At most one fixup per commit</li>
+<li><code>-n, --no-limit</code>: Search all commits in the stack (not just last 10)</li>
+<li><code>-s, --squash</code>: Squash directly instead of creating <code>fixup!</code> commits</li>
+<li><code>-f, --force</code> (alias <code>--ignore-immutable</code>): Override the immutability guard.
+By default, <code>gg absorb</code> refuses to run if any commit in the stack is
+merged or reachable from <code>origin/&lt;base&gt;</code> — because it cannot tell ahead of
+time whether git-absorb will target those commits. <code>--dry-run</code> skips the
+guard so you can preview safely. See
+<a href="#immutable-commits">Core concepts · Immutable commits</a>.</li>
+</ul>
+<h2 id="examples-4"><a class="header" href="#examples-4">Examples</a></h2>
+<pre><code class="language-bash"># Preview before applying
+gg absorb --dry-run
+
+# Absorb and finish with rebase
+gg absorb --and-rebase
+
+# Heavy refactor across many files
+gg absorb --whole-file --no-limit
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="gg-drop"><a class="header" href="#gg-drop"><code>gg drop</code></a></h1>
+<p>Remove one or more commits from the stack.</p>
+<p><strong>Alias:</strong> <code>gg abandon</code></p>
+<pre><code class="language-bash">gg drop &lt;TARGET&gt;... [OPTIONS]
+</code></pre>
+<h2 id="arguments"><a class="header" href="#arguments">Arguments</a></h2>
+<ul>
+<li><code>&lt;TARGET&gt;...</code>: One or more commits to drop. Each target can be:
+<ul>
+<li><strong>Position</strong> (1-indexed): <code>1</code>, <code>3</code></li>
+<li><strong>Short SHA</strong>: <code>abc1234</code></li>
+<li><strong>GG-ID</strong>: <code>c-abc1234</code></li>
+</ul>
+</li>
+</ul>
+<h2 id="options-6"><a class="header" href="#options-6">Options</a></h2>
+<ul>
+<li><code>-f, --force</code> (alias <code>--ignore-immutable</code>): Skip the confirmation prompt
+<strong>and</strong> override the immutability guard. <code>gg drop</code> refuses by default to
+drop or rewrite commits whose PR is merged or which are already reachable
+from <code>origin/&lt;base&gt;</code>; this flag bypasses both safeties. See
+<a href="#immutable-commits">Core concepts · Immutable commits</a>.</li>
+<li><code>--json</code>: Output result as JSON</li>
+</ul>
+<h2 id="behavior"><a class="header" href="#behavior">Behavior</a></h2>
+<ol>
+<li>Validates the working directory is clean</li>
+<li>Resolves each target to a commit in the stack</li>
+<li>Shows which commits will be dropped and asks for confirmation (unless <code>--force</code>)</li>
+<li>Performs a <code>git rebase -i</code> that omits the dropped commits</li>
+<li>Cleans up per-commit branches for dropped commits</li>
+<li>Prints a summary of what was dropped</li>
+</ol>
+<p>At least one commit must remain in the stack after dropping.</p>
+<h2 id="examples-5"><a class="header" href="#examples-5">Examples</a></h2>
+<pre><code class="language-bash"># Drop the second commit in the stack
+gg drop 2
+
+# Drop multiple commits at once
+gg drop 1 3
+
+# Drop by GG-ID, skip confirmation
+gg drop c-abc1234 --force
+
+# Drop with JSON output
+gg drop 2 --force --json
+
+# Use the 'abandon' alias (inspired by jj)
+gg abandon 2
+</code></pre>
+<h2 id="json-output"><a class="header" href="#json-output">JSON Output</a></h2>
+<pre><code class="language-json">{
+  "version": 1,
+  "drop": {
+    "dropped": [
+      {"position": 2, "sha": "abc1234", "title": "Fix typo"}
+    ],
+    "remaining": 3
+  }
+}
+</code></pre>
+<h2 id="edge-cases"><a class="header" href="#edge-cases">Edge Cases</a></h2>
+<ul>
+<li><strong>Dropping all commits</strong> produces an error — at least one commit must remain</li>
+<li><strong>Invalid position</strong> shows the valid range</li>
+<li><strong>Rebase conflicts</strong> are handled the same as <code>gg reorder</code> — resolve with <code>gg continue</code> or <code>gg abort</code></li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="gg-reorder--gg-arrange"><a class="header" href="#gg-reorder--gg-arrange"><code>gg reorder</code> / <code>gg arrange</code></a></h1>
+<p>Reorder and/or drop commits in your stack.</p>
+<p><code>gg arrange</code> is an alias for <code>gg reorder</code> — they share the same implementation.</p>
+<pre><code class="language-bash">gg reorder [OPTIONS]
+gg arrange [OPTIONS]
+</code></pre>
+<h2 id="options-7"><a class="header" href="#options-7">Options</a></h2>
+<ul>
+<li><code>-o, --order &lt;ORDER&gt;</code>: New order as positions/SHAs (<code>"3,1,2"</code> or <code>"3 1 2"</code>)</li>
+<li><code>--no-tui</code>: Disable the interactive TUI and use a text editor instead</li>
+<li><code>-f, --force</code> (alias <code>--ignore-immutable</code>): Override the immutability guard.
+Reordering or dropping a commit that is already merged or reachable from
+<code>origin/&lt;base&gt;</code> is refused by default. See
+<a href="#immutable-commits">Core concepts · Immutable commits</a>.</li>
+</ul>
+<h2 id="interactive-tui"><a class="header" href="#interactive-tui">Interactive TUI</a></h2>
+<p>When run without <code>--order</code>, opens an interactive TUI where you can visually rearrange and drop commits:</p>
+<pre><code>┌─ Arrange Stack ──────────────────────────────────┐
+│  1  abc1234  feat: add login page                │
+│▸ 2  def5678  fix: handle empty input     ↕       │
+│  [DROP] 3  ghi9012  refactor: extract validator   │
+│  4  jkl3456  test: add integration tests          │
+└──────────────────────────────────────────────────┘
+ j/k:navigate  J/K:move commit  d:drop/undrop  Enter/s:confirm  q/Esc:cancel
+</code></pre>
+<h3 id="keyboard-shortcuts"><a class="header" href="#keyboard-shortcuts">Keyboard shortcuts</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Key</th><th>Action</th></tr>
+</thead>
+<tbody>
+<tr><td><code>j</code> / <code>↓</code></td><td>Move cursor down</td></tr>
+<tr><td><code>k</code> / <code>↑</code></td><td>Move cursor up</td></tr>
+<tr><td><code>J</code> / <code>Shift+↓</code></td><td>Move commit down</td></tr>
+<tr><td><code>K</code> / <code>Shift+↑</code></td><td>Move commit up</td></tr>
+<tr><td><code>d</code> / <code>Delete</code></td><td>Toggle drop mark on commit</td></tr>
+<tr><td><code>Enter</code> / <code>s</code></td><td>Confirm new order</td></tr>
+<tr><td><code>q</code> / <code>Esc</code></td><td>Cancel (no changes)</td></tr>
+</tbody>
+</table>
+</div>
+<p>Position 1 is the bottom of the stack (closest to the base branch).</p>
+<p>Dropped commits appear in red with strikethrough and a <code>[DROP]</code> prefix. You can still move dropped commits (e.g., to undrop them later). At least one commit must remain — you cannot drop all commits.</p>
+<p>The TUI requires a TTY. In non-interactive environments (pipes, CI), <code>gg reorder</code> falls back to the text editor automatically. Use <code>--no-tui</code> to force the editor fallback.</p>
+<h2 id="editor-fallback"><a class="header" href="#editor-fallback">Editor Fallback</a></h2>
+<p>When using the editor fallback (<code>--no-tui</code> or non-TTY), you can:</p>
+<ul>
+<li><strong>Reorder</strong> commits by rearranging lines</li>
+<li><strong>Drop</strong> commits by deleting their lines</li>
+</ul>
+<p>At least one commit must remain.</p>
+<h2 id="examples-6"><a class="header" href="#examples-6">Examples</a></h2>
+<pre><code class="language-bash"># Interactive reorder/drop with TUI
+gg reorder
+gg arrange
+
+# Explicit reorder by position (no dropping)
+gg reorder --order "3,1,2"
+
+# Use text editor instead of TUI
+gg arrange --no-tui
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="gg-split"><a class="header" href="#gg-split"><code>gg split</code></a></h1>
+<p>Split a commit in the stack into two commits. The selected hunks become a new commit inserted <strong>before</strong> the original in the stack, while the remaining changes stay in the original commit.</p>
+<pre><code class="language-bash">gg split [OPTIONS] [FILES...]
+</code></pre>
+<h2 id="options-8"><a class="header" href="#options-8">Options</a></h2>
+<ul>
+<li><code>-c, --commit &lt;TARGET&gt;</code>: Target commit — position (1-indexed), short SHA, or GG-ID. Defaults to the current commit (HEAD).</li>
+<li><code>-m, --message &lt;MESSAGE&gt;</code>: Commit message for the new (first) commit. Skips the editor prompt.</li>
+<li><code>--no-edit</code>: Keep the original message for the remainder commit without prompting.</li>
+<li><code>--no-tui</code>: Disable TUI, use sequential prompt instead (legacy <code>git add -p</code> style).</li>
+<li><code>-f, --force</code> (alias <code>--ignore-immutable</code>): Override the immutability guard.
+Splitting a merged or base-ancestor commit is refused by default. See
+<a href="#immutable-commits">Core concepts · Immutable commits</a>.</li>
+<li><code>FILES...</code>: Files to include in the new commit. When provided, all hunks from those files are auto-selected (skips the interactive picker).</li>
+</ul>
+<h2 id="how-it-works"><a class="header" href="#how-it-works">How It Works</a></h2>
+<p>When you split commit <strong>K</strong> into two:</p>
+<ol>
+<li><strong>New commit (K’)</strong> — Contains only the selected hunks. Inserted <strong>before</strong> K in the stack. Gets a new GG-ID.</li>
+<li><strong>Remainder (K’’)</strong> — Contains the remaining hunks. Stays in K’s original position. Keeps the original GG-ID (preserving PR association).</li>
+</ol>
+<p>All descendant commits are automatically rebased onto the remainder.</p>
+<pre><code>BEFORE                    AFTER
+  4: "Fix tests"            5: "Fix tests"       (rebased)
+  3: "Add auth+logging"     4: "Add logging"      ← remainder (keeps GG-ID)
+  2: "Setup DB"             3: "Add auth"         ← NEW commit (selected changes)
+  1: "Init project"         2: "Setup DB"
+                             1: "Init project"
+</code></pre>
+<h2 id="interactive-hunk-selection"><a class="header" href="#interactive-hunk-selection">Interactive Hunk Selection</a></h2>
+<p>Running <code>gg split</code> without file arguments opens the interactive hunk picker:</p>
+<pre><code class="language-bash"># Split the current commit — opens hunk selector
+gg split
+
+# Split a specific commit in the stack
+gg split -c 3
+</code></pre>
+<h3 id="tui-mode-default"><a class="header" href="#tui-mode-default">TUI Mode (Default)</a></h3>
+<p>When run with a TTY, <code>gg split</code> opens a two-panel TUI for hunk selection:</p>
+<pre><code>┌── Files (1/3 width) ──┬── Diff (2/3 width) ──────────────┐
+│ [✓] src/auth.rs (3)   │ @@ -10,6 +10,12 @@               │
+│ [ ] src/logging.rs (1)│ +  // Validate token              │
+│ [~] src/tests.rs (2)  │ +  if token.is_empty() {          │
+│                        │ +      return false;               │
+│                        │ +  }                               │
+├────────────────────────┴────────────────────────────────────┤
+│ 5/12 hunks selected │ [Space] toggle · [Tab] switch panel │
+└─────────────────────────────────────────────────────────────┘
+</code></pre>
+<h4 id="tui-keyboard-shortcuts"><a class="header" href="#tui-keyboard-shortcuts">TUI Keyboard Shortcuts</a></h4>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Key</th><th>In File Panel</th><th>In Diff Panel</th></tr>
+</thead>
+<tbody>
+<tr><td>↑/↓ or j/k</td><td>Navigate files</td><td>Navigate hunks</td></tr>
+<tr><td>Space</td><td>Toggle all hunks for file</td><td>Toggle current hunk</td></tr>
+<tr><td>a</td><td>Select all hunks (all files)</td><td>Select all hunks (this file)</td></tr>
+<tr><td>n</td><td>Deselect all hunks (all files)</td><td>Deselect all hunks (this file)</td></tr>
+<tr><td>s</td><td>—</td><td>Split current hunk into sub-hunks</td></tr>
+<tr><td>Tab / ← / →</td><td>Switch to diff panel</td><td>Switch to file panel</td></tr>
+<tr><td>Enter</td><td>Enter commit message</td><td>Enter commit message</td></tr>
+<tr><td>q / Esc</td><td>Abort (cancel split)</td><td>Abort (cancel split)</td></tr>
+</tbody>
+</table>
+</div>
+<h4 id="inline-commit-message"><a class="header" href="#inline-commit-message">Inline Commit Message</a></h4>
+<p>After pressing <strong>Enter</strong> to confirm your hunk selection, an inline text input appears at the bottom of the TUI for the commit message. It’s pre-filled with <code>Split from: &lt;original commit title&gt;</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Key</th><th>Action</th></tr>
+</thead>
+<tbody>
+<tr><td>Enter</td><td>Confirm message and create the split</td></tr>
+<tr><td>Esc</td><td>Go back to hunk selection</td></tr>
+<tr><td>← / →</td><td>Move cursor</td></tr>
+<tr><td>Home / End</td><td>Jump to beginning/end</td></tr>
+<tr><td>Backspace / Delete</td><td>Delete characters</td></tr>
+<tr><td>Ctrl+A / Ctrl+E</td><td>Jump to beginning/end (emacs-style)</td></tr>
+<tr><td>Ctrl+U</td><td>Clear from cursor to beginning</td></tr>
+<tr><td>Ctrl+K</td><td>Clear from cursor to end</td></tr>
+</tbody>
+</table>
+</div>
+<p>After confirming the new commit message, a second inline input appears for the <strong>remainder commit message</strong> (pre-filled with the original commit’s message). This replaces the external editor for both messages, keeping the entire split workflow inside the TUI.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Key</th><th>Action</th></tr>
+</thead>
+<tbody>
+<tr><td>Enter</td><td>Confirm remainder message and complete the split</td></tr>
+<tr><td>Esc</td><td>Go back to the new commit message input</td></tr>
+</tbody>
+</table>
+</div>
+<p>The <code>-m</code> flag still works and bypasses the TUI input for the new commit. The <code>--no-edit</code> flag skips the remainder message input entirely, keeping the original message as-is.</p>
+<h4 id="file-panel-indicators"><a class="header" href="#file-panel-indicators">File Panel Indicators</a></h4>
+<ul>
+<li><code>[✓]</code> — All hunks selected (green)</li>
+<li><code>[~]</code> — Some hunks selected (yellow)</li>
+<li><code>[ ]</code> — No hunks selected</li>
+</ul>
+<h3 id="sequential-prompt-mode---no-tui"><a class="header" href="#sequential-prompt-mode---no-tui">Sequential Prompt Mode (<code>--no-tui</code>)</a></h3>
+<p>Use <code>--no-tui</code> to fall back to the legacy <code>git add -p</code> style sequential prompt:</p>
+<pre><code class="language-bash">gg split --no-tui
+</code></pre>
+<p>This mode is automatically used when no TTY is available (e.g., in CI pipelines or when piping).</p>
+<p>For each hunk, you’ll see the diff with colored output and a prompt:</p>
+<pre><code>--- a/src/auth.rs
++++ b/src/auth.rs
+@@ -10,6 +10,12 @@ fn authenticate(user: &amp;str) -&gt; bool {
++    // Validate token
++    if token.is_empty() {
++        return false;
++    }
+
+Include this hunk? [y]es/[n]o/[a]ll file/[d]one file/[s]plit/[q]uit/?help:
+</code></pre>
+<h4 id="sequential-mode-actions"><a class="header" href="#sequential-mode-actions">Sequential Mode Actions</a></h4>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Key</th><th>Action</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>y</code></td><td>Yes</td><td>Include this hunk in the new commit</td></tr>
+<tr><td><code>n</code></td><td>No</td><td>Skip this hunk (stays in remainder)</td></tr>
+<tr><td><code>a</code></td><td>All file</td><td>Include all remaining hunks from this file</td></tr>
+<tr><td><code>d</code></td><td>Done file</td><td>Skip all remaining hunks from this file</td></tr>
+<tr><td><code>s</code></td><td>Split</td><td>Split this hunk into smaller hunks</td></tr>
+<tr><td><code>q</code></td><td>Quit</td><td>Stop; all remaining hunks stay in remainder</td></tr>
+<tr><td><code>?</code></td><td>Help</td><td>Show this help</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="file-based-splitting"><a class="header" href="#file-based-splitting">File-Based Splitting</a></h2>
+<p>When file arguments are provided, all hunks from those files are auto-selected without opening the interactive picker:</p>
+<pre><code class="language-bash"># Move auth files to a new commit before the current one
+gg split -m "Add authentication" src/auth.rs src/auth_test.rs
+
+# Split a specific commit with explicit files
+gg split -c 3 src/config.rs
+
+# Non-interactive with both messages
+gg split -c 2 -m "Extract helpers" --no-edit helpers.rs utils.rs
+
+# Split by GG-ID
+gg split -c c-abc1234 src/config.rs
+</code></pre>
+<h3 id="hunk-splitting"><a class="header" href="#hunk-splitting">Hunk Splitting</a></h3>
+<p>If a hunk contains multiple logical changes separated by unchanged lines, pressing <code>s</code> will break it into smaller hunks. You can then select each sub-hunk individually. If the hunk is already atomic (contiguous changes), you’ll see “This hunk cannot be split further.”</p>
+<h2 id="edge-cases-1"><a class="header" href="#edge-cases-1">Edge Cases</a></h2>
+<ul>
+<li><strong>All changes selected</strong> — Warning: the original commit will be empty.</li>
+<li><strong>No changes selected</strong> — Error.</li>
+<li><strong>Dirty working directory</strong> — Error. Commit or stash changes first.</li>
+<li><strong>Merge conflicts during rebase</strong> — Split is aborted, original state restored.</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="gg-rebase"><a class="header" href="#gg-rebase"><code>gg rebase</code></a></h1>
+<p>Rebase the current stack onto an updated branch.</p>
+<pre><code class="language-bash">gg rebase [TARGET]
+</code></pre>
+<ul>
+<li>If <code>TARGET</code> is omitted, git-gud uses the stack base branch.</li>
+</ul>
+<h2 id="options-9"><a class="header" href="#options-9">Options</a></h2>
+<ul>
+<li><code>-f, --force</code> (alias <code>--ignore-immutable</code>): Override the immutability guard.
+Rebase rewrites the parent of every commit in the stack; merged commits
+(including squash-merged PRs) and commits already reachable from
+<code>origin/&lt;base&gt;</code> are silently skipped — <code>git rebase</code> drops them automatically
+via patch-id matching, so <code>--force</code> is not required for these. See
+<a href="#immutable-commits">Core concepts · Immutable commits</a>.</li>
+</ul>
+<h2 id="examples-7"><a class="header" href="#examples-7">Examples</a></h2>
+<pre><code class="language-bash"># Rebase onto configured base
+gg rebase
+
+# Rebase onto specific branch
+gg rebase main
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="gg-land"><a class="header" href="#gg-land"><code>gg land</code></a></h1>
+<p>Merge approved PRs/MRs from the bottom of your stack upward.</p>
+<pre><code class="language-bash">gg land [OPTIONS]
+</code></pre>
+<h2 id="options-10"><a class="header" href="#options-10">Options</a></h2>
+<ul>
+<li><code>-a, --all</code>: Land all approved entries in sequence</li>
+<li><code>--auto-merge</code>: <em>(GitLab only)</em> Request auto-merge instead of immediate merge</li>
+<li><code>--no-squash</code>: Disable squash merge (squash is default)</li>
+<li><code>-w, --wait</code>: Wait for CI and approvals before merging</li>
+<li><code>-u, --until &lt;UNTIL&gt;</code>: Land up to a target entry (position, GG-ID, SHA)</li>
+<li><code>-c, --clean</code>: Clean stack automatically after landing all</li>
+<li><code>--no-clean</code>: Disable auto-clean for this run</li>
+<li><code>--admin</code>: <em>(GitHub only)</em> Use admin privileges to bypass branch protection requirements (see <a href="#admin-override">Admin Override</a> below)</li>
+<li><code>--json</code>: Emit machine-readable JSON output (no human logs)</li>
+</ul>
+<h2 id="examples-8"><a class="header" href="#examples-8">Examples</a></h2>
+<pre><code class="language-bash"># Land one approved entry
+gg land
+
+# Land complete stack, waiting for readiness
+gg land --all --wait
+
+# Land part of stack
+gg land --until 2
+
+# GitLab auto-merge queue
+gg land --all --auto-merge
+
+# JSON output for automation
+gg land --all --json
+
+# Bypass approval requirements (GitHub admin)
+gg land --admin
+
+# Land full stack with admin override
+gg land --all --wait --admin
+</code></pre>
+<h2 id="admin-override"><a class="header" href="#admin-override">Admin Override</a></h2>
+<p>The <code>--admin</code> flag (or <code>land_admin</code> config default) passes <code>--admin</code> to <code>gh pr merge</code>, which uses GitHub’s API-level admin merge. This bypasses <strong>all</strong> branch protection rules the merging user has permission to override, which may include both review approvals <strong>and</strong> required status checks depending on your repository settings.</p>
+<p>Use <code>--wait --admin</code> if you want to wait for CI to pass before merging while still bypassing approval requirements. Without <code>--wait</code>, no client-side CI validation is performed.</p>
+<p>On GitLab, <code>--admin</code> is a no-op — <code>glab mr merge</code> has no equivalent flag. A warning is printed and the merge proceeds normally.</p>
+<p>A warning (<code>⚠ Merging with admin override</code>) is printed before each admin-elevated merge.</p>
+<h2 id="downstream-mr-retargeting"><a class="header" href="#downstream-mr-retargeting">Downstream MR Retargeting</a></h2>
+<p>After landing an entry, <code>gg land</code> automatically retargets the next MR in the stack so it no longer points at the now-merged intermediate branch:</p>
+<ul>
+<li><strong>Single entry</strong> (<code>gg land</code>): retargets the immediate next MR to <code>stack.base</code>.</li>
+<li><strong>All entries</strong> (<code>gg land --all</code>): retargets all remaining MRs to <code>stack.base</code> as each entry is landed.</li>
+</ul>
+<p>This applies to both GitHub PRs and GitLab MRs. No manual retargeting in the provider UI is needed after landing.</p>
+<h2 id="merge-trains-gitlab"><a class="header" href="#merge-trains-gitlab">Merge Trains (GitLab)</a></h2>
+<p>When merge trains are enabled on the target branch, <code>gg land</code> automatically adds MRs to the merge train instead of merging directly.</p>
+<p><strong>Approval is always required</strong> before an MR can enter the merge train queue — even with <code>--all</code>. If using <code>--wait</code>, the command will show “Waiting for approval…” until a reviewer approves the MR.</p>
+<h2 id="ci-failure-details"><a class="header" href="#ci-failure-details">CI Failure Details</a></h2>
+<p>When using <code>--wait</code>, if CI fails on an MR the command stops and shows which jobs failed:</p>
+<pre><code>OK Landed 1 MR(s)
+
+⚠ Landed 1 MR(s), but encountered an error:
+
+Error: MR !7621 CI failed
+  Failed jobs: lint (stage: test), build-android (stage: build)
+</code></pre>
+<p>This helps diagnose CI issues without having to open the GitLab UI. Failed job names and stages are fetched from the MR’s head pipeline.</p>
+<h2 id="json-output-1"><a class="header" href="#json-output-1">JSON Output</a></h2>
+<p>Example JSON response:</p>
+<pre><code class="language-json">{
+  "version": 1,
+  "land": {
+    "stack": "my-stack",
+    "base": "main",
+    "landed": [
+      {
+        "position": 1,
+        "sha": "abc1234",
+        "title": "feat: add parser",
+        "gg_id": "c-abc1234",
+        "pr_number": 42,
+        "action": "merged",
+        "error": null
+      }
+    ],
+    "remaining": 0,
+    "cleaned": false,
+    "warnings": [],
+    "error": null
+  }
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="gg-clean"><a class="header" href="#gg-clean"><code>gg clean</code></a></h1>
+<p>Delete merged stacks (and associated managed worktrees).</p>
+<pre><code class="language-bash">gg clean [OPTIONS]
+</code></pre>
+<h2 id="options-11"><a class="header" href="#options-11">Options</a></h2>
+<ul>
+<li><code>-a, --all</code>: Clean all merged stacks without prompting</li>
+<li><code>--json</code>: Emit machine-readable JSON output</li>
+</ul>
+<h2 id="examples-9"><a class="header" href="#examples-9">Examples</a></h2>
+<pre><code class="language-bash">gg clean
+gg clean --all
+gg clean --json
+</code></pre>
+<p><code>--json</code> prints:</p>
+<ul>
+<li><code>version</code>: output schema version</li>
+<li><code>clean.cleaned</code>: stacks that were cleaned</li>
+<li><code>clean.skipped</code>: stacks skipped (unmerged or declined in interactive mode)</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="gg-lint"><a class="header" href="#gg-lint"><code>gg lint</code></a></h1>
+<p>Run configured lint commands on stack commits.</p>
+<pre><code class="language-bash">gg lint [OPTIONS]
+</code></pre>
+<h2 id="options-12"><a class="header" href="#options-12">Options</a></h2>
+<ul>
+<li><code>-u, --until &lt;UNTIL&gt;</code>: Stop at target entry (position, GG-ID, SHA)</li>
+<li><code>--json</code>: Emit structured JSON output</li>
+</ul>
+<h2 id="examples-10"><a class="header" href="#examples-10">Examples</a></h2>
+<pre><code class="language-bash"># Lint from bottom to current
+gg lint
+
+# Lint only a subset
+gg lint --until 2
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="gg-run"><a class="header" href="#gg-run"><code>gg run</code></a></h1>
+<p>Run an arbitrary command on each commit in the stack. Like <code>jj run</code> in Jujutsu — useful for validating changes (build, test), applying auto-fixers (formatters, codemods), or any per-commit shell command.</p>
+<pre><code class="language-bash">gg run [OPTIONS] -- &lt;COMMAND&gt;...
+</code></pre>
+<p>Arguments after <code>--</code> are passed through as-is. Use <code>--</code> whenever your command has its own flags so clap knows where <code>gg run</code>’s options end.</p>
+<h2 id="modes"><a class="header" href="#modes">Modes</a></h2>
+<p><code>gg run</code> has three modes that control what happens to files the command modifies:</p>
+<ul>
+<li><strong>Read-only</strong> (default): if the command modifies tracked files, the commit is marked failed. Ideal for build/test/lint validation.</li>
+<li><code>--amend</code>: stage and fold any modifications into the current commit, then rebase the rest of the stack on top. Ideal for formatters and codemods (<code>cargo fmt</code>, <code>prettier</code>, <code>ruff --fix</code>).</li>
+<li><code>--discard</code>: revert any working-tree changes after each commit. Ideal for commands with known side effects you want to ignore.</li>
+</ul>
+<h2 id="options-13"><a class="header" href="#options-13">Options</a></h2>
+<ul>
+<li><code>-u, --until &lt;UNTIL&gt;</code>: stop at this commit position (default: current).</li>
+<li><code>--amend</code>: fold file changes into each commit (see above).</li>
+<li><code>--discard</code>: discard file changes after each commit.</li>
+<li><code>--keep-going</code>: continue on command failure instead of stopping at the first failed commit (default is to stop).</li>
+<li><code>-j, --jobs &lt;N&gt;</code>: number of parallel workers. <code>0</code> = auto-detect CPUs, <code>1</code> = sequential (default). Parallel mode only applies to read-only runs and uses isolated temporary worktrees, one per commit.</li>
+<li><code>--json</code>: emit structured JSON output instead of human-readable text.</li>
+</ul>
+<h2 id="examples-11"><a class="header" href="#examples-11">Examples</a></h2>
+<pre><code class="language-bash"># Read-only validation across the whole stack
+gg run -- cargo test
+
+# Apply a formatter and fold changes into each commit
+gg run --amend -- cargo fmt
+
+# Run across up to commit 2 only
+gg run --until 2 -- cargo check
+
+# Parallel read-only run with 4 workers
+gg run -j 4 -- cargo test
+
+# Continue past failing commits (useful for auditing)
+gg run --keep-going -- cargo clippy
+
+# Pass a command with quoted arguments — argv boundaries are preserved
+gg run -- sh -c 'echo "$GG_CURRENT_COMMIT" &amp;&amp; cargo test --test integration'
+</code></pre>
+<h2 id="json-output-2"><a class="header" href="#json-output-2">JSON output</a></h2>
+<p>With <code>--json</code>, <code>gg run</code> emits a <code>RunResponse</code>:</p>
+<pre><code class="language-json">{
+  "version": 1,
+  "run": {
+    "results": [
+      {
+        "position": 1,
+        "sha": "abc1234",
+        "title": "Add feature",
+        "passed": true,
+        "commands": [
+          {"command": "cargo test", "passed": true, "output": null}
+        ]
+      }
+    ],
+    "all_passed": true
+  }
+}
+</code></pre>
+<p>The <code>command</code> field is a copy-pasteable shell form: arguments containing whitespace or special characters are single-quoted. It reflects your input, not the actual argv.</p>
+<h2 id="notes"><a class="header" href="#notes">Notes</a></h2>
+<ul>
+<li>Shell aliases (<code>alias gw=./gradlew</code>) are not expanded. Use the real command path.</li>
+<li><code>.git/</code> paths in the command (e.g. <code>.git/gg/lint.sh</code>) are rewritten to the real git commondir so they resolve inside linked worktrees and inside parallel worker worktrees.</li>
+<li>Parallel mode creates temporary worktrees under <code>$TMPDIR/gg-run-&lt;pid&gt;/</code>, cleaned up automatically when the run finishes.</li>
+<li>Under <code>--amend</code> + default stop-on-error, if a later commit fails, the already-amended commits above are preserved — the branch is not force-reset. Use <code>gg continue</code> / <code>gg abort</code> to resume if a rebase conflict happened instead.</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="gg-setup"><a class="header" href="#gg-setup"><code>gg setup</code></a></h1>
+<p>Interactive setup for <code>.git/gg/config.json</code>.</p>
+<pre><code class="language-bash">gg setup        # Quick mode: essential settings only
+gg setup --all  # Full mode: all settings organized by category
+</code></pre>
+<p>Use this when:</p>
+<ul>
+<li>Starting git-gud in a new repository</li>
+<li>Working with self-hosted GitHub/GitLab</li>
+<li>Updating defaults (base branch, username, lint config)</li>
+</ul>
+<h2 id="quick-mode-default"><a class="header" href="#quick-mode-default">Quick Mode (default)</a></h2>
+<p>Quick mode prompts for only the essential settings:</p>
+<ul>
+<li><strong>Provider</strong>: GitHub or GitLab</li>
+<li><strong>Base branch</strong>: Default base branch (main/master/trunk)</li>
+<li><strong>Username</strong>: Username for branch naming</li>
+</ul>
+<p>After completing quick setup, you’ll see:</p>
+<pre><code>Tip: Run 'gg setup --all' to configure advanced options (sync, land, lint, etc.)
+</code></pre>
+<h2 id="full-mode---all"><a class="header" href="#full-mode---all">Full Mode (<code>--all</code>)</a></h2>
+<p>Full mode organizes all settings into logical groups:</p>
+<h3 id="general"><a class="header" href="#general">General</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>provider</code></td><td>select</td><td>auto-detect</td><td>GitHub or GitLab (auto-detects <code>github.com</code> and <code>gitlab.com</code> remotes; self-hosted instances require manual selection)</td></tr>
+<tr><td><code>base</code></td><td>string</td><td>auto-detect</td><td>Default base branch (main/master/trunk)</td></tr>
+<tr><td><code>branch_username</code></td><td>string</td><td>from CLI auth</td><td>Username for branch naming</td></tr>
+<tr><td><code>unstaged_action</code></td><td>select</td><td>ask</td><td>Action for <code>gg amend</code> with unstaged changes</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="sync"><a class="header" href="#sync">Sync</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>sync_auto_rebase</code></td><td>bool</td><td>false</td><td>Auto-rebase when base is behind origin</td></tr>
+<tr><td><code>sync_behind_threshold</code></td><td>number</td><td>1</td><td>Commits behind origin before warning/rebase</td></tr>
+<tr><td><code>sync_draft</code></td><td>bool</td><td>false</td><td>Create new PRs/MRs as drafts by default</td></tr>
+<tr><td><code>sync_update_descriptions</code></td><td>bool</td><td>true</td><td>Update PR/MR descriptions on re-sync</td></tr>
+<tr><td><code>sync_update_title</code></td><td>bool</td><td>false</td><td>Update PR/MR titles on re-sync</td></tr>
+<tr><td><code>stack_nav_comments</code></td><td>bool</td><td>false</td><td>Post a managed navigation comment linking all PRs/MRs in the stack</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="land"><a class="header" href="#land">Land</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>land_auto_clean</code></td><td>bool</td><td>false</td><td>Auto-clean stack after landing all</td></tr>
+<tr><td><code>land_wait_timeout_minutes</code></td><td>number</td><td>30</td><td>Timeout for <code>gg land --wait</code></td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="lint"><a class="header" href="#lint">Lint</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>lint</code></td><td>list</td><td>empty</td><td>Lint commands to run per commit</td></tr>
+<tr><td><code>sync_auto_lint</code></td><td>bool</td><td>false</td><td>Run lint automatically before sync</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="worktrees"><a class="header" href="#worktrees">Worktrees</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>worktree_base_path</code></td><td>string</td><td>empty</td><td>Template for stack worktrees ({repo}, {stack})</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="gitlab-only-shown-if-provider-is-gitlab"><a class="header" href="#gitlab-only-shown-if-provider-is-gitlab">GitLab (only shown if provider is GitLab)</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>gitlab.auto_merge_on_land</code></td><td>bool</td><td>false</td><td>Use “merge when pipeline succeeds”</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="global-config"><a class="header" href="#global-config">Global Config</a></h2>
+<p>git-gud supports global configuration at <code>~/.config/gg/config.json</code>. When running <code>gg setup</code>:</p>
+<ul>
+<li>If no local config exists, global defaults are shown in prompts</li>
+<li>Local config always takes precedence over global config</li>
+</ul>
+<p>This allows you to set organization-wide defaults while allowing per-repo overrides.</p>
+<p>All fields are written to <code>config.json</code> after setup, making it easy to review and edit configuration manually.</p>
+<blockquote>
+<p>Note: <code>auto_add_gg_ids</code> is deprecated. Existing configs that include it are still read, but setup no longer prompts for it and runtime behavior always treats it as enabled.</p>
+</blockquote>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="gg-continue--gg-abort"><a class="header" href="#gg-continue--gg-abort"><code>gg continue</code> / <code>gg abort</code></a></h1>
+<p>Control paused operations (typically rebases with conflicts).</p>
+<pre><code class="language-bash">gg continue
+gg abort
+</code></pre>
+<p>Use <code>gg continue</code> after resolving conflicts and staging files.
+Use <code>gg abort</code> when you want to stop and roll back the in-progress operation.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="gg-reconcile"><a class="header" href="#gg-reconcile"><code>gg reconcile</code></a></h1>
+<p>Repair stack metadata when branches/PRs were manipulated outside <code>gg sync</code>.</p>
+<pre><code class="language-bash">gg reconcile [OPTIONS]
+</code></pre>
+<h2 id="options-14"><a class="header" href="#options-14">Options</a></h2>
+<ul>
+<li><code>-n, --dry-run</code>: Preview only; make no changes</li>
+</ul>
+<h2 id="what-it-does"><a class="header" href="#what-it-does">What it does</a></h2>
+<ul>
+<li>Normalizes GG metadata trailers on stack commits (<code>GG-ID</code> + <code>GG-Parent</code>)</li>
+<li>Maps existing remote PRs/MRs back to local stack entries</li>
+</ul>
+<h2 id="examples-12"><a class="header" href="#examples-12">Examples</a></h2>
+<pre><code class="language-bash"># Safe preview
+gg reconcile --dry-run
+
+# Apply reconciliation
+gg reconcile
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="gg-restack"><a class="header" href="#gg-restack"><code>gg restack</code></a></h1>
+<p>Repair stack ancestry after manual history changes (amend, cherry-pick, upstream rebase).</p>
+<pre><code class="language-bash">gg restack [OPTIONS]
+</code></pre>
+<h2 id="options-15"><a class="header" href="#options-15">Options</a></h2>
+<ul>
+<li><code>-n, --dry-run</code>: Show what would be done without making changes</li>
+<li><code>--from &lt;TARGET&gt;</code>: Repair only from this commit upward (position, SHA, or GG-ID)</li>
+<li><code>--json</code>: Output result as JSON</li>
+</ul>
+<h2 id="behavior-1"><a class="header" href="#behavior-1">Behavior</a></h2>
+<ol>
+<li>Validates no rebase is already in progress</li>
+<li>Validates the working directory is clean</li>
+<li>Requires all commits to have GG-IDs (directs to <code>gg reconcile</code> if missing)</li>
+<li>Compares each entry’s <code>GG-Parent</code> trailer against the expected parent</li>
+<li>If all parents match, reports “Stack is already consistent”</li>
+<li>If <code>--dry-run</code>, displays the plan and exits</li>
+<li>Performs a single <code>git rebase -i</code> to realign the chain</li>
+<li>Normalizes GG metadata after rebase</li>
+<li>Prints a summary with a hint to run <code>gg sync</code></li>
+</ol>
+<h2 id="examples-13"><a class="header" href="#examples-13">Examples</a></h2>
+<pre><code class="language-bash"># Check if the stack needs restacking (no changes)
+gg restack --dry-run
+
+# Repair the full stack
+gg restack
+
+# Repair only from position 3 upward
+gg restack --from 3
+
+# Repair from a specific GG-ID upward
+gg restack --from c-abc1234
+
+# Get JSON output
+gg restack --json
+
+# Combine dry-run and JSON
+gg restack --dry-run --json
+</code></pre>
+<h2 id="json-output-3"><a class="header" href="#json-output-3">JSON Output</a></h2>
+<pre><code class="language-json">{
+  "version": 1,
+  "restack": {
+    "stack_name": "my-feature",
+    "total_entries": 4,
+    "entries_restacked": 2,
+    "entries_ok": 2,
+    "dry_run": false,
+    "steps": [
+      {
+        "position": 1,
+        "gg_id": "c-abc1234",
+        "title": "Add login form",
+        "action": "ok",
+        "current_parent": null,
+        "expected_parent": null
+      },
+      {
+        "position": 2,
+        "gg_id": "c-def5678",
+        "title": "Add validation",
+        "action": "reattach",
+        "current_parent": "c-old1111",
+        "expected_parent": "c-abc1234"
+      }
+    ]
+  }
+}
+</code></pre>
+<h2 id="edge-cases-2"><a class="header" href="#edge-cases-2">Edge Cases</a></h2>
+<ul>
+<li><strong>Empty stack</strong> produces an error</li>
+<li><strong>Missing GG-IDs</strong> directs to <code>gg reconcile</code></li>
+<li><strong>Rebase in progress</strong> blocks with a clear error message</li>
+<li><strong>Rebase conflicts</strong> are handled the same as <code>gg reorder</code> — resolve with <code>gg continue</code> or <code>gg abort</code></li>
+<li><strong><code>--from 1</code></strong> is equivalent to a full restack</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="gg-undo"><a class="header" href="#gg-undo"><code>gg undo</code></a></h1>
+<p>Reverse the local ref/HEAD effects of the most recent mutating <code>gg</code>
+command, backed by a per-repo operation log.</p>
+<pre><code class="language-bash">gg undo [OPERATION_ID] [--json]
+gg undo --list [--limit N] [--json]
+</code></pre>
+<p><code>gg undo</code> only moves refs and <code>HEAD</code> — it never modifies your working
+tree, working-copy files, or the index. The log lives at
+<code>&lt;commondir&gt;/gg/operations/*.json</code> and keeps the last <strong>100 records</strong>;
+<code>Pending</code> records (operations interrupted by a crash, Ctrl-C, or a
+long-running conflict) are never pruned.</p>
+<h2 id="options-16"><a class="header" href="#options-16">Options</a></h2>
+<ul>
+<li><code>OPERATION_ID</code>: Target a specific record (<code>op_…</code>). When omitted,
+undoes the most recent locally-undoable operation.</li>
+<li><code>--list</code>: Show recent operations with id, kind, status, timestamp,
+and undoability marker.</li>
+<li><code>--limit N</code>: Cap <code>--list</code> output (default: 20).</li>
+<li><code>--json</code>: Emit machine-readable JSON.</li>
+</ul>
+<h2 id="how-it-works-1"><a class="header" href="#how-it-works-1">How it works</a></h2>
+<p>Every mutating <code>gg</code> command (<code>sc</code>, <code>drop</code>, <code>split</code>, <code>rebase</code>, <code>reorder</code>,
+<code>absorb</code>, <code>reconcile</code>, <code>checkout</code>, <code>mv</code>/<code>first</code>/<code>last</code>/<code>prev</code>/<code>next</code>,
+<code>clean</code>, <code>sync</code>, <code>land</code>, and <code>run --amend</code>) now snapshots the refs it
+will touch before mutating and finalises the record on success. <code>gg undo</code> replays the <code>refs_before</code> snapshot of the target record, moving
+refs back to where they were.</p>
+<p>A second <code>gg undo</code> redoes the first — because <code>undo</code> is itself
+recorded as an operation, running it twice reverses the reversal.
+Entries created by <code>gg undo</code> appear in <code>--list</code> with a <code>↶</code> marker and
+an <code>undoes</code> field pointing at the original operation id.</p>
+<h2 id="refusal-modes"><a class="header" href="#refusal-modes">Refusal modes</a></h2>
+<p><code>gg undo</code> refuses (exit 1, no refs touched) when:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Reason</th><th>Condition</th><th>What to do</th></tr>
+</thead>
+<tbody>
+<tr><td><code>remote</code></td><td>The target op pushed/merged/closed/created a PR or MR.</td><td>Use the printed provider hint (<code>gh pr close &lt;n&gt;</code>, <code>glab mr close &lt;n&gt;</code>, <code>git push --delete …</code>). Local state is unchanged.</td></tr>
+<tr><td><code>interrupted</code></td><td>The op crashed or was Ctrl-C’d mid-flight and has <code>status: Interrupted</code>.</td><td>Fix the underlying state manually; the stale Pending record is swept into Interrupted on the next lock-acquiring op.</td></tr>
+<tr><td><code>stale</code></td><td>Refs have moved since the target op finalised.</td><td>Run <code>gg undo --list</code> and target a more recent record instead. The error names the ref, the expected OID, and the actual OID.</td></tr>
+<tr><td><code>unsupported_schema</code></td><td>The record was written by a newer <code>gg</code> with a schema version this binary does not understand.</td><td>Upgrade <code>gg</code> or delete the offending record.</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="examples-14"><a class="header" href="#examples-14">Examples</a></h2>
+<pre><code class="language-bash"># Reverse the last local operation
+gg undo
+
+# See what's on the log (newest first)
+gg undo --list
+gg undo --list --limit 5
+
+# Target a specific record from --list
+gg undo op_0000001750000000_018f…
+
+# Redo: undo twice in a row
+gg undo
+gg undo
+
+# Scripting
+gg undo --list --json | jq '.operations[] | select(.is_undoable)'
+</code></pre>
+<h2 id="json-output-4"><a class="header" href="#json-output-4">JSON output</a></h2>
+<p>Schema versioning: all <code>gg</code> JSON responses share the top-level <code>version</code>
+field (<code>OUTPUT_VERSION</code>). The undo types are additive — new optional
+fields may be added in future releases without bumping the version.
+Forward-compatible consumers should ignore unknown fields.</p>
+<h3 id="gg-undo---json"><a class="header" href="#gg-undo---json"><code>gg undo --json</code></a></h3>
+<pre><code class="language-json">{
+  "version": 1,
+  "status": "succeeded",
+  "undone": {
+    "id": "op_0000001750000000_018f…",
+    "kind": "drop",
+    "status": "committed",
+    "created_at_ms": 1750000000000,
+    "args": ["drop", "3"],
+    "stack_name": "feat/login",
+    "touched_remote": false,
+    "is_undoable": true,
+    "is_undo": false,
+    "remote_effects": []
+  }
+}
+</code></pre>
+<p>On refusal:</p>
+<pre><code class="language-json">{
+  "version": 1,
+  "status": "refused",
+  "refusal": {
+    "reason": "remote",
+    "message": "Cannot locally undo 'sync': it touched a remote.",
+    "target": { "id": "op_…", "kind": "sync", "touched_remote": true, "…": "…" },
+    "hints": [
+      "Close PR #42: gh pr close 42",
+      "Delete remote branch: git push --delete origin nacho/feat/1"
+    ]
+  }
+}
+</code></pre>
+<p><code>refusal.reason</code> is one of <code>remote</code>, <code>interrupted</code>, <code>stale</code>,
+<code>unsupported_schema</code>.</p>
+<h3 id="gg-undo---list---json"><a class="header" href="#gg-undo---list---json"><code>gg undo --list --json</code></a></h3>
+<pre><code class="language-json">{
+  "version": 1,
+  "operations": [
+    {
+      "id": "op_…",
+      "kind": "undo",
+      "status": "committed",
+      "created_at_ms": 1750000100000,
+      "args": ["undo"],
+      "stack_name": "feat/login",
+      "touched_remote": false,
+      "is_undoable": true,
+      "is_undo": true,
+      "undoes": "op_previous…"
+    },
+    { "…": "…" }
+  ]
+}
+</code></pre>
+<p>Operations are returned newest-first. Use <code>is_undoable</code> to gate
+UI/agent actions; use <code>is_undo</code> + <code>undoes</code> to render redo markers.</p>
+<h2 id="what-gg-undo-does-not-do"><a class="header" href="#what-gg-undo-does-not-do">What <code>gg undo</code> does NOT do</a></h2>
+<ul>
+<li>It does <strong>not</strong> restore working-tree files or the index. If you amended
+a commit and want the old source back, use <code>git reflog</code> or
+<code>git stash</code>.</li>
+<li>It does <strong>not</strong> touch remotes. Operations that pushed, merged, closed,
+or created PRs/MRs are recorded (so you can see them in <code>--list</code>) but
+refused for local replay.</li>
+<li>It does <strong>not</strong> guarantee atomicity of the replay. If the process
+dies mid-replay, a second <code>gg undo</code> will finish the job — the
+working tree is clean throughout, so only refs move.</li>
+<li>It does <strong>not</strong> support an <code>--all</code> / <code>--range</code> mode. Each call
+reverses exactly one operation.</li>
+</ul>
+<h2 id="see-also-1"><a class="header" href="#see-also-1">See also</a></h2>
+<ul>
+<li><a href="#gg-log"><code>gg log</code></a> — smartlog view of the current stack</li>
+<li><a href="#mcp-server">MCP server</a> — <code>stack_undo</code> and <code>stack_undo_list</code>
+tools for agentic workflows</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="mcp-server"><a class="header" href="#mcp-server">MCP Server</a></h1>
+<p>git-gud includes an MCP (Model Context Protocol) server that allows AI assistants like Claude Desktop, Cursor, and other MCP-compatible tools to interact with your stacked-diffs workflows programmatically.</p>
+<h2 id="installation-2"><a class="header" href="#installation-2">Installation</a></h2>
+<p>The <code>gg-mcp</code> binary is distributed alongside <code>gg</code>. If you installed via Homebrew or cargo-dist, it should already be available.</p>
+<h2 id="configuration"><a class="header" href="#configuration">Configuration</a></h2>
+<h3 id="claude-desktop"><a class="header" href="#claude-desktop">Claude Desktop</a></h3>
+<p>Add this to your Claude Desktop MCP configuration (<code>~/Library/Application Support/Claude/claude_desktop_config.json</code>):</p>
+<pre><code class="language-json">{
+  "mcpServers": {
+    "git-gud": {
+      "command": "gg-mcp",
+      "env": {
+        "GG_REPO_PATH": "/path/to/your/repo"
+      }
+    }
+  }
+}
+</code></pre>
+<h3 id="cursor--other-mcp-clients"><a class="header" href="#cursor--other-mcp-clients">Cursor / Other MCP Clients</a></h3>
+<p>Configure <code>gg-mcp</code> as a stdio-based MCP server. Set <code>GG_REPO_PATH</code> to point to your repository.</p>
+<h2 id="environment-variables"><a class="header" href="#environment-variables">Environment Variables</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Variable</th><th>Description</th><th>Default</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GG_REPO_PATH</code></td><td>Path to the git repository</td><td>Current working directory</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="available-tools"><a class="header" href="#available-tools">Available Tools</a></h2>
+<h3 id="stack_list"><a class="header" href="#stack_list"><code>stack_list</code></a></h3>
+<p>List the current stack with commit entries and PR/MR status.</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>refresh</code> (boolean, optional): Refresh PR/MR status from remote before listing. Default: <code>false</code>.</li>
+</ul>
+<p><strong>Returns:</strong> Stack name, base branch, commit entries with positions, SHAs, titles, GG-IDs, PR numbers, states, CI status, and approval status.</p>
+<h3 id="stack_log"><a class="header" href="#stack_log"><code>stack_log</code></a></h3>
+<p>Render the current stack as a smartlog-style view (stack-scoped). Mirrors the CLI <code>gg log --json</code> output.</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>refresh</code> (boolean, optional): Refresh PR/MR status from remote before rendering. Default: <code>false</code>.</li>
+</ul>
+<p><strong>Returns:</strong> <code>{ stack, base, current_position, entries: [...] }</code>. Entry fields match <code>stack_list</code>. Use <code>stack_list_all</code> when you need a cross-stack overview.</p>
+<h3 id="stack_list_all"><a class="header" href="#stack_list_all"><code>stack_list_all</code></a></h3>
+<p>List all stacks in the repository with summary information.</p>
+<p><strong>Parameters:</strong> None.</p>
+<p><strong>Returns:</strong> Current stack name and a list of all stacks with name, base branch, commit count, and whether each is the current stack.</p>
+<h3 id="stack_inbox"><a class="header" href="#stack_inbox"><code>stack_inbox</code></a></h3>
+<p>Show actionable triage across local stacks. Mirrors <code>gg inbox --json</code> and groups PRs/MRs into action buckets like ready to land, blocked on CI, awaiting review, behind base, draft, and optionally merged.</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>all</code> (boolean, optional): Include merged items as well.</li>
+</ul>
+<p><strong>Returns:</strong> A versioned JSON payload with <code>total_items</code> and <code>buckets</code>, where each bucket contains entries with stack name, position, SHA, title, PR/MR number, URL, CI status, and optional behind-base count.</p>
+<h3 id="stack_status"><a class="header" href="#stack_status"><code>stack_status</code></a></h3>
+<p>Get a quick status summary of the current stack.</p>
+<p><strong>Parameters:</strong> None.</p>
+<p><strong>Returns:</strong> Stack name, base branch, total commits, synced commits, current position, and how many commits behind the base branch.</p>
+<h3 id="pr_info"><a class="header" href="#pr_info"><code>pr_info</code></a></h3>
+<p>Get detailed information about a specific PR/MR by number.</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>number</code> (integer, required): The PR/MR number to look up.</li>
+</ul>
+<p><strong>Returns:</strong> PR number, title, state (open/merged/closed/draft), URL, draft status, approval status, mergeability, and CI status.</p>
+<h3 id="config_show"><a class="header" href="#config_show"><code>config_show</code></a></h3>
+<p>Show the current git-gud configuration for this repository.</p>
+<p><strong>Parameters:</strong> None.</p>
+<p><strong>Returns:</strong> Provider, base branch, branch username, lint commands, and boolean settings (including compatibility field <code>auto_add_gg_ids</code>, which is always returned as <code>true</code>).</p>
+<h2 id="write-tools"><a class="header" href="#write-tools">Write Tools</a></h2>
+<h3 id="stack_checkout"><a class="header" href="#stack_checkout"><code>stack_checkout</code></a></h3>
+<p>Create a new stack or switch to an existing one.</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>name</code> (string, optional): Stack name.</li>
+<li><code>base</code> (string, optional): Base branch (default: main/master).</li>
+<li><code>worktree</code> (boolean, optional): Use a git worktree for isolation.</li>
+</ul>
+<h3 id="stack_sync"><a class="header" href="#stack_sync"><code>stack_sync</code></a></h3>
+<p>Push branches and create/update PRs/MRs for the current stack.</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>draft</code> (boolean, optional): Create PRs as draft.</li>
+<li><code>force</code> (boolean, optional): Force-push branches.</li>
+<li><code>update_descriptions</code> (boolean, optional): Update PR descriptions from commit messages.</li>
+<li><code>update_title</code> (boolean, optional): Update PR titles from commit messages.</li>
+<li><code>no_rebase_check</code> (boolean, optional): Skip rebase-needed check.</li>
+<li><code>lint</code> (boolean, optional): Run lint before syncing.</li>
+<li><code>until</code> (string, optional): Only sync up to this position/GG-ID/SHA.</li>
+</ul>
+<h3 id="stack_land"><a class="header" href="#stack_land"><code>stack_land</code></a></h3>
+<p>Merge approved PRs/MRs from the current stack.</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>all</code> (boolean, optional): Land all approved PRs.</li>
+<li><code>squash</code> (boolean, optional): Use squash merge.</li>
+<li><code>auto_clean</code> (boolean, optional): Auto-clean the stack after landing.</li>
+<li><code>until</code> (string, optional): Only land up to this position/GG-ID/SHA.</li>
+</ul>
+<h3 id="stack_clean"><a class="header" href="#stack_clean"><code>stack_clean</code></a></h3>
+<p>Clean up stacks whose PRs have been merged.</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>all</code> (boolean, optional): Clean all merged stacks.</li>
+</ul>
+<h3 id="stack_rebase"><a class="header" href="#stack_rebase"><code>stack_rebase</code></a></h3>
+<p>Rebase the current stack onto the latest base branch.</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>target</code> (string, optional): Target branch to rebase onto.</li>
+</ul>
+<h3 id="stack_squash"><a class="header" href="#stack_squash"><code>stack_squash</code></a></h3>
+<p>Squash (amend) staged changes into the current commit.</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>all</code> (boolean, optional): Stage all changes first.</li>
+</ul>
+<h3 id="stack_absorb"><a class="header" href="#stack_absorb"><code>stack_absorb</code></a></h3>
+<p>Auto-absorb staged changes into the correct commits.</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>dry_run</code> (boolean, optional): Show what would be absorbed.</li>
+<li><code>and_rebase</code> (boolean, optional): Rebase after absorbing.</li>
+<li><code>whole_file</code> (boolean, optional): Absorb whole files.</li>
+<li><code>one_fixup_per_commit</code> (boolean, optional): One fixup per target commit.</li>
+<li><code>squash</code> (boolean, optional): Squash fixups immediately.</li>
+</ul>
+<h3 id="stack_reconcile"><a class="header" href="#stack_reconcile"><code>stack_reconcile</code></a></h3>
+<p>Reconcile out-of-sync branches pushed outside of gg.</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>dry_run</code> (boolean, optional): Show what would change.</li>
+</ul>
+<h3 id="stack_move"><a class="header" href="#stack_move"><code>stack_move</code></a></h3>
+<p>Move to a specific commit in the stack.</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>target</code> (string, required): Position number, GG-ID, or SHA prefix.</li>
+</ul>
+<h3 id="stack_navigate"><a class="header" href="#stack_navigate"><code>stack_navigate</code></a></h3>
+<p>Navigate within the stack.</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>direction</code> (string, required): <code>"first"</code>, <code>"last"</code>, <code>"prev"</code>, or <code>"next"</code>.</li>
+</ul>
+<h3 id="stack_lint"><a class="header" href="#stack_lint"><code>stack_lint</code></a></h3>
+<p>Run configured lint commands on each commit.</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>until</code> (integer, optional): Only lint up to this position.</li>
+</ul>
+<h3 id="stack_drop"><a class="header" href="#stack_drop"><code>stack_drop</code></a></h3>
+<p>Remove commits from the stack.</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>targets</code> (array of strings, required): Commits to drop—positions (1-indexed), short SHAs, or GG-IDs.</li>
+</ul>
+<p><strong>Notes:</strong> Always uses <code>--force</code> (the agent is expected to confirm with the user before calling). Returns JSON with dropped commits.</p>
+<h3 id="stack_split"><a class="header" href="#stack_split"><code>stack_split</code></a></h3>
+<p>Split a commit into two by moving specified files to a new commit.</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>commit</code> (string, optional): Target commit—position (1-indexed), short SHA, or GG-ID. Defaults to the current commit.</li>
+<li><code>files</code> (array of strings, required): Files to include in the new commit.</li>
+<li><code>message</code> (string, optional): Message for the new (first) commit.</li>
+<li><code>no_edit</code> (boolean, optional): Don’t prompt for the remainder commit message.</li>
+</ul>
+<p><strong>Notes:</strong> File-level only (no hunk selection via MCP). The new commit is inserted <em>before</em> the original.</p>
+<h3 id="stack_reorder"><a class="header" href="#stack_reorder"><code>stack_reorder</code></a></h3>
+<p>Reorder commits in the stack with an explicit order.</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>order</code> (string, required): New order as positions (1-indexed), e.g., <code>"3,1,2"</code> or <code>"3 1 2"</code>.</li>
+</ul>
+<p><strong>Notes:</strong> No TUI via MCP. The order specifies the new bottom-to-top arrangement of commits.</p>
+<h3 id="stack_undo"><a class="header" href="#stack_undo"><code>stack_undo</code></a></h3>
+<p>Reverse the local ref/HEAD effects of the most recent mutating <code>gg</code>
+command (or a specific operation by id). Shell-out wrapper around
+<a href="#gg-undo"><code>gg undo --json</code></a>.</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>operation_id</code> (string, optional): Target a specific record (see
+<code>stack_undo_list</code>). Defaults to the most-recent-undoable operation.</li>
+</ul>
+<p><strong>Notes:</strong> Refuses on remote-touching operations (<code>sync</code>, <code>land</code>) —
+the returned payload includes a <code>refusal.reason</code> of <code>remote</code> plus a
+provider-specific revert hint (e.g. <code>gh pr close &lt;n&gt;</code>, <code>git push --delete …</code>). Agents must surface the hint to the user rather than
+attempt silent remote rollback. Also refuses on <code>interrupted</code>,
+<code>stale</code>, and <code>unsupported_schema</code> records; the working tree is never
+modified.</p>
+<h3 id="stack_undo_list"><a class="header" href="#stack_undo_list"><code>stack_undo_list</code></a></h3>
+<p>List recent operations from the per-repo operation log (newest-first).
+Shell-out wrapper around <a href="#gg-undo"><code>gg undo --list --json</code></a>.</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>limit</code> (integer, optional): Cap the number of records returned
+(default: 20).</li>
+</ul>
+<p><strong>Notes:</strong> Each entry carries <code>is_undoable</code> (gate for safe local
+replay) and, for undo records, <code>is_undo</code> + <code>undoes</code> (the operation id
+being reversed). Remote-touching ops appear with <code>is_undoable: false</code>
+and <code>touched_remote: true</code>.</p>
+<h2 id="transport"><a class="header" href="#transport">Transport</a></h2>
+<p>The MCP server uses <strong>stdio</strong> transport (JSON-RPC over stdin/stdout), which is the standard for local MCP tools. No network configuration is needed.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="configuration-1"><a class="header" href="#configuration-1">Configuration</a></h1>
+<p>git-gud uses a layered configuration system:</p>
+<ol>
+<li><strong>Global config</strong>: <code>~/.config/gg/config.json</code> — shared defaults across all repos</li>
+<li><strong>Local config</strong>: <code>.git/gg/config.json</code> — per-repository settings</li>
+</ol>
+<p>Local config always takes precedence over global config.</p>
+<h2 id="setup"><a class="header" href="#setup">Setup</a></h2>
+<p>Initialize or update local config with:</p>
+<pre><code class="language-bash">gg setup        # Quick mode: essential settings only
+gg setup --all  # Full mode: all settings organized by category
+</code></pre>
+<p>For global config, manually create <code>~/.config/gg/config.json</code> with your preferred defaults.</p>
+<h2 id="example-config"><a class="header" href="#example-config">Example config</a></h2>
+<pre><code class="language-json">{
+  "defaults": {
+    "provider": "gitlab",
+    "base": "main",
+    "branch_username": "your-username",
+    "lint": [
+      "cargo fmt --check",
+      "cargo clippy -- -D warnings"
+    ],
+    "auto_add_gg_ids": true,
+    "unstaged_action": "ask",
+    "land_wait_timeout_minutes": 30,
+    "land_admin": false,
+    "land_auto_clean": false,
+    "sync_auto_lint": false,
+    "sync_auto_rebase": false,
+    "sync_behind_threshold": 1,
+    "sync_draft": false,
+    "sync_update_descriptions": true,
+    "sync_update_title": false,
+    "worktree_base_path": "/tmp/gg-worktrees",
+    "gitlab": {
+      "auto_merge_on_land": false
+    }
+  }
+}
+</code></pre>
+<h2 id="defaults-options"><a class="header" href="#defaults-options"><code>defaults</code> options</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Option</th><th>Type</th><th>What it controls</th><th>Default</th></tr>
+</thead>
+<tbody>
+<tr><td><code>provider</code></td><td><code>string</code></td><td>Provider (<code>github</code>/<code>gitlab</code>) for self-hosted or explicit override</td><td>Auto-detected</td></tr>
+<tr><td><code>base</code></td><td><code>string</code></td><td>Default base branch for new stacks</td><td>Auto-detected</td></tr>
+<tr><td><code>branch_username</code></td><td><code>string</code></td><td>Username prefix in stack/entry branch names</td><td>Auto-detected</td></tr>
+<tr><td><code>lint</code></td><td><code>string[]</code></td><td>Commands used by <code>gg lint</code> / <code>gg sync --lint</code></td><td><code>[]</code></td></tr>
+<tr><td><code>auto_add_gg_ids</code></td><td><code>boolean</code></td><td><strong>Deprecated</strong> compatibility field. gg always enforces GG metadata normalization, regardless of this value.</td><td><code>true</code></td></tr>
+<tr><td><code>unstaged_action</code></td><td><code>string</code></td><td>Default behavior for <code>gg sc</code>/<code>gg amend</code> when unstaged changes exist: <code>ask</code>, <code>add</code>, <code>stash</code>, <code>continue</code>, or <code>abort</code></td><td><code>ask</code></td></tr>
+<tr><td><code>land_wait_timeout_minutes</code></td><td><code>number</code></td><td>Timeout for <code>gg land --wait</code> polling</td><td><code>30</code></td></tr>
+<tr><td><code>land_admin</code></td><td><code>boolean</code></td><td>Use admin privileges to bypass approval requirements on land (GitHub only)</td><td><code>false</code></td></tr>
+<tr><td><code>land_auto_clean</code></td><td><code>boolean</code></td><td>Auto-run cleanup after full landing</td><td><code>false</code></td></tr>
+<tr><td><code>sync_auto_lint</code></td><td><code>boolean</code></td><td>Automatically run <code>gg lint</code> before <code>gg sync</code></td><td><code>false</code></td></tr>
+<tr><td><code>sync_auto_rebase</code></td><td><code>boolean</code></td><td>Automatically run <code>gg rebase</code> before <code>gg sync</code> when behind threshold is reached</td><td><code>false</code></td></tr>
+<tr><td><code>sync_behind_threshold</code></td><td><code>number</code></td><td>Warn/rebase in <code>gg sync</code> when base is at least this many commits behind <code>origin/&lt;base&gt;</code> (<code>0</code> disables check)</td><td><code>1</code></td></tr>
+<tr><td><code>sync_draft</code></td><td><code>boolean</code></td><td>Create new PRs/MRs as drafts by default</td><td><code>false</code></td></tr>
+<tr><td><code>sync_update_descriptions</code></td><td><code>boolean</code></td><td>Update PR/MR descriptions on re-sync</td><td><code>true</code></td></tr>
+<tr><td><code>sync_update_title</code></td><td><code>boolean</code></td><td>Update PR/MR titles on re-sync</td><td><code>false</code></td></tr>
+<tr><td><code>stack_nav_comments</code></td><td><code>boolean</code></td><td>Post a managed navigation comment on each open PR/MR in a multi-entry stack, listing all entries with a 👉 marker on the current one. When set back to <code>false</code>, the next <code>gg sync</code> removes any previously-posted managed comments. Skipped for single-entry stacks and when <code>--until</code> limits a sync.</td><td><code>false</code></td></tr>
+<tr><td><code>worktree_base_path</code></td><td><code>string</code></td><td>Base directory for managed worktrees</td><td>Parent of repo</td></tr>
+<tr><td><code>gitlab.auto_merge_on_land</code></td><td><code>boolean</code></td><td>Default GitLab auto-merge behavior for <code>gg land</code></td><td><code>false</code></td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="global-config-1"><a class="header" href="#global-config-1">Global Config</a></h2>
+<p>Store shared defaults in <code>~/.config/gg/config.json</code>. This is useful for:</p>
+<ul>
+<li>Organization-wide settings (e.g., always use drafts)</li>
+<li>Personal preferences that apply to all your repos</li>
+<li>Reducing repetitive setup across multiple repositories</li>
+</ul>
+<p>Example global config:</p>
+<pre><code class="language-json">{
+  "defaults": {
+    "sync_draft": true,
+    "land_auto_clean": true,
+    "sync_behind_threshold": 5
+  }
+}
+</code></pre>
+<p>When <code>gg setup</code> runs in a new repo, these global defaults will be shown in prompts. You can accept them or override per-repo.</p>
+<h2 id="stack-state"><a class="header" href="#stack-state">Stack state</a></h2>
+<p>git-gud also stores stack-specific state in the local config file (for example PR/MR mappings by GG-ID). This is how it remembers which commit corresponds to which PR/MR over time.</p>
+<h2 id="prmr-templates"><a class="header" href="#prmr-templates">PR/MR templates</a></h2>
+<p>You can customize descriptions by creating <code>.git/gg/pr_template.md</code>.</p>
+<p>Supported placeholders:</p>
+<ul>
+<li><code>{{title}}</code></li>
+<li><code>{{description}}</code></li>
+<li><code>{{stack_name}}</code></li>
+<li><code>{{commit_sha}}</code></li>
+</ul>
+<p>Example:</p>
+<pre><code class="language-markdown">## Summary
+
+{{description}}
+
+---
+
+**Stack:** `{{stack_name}}`
+**Commit:** `{{commit_sha}}`
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="shell-completions"><a class="header" href="#shell-completions">Shell Completions</a></h1>
+<p>Generate completions with:</p>
+<pre><code class="language-bash">gg completions &lt;shell&gt;
+</code></pre>
+<p>Supported shells include: <code>bash</code>, <code>zsh</code>, <code>fish</code>, <code>elvish</code>, <code>powershell</code>.</p>
+<h2 id="bash"><a class="header" href="#bash">Bash</a></h2>
+<pre><code class="language-bash">mkdir -p ~/.local/share/bash-completion/completions
+gg completions bash &gt; ~/.local/share/bash-completion/completions/gg
+</code></pre>
+<h2 id="zsh"><a class="header" href="#zsh">Zsh</a></h2>
+<pre><code class="language-bash">mkdir -p ~/.zfunc
+gg completions zsh &gt; ~/.zfunc/_gg
+</code></pre>
+<p>Then in <code>~/.zshrc</code>:</p>
+<pre><code class="language-bash">fpath=(~/.zfunc $fpath)
+autoload -Uz compinit &amp;&amp; compinit
+</code></pre>
+<h2 id="fish"><a class="header" href="#fish">Fish</a></h2>
+<pre><code class="language-bash">mkdir -p ~/.config/fish/completions
+gg completions fish &gt; ~/.config/fish/completions/gg.fish
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="troubleshooting--faq"><a class="header" href="#troubleshooting--faq">Troubleshooting / FAQ</a></h1>
+<h2 id="gh-or-glab-is-missing"><a class="header" href="#gh-or-glab-is-missing"><code>gh</code> or <code>glab</code> is missing</a></h2>
+<p>Install the provider CLI:</p>
+<ul>
+<li>GitHub: <a href="https://cli.github.com/">https://cli.github.com/</a></li>
+<li>GitLab: <a href="https://gitlab.com/gitlab-org/cli">https://gitlab.com/gitlab-org/cli</a></li>
+</ul>
+<h2 id="not-authenticated-with-provider"><a class="header" href="#not-authenticated-with-provider">Not authenticated with provider</a></h2>
+<pre><code class="language-bash">gh auth login
+glab auth login
+</code></pre>
+<h2 id="not-on-a-stack-branch"><a class="header" href="#not-on-a-stack-branch">“Not on a stack branch”</a></h2>
+<p>You’re on a branch that doesn’t match the stack naming scheme.</p>
+<pre><code class="language-bash">gg co &lt;stack-name&gt;
+</code></pre>
+<h2 id="i-pushed-with-git-push-and-now-mappings-are-wrong"><a class="header" href="#i-pushed-with-git-push-and-now-mappings-are-wrong">I pushed with <code>git push</code> and now mappings are wrong</a></h2>
+<p>Run reconcile:</p>
+<pre><code class="language-bash">gg reconcile --dry-run
+gg reconcile
+</code></pre>
+<h2 id="merge-commits-are-not-supported"><a class="header" href="#merge-commits-are-not-supported">Merge commits are not supported</a></h2>
+<p>Stacks require linear history. Rebase your branch:</p>
+<pre><code class="language-bash">git rebase main
+</code></pre>
+<h2 id="gg-land---wait-times-out"><a class="header" href="#gg-land---wait-times-out"><code>gg land --wait</code> times out</a></h2>
+<p>Increase timeout in config:</p>
+<pre><code class="language-json">{
+  "defaults": {
+    "land_wait_timeout_minutes": 60
+  }
+}
+</code></pre>
+<h2 id="when-should-i-use-gg-absorb-vs-gg-sc"><a class="header" href="#when-should-i-use-gg-absorb-vs-gg-sc">When should I use <code>gg absorb</code> vs <code>gg sc</code>?</a></h2>
+<ul>
+<li>Use <code>gg sc</code> when you’re on the exact commit you want to modify.</li>
+<li>Use <code>gg absorb</code> when staged edits belong to multiple commits and you want git-gud to distribute them.</li>
+</ul>
+<h2 id="how-do-i-undo-a-gg-command"><a class="header" href="#how-do-i-undo-a-gg-command">How do I undo a <code>gg</code> command?</a></h2>
+<p>Run <a href="#gg-undo"><code>gg undo</code></a>. It reverses the local ref/HEAD
+effects of the most recent mutating <code>gg</code> command (drop, squash, split,
+rebase, reorder, absorb, reconcile, checkout, nav, clean, sync, land,
+or <code>run --amend</code>). Working-tree changes are not touched.</p>
+<pre><code class="language-bash">gg undo              # reverse the last local operation
+gg undo --list       # see the recent operation log
+gg undo &lt;op_id&gt;      # target a specific record
+gg undo; gg undo     # undo then redo — a second undo reverses the first
+</code></pre>
+<p>Remote-touching operations (<code>sync</code>, <code>land</code>) are recorded but refused
+for local replay. <code>gg undo</code> prints a provider-specific revert hint
+(e.g. <code>gh pr close &lt;n&gt;</code>, <code>git push --delete …</code>) instead of silently
+rewriting published history. See <a href="#gg-undo"><code>gg undo</code></a> for
+the full refusal matrix and JSON schema.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr-ef4e11c1.min.js"></script>
+        <script src="mark-09e88c2c.min.js"></script>
+        <script src="searcher-c2a407aa.js"></script>
+
+        <script src="clipboard-1626706a.min.js"></script>
+        <script src="highlight-abc7f01d.js"></script>
+        <script src="book-a0b12cfe.js"></script>
+
+        <!-- Custom JS scripts -->
+
+        <script>
+        window.addEventListener('load', function() {
+            window.setTimeout(window.print, 100);
+        });
+        </script>
+
+
+    </div>
+    </body>
+</html>

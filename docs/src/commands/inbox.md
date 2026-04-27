@@ -37,6 +37,10 @@ gg inbox --json
 
 ## Example human output
 
+The labels and number prefixes adapt to the detected provider.
+
+**GitHub:**
+
 ```text
 Inbox (3 items across 2 stacks)
 
@@ -48,6 +52,18 @@ Blocked on CI (1):
 
 Awaiting review (1):
   billing #1  9876abc  Add invoice export  stack/billing  PR #51
+```
+
+**GitLab:**
+
+```text
+Inbox (2 items across 1 stack)
+
+Ready to land (1):
+  auth #2  abc1234  Add login button  stack/auth  MR !41
+
+Awaiting review (1):
+  auth #3  def5678  Add login API  stack/auth  MR !42
 ```
 
 ## JSON

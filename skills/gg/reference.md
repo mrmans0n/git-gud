@@ -77,6 +77,7 @@ badges). Stack-scoped — use `gg ls --all` for cross-stack browsing.
 
 #### `gg inbox [OPTIONS]`
 Cross-stack actionable triage view for local stacks.
+Output adapts to the detected provider: `PR #n` for GitHub, `MR !n` for GitLab.
 
 - `-a, --all` — include merged items too
 - `--json` — emit `InboxResponse` with bucketed entries

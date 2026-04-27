@@ -42,7 +42,7 @@ pub struct BucketInput {
     pub behind_base: bool,
 }
 
-/// Classify a PR into an action bucket.
+/// Classify a PR/MR into an action bucket.
 ///
 /// Priority order (first match wins):
 /// 1. Merged → Merged
@@ -131,7 +131,7 @@ struct StackLoadError {
     error: String,
 }
 
-/// Internal item representing one triaged PR.
+/// Internal item representing one triaged PR/MR.
 struct InboxItem {
     stack_name: String,
     position: usize,
@@ -139,6 +139,8 @@ struct InboxItem {
     title: String,
     mr_number: u64,
     mr_url: String,
+    mr_label: &'static str,
+    mr_number_prefix: &'static str,
     bucket: ActionBucket,
     ci_status: Option<CiStatus>,
     behind_base: Option<usize>,
@@ -243,8 +245,17 @@ pub fn run(all: bool, json: bool) -> Result<()> {
         return Ok(());
     }
 
+    let detected_provider = Provider::detect(&repo).ok();
+    let mr_label = detected_provider
+        .as_ref()
+        .map(Provider::pr_label)
+        .unwrap_or("PR/MR");
+
     if !json {
-        eprint!("{}", style("Refreshing PR status...").dim());
+        eprint!(
+            "{}",
+            style(format!("Refreshing {mr_label} status...")).dim()
+        );
     }
 
     let mut items: Vec<InboxItem> = Vec::new();
@@ -283,12 +294,12 @@ pub fn run(all: bool, json: bool) -> Result<()> {
         }
 
         let provider = if entries.iter().any(|entry| entry.mr_number.is_some()) {
-            Provider::detect(&repo).ok()
+            detected_provider
         } else {
             None
         };
 
-        // Refresh MR info from provider and cache URLs (T9 optimization)
+        // Refresh PR/MR info from provider and cache URLs (T9 optimization)
         let mut mr_urls: HashMap<u64, String> = HashMap::new();
         for entry in &mut entries {
             if let (Some(pr_num), Some(provider)) = (entry.mr_number, provider) {
@@ -318,7 +329,7 @@ pub fn run(all: bool, json: bool) -> Result<()> {
                 .ok()
                 .filter(|&b| b > 0);
 
-        // Bucket each entry with a PR
+        // Bucket each entry with a PR/MR
         for entry in &entries {
             if let Some(mr_num) = entry.mr_number {
                 let mr_url = mr_urls.get(&mr_num).cloned().unwrap_or_default();
@@ -345,6 +356,11 @@ pub fn run(all: bool, json: bool) -> Result<()> {
                         title: entry.title.clone(),
                         mr_number: mr_num,
                         mr_url,
+                        mr_label: provider.as_ref().map(Provider::pr_label).unwrap_or("PR/MR"),
+                        mr_number_prefix: provider
+                            .as_ref()
+                            .map(Provider::pr_number_prefix)
+                            .unwrap_or("#"),
                         bucket: b,
                         ci_status: entry.ci_status.clone(),
                         behind_base: behind,
@@ -436,11 +452,13 @@ fn print_human_output(items: &[InboxItem], stack_errors: &[StackLoadError]) {
             };
 
             println!(
-                "  {} {}  {}  {}  PR #{}{}",
+                "  {} {}  {}  {}  {} {}{}{}",
                 style(format!("{} #{}", item.stack_name, item.position)).dim(),
                 style(&item.short_sha).dim(),
                 item.title,
                 style(format!("stack/{}", item.stack_name)).cyan(),
+                item.mr_label,
+                item.mr_number_prefix,
                 item.mr_number,
                 ci_icon,
             );

@@ -5650,6 +5650,322 @@ fn test_gg_ls_marks_stacks_with_worktree_indicator() {
 }
 
 #[test]
+fn test_gg_unstack_worktree_creates_new_stack_worktree_and_preserves_current_branch() {
+    let (_temp_dir, repo_path) = create_test_repo_with_worktree_support();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","base":"main"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["co", "lower"]);
+    assert!(
+        success,
+        "checkout should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+
+    for i in 1..=4 {
+        fs::write(
+            repo_path.join(format!("file{i}.txt")),
+            format!("commit {i}\n"),
+        )
+        .expect("Failed to write test file");
+        run_git(&repo_path, &["add", "."]);
+        let (success, _) = run_git(&repo_path, &["commit", "-m", &format!("commit {i}")]);
+        assert!(success, "commit {i} should succeed");
+    }
+
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &["unstack", "-t", "3", "--name", "upper", "--worktree"],
+    );
+    assert!(
+        success,
+        "unstack --worktree should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+
+    let (_, current_branch) = run_git(&repo_path, &["branch", "--show-current"]);
+    assert_eq!(current_branch.trim(), "testuser/lower");
+
+    let (_, lower_log) = run_git(&repo_path, &["log", "--format=%s", "main..HEAD"]);
+    assert!(lower_log.contains("commit 1"), "lower log: {lower_log}");
+    assert!(lower_log.contains("commit 2"), "lower log: {lower_log}");
+    assert!(!lower_log.contains("commit 3"), "lower log: {lower_log}");
+    assert!(!lower_log.contains("commit 4"), "lower log: {lower_log}");
+
+    let expected_path = repo_path.parent().expect("repo parent").join(format!(
+        "{}.{}",
+        repo_path.file_name().unwrap().to_string_lossy(),
+        "upper"
+    ));
+    assert!(
+        expected_path.exists(),
+        "Expected worktree path to exist: {}",
+        expected_path.display()
+    );
+
+    let (_, worktree_branch) = run_git(&expected_path, &["branch", "--show-current"]);
+    assert_eq!(worktree_branch.trim(), "testuser/upper");
+
+    let (_, upper_log) = run_git(&expected_path, &["log", "--format=%s", "main..HEAD"]);
+    assert!(!upper_log.contains("commit 1"), "upper log: {upper_log}");
+    assert!(!upper_log.contains("commit 2"), "upper log: {upper_log}");
+    assert!(upper_log.contains("commit 3"), "upper log: {upper_log}");
+    assert!(upper_log.contains("commit 4"), "upper log: {upper_log}");
+
+    let config: Value =
+        serde_json::from_str(&fs::read_to_string(gg_dir.join("config.json")).unwrap()).unwrap();
+    let worktree_path = config["stacks"]["upper"]["worktree_path"]
+        .as_str()
+        .expect("upper stack should persist worktree_path");
+    assert_eq!(
+        PathBuf::from(worktree_path).canonicalize().unwrap(),
+        expected_path.canonicalize().unwrap()
+    );
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["ls", "--all"]);
+    assert!(success, "ls --all should succeed: {}", stderr);
+    assert!(
+        stdout.contains("upper"),
+        "ls should show upper stack: {stdout}"
+    );
+    assert!(
+        stdout.contains("[wt]"),
+        "ls should show worktree marker: {stdout}"
+    );
+}
+
+#[test]
+fn test_gg_unstack_worktree_failure_leaves_original_stack_unchanged() {
+    let (_temp_dir, repo_path) = create_test_repo_with_worktree_support();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","base":"main"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["co", "rollback-lower"]);
+    assert!(
+        success,
+        "checkout should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+
+    for i in 1..=3 {
+        fs::write(
+            repo_path.join(format!("rollback-file{i}.txt")),
+            format!("commit {i}\n"),
+        )
+        .expect("Failed to write test file");
+        run_git(&repo_path, &["add", "."]);
+        let (success, _) = run_git(
+            &repo_path,
+            &["commit", "-m", &format!("rollback commit {i}")],
+        );
+        assert!(success, "commit {i} should succeed");
+    }
+
+    let before_log = rev_list(&repo_path, "main..testuser/rollback-lower");
+    let blocked_path = repo_path.parent().expect("repo parent").join(format!(
+        "{}.{}",
+        repo_path.file_name().unwrap().to_string_lossy(),
+        "rollback-upper"
+    ));
+    fs::create_dir_all(&blocked_path).expect("Failed to create blocked worktree path");
+    fs::write(blocked_path.join("occupied.txt"), "already here\n")
+        .expect("Failed to occupy blocked worktree path");
+
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &[
+            "unstack",
+            "-t",
+            "2",
+            "--name",
+            "rollback-upper",
+            "--worktree",
+        ],
+    );
+    assert!(
+        !success,
+        "unstack --worktree should fail when target path exists: stdout={stdout}"
+    );
+    assert!(
+        stderr.contains("Failed to create worktree"),
+        "stderr should report worktree creation failure: {stderr}"
+    );
+
+    let after_log = rev_list(&repo_path, "main..testuser/rollback-lower");
+    assert_eq!(after_log, before_log);
+
+    let (_, current_branch) = run_git(&repo_path, &["branch", "--show-current"]);
+    assert_eq!(current_branch.trim(), "testuser/rollback-lower");
+
+    let (branch_exists, _) = run_git(&repo_path, &["rev-parse", "testuser/rollback-upper"]);
+    assert!(
+        !branch_exists,
+        "temporary new stack branch should be removed after worktree failure"
+    );
+
+    let config: Value =
+        serde_json::from_str(&fs::read_to_string(gg_dir.join("config.json")).unwrap()).unwrap();
+    assert!(
+        config["stacks"]["rollback-upper"].is_null(),
+        "failed unstack should not persist new stack config: {config}"
+    );
+}
+
+#[test]
+fn test_gg_unstack_wt_alias_preserves_existing_old_stack_worktree_metadata() {
+    let (_temp_dir, repo_path) = create_test_repo_with_worktree_support();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","base":"main"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["co", "old-wt", "--worktree"]);
+    assert!(
+        success,
+        "checkout --worktree should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+
+    let old_worktree_path = repo_path.parent().expect("repo parent").join(format!(
+        "{}.{}",
+        repo_path.file_name().unwrap().to_string_lossy(),
+        "old-wt"
+    ));
+
+    for i in 1..=3 {
+        fs::write(
+            old_worktree_path.join(format!("wt-file{i}.txt")),
+            format!("commit {i}\n"),
+        )
+        .expect("Failed to write test file");
+        run_git(&old_worktree_path, &["add", "."]);
+        let (success, _) = run_git(
+            &old_worktree_path,
+            &["commit", "-m", &format!("wt commit {i}")],
+        );
+        assert!(success, "worktree commit {i} should succeed");
+    }
+
+    let (success, stdout, stderr) = run_gg(
+        &old_worktree_path,
+        &["unstack", "-t", "2", "--name", "new-wt", "--wt"],
+    );
+    assert!(
+        success,
+        "unstack --wt should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+
+    let (_, current_branch) = run_git(&old_worktree_path, &["branch", "--show-current"]);
+    assert_eq!(current_branch.trim(), "testuser/old-wt");
+
+    let config: Value =
+        serde_json::from_str(&fs::read_to_string(gg_dir.join("config.json")).unwrap()).unwrap();
+    let old_config_worktree_path = config["stacks"]["old-wt"]["worktree_path"]
+        .as_str()
+        .expect("old stack should keep worktree_path");
+    assert_eq!(
+        PathBuf::from(old_config_worktree_path)
+            .canonicalize()
+            .unwrap(),
+        old_worktree_path.canonicalize().unwrap()
+    );
+
+    let new_worktree_path = config["stacks"]["new-wt"]["worktree_path"]
+        .as_str()
+        .expect("new stack should persist worktree_path");
+    assert_ne!(
+        PathBuf::from(new_worktree_path).canonicalize().unwrap(),
+        PathBuf::from(old_config_worktree_path)
+            .canonicalize()
+            .unwrap()
+    );
+    assert!(
+        PathBuf::from(new_worktree_path).exists(),
+        "new worktree should exist at {new_worktree_path}"
+    );
+}
+
+#[test]
+fn test_gg_unstack_without_worktree_switches_current_repo_to_new_stack() {
+    let (_temp_dir, repo_path) = create_test_repo_with_worktree_support();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","base":"main"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["co", "plain-unstack"]);
+    assert!(
+        success,
+        "checkout should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+
+    for i in 1..=3 {
+        fs::write(
+            repo_path.join(format!("plain-file{i}.txt")),
+            format!("commit {i}\n"),
+        )
+        .expect("Failed to write test file");
+        run_git(&repo_path, &["add", "."]);
+        let (success, _) = run_git(&repo_path, &["commit", "-m", &format!("plain commit {i}")]);
+        assert!(success, "commit {i} should succeed");
+    }
+
+    let (success, stdout, stderr) =
+        run_gg(&repo_path, &["unstack", "-t", "2", "--name", "plain-upper"]);
+    assert!(
+        success,
+        "unstack should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+
+    let (_, current_branch) = run_git(&repo_path, &["branch", "--show-current"]);
+    assert_eq!(current_branch.trim(), "testuser/plain-upper");
+
+    let (_, upper_log) = run_git(&repo_path, &["log", "--format=%s", "main..HEAD"]);
+    assert!(
+        !upper_log.contains("plain commit 1"),
+        "upper log: {upper_log}"
+    );
+    assert!(
+        upper_log.contains("plain commit 2"),
+        "upper log: {upper_log}"
+    );
+    assert!(
+        upper_log.contains("plain commit 3"),
+        "upper log: {upper_log}"
+    );
+
+    let config: Value =
+        serde_json::from_str(&fs::read_to_string(gg_dir.join("config.json")).unwrap()).unwrap();
+    assert!(
+        config["stacks"]["plain-upper"]["worktree_path"].is_null(),
+        "plain unstack should not create worktree metadata: {config}"
+    );
+}
+
+#[test]
 fn test_clean_detects_locally_merged_worktree_stack_when_provider_check_fails() {
     let (_parent_dir, repo_path) = create_test_repo_with_worktree_support();
 

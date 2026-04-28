@@ -498,6 +498,8 @@ pub struct UnstackResultJson {
     pub deleted_entry_branches: Vec<String>,
     pub migrated_review_mappings: usize,
     pub sync_required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
 }
 
 #[derive(Serialize)]

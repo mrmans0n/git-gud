@@ -3,7 +3,7 @@
 Split the current stack into two independent stacks.
 
 ```bash
-gg unstack [--target <TARGET>] [--name <STACK_NAME>] [--no-tui] [-f] [--json]
+gg unstack [--target <TARGET>] [--name <STACK_NAME>] [--no-tui] [-f] [--json] [-w]
 ```
 
 The selected entry becomes the root of a new stack, and all entries above it
@@ -26,6 +26,9 @@ gg unstack --target c-abc1234 --name auth-followup --no-tui
 
 # Machine-readable output
 gg unstack --target 3 --json --no-tui
+
+# Put the new upper stack in a managed worktree
+gg unstack --target 3 --name upper-auth --wt
 ```
 
 ## Behavior
@@ -55,6 +58,10 @@ local entry branches under the old stack name are removed for moved entries.
 If moved entries had review mappings, run `gg sync` afterwards to recreate or
 update review branches for the new stack.
 
+Without `--worktree`, the current directory switches to the new upper stack.
+With `--worktree`, the current directory stays on the lower stack and the new
+upper stack is checked out in its managed worktree.
+
 ## Options
 
 - `--target <TARGET>`: first entry for the new stack. Accepts a 1-indexed
@@ -65,6 +72,8 @@ update review branches for the new stack.
   scripts and tests.
 - `-f, --force`: bypass the immutability guard for merged/base commits.
 - `--json`: emit structured JSON.
+- `-w, --worktree`: create or reuse a managed worktree for the new stack
+  (`--wt` also works).
 
 Position `1` is rejected because it would leave the original stack empty. The
 last position is allowed and creates a one-entry new stack.

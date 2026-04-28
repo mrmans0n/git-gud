@@ -171,6 +171,17 @@ Split a commit into two. Selected files/hunks become a new commit inserted befor
 - `-f, --force` (alias: `--ignore-immutable`) — bypass the [immutability guard](#immutable-commits)
 - `FILES...` — auto-select all hunks from these files (opens interactive hunk picker if omitted)
 
+#### `gg unstack [OPTIONS]`
+Split the current stack into two independent stacks. The selected commit and all descendants become the new stack; lower commits remain in the original stack. This is distinct from `gg split`, which splits one commit.
+
+- `-t, --target <TARGET>` — first commit to move into the new stack (position, SHA, or GG-ID)
+- `-n, --name <NAME>` — name for the new stack (default: `<current-stack>-2`, with the next free suffix)
+- `--no-tui` — disable the TUI picker; requires `--target`
+- `-f, --force` (alias: `--ignore-immutable`) — bypass the [immutability guard](#immutable-commits)
+- `--json`
+
+After unstacking, run `gg sync` to push the new stack and update PR/MR targets.
+
 #### `gg rebase [TARGET]`
 Rebase current stack onto base or explicit target.
 
@@ -225,7 +236,7 @@ command, backed by a per-repo operation log at
 - `--limit N` — cap `--list` output (default: 20).
 - `--json` — emit machine-readable JSON.
 
-Every mutating command (`sc`, `drop`, `split`, `rebase`, `reorder`,
+Every mutating command (`sc`, `drop`, `split`, `unstack`, `rebase`, `reorder`,
 `absorb`, `reconcile`, `restack`, `checkout`, `mv`/`first`/`last`/`prev`/`next`,
 `clean`, `sync`, `land`, `run --amend`) snapshots refs before mutating
 and records the operation on success. A second `gg undo` redoes the
@@ -524,6 +535,29 @@ Field types for `entries`:
 }
 ```
 
+### `gg unstack --json`
+
+```json
+{
+  "version": 1,
+  "unstack": {
+    "old_stack": "my-stack",
+    "new_stack": "my-stack-2",
+    "target_position": 3,
+    "moved": [
+      {
+        "old_position": 3,
+        "sha": "abc1234",
+        "gg_id": "c-abc1234",
+        "title": "Add auth"
+      }
+    ],
+    "old_stack_count": 2,
+    "new_stack_count": 2
+  }
+}
+```
+
 ### `gg clean -a --json`
 
 ```json
@@ -643,7 +677,7 @@ with `is_undoable: false` and `touched_remote: true`.
 ## Immutable commits
 
 gg refuses by default to let rewrite-style commands (`gg sc`, `gg absorb`,
-`gg reorder`/`gg arrange`, `gg split`, `gg drop`, `gg rebase`, `gg restack`) touch commits
+`gg reorder`/`gg arrange`, `gg split`, `gg unstack`, `gg drop`, `gg rebase`, `gg restack`) touch commits
 that look "already published". A commit is considered immutable when any of
 these is true:
 

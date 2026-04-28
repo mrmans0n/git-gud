@@ -56,6 +56,7 @@ pub enum OperationKind {
     Drop,
     Squash,
     Split,
+    Unstack,
     Rebase,
     Reorder,
     Absorb,

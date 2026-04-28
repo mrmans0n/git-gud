@@ -1,10 +1,10 @@
-# Agent Skills Plugin
+# Agent Skills
 
-git-gud ships as a [Claude Code plugin](https://code.claude.com/docs/en/plugins) and follows the open [Agent Skills](https://agentskills.io) standard. This means AI coding agents — Claude Code, Cursor, Gemini CLI, OpenAI Codex, VS Code integrations, and others — can use `gg` for stacked-diff workflows.
+git-gud follows the open [Agent Skills](https://agentskills.io) standard. AI coding agents with shell access — including Codex, Claude Code, Cursor, Gemini CLI, VS Code integrations, and others — can use `gg` for stacked-diff workflows.
 
 ## What's included
 
-The plugin provides one unified skill:
+The integration provides one unified skill:
 
 | Skill | Description |
 |-------|-------------|
@@ -18,24 +18,47 @@ Each skill includes:
 
 ## Installation
 
-### 1) Claude Code marketplace (recommended)
+### 1) Generic install (recommended)
+
+```bash
+npx skills add mrmans0n/git-gud
+```
+
+The `skills` CLI installs the skill into the agent setup it detects. If it cannot decide, it prompts you to choose where to install it.
+
+### 2) Install for a specific agent
+
+Use `--agent` when you already know the host you want to target:
+
+```bash
+npx skills add mrmans0n/git-gud --agent codex
+npx skills add mrmans0n/git-gud --agent claude-code
+npx skills add mrmans0n/git-gud --agent cursor
+npx skills add mrmans0n/git-gud --agent gemini-cli
+```
+
+For a shared repository setup, run the command from the project root. For a user-level install, add `--global`.
+
+### 3) Claude Code marketplace
+
+Claude Code users can also install git-gud as a plugin:
 
 ```bash
 claude plugin marketplace add https://github.com/mrmans0n/git-gud
 claude plugin install git-gud
 ```
 
-### 2) One-off plugin loading (CLI)
+### 4) Claude Code local checkout
 
-Use this when launching Claude Code directly:
+Use this when launching Claude Code directly from a local git-gud checkout:
 
 ```bash
 claude --plugin-dir /path/to/git-gud
 ```
 
-### 3) Project-level config (`.claude/settings.json`)
+### 5) Claude Code project-level config (`.claude/settings.json`)
 
-Use this when you want the plugin enabled by default for a repository:
+Use this when you want the local checkout enabled by default for a repository:
 
 ```json
 {
@@ -48,9 +71,9 @@ Use this when you want the plugin enabled by default for a repository:
 }
 ```
 
-### 4) Other Agent Skills-compatible tools
+### 6) Manual setup for compatible tools
 
-Tools that support the Agent Skills standard can load skills from the repo's `skills/` directory. In practice, this includes Claude Code, Cursor, Gemini CLI, OpenAI Codex, and other compatible agent hosts.
+Tools that support Agent Skills can also load the repo's `skills/gg/` directory directly. Use this fallback if your agent does not use the `skills` CLI yet, or if you want to manage skill files yourself.
 
 ## How agents typically use gg
 

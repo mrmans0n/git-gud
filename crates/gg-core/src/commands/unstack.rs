@@ -19,6 +19,8 @@ use crate::output::{
 };
 use crate::stack::{self, Stack, StackEntry};
 
+const AUTO_NAME_ATTEMPT_LIMIT: usize = 100;
+
 /// Options for the unstack command.
 #[derive(Debug, Default)]
 pub struct UnstackOptions {
@@ -63,7 +65,7 @@ pub fn run(options: UnstackOptions) -> Result<()> {
     }
 
     // Resolve new stack name
-    let new_stack_name = resolve_new_stack_name(&repo, &stack_obj, &options)?;
+    let new_stack_name = resolve_new_stack_name(&repo, &config, &stack_obj, &options)?;
 
     // Immutability guard: check entries from split_position to tip
     let targets: Vec<usize> = (split_position..=stack_obj.len()).collect();
@@ -242,21 +244,33 @@ fn resolve_split_position(stack: &Stack, options: &UnstackOptions) -> Result<usi
 
 fn resolve_new_stack_name(
     repo: &Repository,
+    config: &Config,
     stack: &Stack,
     options: &UnstackOptions,
 ) -> Result<String> {
     if let Some(name) = &options.name {
         let sanitized = git::sanitize_stack_name(name)?;
-        return validate_new_stack_name(repo, stack, &sanitized);
+        return validate_new_stack_name(repo, config, stack, &sanitized);
     }
-    generate_new_stack_name(repo, stack)
+    generate_new_stack_name(repo, config, stack)
 }
 
-fn validate_new_stack_name(repo: &Repository, stack: &Stack, name: &str) -> Result<String> {
+fn validate_new_stack_name(
+    repo: &Repository,
+    config: &Config,
+    stack: &Stack,
+    name: &str,
+) -> Result<String> {
     if name == stack.name {
         return Err(GgError::Other(format!(
             "New stack name must differ from the original stack '{}'.",
             stack.name
+        )));
+    }
+    if config.get_stack(name).is_some() {
+        return Err(GgError::Other(format!(
+            "Stack config for '{}' already exists.",
+            name
         )));
     }
     let branch_name = git::format_stack_branch(&stack.username, name);
@@ -266,22 +280,22 @@ fn validate_new_stack_name(repo: &Repository, stack: &Stack, name: &str) -> Resu
     Ok(name.to_string())
 }
 
-fn generate_new_stack_name(repo: &Repository, stack: &Stack) -> Result<String> {
+fn generate_new_stack_name(repo: &Repository, config: &Config, stack: &Stack) -> Result<String> {
     let prefix = stack.name.trim_end_matches('-');
     let prefix = if prefix.is_empty() { "unstack" } else { prefix };
 
-    for suffix in 2..1000 {
+    for suffix in 2..(2 + AUTO_NAME_ATTEMPT_LIMIT) {
         let candidate = format!("{}-{}", prefix, suffix);
         let Ok(candidate) = git::sanitize_stack_name(&candidate) else {
             continue;
         };
-        if validate_new_stack_name(repo, stack, &candidate).is_ok() {
+        if validate_new_stack_name(repo, config, stack, &candidate).is_ok() {
             return Ok(candidate);
         }
     }
     Err(GgError::Other(format!(
-        "Could not generate a unique stack name for '{}'. Use --name.",
-        stack.name
+        "Could not generate a valid unused stack name after {} attempts. Use --name.",
+        AUTO_NAME_ATTEMPT_LIMIT
     )))
 }
 
@@ -295,7 +309,7 @@ fn rebase_upper_stack(
     new_branch: &str,
     split_position: usize,
 ) -> Result<Oid> {
-    let original_branch = git::current_branch_name(repo);
+    let original_branch = stack.branch_name();
     let base_ref = repo
         .revparse_single(&stack.base)
         .or_else(|_| repo.revparse_single(&format!("origin/{}", stack.base)))
@@ -355,15 +369,7 @@ fn rebase_upper_stack(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let _ = std::process::Command::new("git")
-            .args(["rebase", "--abort"])
-            .output();
-        if let Some(original_branch) = original_branch {
-            let _ = git::checkout_branch(repo, &original_branch);
-        }
-        if let Ok(mut branch) = repo.find_branch(new_branch, BranchType::Local) {
-            let _ = branch.delete();
-        }
+        cleanup_failed_unstack_rebase(repo, &original_branch, new_branch)?;
         if stderr.contains("CONFLICT") || stderr.contains("conflict") {
             return Err(GgError::RebaseConflict);
         }
@@ -380,6 +386,40 @@ fn rebase_upper_stack(
         .ok_or_else(|| GgError::Other("New branch has no target after rebase".to_string()))?;
 
     Ok(new_tip)
+}
+
+fn cleanup_failed_unstack_rebase(
+    repo: &Repository,
+    original_branch: &str,
+    new_branch: &str,
+) -> Result<()> {
+    let abort_output = std::process::Command::new("git")
+        .args(["rebase", "--abort"])
+        .output()?;
+    if !abort_output.status.success() && git::is_rebase_in_progress(repo) {
+        return Err(GgError::Other(format!(
+            "Rebase failed, and cleanup could not abort the rebase: {}",
+            String::from_utf8_lossy(&abort_output.stderr)
+        )));
+    }
+
+    git::checkout_branch(repo, original_branch).map_err(|e| {
+        GgError::Other(format!(
+            "Rebase failed, and cleanup could not checkout '{}': {}",
+            original_branch, e
+        ))
+    })?;
+
+    if let Ok(mut branch) = repo.find_branch(new_branch, BranchType::Local) {
+        branch.delete().map_err(|e| {
+            GgError::Other(format!(
+                "Rebase failed, and cleanup could not delete temporary branch '{}': {}",
+                new_branch, e
+            ))
+        })?;
+    }
+
+    Ok(())
 }
 
 fn set_branch_target(repo: &Repository, branch_name: &str, oid: Oid, message: &str) -> Result<()> {
@@ -447,6 +487,7 @@ fn entry_to_json(entry: &StackEntry) -> UnstackEntryJson {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn test_unstack_options_default() {
@@ -456,5 +497,107 @@ mod tests {
         assert!(!opts.no_tui);
         assert!(!opts.force);
         assert!(!opts.json);
+    }
+
+    fn temp_repo() -> (tempfile::TempDir, Repository) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        (dir, repo)
+    }
+
+    fn test_stack(name: &str) -> Stack {
+        Stack {
+            name: name.to_string(),
+            username: "nacho".to_string(),
+            base: "main".to_string(),
+            entries: vec![],
+            current_position: None,
+        }
+    }
+
+    #[test]
+    fn explicit_name_rejects_existing_config_entry() {
+        let (_dir, repo) = temp_repo();
+        let stack = test_stack("feature");
+        let mut config = Config::default();
+        config
+            .stacks
+            .insert("existing".to_string(), StackConfig::default());
+        let options = UnstackOptions {
+            name: Some("existing".to_string()),
+            ..UnstackOptions::default()
+        };
+
+        let err = resolve_new_stack_name(&repo, &config, &stack, &options).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("Stack config for 'existing' already exists"));
+    }
+
+    #[test]
+    fn generated_name_skips_existing_config_entries() {
+        let (_dir, repo) = temp_repo();
+        let stack = test_stack("feature");
+        let mut config = Config::default();
+        config
+            .stacks
+            .insert("feature-2".to_string(), StackConfig::default());
+
+        let name = generate_new_stack_name(&repo, &config, &stack).unwrap();
+
+        assert_eq!(name, "feature-3");
+    }
+
+    #[test]
+    fn generated_name_falls_back_for_trailing_dash_stack_names() {
+        let (_dir, repo) = temp_repo();
+        let stack = test_stack("feature-");
+        let config = Config::default();
+
+        let name = generate_new_stack_name(&repo, &config, &stack).unwrap();
+
+        assert_eq!(name, "feature-2");
+    }
+
+    #[test]
+    fn generated_name_errors_after_bounded_invalid_candidates() {
+        let (_dir, repo) = temp_repo();
+        let stack = test_stack("bad@name");
+        let config = Config::default();
+
+        let err = generate_new_stack_name(&repo, &config, &stack).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("Could not generate a valid unused stack name after 100 attempts"));
+    }
+
+    #[test]
+    fn migrate_config_preserves_inherited_base() {
+        let mut config = Config::default();
+        config.defaults.base = Some("main".to_string());
+        config.stacks.insert(
+            "feature".to_string(),
+            StackConfig {
+                base: None,
+                mrs: HashMap::from([("c-abc1234".to_string(), 42)]),
+                worktree_path: None,
+            },
+        );
+        let moved_entries = vec![UnstackEntryJson {
+            position: 2,
+            sha: "abc1234".to_string(),
+            title: "Upper commit".to_string(),
+            gg_id: Some("c-abc1234".to_string()),
+        }];
+
+        let migrated = migrate_config(&mut config, "feature", "feature-2", &moved_entries);
+
+        assert_eq!(migrated, 1);
+        assert_eq!(config.get_stack("feature-2").unwrap().base, None);
+        assert_eq!(config.get_base_for_stack("feature-2"), Some("main"));
+        assert_eq!(config.get_mr_for_entry("feature-2", "c-abc1234"), Some(42));
+        assert_eq!(config.get_mr_for_entry("feature", "c-abc1234"), None);
     }
 }

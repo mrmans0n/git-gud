@@ -288,7 +288,7 @@ pub fn run(stack_name: Option<String>, base: Option<String>, use_worktree: bool)
     Ok(())
 }
 
-fn ensure_stack_worktree(
+pub(crate) fn ensure_stack_worktree(
     repo: &git2::Repository,
     config: &mut Config,
     stack_name: &str,

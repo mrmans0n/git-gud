@@ -237,6 +237,10 @@ enum Commands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+
+        /// Create or reuse a managed worktree for the new stack
+        #[arg(long = "worktree", short = 'w', alias = "wt")]
+        worktree: bool,
     },
 
     /// Land (merge) approved PRs/MRs starting from the first commit
@@ -602,6 +606,7 @@ fn main() {
             no_tui,
             force,
             json,
+            worktree,
         }) => (
             gg_core::commands::unstack::run(gg_core::commands::unstack::UnstackOptions {
                 target,
@@ -609,6 +614,7 @@ fn main() {
                 no_tui,
                 force,
                 json,
+                worktree,
             }),
             json,
         ),

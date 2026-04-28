@@ -34,6 +34,8 @@ pub struct UnstackOptions {
     pub force: bool,
     /// Output as JSON.
     pub json: bool,
+    /// Create or reuse a managed worktree for the new stack.
+    pub worktree: bool,
 }
 
 /// Run the unstack command.
@@ -135,6 +137,7 @@ pub fn run(options: UnstackOptions) -> Result<()> {
         &original_stack,
         &new_stack_name,
         &moved_entries,
+        options.worktree,
     );
 
     // Delete old entry branches for moved entries
@@ -151,6 +154,23 @@ pub fn run(options: UnstackOptions) -> Result<()> {
     git::checkout_branch(&repo, &new_branch)?;
     let upper_stack = Stack::load(&repo, &config)?;
     git::normalize_stack_metadata(&repo, &upper_stack)?;
+
+    // Handle worktree mode: checkout old stack branch, create worktree for new stack
+    let worktree_path = if options.worktree {
+        // Switch back to the original (lower) stack in the current worktree
+        git::checkout_branch(&repo, &original_branch)?;
+        // Create or reuse a managed worktree for the new upper stack
+        let path = super::checkout::ensure_stack_worktree(
+            &repo,
+            &mut config,
+            &new_stack_name,
+            &new_branch,
+        )?;
+        config.save(repo.commondir())?;
+        Some(path.to_string_lossy().to_string())
+    } else {
+        None
+    };
 
     // Finalize the operation record
     guard.finalize_with_scope(
@@ -175,8 +195,33 @@ pub fn run(options: UnstackOptions) -> Result<()> {
                 deleted_entry_branches,
                 migrated_review_mappings,
                 sync_required,
+                worktree_path,
             },
         });
+    } else if let Some(path) = &worktree_path {
+        println!(
+            "{} Unstacked {} at position #{}",
+            style("OK").green().bold(),
+            style(&original_stack).cyan(),
+            split_position
+        );
+        println!(
+            "  {}: {} entries",
+            style(&original_stack).cyan(),
+            split_position - 1
+        );
+        println!(
+            "  {}: {} entries (worktree: {})",
+            style(&new_stack_name).cyan(),
+            stack_obj.len() - split_position + 1,
+            style(path).yellow()
+        );
+        if sync_required {
+            println!(
+                "\n{} Run `gg sync` to push the new stack and update PR/MR targets.",
+                style("hint:").yellow()
+            );
+        }
     } else {
         println!(
             "{} Unstacked {} at position #{}",
@@ -438,10 +483,14 @@ fn migrate_config(
     original_stack: &str,
     new_stack: &str,
     moved_entries: &[UnstackEntryJson],
+    worktree_mode: bool,
 ) -> usize {
     let original_base = config
         .get_stack(original_stack)
         .and_then(|s| s.base.clone());
+    let original_worktree_path = config
+        .get_stack(original_stack)
+        .and_then(|s| s.worktree_path.clone());
 
     let mut new_config = StackConfig {
         base: original_base,
@@ -455,6 +504,19 @@ fn migrate_config(
         if let Some(mr) = config.get_mr_for_entry(original_stack, gg_id) {
             new_config.mrs.insert(gg_id.clone(), mr);
             config.remove_mr_for_entry(original_stack, gg_id);
+        }
+    }
+
+    // In worktree mode, the current worktree stays with the old (lower) stack,
+    // so preserve the old worktree_path on it. The new stack gets its worktree
+    // assigned later by ensure_stack_worktree.
+    // In normal mode, HEAD moves to the new stack, so migrate the worktree_path.
+    if !worktree_mode {
+        if let Some(wt_path) = original_worktree_path {
+            new_config.worktree_path = Some(wt_path);
+            if let Some(old_stack) = config.stacks.get_mut(original_stack) {
+                old_stack.worktree_path = None;
+            }
         }
     }
 
@@ -503,6 +565,7 @@ mod tests {
         assert!(!opts.no_tui);
         assert!(!opts.force);
         assert!(!opts.json);
+        assert!(!opts.worktree);
     }
 
     fn temp_repo() -> (tempfile::TempDir, Repository) {
@@ -598,7 +661,7 @@ mod tests {
             gg_id: Some("c-abc1234".to_string()),
         }];
 
-        let migrated = migrate_config(&mut config, "feature", "feature-2", &moved_entries);
+        let migrated = migrate_config(&mut config, "feature", "feature-2", &moved_entries, false);
 
         assert_eq!(migrated, 1);
         assert_eq!(config.get_stack("feature-2").unwrap().base, None);

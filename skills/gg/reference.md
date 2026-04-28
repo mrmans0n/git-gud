@@ -59,6 +59,15 @@ Create/switch stack, optionally worktree-backed.
 - `-b, --base <BASE>`
 - `-w, --worktree`
 
+#### `gg unstack [OPTIONS] [TARGET]`
+Move the upper part of the current stack to a new stack. With `--worktree`,
+the current directory stays on the lower stack and the new upper stack is
+opened in a managed worktree.
+
+- `-n, --name <NAME>`
+- `-w, --worktree` / `--wt`
+- `--json`
+
 #### `gg ls [OPTIONS]`
 List current/all/remote stacks.
 

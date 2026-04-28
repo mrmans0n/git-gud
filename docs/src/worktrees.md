@@ -1,6 +1,6 @@
 # Worktrees
 
-`gg co` supports managed worktrees.
+`gg co` and `gg unstack` support managed worktrees.
 
 ## Create a stack worktree
 
@@ -9,6 +9,14 @@ gg co my-feature --wt
 # or
 gg co my-feature --worktree
 ```
+
+## Unstack into a worktree
+
+```bash
+gg unstack 3 --name upper-feature --wt
+```
+
+This keeps your current directory on the lower stack and creates or reuses a managed worktree for the new upper stack.
 
 ## Default location
 

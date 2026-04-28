@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-6284bd0a.js";
+            window.path_to_searchindex_js = "../searchindex-c9d69cd7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-09a1e4c5.js"></script>
@@ -195,7 +195,7 @@ and undoability marker.</li>
 <li><code>--json</code>: Emit machine-readable JSON.</li>
 </ul>
 <h2 id="how-it-works"><a class="header" href="#how-it-works">How it works</a></h2>
-<p>Every mutating <code>gg</code> command (<code>sc</code>, <code>drop</code>, <code>split</code>, <code>rebase</code>, <code>reorder</code>,
+<p>Every mutating <code>gg</code> command (<code>sc</code>, <code>drop</code>, <code>split</code>, <code>unstack</code>, <code>rebase</code>, <code>reorder</code>,
 <code>absorb</code>, <code>reconcile</code>, <code>checkout</code>, <code>mv</code>/<code>first</code>/<code>last</code>/<code>prev</code>/<code>next</code>,
 <code>clean</code>, <code>sync</code>, <code>land</code>, and <code>run --amend</code>) now snapshots the refs it
 will touch before mutating and finalises the record on success. <code>gg undo</code> replays the <code>refs_before</code> snapshot of the target record, moving

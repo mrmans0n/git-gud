@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6284bd0a.js";
+            window.path_to_searchindex_js = "searchindex-c9d69cd7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-09a1e4c5.js"></script>
@@ -327,7 +327,7 @@ GG-Parent: c-1234567
 <p>Result: reviewers can review from bottom to top, and <code>gg land</code> can merge safely in order.</p>
 <h2 id="immutable-commits"><a class="header" href="#immutable-commits">Immutable commits</a></h2>
 <p>Some commits should not be casually rewritten. History-rewriting commands —
-<code>gg squash</code>, <code>gg drop</code>, <code>gg reorder</code>, <code>gg split</code>, <code>gg absorb</code>, and <code>gg rebase</code> —
+<code>gg squash</code>, <code>gg drop</code>, <code>gg reorder</code>, <code>gg split</code>, <code>gg unstack</code>, <code>gg absorb</code>, and <code>gg rebase</code> —
 refuse to touch the following by default:</p>
 <ul>
 <li><strong>Merged PR/MR commits.</strong> If an entry’s PR/MR state is <code>Merged</code>, rewriting it
@@ -1383,64 +1383,58 @@ gg split -c c-abc1234 src/config.rs
 <li><strong>Merge conflicts during rebase</strong> — Split is aborted, original state restored.</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="unstack"><a class="header" href="#unstack">unstack</a></h1>
-<p><code>gg unstack</code> splits the current stack into two independent stacks.</p>
-<p>Use this when the upper part of a stack has become a separate line of work. The selected commit becomes the first commit in the new stack, and every descendant moves with it. Commits below the selected commit remain in the original stack.</p>
-<p>This is named <code>unstack</code> because <code>gg split</code> already means splitting one commit into two commits.</p>
-<pre><code class="language-text">main
-  A
-  B
-  C  &lt;- selected target
-  D
+<h1 id="gg-unstack"><a class="header" href="#gg-unstack"><code>gg unstack</code></a></h1>
+<p>Split the current stack into two independent stacks.</p>
+<pre><code class="language-bash">gg unstack [--target &lt;TARGET&gt;] [--name &lt;STACK_NAME&gt;] [--no-tui] [-f] [--json]
 </code></pre>
-<p>After <code>gg unstack --target 3 --name upper</code>:</p>
-<pre><code class="language-text">main
-  A
-  B          original stack
+<p>The selected entry becomes the root of a new stack, and all entries above it
+move with it. Entries below the selected point remain in the original stack.</p>
+<p>The command is called <code>unstack</code> because <code>gg split</code> already means splitting one
+commit into two commits.</p>
+<h2 id="examples-7"><a class="header" href="#examples-7">Examples</a></h2>
+<pre><code class="language-bash"># Pick the split point interactively
+gg unstack
 
-main
-  C
-  D          new stack: upper
+# Move entries 3 and above into a new stack named auth-followup
+gg unstack --target 3 --name auth-followup --no-tui
+
+# Use a GG-ID or SHA prefix instead of a position
+gg unstack --target c-abc1234 --name auth-followup --no-tui
+
+# Machine-readable output
+gg unstack --target 3 --json --no-tui
 </code></pre>
-<h2 id="usage-1"><a class="header" href="#usage-1">Usage</a></h2>
-<pre><code class="language-bash">gg unstack
-gg unstack --target 3
-gg unstack --target c-abc1234 --name auth-cleanup
-gg unstack --target abc123 --force
-gg unstack --target 2 --json
+<h2 id="behavior-1"><a class="header" href="#behavior-1">Behavior</a></h2>
+<p>Given a stack:</p>
+<pre><code class="language-text">1  Add schema
+2  Add API
+3  Add UI
+4  Add tests
 </code></pre>
-<p>Without <code>--target</code>, <code>gg unstack</code> opens a TUI picker when the terminal is interactive. The first commit is not a valid target because the original stack would be empty.</p>
+<p>Running <code>gg unstack --target 3 --name ui-work</code> leaves:</p>
+<pre><code class="language-text">original stack: 1 Add schema, 2 Add API
+new stack:      1 Add UI, 2 Add tests
+</code></pre>
+<p><code>GG-ID</code> trailers are preserved. <code>GG-Parent</code> trailers are rewritten so the first
+entry in each resulting stack has no parent and later entries point at the
+previous entry in that same stack.</p>
+<p>Local PR/MR mappings in <code>.git/gg/config.json</code> move with their entries. Stale
+local entry branches under the old stack name are removed for moved entries.
+If moved entries had review mappings, run <code>gg sync</code> afterwards to recreate or
+update review branches for the new stack.</p>
 <h2 id="options-9"><a class="header" href="#options-9">Options</a></h2>
 <ul>
-<li><code>-t, --target &lt;TARGET&gt;</code>: First commit to move into the new stack. Accepts a position, short SHA, or GG-ID.</li>
-<li><code>-n, --name &lt;NAME&gt;</code>: Name for the new stack. Defaults to <code>&lt;current-stack&gt;-2</code>, or the next free suffix.</li>
-<li><code>--no-tui</code>: Disable the picker. Requires <code>--target</code>.</li>
-<li><code>-f, --force</code> / <code>--ignore-immutable</code>: Bypass the immutability guard for moved commits.</li>
-<li><code>--json</code>: Emit structured output.</li>
+<li><code>--target &lt;TARGET&gt;</code>: first entry for the new stack. Accepts a 1-indexed
+position, GG-ID, or SHA prefix.</li>
+<li><code>--name &lt;STACK_NAME&gt;</code>: name for the new stack. If omitted, gg generates a
+unique name such as <code>&lt;old-stack&gt;-2</code>.</li>
+<li><code>--no-tui</code>: disable the interactive picker. Use this with <code>--target</code> in
+scripts and tests.</li>
+<li><code>-f, --force</code>: bypass the immutability guard for merged/base commits.</li>
+<li><code>--json</code>: emit structured JSON.</li>
 </ul>
-<h2 id="remote-prsmrs"><a class="header" href="#remote-prsmrs">Remote PRs/MRs</a></h2>
-<p><code>gg unstack</code> is local-only. It updates local stack metadata and moves any PR/MR mappings for the moved GG-IDs to the new stack, but it does not push branches or retarget PRs/MRs.</p>
-<p>Run <code>gg sync</code> after unstacking to push the new stack and update PR/MR targets.</p>
-<h2 id="json-output-1"><a class="header" href="#json-output-1">JSON Output</a></h2>
-<pre><code class="language-json">{
-  "version": 1,
-  "unstack": {
-    "old_stack": "my-stack",
-    "new_stack": "my-stack-2",
-    "target_position": 3,
-    "moved": [
-      {
-        "old_position": 3,
-        "sha": "abc1234",
-        "gg_id": "c-abc1234",
-        "title": "Add auth"
-      }
-    ],
-    "old_stack_count": 2,
-    "new_stack_count": 2
-  }
-}
-</code></pre>
+<p>Position <code>1</code> is rejected because it would leave the original stack empty. The
+last position is allowed and creates a one-entry new stack.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="gg-rebase"><a class="header" href="#gg-rebase"><code>gg rebase</code></a></h1>
 <p>Rebase the current stack onto an updated branch.</p>
@@ -1458,7 +1452,7 @@ Rebase rewrites the parent of every commit in the stack; merged commits
 via patch-id matching, so <code>--force</code> is not required for these. See
 <a href="#immutable-commits">Core concepts · Immutable commits</a>.</li>
 </ul>
-<h2 id="examples-7"><a class="header" href="#examples-7">Examples</a></h2>
+<h2 id="examples-8"><a class="header" href="#examples-8">Examples</a></h2>
 <pre><code class="language-bash"># Rebase onto configured base
 gg rebase
 
@@ -1482,7 +1476,7 @@ gg rebase main
 <li><code>--admin</code>: <em>(GitHub only)</em> Use admin privileges to bypass branch protection requirements (see <a href="#admin-override">Admin Override</a> below)</li>
 <li><code>--json</code>: Emit machine-readable JSON output (no human logs)</li>
 </ul>
-<h2 id="examples-8"><a class="header" href="#examples-8">Examples</a></h2>
+<h2 id="examples-9"><a class="header" href="#examples-9">Examples</a></h2>
 <pre><code class="language-bash"># Land one approved entry
 gg land
 
@@ -1529,7 +1523,7 @@ Error: MR !7621 CI failed
   Failed jobs: lint (stage: test), build-android (stage: build)
 </code></pre>
 <p>This helps diagnose CI issues without having to open the GitLab UI. Failed job names and stages are fetched from the MR’s head pipeline.</p>
-<h2 id="json-output-2"><a class="header" href="#json-output-2">JSON Output</a></h2>
+<h2 id="json-output-1"><a class="header" href="#json-output-1">JSON Output</a></h2>
 <p>Example JSON response:</p>
 <pre><code class="language-json">{
   "version": 1,
@@ -1564,7 +1558,7 @@ Error: MR !7621 CI failed
 <li><code>-a, --all</code>: Clean all merged stacks without prompting</li>
 <li><code>--json</code>: Emit machine-readable JSON output</li>
 </ul>
-<h2 id="examples-9"><a class="header" href="#examples-9">Examples</a></h2>
+<h2 id="examples-10"><a class="header" href="#examples-10">Examples</a></h2>
 <pre><code class="language-bash">gg clean
 gg clean --all
 gg clean --json
@@ -1585,7 +1579,7 @@ gg clean --json
 <li><code>-u, --until &lt;UNTIL&gt;</code>: Stop at target entry (position, GG-ID, SHA)</li>
 <li><code>--json</code>: Emit structured JSON output</li>
 </ul>
-<h2 id="examples-10"><a class="header" href="#examples-10">Examples</a></h2>
+<h2 id="examples-11"><a class="header" href="#examples-11">Examples</a></h2>
 <pre><code class="language-bash"># Lint from bottom to current
 gg lint
 
@@ -1614,7 +1608,7 @@ gg lint --until 2
 <li><code>-j, --jobs &lt;N&gt;</code>: number of parallel workers. <code>0</code> = auto-detect CPUs, <code>1</code> = sequential (default). Parallel mode only applies to read-only runs and uses isolated temporary worktrees, one per commit.</li>
 <li><code>--json</code>: emit structured JSON output instead of human-readable text.</li>
 </ul>
-<h2 id="examples-11"><a class="header" href="#examples-11">Examples</a></h2>
+<h2 id="examples-12"><a class="header" href="#examples-12">Examples</a></h2>
 <pre><code class="language-bash"># Read-only validation across the whole stack
 gg run -- cargo test
 
@@ -1633,7 +1627,7 @@ gg run --keep-going -- cargo clippy
 # Pass a command with quoted arguments — argv boundaries are preserved
 gg run -- sh -c 'echo "$GG_CURRENT_COMMIT" &amp;&amp; cargo test --test integration'
 </code></pre>
-<h2 id="json-output-3"><a class="header" href="#json-output-3">JSON output</a></h2>
+<h2 id="json-output-2"><a class="header" href="#json-output-2">JSON output</a></h2>
 <p>With <code>--json</code>, <code>gg run</code> emits a <code>RunResponse</code>:</p>
 <pre><code class="language-json">{
   "version": 1,
@@ -1794,7 +1788,7 @@ Use <code>gg abort</code> when you want to stop and roll back the in-progress op
 <li>Normalizes GG metadata trailers on stack commits (<code>GG-ID</code> + <code>GG-Parent</code>)</li>
 <li>Maps existing remote PRs/MRs back to local stack entries</li>
 </ul>
-<h2 id="examples-12"><a class="header" href="#examples-12">Examples</a></h2>
+<h2 id="examples-13"><a class="header" href="#examples-13">Examples</a></h2>
 <pre><code class="language-bash"># Safe preview
 gg reconcile --dry-run
 
@@ -1812,7 +1806,7 @@ gg reconcile
 <li><code>--from &lt;TARGET&gt;</code>: Repair only from this commit upward (position, SHA, or GG-ID)</li>
 <li><code>--json</code>: Output result as JSON</li>
 </ul>
-<h2 id="behavior-1"><a class="header" href="#behavior-1">Behavior</a></h2>
+<h2 id="behavior-2"><a class="header" href="#behavior-2">Behavior</a></h2>
 <ol>
 <li>Validates no rebase is already in progress</li>
 <li>Validates the working directory is clean</li>
@@ -1824,7 +1818,7 @@ gg reconcile
 <li>Normalizes GG metadata after rebase</li>
 <li>Prints a summary with a hint to run <code>gg sync</code></li>
 </ol>
-<h2 id="examples-13"><a class="header" href="#examples-13">Examples</a></h2>
+<h2 id="examples-14"><a class="header" href="#examples-14">Examples</a></h2>
 <pre><code class="language-bash"># Check if the stack needs restacking (no changes)
 gg restack --dry-run
 
@@ -1843,7 +1837,7 @@ gg restack --json
 # Combine dry-run and JSON
 gg restack --dry-run --json
 </code></pre>
-<h2 id="json-output-4"><a class="header" href="#json-output-4">JSON Output</a></h2>
+<h2 id="json-output-3"><a class="header" href="#json-output-3">JSON Output</a></h2>
 <pre><code class="language-json">{
   "version": 1,
   "restack": {
@@ -1903,7 +1897,7 @@ and undoability marker.</li>
 <li><code>--json</code>: Emit machine-readable JSON.</li>
 </ul>
 <h2 id="how-it-works-1"><a class="header" href="#how-it-works-1">How it works</a></h2>
-<p>Every mutating <code>gg</code> command (<code>sc</code>, <code>drop</code>, <code>split</code>, <code>rebase</code>, <code>reorder</code>,
+<p>Every mutating <code>gg</code> command (<code>sc</code>, <code>drop</code>, <code>split</code>, <code>unstack</code>, <code>rebase</code>, <code>reorder</code>,
 <code>absorb</code>, <code>reconcile</code>, <code>checkout</code>, <code>mv</code>/<code>first</code>/<code>last</code>/<code>prev</code>/<code>next</code>,
 <code>clean</code>, <code>sync</code>, <code>land</code>, and <code>run --amend</code>) now snapshots the refs it
 will touch before mutating and finalises the record on success. <code>gg undo</code> replays the <code>refs_before</code> snapshot of the target record, moving
@@ -1927,7 +1921,7 @@ an <code>undoes</code> field pointing at the original operation id.</p>
 </tbody>
 </table>
 </div>
-<h2 id="examples-14"><a class="header" href="#examples-14">Examples</a></h2>
+<h2 id="examples-15"><a class="header" href="#examples-15">Examples</a></h2>
 <pre><code class="language-bash"># Reverse the last local operation
 gg undo
 
@@ -1945,7 +1939,7 @@ gg undo
 # Scripting
 gg undo --list --json | jq '.operations[] | select(.is_undoable)'
 </code></pre>
-<h2 id="json-output-5"><a class="header" href="#json-output-5">JSON output</a></h2>
+<h2 id="json-output-4"><a class="header" href="#json-output-4">JSON output</a></h2>
 <p>Schema versioning: all <code>gg</code> JSON responses share the top-level <code>version</code>
 field (<code>OUTPUT_VERSION</code>). The undo types are additive — new optional
 fields may be added in future releases without bumping the version.
@@ -2405,7 +2399,7 @@ gg reconcile
 </ul>
 <h2 id="how-do-i-undo-a-gg-command"><a class="header" href="#how-do-i-undo-a-gg-command">How do I undo a <code>gg</code> command?</a></h2>
 <p>Run <a href="#gg-undo"><code>gg undo</code></a>. It reverses the local ref/HEAD
-effects of the most recent mutating <code>gg</code> command (drop, squash, split,
+effects of the most recent mutating <code>gg</code> command (drop, squash, split, unstack,
 rebase, reorder, absorb, reconcile, checkout, nav, clean, sync, land,
 or <code>run --amend</code>). Working-tree changes are not touched.</p>
 <pre><code class="language-bash">gg undo              # reverse the last local operation

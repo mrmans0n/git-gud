@@ -61,7 +61,7 @@ Result: reviewers can review from bottom to top, and `gg land` can merge safely 
 ## Immutable commits
 
 Some commits should not be casually rewritten. History-rewriting commands —
-`gg squash`, `gg drop`, `gg reorder`, `gg split`, `gg absorb`, and `gg rebase` —
+`gg squash`, `gg drop`, `gg reorder`, `gg split`, `gg unstack`, `gg absorb`, and `gg rebase` —
 refuse to touch the following by default:
 
 - **Merged PR/MR commits.** If an entry's PR/MR state is `Merged`, rewriting it

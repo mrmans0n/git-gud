@@ -171,6 +171,15 @@ Split a commit into two. Selected files/hunks become a new commit inserted befor
 - `-f, --force` (alias: `--ignore-immutable`) — bypass the [immutability guard](#immutable-commits)
 - `FILES...` — auto-select all hunks from these files (opens interactive hunk picker if omitted)
 
+#### `gg unstack [OPTIONS]`
+Split the current stack into two independent stacks. The selected entry and its descendants become a new stack; lower entries remain in the original stack. This is named `unstack` because `gg split` already splits commits.
+
+- `-t, --target <TARGET>` — first entry for the new stack (position, SHA, or GG-ID)
+- `-n, --name <STACK_NAME>` — explicit new stack name (default: `<old-stack>-2`, incrementing)
+- `--no-tui` — disable the interactive picker; requires `--target`
+- `-f, --force` (alias: `--ignore-immutable`) — bypass the [immutability guard](#immutable-commits)
+- `--json`
+
 #### `gg rebase [TARGET]`
 Rebase current stack onto base or explicit target.
 
@@ -225,7 +234,7 @@ command, backed by a per-repo operation log at
 - `--limit N` — cap `--list` output (default: 20).
 - `--json` — emit machine-readable JSON.
 
-Every mutating command (`sc`, `drop`, `split`, `rebase`, `reorder`,
+Every mutating command (`sc`, `drop`, `split`, `unstack`, `rebase`, `reorder`,
 `absorb`, `reconcile`, `restack`, `checkout`, `mv`/`first`/`last`/`prev`/`next`,
 `clean`, `sync`, `land`, `run --amend`) snapshots refs before mutating
 and records the operation on success. A second `gg undo` redoes the
@@ -643,7 +652,7 @@ with `is_undoable: false` and `touched_remote: true`.
 ## Immutable commits
 
 gg refuses by default to let rewrite-style commands (`gg sc`, `gg absorb`,
-`gg reorder`/`gg arrange`, `gg split`, `gg drop`, `gg rebase`, `gg restack`) touch commits
+`gg reorder`/`gg arrange`, `gg split`, `gg unstack`, `gg drop`, `gg rebase`, `gg restack`) touch commits
 that look "already published". A commit is considered immutable when any of
 these is true:
 

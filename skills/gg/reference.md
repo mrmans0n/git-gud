@@ -59,15 +59,6 @@ Create/switch stack, optionally worktree-backed.
 - `-b, --base <BASE>`
 - `-w, --worktree`
 
-#### `gg unstack [OPTIONS] [TARGET]`
-Move the upper part of the current stack to a new stack. With `--worktree`,
-the current directory stays on the lower stack and the new upper stack is
-opened in a managed worktree.
-
-- `-n, --name <NAME>`
-- `-w, --worktree` / `--wt`
-- `--json`
-
 #### `gg ls [OPTIONS]`
 List current/all/remote stacks.
 
@@ -186,6 +177,7 @@ Split the current stack into two independent stacks. The selected entry and its 
 
 - `-t, --target <TARGET>` — first entry for the new stack (position, SHA, or GG-ID)
 - `-n, --name <STACK_NAME>` — explicit new stack name (default: `<old-stack>-2`, incrementing)
+- `-w, --worktree` / `--wt` — create the new upper stack in a managed worktree; current directory stays on the lower stack
 - `--no-tui` — disable the interactive picker; requires `--target`
 - `-f, --force` (alias: `--ignore-immutable`) — bypass the [immutability guard](#immutable-commits)
 - `--json`
@@ -554,6 +546,33 @@ Field types for `entries`:
   }
 }
 ```
+
+### `gg unstack --json`
+
+```json
+{
+  "version": 1,
+  "unstack": {
+    "original_stack": "my-feature",
+    "new_stack": "my-feature-2",
+    "split_position": 3,
+    "remaining_entries": [
+      { "position": 1, "sha": "abc1234", "title": "First commit", "gg_id": "c-abc1234" }
+    ],
+    "moved_entries": [
+      { "position": 3, "sha": "def5678", "title": "Third commit", "gg_id": "c-def5678" }
+    ],
+    "deleted_entry_branches": ["testuser/my-feature/3"],
+    "migrated_review_mappings": 1,
+    "sync_required": true,
+    "worktree_path": "/path/to/repo.my-feature-2"
+  }
+}
+```
+
+Field types:
+- `worktree_path`: `string | null` — present only when `--worktree` was used
+- `gg_id`: `string | null`
 
 ### `gg restack --json`
 

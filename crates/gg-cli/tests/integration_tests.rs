@@ -9037,6 +9037,251 @@ fn test_restack_missing_gg_ids_errors() {
     );
 }
 
+fn branch_subjects(repo_path: &std::path::Path, branch: &str, base: &str) -> Vec<String> {
+    let range = format!("{base}..{branch}");
+    let (success, stdout) = run_git(repo_path, &["log", "--reverse", "--format=%s", &range]);
+    assert!(success, "git log failed for {range}");
+    stdout
+        .lines()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+fn trailer_value(repo_path: &std::path::Path, branch: &str, trailer: &str) -> Option<String> {
+    let format = format!("%(trailers:key={trailer},valueonly)");
+    let (success, stdout) = run_git(
+        repo_path,
+        &["show", "-s", &format!("--format={format}"), branch],
+    );
+    assert!(success, "git show failed for {branch}");
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+#[test]
+fn test_unstack_splits_stack_at_target() {
+    let (_temp_dir, repo_path) = setup_restack_repo("unstack-basic", 4);
+
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &["unstack", "--target", "3", "--name", "unstack-upper"],
+    );
+    assert!(success, "unstack failed: stdout={stdout} stderr={stderr}");
+    assert!(stdout.contains("Created new stack"));
+    assert!(stdout.contains("gg sync"));
+
+    assert_eq!(
+        branch_subjects(&repo_path, "testuser/unstack-basic", "main"),
+        vec!["Commit 1", "Commit 2"]
+    );
+    assert_eq!(
+        branch_subjects(&repo_path, "testuser/unstack-upper", "main"),
+        vec!["Commit 3", "Commit 4"]
+    );
+
+    assert_eq!(
+        trailer_value(&repo_path, "testuser/unstack-upper~1", "GG-ID").as_deref(),
+        Some("c-0000003")
+    );
+    assert_eq!(
+        trailer_value(&repo_path, "testuser/unstack-upper~1", "GG-Parent"),
+        None,
+        "new stack root must not keep its old GG-Parent"
+    );
+    assert_eq!(
+        trailer_value(&repo_path, "testuser/unstack-upper", "GG-Parent").as_deref(),
+        Some("c-0000003")
+    );
+
+    let (success, current_branch) = run_git(&repo_path, &["branch", "--show-current"]);
+    assert!(success);
+    assert_eq!(current_branch.trim(), "testuser/unstack-upper");
+}
+
+#[test]
+fn test_unstack_tip_creates_one_commit_stack() {
+    let (_temp_dir, repo_path) = setup_restack_repo("unstack-tip", 4);
+
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &["unstack", "--target", "4", "--name", "unstack-tip-one"],
+    );
+    assert!(
+        success,
+        "unstack tip failed: stdout={stdout} stderr={stderr}"
+    );
+
+    assert_eq!(
+        branch_subjects(&repo_path, "testuser/unstack-tip", "main"),
+        vec!["Commit 1", "Commit 2", "Commit 3"]
+    );
+    assert_eq!(
+        branch_subjects(&repo_path, "testuser/unstack-tip-one", "main"),
+        vec!["Commit 4"]
+    );
+    assert_eq!(
+        trailer_value(&repo_path, "testuser/unstack-tip-one", "GG-Parent"),
+        None
+    );
+}
+
+#[test]
+fn test_unstack_rejects_first_position() {
+    let (_temp_dir, repo_path) = setup_restack_repo("unstack-first", 3);
+    let head_before = head_sha(&repo_path);
+
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["unstack", "--target", "1"]);
+    assert!(!success, "unstack at first commit should fail");
+    assert!(
+        stderr.contains("position 1") || stderr.contains("original stack"),
+        "unexpected error: {stderr}"
+    );
+    assert_eq!(head_sha(&repo_path), head_before);
+}
+
+#[test]
+fn test_unstack_migrates_mr_mappings() {
+    let (_temp_dir, repo_path) = setup_restack_repo("unstack-config", 4);
+    let config_path = repo_path.join(".git/gg/config.json");
+    fs::write(
+        &config_path,
+        r#"{
+  "defaults": {"branch_username": "testuser"},
+  "stacks": {
+    "unstack-config": {
+      "mrs": {
+        "c-0000001": 101,
+        "c-0000002": 102,
+        "c-0000003": 103,
+        "c-0000004": 104
+      },
+      "worktree_path": "/tmp/old-worktree"
+    }
+  }
+}"#,
+    )
+    .unwrap();
+
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &[
+            "unstack",
+            "--target",
+            "3",
+            "--name",
+            "unstack-config-upper",
+            "--json",
+        ],
+    );
+    assert!(
+        success,
+        "unstack config failed: stdout={stdout} stderr={stderr}"
+    );
+
+    let output: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(output["unstack"]["old_stack"], "unstack-config");
+    assert_eq!(output["unstack"]["new_stack"], "unstack-config-upper");
+    assert_eq!(output["unstack"]["target_position"], 3);
+    assert_eq!(output["unstack"]["old_stack_count"], 2);
+    assert_eq!(output["unstack"]["new_stack_count"], 2);
+
+    let config: Value =
+        serde_json::from_str(&fs::read_to_string(config_path).unwrap()).expect("valid config");
+    assert_eq!(config["stacks"]["unstack-config"]["mrs"]["c-0000001"], 101);
+    assert_eq!(config["stacks"]["unstack-config"]["mrs"]["c-0000002"], 102);
+    assert!(config["stacks"]["unstack-config"]["mrs"]
+        .get("c-0000003")
+        .is_none());
+    assert_eq!(
+        config["stacks"]["unstack-config-upper"]["mrs"]["c-0000003"],
+        103
+    );
+    assert_eq!(
+        config["stacks"]["unstack-config-upper"]["mrs"]["c-0000004"],
+        104
+    );
+    assert!(config["stacks"]["unstack-config-upper"]
+        .get("worktree_path")
+        .is_none());
+}
+
+#[test]
+fn test_unstack_deletes_old_entry_branches_for_moved_commits() {
+    let (_temp_dir, repo_path) = setup_restack_repo("unstack-entries", 4);
+    run_git(
+        &repo_path,
+        &["branch", "testuser/unstack-entries--c-0000003", "HEAD~1"],
+    );
+    run_git(
+        &repo_path,
+        &["branch", "testuser/unstack-entries--c-0000004", "HEAD"],
+    );
+    run_git(
+        &repo_path,
+        &["branch", "testuser/unstack-entries--c-0000002", "HEAD~2"],
+    );
+
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &[
+            "unstack",
+            "--target",
+            "3",
+            "--name",
+            "unstack-entries-upper",
+        ],
+    );
+    assert!(
+        success,
+        "unstack entries failed: stdout={stdout} stderr={stderr}"
+    );
+
+    let (success, branches) = run_git(
+        &repo_path,
+        &["branch", "--list", "testuser/unstack-entries--*"],
+    );
+    assert!(success);
+    assert!(branches.contains("testuser/unstack-entries--c-0000002"));
+    assert!(!branches.contains("testuser/unstack-entries--c-0000003"));
+    assert!(!branches.contains("testuser/unstack-entries--c-0000004"));
+}
+
+#[test]
+fn test_unstack_default_name_skips_collision() {
+    let (_temp_dir, repo_path) = setup_restack_repo("unstack-name", 3);
+    run_git(&repo_path, &["branch", "testuser/unstack-name-2", "main"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["unstack", "--target", "2"]);
+    assert!(
+        success,
+        "unstack name failed: stdout={stdout} stderr={stderr}"
+    );
+    assert!(stdout.contains("unstack-name-3"));
+    assert_eq!(
+        branch_subjects(&repo_path, "testuser/unstack-name-3", "main"),
+        vec!["Commit 2", "Commit 3"]
+    );
+}
+
+#[test]
+fn test_unstack_no_tui_without_target_errors() {
+    let (_temp_dir, repo_path) = setup_restack_repo("unstack-no-target", 2);
+    let head_before = head_sha(&repo_path);
+
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["unstack", "--no-tui"]);
+    assert!(!success, "--no-tui without target should fail");
+    assert!(
+        stderr.contains("No unstack target specified"),
+        "unexpected error: {stderr}"
+    );
+    assert_eq!(head_sha(&repo_path), head_before);
+}
+
 #[test]
 fn test_undo_reverses_sc_amend() {
     let (_temp_dir, repo_path) = setup_undo_test_repo("undo-sc");

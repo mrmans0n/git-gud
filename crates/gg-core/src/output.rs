@@ -483,6 +483,30 @@ pub struct DroppedEntryJson {
 }
 
 #[derive(Serialize)]
+pub struct UnstackResponse {
+    pub version: u32,
+    pub unstack: UnstackResultJson,
+}
+
+#[derive(Serialize)]
+pub struct UnstackResultJson {
+    pub old_stack: String,
+    pub new_stack: String,
+    pub target_position: usize,
+    pub moved: Vec<UnstackMovedEntryJson>,
+    pub old_stack_count: usize,
+    pub new_stack_count: usize,
+}
+
+#[derive(Serialize)]
+pub struct UnstackMovedEntryJson {
+    pub old_position: usize,
+    pub sha: String,
+    pub gg_id: Option<String>,
+    pub title: String,
+}
+
+#[derive(Serialize)]
 pub struct RestackResponse {
     pub version: u32,
     pub restack: RestackResultJson,

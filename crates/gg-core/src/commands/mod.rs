@@ -23,3 +23,5 @@ pub mod split_tui;
 pub mod squash;
 pub mod sync;
 pub mod undo;
+pub mod unstack;
+pub mod unstack_tui;

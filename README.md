@@ -196,6 +196,7 @@ gg clean
 | `gg sc --all` | Squash all changes (staged + unstaged) |
 | `gg reorder` | Reorder commits interactively (TUI with `J`/`K` to move) |
 | `gg split` | Split a commit into two (TUI hunk selection by default) |
+| `gg unstack` | Split a stack into two independent stacks at a selected commit |
 | `gg absorb` | Auto-distribute changes to appropriate commits |
 
 ### Landing

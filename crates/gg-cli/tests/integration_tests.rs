@@ -4150,6 +4150,186 @@ fn test_sync_lint_failure_restores_head_and_does_not_push() {
 }
 
 #[test]
+fn test_sync_recreates_mapped_pr_when_head_branch_changed() {
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","provider":"github","base":"main","sync_behind_threshold":0}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "u312b-split"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("entry-a.txt"), "a\n").expect("Failed to write entry A");
+    run_git(&repo_path, &["add", "entry-a.txt"]);
+    run_git(&repo_path, &["commit", "-m", "Entry A\n\nGG-ID: c-8b999da"]);
+
+    fs::write(repo_path.join("entry-b.txt"), "b\n").expect("Failed to write entry B");
+    run_git(&repo_path, &["add", "entry-b.txt"]);
+    run_git(
+        &repo_path,
+        &[
+            "commit",
+            "-m",
+            "Entry B\n\nGG-ID: c-fa7d2e9\nGG-Parent: c-8b999da",
+        ],
+    );
+
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{
+  "defaults": {
+    "branch_username": "testuser",
+    "provider": "github",
+    "base": "main",
+    "sync_behind_threshold": 0
+  },
+  "stacks": {
+    "u312b-split": {
+      "base": "main",
+      "mrs": {
+        "c-8b999da": 428,
+        "c-fa7d2e9": 429
+      }
+    }
+  }
+}"#,
+    )
+    .expect("Failed to write moved PR mapping");
+
+    let fake_bin = repo_path.join("fake-bin");
+    fs::create_dir_all(&fake_bin).expect("Failed to create fake bin dir");
+    let fake_log = repo_path.join("fake-gh.log");
+    let fake_next = repo_path.join("fake-gh-next");
+    fs::write(&fake_next, "900\n").expect("Failed to write fake gh state");
+    fs::write(
+        fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+echo "$@" >> "$GG_FAKE_GH_LOG"
+
+if [ "$1" = "--version" ]; then
+  echo "gh version 2.0.0"
+  exit 0
+fi
+
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  exit 0
+fi
+
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  case "$3" in
+    428)
+      echo '{"number":428,"title":"Entry A","state":"OPEN","url":"https://github.com/test/repo/pull/428","headRefName":"testuser/u312b203606--c-8b999da","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
+      exit 0
+      ;;
+    429)
+      echo '{"number":429,"title":"Entry B","state":"OPEN","url":"https://github.com/test/repo/pull/429","headRefName":"testuser/u312b203606--c-fa7d2e9","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
+      exit 0
+      ;;
+    *)
+      echo '{"number":999,"title":"Replacement","state":"OPEN","url":"https://github.com/test/repo/pull/999","headRefName":"testuser/u312b-split--c-unknown","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
+      exit 0
+      ;;
+  esac
+fi
+
+if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
+  num=$(cat "$GG_FAKE_GH_NEXT")
+  next=$((num + 1))
+  echo "$next" > "$GG_FAKE_GH_NEXT"
+  echo "https://github.com/test/repo/pull/$num"
+  exit 0
+fi
+
+if [ "$1" = "pr" ] && [ "$2" = "close" ]; then
+  exit 0
+fi
+
+if [ "$1" = "api" ] && [ "$2" = "-X" ] && [ "$3" = "POST" ]; then
+  exit 0
+fi
+
+echo "unexpected gh invocation: $@" >&2
+exit 1
+"#,
+    )
+    .expect("Failed to write fake gh");
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(fake_bin.join("gh"))
+            .expect("Failed to stat fake gh")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(fake_bin.join("gh"), perms).expect("Failed to chmod fake gh");
+    }
+
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut new_path = std::ffi::OsString::from(fake_bin.as_os_str());
+    new_path.push(":");
+    new_path.push(old_path);
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["sync", "--json", "--until", "2"],
+        &[
+            ("PATH", new_path.as_os_str()),
+            ("GG_FAKE_GH_LOG", fake_log.as_os_str()),
+            ("GG_FAKE_GH_NEXT", fake_next.as_os_str()),
+        ],
+    );
+    assert!(
+        success,
+        "sync failed\nstdout:\n{}\nstderr:\n{}",
+        stdout, stderr
+    );
+
+    let json: Value = serde_json::from_str(&stdout).expect("sync should emit JSON");
+    let entries = json["sync"]["entries"]
+        .as_array()
+        .expect("entries should be an array");
+    assert_eq!(entries[0]["action"], "recreated");
+    assert_eq!(entries[0]["pr_number"], 900);
+    assert_eq!(entries[1]["action"], "recreated");
+    assert_eq!(entries[1]["pr_number"], 901);
+
+    let config = fs::read_to_string(gg_dir.join("config.json")).expect("Failed to read config");
+    assert!(
+        config.contains(r#""c-8b999da": 900"#),
+        "config should map first entry to replacement PR: {}",
+        config
+    );
+    assert!(
+        config.contains(r#""c-fa7d2e9": 901"#),
+        "config should map second entry to replacement PR: {}",
+        config
+    );
+
+    let log = fs::read_to_string(fake_log).expect("Failed to read fake gh log");
+    assert!(
+        log.contains("pr create --head testuser/u312b-split--c-8b999da --base main"),
+        "first replacement should use new head branch, log:\n{}",
+        log
+    );
+    assert!(
+        log.contains("pr create --head testuser/u312b-split--c-fa7d2e9 --base testuser/u312b-split--c-8b999da"),
+        "second replacement should target the new first entry branch, log:\n{}",
+        log
+    );
+    assert!(log.contains("pr close 428"), "old PR 428 should be closed");
+    assert!(log.contains("pr close 429"), "old PR 429 should be closed");
+    assert!(
+        !log.contains("pr edit 428 --base") && !log.contains("pr edit 429 --base"),
+        "old PR bases should not be edited when source branch is wrong, log:\n{}",
+        log
+    );
+}
+
+#[test]
 fn test_sync_lint_failure_restores_post_rebase_snapshot() {
     let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
 

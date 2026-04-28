@@ -25,6 +25,12 @@ When you run `gg sync --lint`, lint runs before any push/PR updates. If lint fai
 
 Before pushing, `gg sync` also normalizes commit metadata (`GG-ID` and `GG-Parent`) for the whole stack. This normalization is always enforced during sync (including adding missing `GG-ID` trailers) to keep stack identity and PR/MR mappings stable.
 
+If an existing mapped PR/MR is attached to the wrong source branch (for
+example after moving commits into a new stack with `gg unstack`), providers
+cannot retarget that source branch in place. `gg sync` creates a replacement
+PR/MR with the correct branch, updates the local mapping, comments on the old
+PR/MR, and closes it. In JSON output that entry uses action `"recreated"`.
+
 You can control this behavior with config:
 
 - `defaults.sync_auto_rebase` (`sync.auto_rebase`): automatically run `gg rebase` before sync when behind threshold is reached

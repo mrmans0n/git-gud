@@ -105,6 +105,12 @@ Push and create/update PRs/MRs.
 - `-u, --until <UNTIL>`
 - `--json`
 
+If a mapped PR/MR's source branch no longer matches the current entry branch
+(for example after `gg unstack` moved entries to a new stack name), `gg sync`
+creates a replacement PR/MR with the correct source branch, updates the local
+mapping, comments on the old PR/MR, and closes it. JSON action is
+`"recreated"`.
+
 #### `gg land [OPTIONS]`
 Merge approved PRs/MRs from bottom up. Automatically retargets downstream MRs after each merge (next entry for single land, all remaining for `--all`).
 
@@ -457,6 +463,8 @@ Entry fields match `gg ls --json` so consumers can share parsers.
 ```
 
 Field types for `entries`:
+- `action` (string): `"created"`, `"updated"`, `"up_to_date"`,
+  `"skipped_closed"`, `"recreated"`, or `"error"`.
 - `nav_comment_action` (string, optional): action taken on the managed
   stack-nav comment for this entry's PR during this sync. One of
   `"created"`, `"updated"`, `"unchanged"`, `"deleted"`, or `"error"`.

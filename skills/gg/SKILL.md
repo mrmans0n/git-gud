@@ -115,6 +115,11 @@ gg inbox --json     # cross-stack triage buckets for action needed
 gg sync --json
 ```
 
+If a mapped PR/MR still points at an old source branch after a stack split,
+`gg sync` recreates that PR/MR with the current entry branch, remaps config to
+the new number, comments on the old one, and closes it. JSON action is
+`"recreated"`.
+
 5. When approved + green CI, land **only after user confirmation**:
 
 ```bash

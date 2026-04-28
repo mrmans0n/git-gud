@@ -8679,6 +8679,54 @@ fn test_unstack_splits_stack_metadata_config_and_entry_branches() {
 }
 
 #[test]
+fn test_unstack_preserves_inherited_base_config() {
+    let (_temp_dir, repo_path) = setup_unstack_repo("unstack-base", 3);
+
+    let config_path = repo_path.join(".git/gg/config.json");
+    let mut config: Value =
+        serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+    config["defaults"]["base"] = serde_json::json!("main");
+    config["stacks"]["unstack-base"]
+        .as_object_mut()
+        .unwrap()
+        .remove("base");
+    fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+
+    let (success, _stdout, stderr) = run_gg(
+        &repo_path,
+        &[
+            "unstack",
+            "--target",
+            "2",
+            "--name",
+            "unstack-base-top",
+            "--no-tui",
+        ],
+    );
+    assert!(success, "gg unstack failed: {stderr}");
+
+    let config: Value = serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+    assert_eq!(config["defaults"]["base"], "main");
+    assert!(
+        config["stacks"]["unstack-base-top"]["base"].is_null(),
+        "new stack should inherit defaults.base instead of pinning an override: {config}"
+    );
+}
+
+#[test]
+fn test_unstack_default_name_handles_trailing_hyphen_stack_name() {
+    let (_temp_dir, repo_path) = setup_unstack_repo("unstack-edge-", 3);
+
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["unstack", "--target", "2", "--no-tui"]);
+    assert!(success, "gg unstack failed: {stderr}");
+
+    let lower_commits = rev_list(&repo_path, "main..testuser/unstack-edge-");
+    let upper_commits = rev_list(&repo_path, "main..testuser/unstack-edge-2");
+    assert_eq!(lower_commits.len(), 1);
+    assert_eq!(upper_commits.len(), 2);
+}
+
+#[test]
 fn test_unstack_rejects_first_position_without_mutating() {
     let (_temp_dir, repo_path) = setup_unstack_repo("unstack-invalid", 3);
     let before = rev_list(&repo_path, "main..testuser/unstack-invalid");

@@ -267,8 +267,14 @@ fn validate_new_stack_name(repo: &Repository, stack: &Stack, name: &str) -> Resu
 }
 
 fn generate_new_stack_name(repo: &Repository, stack: &Stack) -> Result<String> {
+    let prefix = stack.name.trim_end_matches('-');
+    let prefix = if prefix.is_empty() { "unstack" } else { prefix };
+
     for suffix in 2..1000 {
-        let candidate = format!("{}-{}", stack.name, suffix);
+        let candidate = format!("{}-{}", prefix, suffix);
+        let Ok(candidate) = git::sanitize_stack_name(&candidate) else {
+            continue;
+        };
         if validate_new_stack_name(repo, stack, &candidate).is_ok() {
             return Ok(candidate);
         }
@@ -389,8 +395,7 @@ fn migrate_config(
 ) -> usize {
     let original_base = config
         .get_stack(original_stack)
-        .and_then(|s| s.base.clone())
-        .or_else(|| config.defaults.base.clone());
+        .and_then(|s| s.base.clone());
 
     let mut new_config = StackConfig {
         base: original_base,

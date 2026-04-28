@@ -25,6 +25,7 @@ pub struct PrInfo {
     pub title: String,
     pub state: PrState,
     pub url: String,
+    pub head_branch: Option<String>,
     pub draft: bool,
     pub approved: bool,
     pub mergeable: bool,
@@ -40,6 +41,7 @@ struct GhPrJson {
     title: String,
     state: String,
     url: String,
+    head_ref_name: Option<String>,
     #[serde(default)]
     is_draft: bool,
     mergeable: Option<String>,
@@ -184,7 +186,7 @@ pub fn view_pr(pr_number: u64) -> Result<PrInfo> {
             "view",
             &pr_number.to_string(),
             "--json",
-            "number,title,state,url,isDraft,mergeable,reviews,reviewDecision",
+            "number,title,state,url,headRefName,isDraft,mergeable,reviews,reviewDecision",
         ])
         .output()?;
 
@@ -217,11 +219,29 @@ pub fn view_pr(pr_number: u64) -> Result<PrInfo> {
         title: pr_json.title,
         state,
         url: pr_json.url,
+        head_branch: pr_json.head_ref_name,
         draft: pr_json.is_draft,
         approved,
         mergeable,
         changes_requested,
     })
+}
+
+/// Close a PR without merging.
+pub fn close_pr(pr_number: u64) -> Result<()> {
+    let output = Command::new("gh")
+        .args(["pr", "close", &pr_number.to_string()])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::Other(format!(
+            "Failed to close PR #{}: {}",
+            pr_number, stderr
+        )));
+    }
+
+    Ok(())
 }
 
 /// Alias for view_pr for compatibility
@@ -669,6 +689,7 @@ mod tests {
             title: "Test PR".to_string(),
             state: PrState::Open,
             url: "https://github.com/test/repo/pull/42".to_string(),
+            head_branch: Some("user/stack--c-abc1234".to_string()),
             draft: false,
             approved: true,
             mergeable: true,
@@ -688,6 +709,7 @@ mod tests {
             "title": "My PR",
             "state": "OPEN",
             "url": "https://github.com/owner/repo/pull/123",
+            "headRefName": "user/stack--c-abc1234",
             "isDraft": false,
             "mergeable": "MERGEABLE",
             "reviews": [{"state": "APPROVED"}]
@@ -697,6 +719,10 @@ mod tests {
         assert_eq!(parsed.number, 123);
         assert_eq!(parsed.title, "My PR");
         assert_eq!(parsed.state, "OPEN");
+        assert_eq!(
+            parsed.head_ref_name.as_deref(),
+            Some("user/stack--c-abc1234")
+        );
         assert!(!parsed.is_draft);
         assert_eq!(parsed.mergeable, Some("MERGEABLE".to_string()));
         assert_eq!(parsed.reviews.len(), 1);

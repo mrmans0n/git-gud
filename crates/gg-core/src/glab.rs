@@ -28,6 +28,7 @@ pub struct MrInfo {
     pub title: String,
     pub state: MrState,
     pub web_url: String,
+    pub head_branch: Option<String>,
     pub draft: bool,
     pub approved: bool,
     pub mergeable: bool,
@@ -41,6 +42,7 @@ struct GlabMrJson {
     title: String,
     state: String,
     web_url: String,
+    source_branch: Option<String>,
     draft: Option<bool>,
     work_in_progress: Option<bool>,
 }
@@ -334,11 +336,36 @@ pub fn view_mr(mr_number: u64) -> Result<MrInfo> {
         title: mr_json.title,
         state,
         web_url: mr_json.web_url,
+        head_branch: mr_json.source_branch,
         draft,
         approved: false, // Would need additional API call
         mergeable,
         changes_requested: false, // GitLab doesn't expose this directly
     })
+}
+
+/// Close an MR without merging.
+pub fn close_mr(mr_number: u64) -> Result<()> {
+    let output = Command::new("glab")
+        .args([
+            "api",
+            "--method",
+            "PUT",
+            &format!("projects/:id/merge_requests/{}", mr_number),
+            "-f",
+            "state_event=close",
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::GlabError(format!(
+            "Failed to close MR !{}: {}",
+            mr_number, stderr
+        )));
+    }
+
+    Ok(())
 }
 
 /// Alias for view_mr for compatibility with gh module
@@ -1492,6 +1519,26 @@ mod tests {
         let json = r#"{"description": "Some MR description"}"#;
         let parsed: GlabMrBodyJson = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.description, Some("Some MR description".to_string()));
+    }
+
+    #[test]
+    fn test_glab_mr_json_deserializes_source_branch() {
+        let json = r#"{
+            "iid": 428,
+            "title": "Test MR",
+            "state": "opened",
+            "web_url": "https://gitlab.com/group/project/-/merge_requests/428",
+            "source_branch": "testuser/stack--c-8b999da",
+            "draft": false,
+            "work_in_progress": false
+        }"#;
+
+        let parsed: GlabMrJson = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.iid, 428);
+        assert_eq!(
+            parsed.source_branch.as_deref(),
+            Some("testuser/stack--c-8b999da")
+        );
     }
 
     #[test]

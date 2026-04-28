@@ -63,6 +63,7 @@ pub struct PrInfo {
     pub title: String,
     pub state: PrState,
     pub url: String,
+    pub head_branch: Option<String>,
     pub draft: bool,
     pub approved: bool,
     pub mergeable: bool,
@@ -193,6 +194,7 @@ impl Provider {
                     title: info.title,
                     state: convert_gh_state(info.state),
                     url: info.url,
+                    head_branch: info.head_branch,
                     draft: info.draft,
                     approved: info.approved,
                     mergeable: info.mergeable,
@@ -206,6 +208,7 @@ impl Provider {
                     title: info.title,
                     state: convert_glab_state(info.state),
                     url: info.web_url,
+                    head_branch: info.head_branch,
                     draft: info.draft,
                     approved: info.approved,
                     mergeable: info.mergeable,
@@ -220,6 +223,14 @@ impl Provider {
         match self {
             Provider::GitHub => gh::update_pr_base(number, base_branch),
             Provider::GitLab => glab::update_mr_target(number, base_branch),
+        }
+    }
+
+    /// Close a PR/MR without merging.
+    pub fn close_pr(&self, number: u64) -> Result<()> {
+        match self {
+            Provider::GitHub => gh::close_pr(number),
+            Provider::GitLab => glab::close_mr(number),
         }
     }
 
@@ -551,6 +562,7 @@ mod tests {
             title: "Test PR".to_string(),
             state: PrState::Open,
             url: "https://example.com/pr/42".to_string(),
+            head_branch: Some("user/stack--c-abc1234".to_string()),
             draft: false,
             approved: true,
             mergeable: true,
@@ -559,6 +571,7 @@ mod tests {
         assert_eq!(info.number, 42);
         assert_eq!(info.title, "Test PR");
         assert_eq!(info.state, PrState::Open);
+        assert_eq!(info.head_branch.as_deref(), Some("user/stack--c-abc1234"));
         assert!(info.approved);
         assert!(info.mergeable);
         assert!(!info.draft);

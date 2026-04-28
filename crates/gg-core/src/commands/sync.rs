@@ -422,6 +422,7 @@ pub fn run(
         let mut pushed = false;
         let mut entry_error: Option<String> = None;
         let mut pr_state_cached: Option<crate::stack_nav::PrEntryState> = None;
+        let mut effective_draft = entry_draft;
         let mut is_entry_closed = false;
 
         let (title, description) = build_pr_payload(
@@ -533,6 +534,146 @@ pub fn run(
                             provider.pr_number_prefix(),
                             pr_num
                         ));
+                    }
+                } else if let Some(old_head_branch) =
+                    mismatched_pr_head_branch(pr_info.as_ref(), &entry_branch)
+                {
+                    let replacement_draft = pr_info
+                        .as_ref()
+                        .map(|info| info.draft)
+                        .unwrap_or(entry_draft);
+                    effective_draft = replacement_draft;
+                    let replacement_description = managed_body::wrap(
+                        &description_with_replacement_note(&description, &provider, pr_num),
+                    );
+
+                    match provider.create_pr(
+                        &entry_branch,
+                        &target_branch,
+                        &title,
+                        &replacement_description,
+                        replacement_draft,
+                    ) {
+                        Ok(result) => {
+                            config.set_mr_for_entry(&stack.name, gg_id, result.number);
+                            pr_number = Some(result.number);
+                            pr_url = if result.url.is_empty() {
+                                None
+                            } else {
+                                Some(result.url.clone())
+                            };
+                            pr_state_cached = Some(if replacement_draft {
+                                stack_nav::PrEntryState::Draft
+                            } else {
+                                stack_nav::PrEntryState::Open
+                            });
+                            action = "recreated".to_string();
+
+                            let created_effect = RemoteEffect::PrCreated {
+                                number: result.number,
+                                url: result.url.clone(),
+                            };
+                            remote_effects.push(created_effect.clone());
+                            touched_remote = true;
+                            guard.record_remote_effect(created_effect);
+
+                            let close_comment = replacement_closing_comment(
+                                &provider,
+                                old_head_branch,
+                                &entry_branch,
+                                result.number,
+                                &result.url,
+                            );
+                            if let Err(e) = provider.create_pr_comment(pr_num, &close_comment) {
+                                if !json {
+                                    pb.println(format!(
+                                        "{} Could not comment on old {} {}{}: {}",
+                                        style("Warning:").yellow(),
+                                        provider.pr_label(),
+                                        provider.pr_number_prefix(),
+                                        pr_num,
+                                        e
+                                    ));
+                                }
+                                if entry_error.is_none() {
+                                    entry_error = Some(format!(
+                                        "Recreated, but could not comment on old {}: {e}",
+                                        provider.pr_label()
+                                    ));
+                                }
+                            } else {
+                                touched_remote = true;
+                                guard.mark_touched_remote();
+                            }
+
+                            match provider.close_pr(pr_num) {
+                                Ok(()) => {
+                                    let closed_effect = RemoteEffect::PrClosed {
+                                        number: pr_num,
+                                        url: pr_info
+                                            .as_ref()
+                                            .map(|info| info.url.clone())
+                                            .unwrap_or_default(),
+                                    };
+                                    remote_effects.push(closed_effect.clone());
+                                    touched_remote = true;
+                                    guard.record_remote_effect(closed_effect);
+                                }
+                                Err(e) => {
+                                    if !json {
+                                        pb.println(format!(
+                                            "{} Could not close old {} {}{}: {}",
+                                            style("Warning:").yellow(),
+                                            provider.pr_label(),
+                                            provider.pr_number_prefix(),
+                                            pr_num,
+                                            e
+                                        ));
+                                    }
+                                    if entry_error.is_none() {
+                                        entry_error = Some(format!(
+                                            "Recreated, but could not close old {}: {e}",
+                                            provider.pr_label()
+                                        ));
+                                    }
+                                }
+                            }
+
+                            if !json {
+                                let status_msg = if needs_push { "Pushed" } else { "Up to date" };
+                                pb.println(format!(
+                                    "{} {} {} -> {} {}{} (recreated from {}{})",
+                                    style("OK").green().bold(),
+                                    status_msg,
+                                    style(&entry_branch).cyan(),
+                                    provider.pr_label(),
+                                    provider.pr_number_prefix(),
+                                    result.number,
+                                    provider.pr_number_prefix(),
+                                    pr_num
+                                ));
+                                if !result.url.is_empty() {
+                                    pb.println(format!(
+                                        "   {}",
+                                        style(&result.url).underlined().blue()
+                                    ));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            action = "error".to_string();
+                            entry_error = Some(e.to_string());
+                            if !json {
+                                pb.println(format!(
+                                    "{} Failed to recreate {} for {} after source branch changed from {}: {}",
+                                    style("Error:").red().bold(),
+                                    provider.pr_label(),
+                                    entry_branch,
+                                    old_head_branch,
+                                    e
+                                ));
+                            }
+                        }
                     }
                 } else {
                     if update_title {
@@ -758,7 +899,7 @@ pub fn run(
                 action,
                 pr_number,
                 pr_url,
-                draft: entry_draft,
+                draft: effective_draft,
                 pushed,
                 error: entry_error,
                 nav_comment_action: None,
@@ -1064,6 +1205,53 @@ fn clean_title(title: &str) -> String {
     trimmed.strip_suffix('.').unwrap_or(trimmed).to_string()
 }
 
+fn description_with_replacement_note(
+    description: &str,
+    provider: &Provider,
+    old_pr_number: u64,
+) -> String {
+    format!(
+        "{}\n\nReplaces {} {}{} because the source branch changed after `gg unstack`.",
+        description,
+        provider.pr_label(),
+        provider.pr_number_prefix(),
+        old_pr_number
+    )
+}
+
+fn mismatched_pr_head_branch<'a>(
+    pr_info: Option<&'a crate::provider::PrInfo>,
+    entry_branch: &str,
+) -> Option<&'a str> {
+    pr_info
+        .and_then(|info| info.head_branch.as_deref())
+        .filter(|head_branch| *head_branch != entry_branch)
+}
+
+fn replacement_closing_comment(
+    provider: &Provider,
+    old_head_branch: &str,
+    new_head_branch: &str,
+    new_pr_number: u64,
+    new_pr_url: &str,
+) -> String {
+    let replacement = if new_pr_url.is_empty() {
+        format!("{}{}", provider.pr_number_prefix(), new_pr_number)
+    } else {
+        format!(
+            "{}{} ({})",
+            provider.pr_number_prefix(),
+            new_pr_number,
+            new_pr_url
+        )
+    };
+
+    format!(
+        "Closed by git-gud because this stack entry moved to a new source branch after `gg unstack`.\n\nOld source branch: `{}`\nNew source branch: `{}`\nReplacement: {}",
+        old_head_branch, new_head_branch, replacement
+    )
+}
+
 /// Ensure a title has the "Draft: " prefix for GitLab when draft is true.
 /// GitLab controls draft state via the title prefix, so when syncing with --draft,
 /// we need to ensure the title has the "Draft: " prefix.
@@ -1112,8 +1300,9 @@ fn create_entry_branch(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_pr_payload, clean_title, compute_target_branch, ensure_draft_prefix_for_gitlab,
-        is_wip_or_draft_prefix,
+        build_pr_payload, clean_title, compute_target_branch, description_with_replacement_note,
+        ensure_draft_prefix_for_gitlab, is_wip_or_draft_prefix, mismatched_pr_head_branch,
+        replacement_closing_comment,
     };
     use crate::git;
     use crate::output::{
@@ -1330,6 +1519,84 @@ mod tests {
         assert!(result.contains("Reviewer comments here"));
         assert!(result.contains("Updated details"));
         assert!(!result.contains("Details here"));
+    }
+
+    #[test]
+    fn test_description_with_replacement_note_mentions_old_pr() {
+        use crate::provider::Provider;
+
+        let description =
+            description_with_replacement_note("Original body", &Provider::GitHub, 428);
+
+        assert!(description.contains("Original body"));
+        assert!(description.contains("Replaces PR #428"));
+        assert!(description.contains("source branch changed after `gg unstack`"));
+    }
+
+    #[test]
+    fn test_mismatched_pr_head_branch_detects_old_stack_head() {
+        let info = crate::provider::PrInfo {
+            number: 428,
+            title: "Test PR".to_string(),
+            state: crate::provider::PrState::Open,
+            url: "https://example.com/pr/428".to_string(),
+            head_branch: Some("testuser/old-stack--c-8b999da".to_string()),
+            draft: false,
+            approved: false,
+            mergeable: true,
+            changes_requested: false,
+        };
+
+        assert_eq!(
+            mismatched_pr_head_branch(Some(&info), "testuser/new-stack--c-8b999da"),
+            Some("testuser/old-stack--c-8b999da")
+        );
+    }
+
+    #[test]
+    fn test_mismatched_pr_head_branch_skips_matching_or_unknown_head() {
+        let matching = crate::provider::PrInfo {
+            number: 428,
+            title: "Test PR".to_string(),
+            state: crate::provider::PrState::Open,
+            url: "https://example.com/pr/428".to_string(),
+            head_branch: Some("testuser/new-stack--c-8b999da".to_string()),
+            draft: false,
+            approved: false,
+            mergeable: true,
+            changes_requested: false,
+        };
+        let unknown = crate::provider::PrInfo {
+            head_branch: None,
+            ..matching.clone()
+        };
+
+        assert_eq!(
+            mismatched_pr_head_branch(Some(&matching), "testuser/new-stack--c-8b999da"),
+            None
+        );
+        assert_eq!(
+            mismatched_pr_head_branch(Some(&unknown), "testuser/new-stack--c-8b999da"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_replacement_closing_comment_mentions_branches_and_replacement() {
+        use crate::provider::Provider;
+
+        let comment = replacement_closing_comment(
+            &Provider::GitHub,
+            "testuser/old--c-1234567",
+            "testuser/new--c-1234567",
+            430,
+            "https://github.com/org/repo/pull/430",
+        );
+
+        assert!(comment.contains("testuser/old--c-1234567"));
+        assert!(comment.contains("testuser/new--c-1234567"));
+        assert!(comment.contains("#430"));
+        assert!(comment.contains("https://github.com/org/repo/pull/430"));
     }
 
     #[test]

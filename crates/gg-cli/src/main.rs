@@ -212,6 +212,33 @@ enum Commands {
         files: Vec<String>,
     },
 
+    /// Split the current stack into two independent stacks
+    #[command(
+        name = "unstack",
+        long_about = "Split the current stack into two independent stacks. The selected entry and its descendants become a new stack; lower entries remain in the original stack. This is named `unstack` to avoid colliding with `gg split`, which splits commits."
+    )]
+    Unstack {
+        /// First entry for the new stack: position (1-indexed), short SHA, or GG-ID
+        #[arg(short, long, value_name = "TARGET")]
+        target: Option<String>,
+
+        /// Name for the new stack (default: <current-stack>-2, incrementing as needed)
+        #[arg(short, long, value_name = "STACK_NAME")]
+        name: Option<String>,
+
+        /// Disable the interactive picker; requires --target
+        #[arg(long)]
+        no_tui: bool,
+
+        /// Override the immutability check and rewrite merged/base commits anyway
+        #[arg(short = 'f', long = "force", alias = "ignore-immutable")]
+        force: bool,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Land (merge) approved PRs/MRs starting from the first commit
     #[command(name = "land", alias = "merge")]
     Land {
@@ -568,6 +595,22 @@ fn main() {
                 force,
             }),
             false,
+        ),
+        Some(Commands::Unstack {
+            target,
+            name,
+            no_tui,
+            force,
+            json,
+        }) => (
+            gg_core::commands::unstack::run(gg_core::commands::unstack::UnstackOptions {
+                target,
+                name,
+                no_tui,
+                force,
+                json,
+            }),
+            json,
         ),
         Some(Commands::Land {
             all,

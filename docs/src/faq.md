@@ -59,7 +59,7 @@ Increase timeout in config:
 ## How do I undo a `gg` command?
 
 Run [`gg undo`](./commands/undo.md). It reverses the local ref/HEAD
-effects of the most recent mutating `gg` command (drop, squash, split,
+effects of the most recent mutating `gg` command (drop, squash, split, unstack,
 rebase, reorder, absorb, reconcile, checkout, nav, clean, sync, land,
 or `run --amend`). Working-tree changes are not touched.
 

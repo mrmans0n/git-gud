@@ -25,7 +25,7 @@ long-running conflict) are never pruned.
 
 ## How it works
 
-Every mutating `gg` command (`sc`, `drop`, `split`, `rebase`, `reorder`,
+Every mutating `gg` command (`sc`, `drop`, `split`, `unstack`, `rebase`, `reorder`,
 `absorb`, `reconcile`, `checkout`, `mv`/`first`/`last`/`prev`/`next`,
 `clean`, `sync`, `land`, and `run --amend`) now snapshots the refs it
 will touch before mutating and finalises the record on success. `gg

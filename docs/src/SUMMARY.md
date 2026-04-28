@@ -24,6 +24,7 @@
   - [drop (abandon)](./commands/drop.md)
   - [reorder](./commands/reorder.md)
   - [split](./commands/split.md)
+  - [unstack](./commands/unstack.md)
   - [rebase](./commands/rebase.md)
   - [land](./commands/land.md)
   - [clean](./commands/clean.md)

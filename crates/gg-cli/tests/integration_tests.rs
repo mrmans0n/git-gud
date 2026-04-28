@@ -8589,6 +8589,269 @@ fn test_gg_log_json_shape() {
     assert_eq!(entries[0]["is_current"], false);
 }
 
+// ── Unstack tests ──────────────────────────────────────────────
+
+fn setup_unstack_repo(stack_name: &str, num_commits: usize) -> (TempDir, PathBuf) {
+    let (temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", stack_name]);
+    assert!(success, "gg co failed: {stderr}");
+
+    let mut previous_gg_id: Option<String> = None;
+    for i in 1..=num_commits {
+        let gg_id = format!("c-{i:07}");
+        fs::write(
+            repo_path.join(format!("unstack-{i}.txt")),
+            format!("content {i}\n"),
+        )
+        .unwrap();
+        run_git(&repo_path, &["add", "."]);
+
+        let mut message = format!("Commit {i}\n\nGG-ID: {gg_id}");
+        if let Some(parent) = previous_gg_id {
+            message.push_str(&format!("\nGG-Parent: {parent}"));
+        }
+        run_git(&repo_path, &["commit", "-m", &message]);
+        previous_gg_id = Some(gg_id);
+    }
+
+    (temp_dir, repo_path)
+}
+
+fn rev_list(repo_path: &std::path::Path, range: &str) -> Vec<String> {
+    let (success, stdout) = run_git(repo_path, &["rev-list", "--reverse", range]);
+    assert!(success, "git rev-list failed for {range}");
+    stdout.lines().map(str::to_string).collect()
+}
+
+fn commit_message(repo_path: &std::path::Path, rev: &str) -> String {
+    let (success, stdout) = run_git(repo_path, &["show", "-s", "--format=%B", rev]);
+    assert!(success, "git show failed for {rev}");
+    stdout
+}
+
+#[test]
+fn test_unstack_splits_stack_metadata_config_and_entry_branches() {
+    let (_temp_dir, repo_path) = setup_unstack_repo("unstack-flow", 4);
+
+    let original_commits = rev_list(&repo_path, "main..testuser/unstack-flow");
+    assert_eq!(original_commits.len(), 4);
+
+    run_git(
+        &repo_path,
+        &[
+            "branch",
+            "testuser/unstack-flow--c-0000003",
+            &original_commits[2],
+        ],
+    );
+    run_git(
+        &repo_path,
+        &[
+            "branch",
+            "testuser/unstack-flow--c-0000004",
+            &original_commits[3],
+        ],
+    );
+    run_git(
+        &repo_path,
+        &[
+            "branch",
+            "testuser/unstack-flow--c-0000002",
+            &original_commits[1],
+        ],
+    );
+
+    let config_path = repo_path.join(".git/gg/config.json");
+    let mut config: Value =
+        serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+    config["stacks"]["unstack-flow"]["mrs"] = serde_json::json!({
+        "c-0000001": 101,
+        "c-0000002": 102,
+        "c-0000003": 103,
+        "c-0000004": 104
+    });
+    fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &[
+            "unstack",
+            "--target",
+            "3",
+            "--name",
+            "unstack-flow-top",
+            "--no-tui",
+        ],
+    );
+    assert!(
+        success,
+        "gg unstack failed. stdout={stdout} stderr={stderr}"
+    );
+
+    let lower_commits = rev_list(&repo_path, "main..testuser/unstack-flow");
+    let upper_commits = rev_list(&repo_path, "main..testuser/unstack-flow-top");
+    assert_eq!(lower_commits.len(), 2);
+    assert_eq!(upper_commits.len(), 2);
+
+    let lower_root = commit_message(&repo_path, &lower_commits[0]);
+    let lower_head = commit_message(&repo_path, &lower_commits[1]);
+    let upper_root = commit_message(&repo_path, &upper_commits[0]);
+    let upper_head = commit_message(&repo_path, &upper_commits[1]);
+
+    assert!(lower_root.contains("GG-ID: c-0000001"));
+    assert!(!lower_root.contains("GG-Parent:"));
+    assert!(lower_head.contains("GG-ID: c-0000002"));
+    assert!(lower_head.contains("GG-Parent: c-0000001"));
+
+    assert!(upper_root.contains("GG-ID: c-0000003"));
+    assert!(
+        !upper_root.contains("GG-Parent:"),
+        "new stack root must not keep old parent: {upper_root}"
+    );
+    assert!(upper_head.contains("GG-ID: c-0000004"));
+    assert!(upper_head.contains("GG-Parent: c-0000003"));
+
+    let config: Value = serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+    assert_eq!(config["stacks"]["unstack-flow"]["mrs"]["c-0000001"], 101);
+    assert_eq!(config["stacks"]["unstack-flow"]["mrs"]["c-0000002"], 102);
+    assert!(config["stacks"]["unstack-flow"]["mrs"]["c-0000003"].is_null());
+    assert_eq!(
+        config["stacks"]["unstack-flow-top"]["mrs"]["c-0000003"],
+        103
+    );
+    assert_eq!(
+        config["stacks"]["unstack-flow-top"]["mrs"]["c-0000004"],
+        104
+    );
+
+    let (success, branches) = run_git(&repo_path, &["branch", "--list"]);
+    assert!(success);
+    assert!(!branches.contains("testuser/unstack-flow--c-0000003"));
+    assert!(!branches.contains("testuser/unstack-flow--c-0000004"));
+    assert!(branches.contains("testuser/unstack-flow--c-0000002"));
+}
+
+#[test]
+fn test_unstack_preserves_inherited_base_config() {
+    let (_temp_dir, repo_path) = setup_unstack_repo("unstack-base", 3);
+
+    let config_path = repo_path.join(".git/gg/config.json");
+    let mut config: Value =
+        serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+    config["defaults"]["base"] = serde_json::json!("main");
+    config["stacks"]["unstack-base"]
+        .as_object_mut()
+        .unwrap()
+        .remove("base");
+    fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+
+    let (success, _stdout, stderr) = run_gg(
+        &repo_path,
+        &[
+            "unstack",
+            "--target",
+            "2",
+            "--name",
+            "unstack-base-top",
+            "--no-tui",
+        ],
+    );
+    assert!(success, "gg unstack failed: {stderr}");
+
+    let config: Value = serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+    assert_eq!(config["defaults"]["base"], "main");
+    assert!(
+        config["stacks"]["unstack-base-top"]["base"].is_null(),
+        "new stack should inherit defaults.base instead of pinning an override: {config}"
+    );
+}
+
+#[test]
+fn test_unstack_default_name_handles_trailing_hyphen_stack_name() {
+    let (_temp_dir, repo_path) = setup_unstack_repo("unstack-edge-", 3);
+
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["unstack", "--target", "2", "--no-tui"]);
+    assert!(success, "gg unstack failed: {stderr}");
+
+    let lower_commits = rev_list(&repo_path, "main..testuser/unstack-edge-");
+    let upper_commits = rev_list(&repo_path, "main..testuser/unstack-edge-2");
+    assert_eq!(lower_commits.len(), 1);
+    assert_eq!(upper_commits.len(), 2);
+}
+
+#[test]
+fn test_unstack_rejects_first_position_without_mutating() {
+    let (_temp_dir, repo_path) = setup_unstack_repo("unstack-invalid", 3);
+    let before = rev_list(&repo_path, "main..testuser/unstack-invalid");
+
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["unstack", "--target", "1", "--no-tui"]);
+    assert!(!success, "unstack at position 1 should fail");
+    assert!(
+        stderr.contains("position 1") || stderr.contains("original stack would be empty"),
+        "unexpected stderr: {stderr}"
+    );
+
+    let after = rev_list(&repo_path, "main..testuser/unstack-invalid");
+    assert_eq!(after, before);
+    let (success, _stdout) = run_git(&repo_path, &["rev-parse", "testuser/unstack-invalid-2"]);
+    assert!(!success, "new stack branch should not be created");
+}
+
+#[test]
+fn test_unstack_last_entry_json_creates_one_entry_stack() {
+    let (_temp_dir, repo_path) = setup_unstack_repo("unstack-json", 3);
+
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &[
+            "unstack",
+            "--target",
+            "3",
+            "--name",
+            "unstack-json-tail",
+            "--no-tui",
+            "--json",
+        ],
+    );
+    assert!(success, "gg unstack --json failed: {stderr}");
+    assert!(
+        stderr.trim().is_empty(),
+        "stderr should be empty in JSON mode: {stderr}"
+    );
+
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(parsed["version"], 1);
+    assert_eq!(parsed["unstack"]["original_stack"], "unstack-json");
+    assert_eq!(parsed["unstack"]["new_stack"], "unstack-json-tail");
+    assert_eq!(parsed["unstack"]["split_position"], 3);
+    assert_eq!(
+        parsed["unstack"]["remaining_entries"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        parsed["unstack"]["moved_entries"].as_array().unwrap().len(),
+        1
+    );
+
+    let upper_commits = rev_list(&repo_path, "main..testuser/unstack-json-tail");
+    assert_eq!(upper_commits.len(), 1);
+    let upper_root = commit_message(&repo_path, &upper_commits[0]);
+    assert!(upper_root.contains("GG-ID: c-0000003"));
+    assert!(!upper_root.contains("GG-Parent:"));
+}
+
 #[test]
 fn test_gg_log_empty_stack() {
     let (_temp_dir, repo_path) = create_test_repo();

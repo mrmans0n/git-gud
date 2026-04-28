@@ -216,7 +216,9 @@ fn resolve_new_stack_name(
 
     for suffix in 2usize.. {
         let candidate = format!("{}-{}", source_stack.name, suffix);
-        let sanitized = git::sanitize_stack_name(&candidate)?;
+        let Ok(sanitized) = git::sanitize_stack_name(&candidate) else {
+            continue;
+        };
         if ensure_stack_name_available(repo, config, &source_stack.username, &sanitized).is_ok() {
             return Ok(sanitized);
         }
@@ -271,8 +273,7 @@ fn migrate_config(
     let mut moved_mrs = HashMap::new();
     let old_base = config
         .get_stack(&old_stack_name)
-        .and_then(|stack| stack.base.clone())
-        .or_else(|| Some(source_stack.base.clone()));
+        .and_then(|stack| stack.base.clone());
 
     if let Some(old_cfg) = config.stacks.get_mut(&old_stack_name) {
         old_cfg.mrs.retain(|gg_id, mr| {

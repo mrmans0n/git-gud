@@ -422,6 +422,7 @@ pub fn run(
         let mut pushed = false;
         let mut entry_error: Option<String> = None;
         let mut pr_state_cached: Option<crate::stack_nav::PrEntryState> = None;
+        let mut effective_draft = entry_draft;
         let mut is_entry_closed = false;
 
         let (title, description) = build_pr_payload(
@@ -541,6 +542,7 @@ pub fn run(
                         .as_ref()
                         .map(|info| info.draft)
                         .unwrap_or(entry_draft);
+                    effective_draft = replacement_draft;
                     let replacement_description = managed_body::wrap(
                         &description_with_replacement_note(&description, &provider, pr_num),
                     );
@@ -897,7 +899,7 @@ pub fn run(
                 action,
                 pr_number,
                 pr_url,
-                draft: entry_draft,
+                draft: effective_draft,
                 pushed,
                 error: entry_error,
                 nav_comment_action: None,

@@ -91,7 +91,7 @@ When splitting an existing stack into lower and upper stacks, prefer a managed
 worktree for the new upper stack:
 
 ```bash
-gg unstack 3 --name feature-auth-followup --wt
+gg unstack --target 3 --name feature-auth-followup --wt
 ```
 
 2. Commit logical changes:

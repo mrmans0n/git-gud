@@ -13,7 +13,7 @@ gg co my-feature --worktree
 ## Unstack into a worktree
 
 ```bash
-gg unstack 3 --name upper-feature --wt
+gg unstack --target 3 --name upper-feature --wt
 ```
 
 This keeps your current directory on the lower stack and creates or reuses a managed worktree for the new upper stack.

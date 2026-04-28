@@ -5741,6 +5741,89 @@ fn test_gg_unstack_worktree_creates_new_stack_worktree_and_preserves_current_bra
 }
 
 #[test]
+fn test_gg_unstack_worktree_failure_leaves_original_stack_unchanged() {
+    let (_temp_dir, repo_path) = create_test_repo_with_worktree_support();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","base":"main"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["co", "rollback-lower"]);
+    assert!(
+        success,
+        "checkout should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+
+    for i in 1..=3 {
+        fs::write(
+            repo_path.join(format!("rollback-file{i}.txt")),
+            format!("commit {i}\n"),
+        )
+        .expect("Failed to write test file");
+        run_git(&repo_path, &["add", "."]);
+        let (success, _) = run_git(
+            &repo_path,
+            &["commit", "-m", &format!("rollback commit {i}")],
+        );
+        assert!(success, "commit {i} should succeed");
+    }
+
+    let before_log = rev_list(&repo_path, "main..testuser/rollback-lower");
+    let blocked_path = repo_path.parent().expect("repo parent").join(format!(
+        "{}.{}",
+        repo_path.file_name().unwrap().to_string_lossy(),
+        "rollback-upper"
+    ));
+    fs::create_dir_all(&blocked_path).expect("Failed to create blocked worktree path");
+    fs::write(blocked_path.join("occupied.txt"), "already here\n")
+        .expect("Failed to occupy blocked worktree path");
+
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &[
+            "unstack",
+            "-t",
+            "2",
+            "--name",
+            "rollback-upper",
+            "--worktree",
+        ],
+    );
+    assert!(
+        !success,
+        "unstack --worktree should fail when target path exists: stdout={stdout}"
+    );
+    assert!(
+        stderr.contains("Failed to create worktree"),
+        "stderr should report worktree creation failure: {stderr}"
+    );
+
+    let after_log = rev_list(&repo_path, "main..testuser/rollback-lower");
+    assert_eq!(after_log, before_log);
+
+    let (_, current_branch) = run_git(&repo_path, &["branch", "--show-current"]);
+    assert_eq!(current_branch.trim(), "testuser/rollback-lower");
+
+    let (branch_exists, _) = run_git(&repo_path, &["rev-parse", "testuser/rollback-upper"]);
+    assert!(
+        !branch_exists,
+        "temporary new stack branch should be removed after worktree failure"
+    );
+
+    let config: Value =
+        serde_json::from_str(&fs::read_to_string(gg_dir.join("config.json")).unwrap()).unwrap();
+    assert!(
+        config["stacks"]["rollback-upper"].is_null(),
+        "failed unstack should not persist new stack config: {config}"
+    );
+}
+
+#[test]
 fn test_gg_unstack_wt_alias_preserves_existing_old_stack_worktree_metadata() {
     let (_temp_dir, repo_path) = create_test_repo_with_worktree_support();
 

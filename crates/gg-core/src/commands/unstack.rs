@@ -115,6 +115,28 @@ pub fn run(options: UnstackOptions) -> Result<()> {
     // Create the new stack by rebasing upper commits onto base
     let new_tip = rebase_upper_stack(&repo, &stack_obj, &new_branch, split_position)?;
 
+    // In worktree mode, create the managed worktree before mutating the
+    // original stack branch or config. If worktree creation fails, the
+    // original stack is still intact and only the temporary new branch needs
+    // cleanup.
+    let precreated_worktree_path = if options.worktree {
+        git::checkout_branch(&repo, &original_branch)?;
+        match super::checkout::ensure_stack_worktree(
+            &repo,
+            &mut config,
+            &new_stack_name,
+            &new_branch,
+        ) {
+            Ok(path) => Some(path),
+            Err(err) => {
+                cleanup_failed_worktree_unstack(&repo, &original_branch, &new_branch)?;
+                return Err(err);
+            }
+        }
+    } else {
+        None
+    };
+
     // Move the original stack branch down to the lower tip
     set_branch_target(
         &repo,
@@ -140,6 +162,11 @@ pub fn run(options: UnstackOptions) -> Result<()> {
         options.worktree,
     );
 
+    if let Some(path) = &precreated_worktree_path {
+        config.get_or_create_stack(&new_stack_name).worktree_path =
+            Some(path.to_string_lossy().to_string());
+    }
+
     // Delete old entry branches for moved entries
     let deleted_entry_branches = delete_old_entry_branches(&repo, &stack_obj, split_position)?;
 
@@ -150,25 +177,16 @@ pub fn run(options: UnstackOptions) -> Result<()> {
     let lower_stack = Stack::load(&repo, &config)?;
     git::normalize_stack_metadata(&repo, &lower_stack)?;
 
-    // Normalize metadata on the new (upper) stack and leave HEAD there
-    git::checkout_branch(&repo, &new_branch)?;
-    let upper_stack = Stack::load(&repo, &config)?;
-    git::normalize_stack_metadata(&repo, &upper_stack)?;
-
-    // Handle worktree mode: checkout old stack branch, create worktree for new stack
-    let worktree_path = if options.worktree {
-        // Switch back to the original (lower) stack in the current worktree
-        git::checkout_branch(&repo, &original_branch)?;
-        // Create or reuse a managed worktree for the new upper stack
-        let path = super::checkout::ensure_stack_worktree(
-            &repo,
-            &mut config,
-            &new_stack_name,
-            &new_branch,
-        )?;
-        config.save(repo.commondir())?;
+    let worktree_path = if let Some(path) = &precreated_worktree_path {
+        let upper_repo = Repository::open(path)?;
+        let upper_stack = Stack::load(&upper_repo, &config)?;
+        git::normalize_stack_metadata(&upper_repo, &upper_stack)?;
         Some(path.to_string_lossy().to_string())
     } else {
+        // Normalize metadata on the new (upper) stack and leave HEAD there.
+        git::checkout_branch(&repo, &new_branch)?;
+        let upper_stack = Stack::load(&repo, &config)?;
+        git::normalize_stack_metadata(&repo, &upper_stack)?;
         None
     };
 
@@ -465,6 +483,25 @@ fn cleanup_failed_unstack_rebase(
         branch.delete().map_err(|e| {
             GgError::Other(format!(
                 "Rebase failed, and cleanup could not delete temporary branch '{}': {}",
+                new_branch, e
+            ))
+        })?;
+    }
+
+    Ok(())
+}
+
+fn cleanup_failed_worktree_unstack(
+    repo: &Repository,
+    original_branch: &str,
+    new_branch: &str,
+) -> Result<()> {
+    git::checkout_branch(repo, original_branch)?;
+
+    if let Ok(mut branch) = repo.find_branch(new_branch, BranchType::Local) {
+        branch.delete().map_err(|e| {
+            GgError::Other(format!(
+                "Worktree creation failed, and cleanup could not delete temporary branch '{}': {}",
                 new_branch, e
             ))
         })?;

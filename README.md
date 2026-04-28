@@ -89,7 +89,7 @@ gg clean
 
 ## Worktree Support
 
-`gg co` supports managed Git worktrees so you can develop a stack in its own checkout while keeping your original repository working tree untouched.
+`gg co` and `gg unstack --wt` support managed Git worktrees so you can develop a stack in its own checkout while keeping your original repository working tree untouched.
 
 ### Create a stack worktree
 
@@ -100,6 +100,14 @@ gg co my-feature --worktree
 ```
 
 This creates (or reuses) a managed worktree for the stack and checks it out there.
+
+### Unstack into a worktree
+
+```bash
+gg unstack --target 3 --name upper-feature --wt
+```
+
+This keeps your current directory on the lower stack and creates or reuses a managed worktree for the new upper stack.
 
 ### Default worktree location
 
@@ -296,7 +304,7 @@ All configuration options are in the `defaults` section (with provider-specific 
 | `sync_auto_rebase` (`sync.auto_rebase`) | `boolean` | Automatically run `gg rebase` before `gg sync` when base is behind threshold | `false` |
 | `sync_behind_threshold` (`sync.behind_threshold`) | `number` | Warn/rebase in `gg sync` when base is at least this many commits behind `origin/<base>` (`0` disables check) | `1` |
 | `stack_nav_comments` | `boolean` | **Stack navigation comments** — opt-in. Each PR/MR in a stack gets a managed comment listing sibling PRs with a 👉 marker on the current one (GitHub `#N` or GitLab `!N`). | `false` |
-| `worktree_base_path` | `string` | Base directory used by `gg co --wt` / `--worktree` for managed stack worktrees | Parent directory of current repository |
+| `worktree_base_path` | `string` | Base directory used by `gg co --wt` / `--worktree` and `gg unstack --wt` / `--worktree` for managed stack worktrees | Parent directory of current repository |
 | `gitlab.auto_merge_on_land` | `boolean` | *(GitLab only)* Use "merge when pipeline succeeds" for `gg land` by default | `false` |
 
 Example configuration:

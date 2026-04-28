@@ -403,12 +403,7 @@ fn cleanup_failed_unstack_rebase(
         )));
     }
 
-    git::checkout_branch(repo, original_branch).map_err(|e| {
-        GgError::Other(format!(
-            "Rebase failed, and cleanup could not checkout '{}': {}",
-            original_branch, e
-        ))
-    })?;
+    let checkout_err = git::checkout_branch(repo, original_branch).err();
 
     if let Ok(mut branch) = repo.find_branch(new_branch, BranchType::Local) {
         branch.delete().map_err(|e| {
@@ -417,6 +412,13 @@ fn cleanup_failed_unstack_rebase(
                 new_branch, e
             ))
         })?;
+    }
+
+    if let Some(e) = checkout_err {
+        return Err(GgError::Other(format!(
+            "Rebase failed, and cleanup could not checkout '{}': {}",
+            original_branch, e
+        )));
     }
 
     Ok(())

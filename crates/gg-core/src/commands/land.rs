@@ -960,7 +960,13 @@ pub fn run(opts: LandOptions) -> Result<()> {
             // sanctioned cleanup step, not a user-driven history rewrite.
             let _ =
                 crate::commands::rebase::run_with_repo(&repo, Some(stack.base.clone()), json, true);
-            if crate::commands::clean::run_for_stack_with_repo(&repo, &stack.name, true).is_ok() {
+            if crate::commands::clean::run_for_stack_with_repo_after_verified_land(
+                &repo,
+                &stack.name,
+                true,
+            )
+            .is_ok()
+            {
                 cleaned = true;
             }
         }

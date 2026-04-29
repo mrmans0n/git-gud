@@ -7423,6 +7423,135 @@ fn test_clean_no_mrs_tracked_verified_false() {
 }
 
 #[test]
+fn test_land_all_clean_deletes_remote_entry_branch_after_mapping_removed() {
+    let (_temp_dir, repo_path, remote_path) = create_test_repo_with_remote();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","base":"main","provider":"github"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "land-clean"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("land-clean.txt"), "land clean\n").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "feat: land clean\n\nGG-ID: c-1a2b3c4"],
+    );
+
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{
+  "defaults": {
+    "branch_username": "testuser",
+    "base": "main",
+    "provider": "github"
+  },
+  "stacks": {
+    "land-clean": {
+      "base": "main",
+      "mrs": {
+        "c-1a2b3c4": 4242
+      }
+    }
+  }
+}"#,
+    )
+    .expect("Failed to write PR mapping");
+
+    let entry_branch = "testuser/land-clean--c-1a2b3c4";
+    run_git(&repo_path, &["branch", entry_branch]);
+    let (success, _, stderr) = run_git_full(&repo_path, &["push", "-u", "origin", entry_branch]);
+    assert!(success, "Failed to push entry branch: {}", stderr);
+
+    let fake_bin = repo_path.join("fake-bin");
+    fs::create_dir_all(&fake_bin).expect("Failed to create fake bin dir");
+    fs::write(
+        fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+
+if [ "$1" = "--version" ]; then
+  echo "gh version 2.0.0"
+  exit 0
+fi
+
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  exit 0
+fi
+
+if [ "$1" = "pr" ] && [ "$2" = "view" ] && [ "$3" = "4242" ]; then
+  echo '{"number":4242,"title":"Land clean","state":"OPEN","url":"https://github.com/test/repo/pull/4242","headRefName":"testuser/land-clean--c-1a2b3c4","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
+  exit 0
+fi
+
+if [ "$1" = "pr" ] && [ "$2" = "merge" ] && [ "$3" = "4242" ]; then
+  current_branch=$(git rev-parse --abbrev-ref HEAD)
+  git checkout main >/dev/null 2>&1
+  git merge --ff-only testuser/land-clean >/dev/null 2>&1
+  git push origin main >/dev/null 2>&1
+  git checkout "$current_branch" >/dev/null 2>&1
+  exit 0
+fi
+
+echo "unexpected gh invocation: $@" >&2
+exit 1
+"#,
+    )
+    .expect("Failed to write fake gh");
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(fake_bin.join("gh"))
+            .expect("Failed to stat fake gh")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(fake_bin.join("gh"), perms).expect("Failed to chmod fake gh");
+    }
+
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut new_path = std::ffi::OsString::from(fake_bin.as_os_str());
+    new_path.push(":");
+    new_path.push(old_path);
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["land", "--all", "--clean"],
+        &[("PATH", new_path.as_os_str())],
+    );
+    assert!(
+        success,
+        "land --all --clean should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+
+    let combined = format!("{}{}", stdout, stderr);
+    assert!(
+        !combined.contains("merge verification is unavailable"),
+        "auto-clean after verified land should not warn about unavailable verification: {}",
+        combined
+    );
+
+    let output = Command::new("git")
+        .args([
+            "--git-dir",
+            remote_path.to_str().unwrap(),
+            "show-ref",
+            "refs/heads/testuser/land-clean--c-1a2b3c4",
+        ])
+        .output()
+        .expect("Failed to inspect remote refs");
+    assert!(
+        !output.status.success(),
+        "remote entry branch should be deleted after verified land auto-clean"
+    );
+}
+
+#[test]
 fn test_arrange_is_alias_for_reorder() {
     let (_temp_dir, repo_path) = create_test_repo();
 

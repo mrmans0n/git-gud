@@ -42,6 +42,30 @@ pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
 
 /// Run clean for a stack with an already-open repository (no lock acquisition)
 pub fn run_for_stack_with_repo(repo: &Repository, stack_name: &str, force: bool) -> Result<()> {
+    run_for_stack_with_repo_options(repo, stack_name, force, false)
+}
+
+/// Run clean after `gg land` has already verified that every PR/MR in the stack
+/// was merged via the provider.
+///
+/// `gg land` removes merged PR/MR mappings from config before auto-clean runs,
+/// so a normal clean cannot always re-check provider state. This entry point
+/// carries the verification that land just obtained and allows remote entry
+/// branch deletion while keeping normal `gg clean` conservative.
+pub(crate) fn run_for_stack_with_repo_after_verified_land(
+    repo: &Repository,
+    stack_name: &str,
+    force: bool,
+) -> Result<()> {
+    run_for_stack_with_repo_options(repo, stack_name, force, true)
+}
+
+fn run_for_stack_with_repo_options(
+    repo: &Repository,
+    stack_name: &str,
+    force: bool,
+    merge_verified_by_land: bool,
+) -> Result<()> {
     let git_dir = repo.commondir();
     let mut config = Config::load_with_global(git_dir)?;
 
@@ -137,7 +161,7 @@ pub fn run_for_stack_with_repo(repo: &Repository, stack_name: &str, force: bool)
         }
     }
 
-    let allow_remote_delete = merge_status.verified;
+    let allow_remote_delete = should_delete_remote_branches(merge_status, merge_verified_by_land);
     if !allow_remote_delete {
         println!(
             "{} Skipping remote branch deletion for '{}' because merge verification is unavailable.",
@@ -492,6 +516,10 @@ struct MergeStatus {
     merged: bool,
     /// True when merge state was verified via provider checks.
     verified: bool,
+}
+
+fn should_delete_remote_branches(merge_status: MergeStatus, merge_verified_by_land: bool) -> bool {
+    merge_status.verified || (merge_verified_by_land && merge_status.merged)
 }
 
 /// Check if a stack is fully merged
@@ -949,5 +977,51 @@ fn delete_entry_branches(
         if delete_remote {
             let _ = git::delete_remote_branch(&branch_name);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normal_clean_deletes_remote_branches_only_when_verified() {
+        assert!(should_delete_remote_branches(
+            MergeStatus {
+                merged: true,
+                verified: true,
+            },
+            false,
+        ));
+
+        assert!(!should_delete_remote_branches(
+            MergeStatus {
+                merged: true,
+                verified: false,
+            },
+            false,
+        ));
+    }
+
+    #[test]
+    fn verified_land_allows_remote_branch_deletion_after_config_mappings_are_removed() {
+        assert!(should_delete_remote_branches(
+            MergeStatus {
+                merged: true,
+                verified: false,
+            },
+            true,
+        ));
+    }
+
+    #[test]
+    fn verified_land_does_not_allow_remote_branch_deletion_for_unmerged_stack() {
+        assert!(!should_delete_remote_branches(
+            MergeStatus {
+                merged: false,
+                verified: false,
+            },
+            true,
+        ));
     }
 }

@@ -737,6 +737,38 @@ fn test_gg_ls_shows_commits() {
 }
 
 #[test]
+fn test_gg_ls_warns_on_mismatched_stack_prefix() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "wrong-prefix-ls"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+    run_git(&repo_path, &["branch", "-m", "other/wrong-prefix-ls"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["ls"]);
+    assert!(success, "gg ls failed: {}", stderr);
+    assert!(
+        stdout.contains("Warning:"),
+        "warning should appear: {stdout}"
+    );
+    assert!(
+        stdout.contains("configured prefix 'testuser/'"),
+        "configured prefix should appear: {stdout}"
+    );
+    assert!(
+        stdout.contains("git branch -m testuser/wrong-prefix-ls"),
+        "rename hint should appear: {stdout}"
+    );
+}
+
+#[test]
 fn test_gg_ls_json_current_stack() {
     let (_temp_dir, repo_path) = create_test_repo();
 
@@ -779,6 +811,39 @@ fn test_gg_ls_json_current_stack() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["position"], 1);
     assert_eq!(entries[0]["title"], "Add file1");
+}
+
+#[test]
+fn test_gg_sync_json_includes_mismatched_stack_prefix_warning() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "wrong-prefix-sync"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+    run_git(&repo_path, &["branch", "-m", "other/wrong-prefix-sync"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["sync", "--json"]);
+    assert!(success, "gg sync --json failed: {}", stderr);
+    assert!(
+        stderr.trim().is_empty(),
+        "stderr should be empty in JSON mode: {stderr}"
+    );
+
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    let warnings = parsed["sync"]["warnings"]
+        .as_array()
+        .expect("warnings must be an array");
+    assert_eq!(warnings.len(), 1);
+    let warning = warnings[0].as_str().expect("warning must be a string");
+    assert!(warning.contains("configured prefix 'testuser/'"));
+    assert!(warning.contains("git branch -m testuser/wrong-prefix-sync"));
 }
 
 #[test]
@@ -4804,14 +4869,14 @@ fn test_rebase_without_stack_requires_target() {
     run_git(&repo_path, &["add", "."]);
     run_git(&repo_path, &["commit", "-m", "Feature commit"]);
 
-    // Try rebase without target (should fail - not on stack)
+    // Try rebase without target (should fail - not on a stack branch)
     let (success, _stdout, stderr) = run_gg(&repo_path, &["rebase"]);
     assert!(
         !success,
         "Rebase without target should fail when not on a stack"
     );
     assert!(
-        stderr.contains("Not on a stack"),
+        stderr.contains("not a stack branch"),
         "Should indicate not on a stack. Got: {}",
         stderr
     );
@@ -4834,7 +4899,7 @@ fn test_nav_requires_stack() {
     let (success, _stdout, stderr) = run_gg(&repo_path, &["first"]);
     assert!(!success, "Nav first should fail when not on a stack");
     assert!(
-        stderr.contains("Not on a stack"),
+        stderr.contains("not a stack branch"),
         "Should indicate not on a stack. Got: {}",
         stderr
     );
@@ -4842,17 +4907,17 @@ fn test_nav_requires_stack() {
     // Try nav last while not on a stack
     let (success, _stdout, stderr) = run_gg(&repo_path, &["last"]);
     assert!(!success, "Nav last should fail when not on a stack");
-    assert!(stderr.contains("Not on a stack"));
+    assert!(stderr.contains("not a stack branch"));
 
     // Try nav next while not on a stack
     let (success, _stdout, stderr) = run_gg(&repo_path, &["next"]);
     assert!(!success, "Nav next should fail when not on a stack");
-    assert!(stderr.contains("Not on a stack"));
+    assert!(stderr.contains("not a stack branch"));
 
     // Try nav prev while not on a stack
     let (success, _stdout, stderr) = run_gg(&repo_path, &["prev"]);
     assert!(!success, "Nav prev should fail when not on a stack");
-    assert!(stderr.contains("Not on a stack"));
+    assert!(stderr.contains("not a stack branch"));
 }
 
 #[test]
@@ -9214,6 +9279,38 @@ fn test_gg_log_json_shape() {
     assert_eq!(entries[0]["is_current"], false);
 }
 
+#[test]
+fn test_gg_log_warns_on_mismatched_stack_prefix() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "wrong-prefix-log"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+    run_git(&repo_path, &["branch", "-m", "other/wrong-prefix-log"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["log"]);
+    assert!(success, "gg log failed: {}", stderr);
+    assert!(
+        stdout.contains("Warning:"),
+        "warning should appear: {stdout}"
+    );
+    assert!(
+        stdout.contains("configured prefix 'testuser/'"),
+        "configured prefix should appear: {stdout}"
+    );
+    assert!(
+        stdout.contains("git branch -m testuser/wrong-prefix-log"),
+        "rename hint should appear: {stdout}"
+    );
+}
+
 // ── Unstack tests ──────────────────────────────────────────────
 
 fn setup_unstack_repo(stack_name: &str, num_commits: usize) -> (TempDir, PathBuf) {
@@ -9522,7 +9619,7 @@ fn test_gg_log_not_on_stack() {
     let (success, stdout, stderr) = run_gg(&repo_path, &["log"]);
     assert!(!success, "gg log off-stack should fail: stdout={stdout}");
     assert!(
-        stderr.contains("Not on a stack"),
+        stderr.contains("not a stack branch"),
         "stderr should explain we are not on a stack: {stderr}"
     );
 
@@ -9532,6 +9629,31 @@ fn test_gg_log_not_on_stack() {
     let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
     assert_eq!(parsed["version"], 1);
     assert!(parsed["error"].is_string(), "error field must be string");
+}
+
+#[test]
+fn test_stack_command_on_bare_branch_suggests_configured_prefix() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+    run_git(&repo_path, &["checkout", "-b", "bare-feature"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["log"]);
+    assert!(!success, "gg log off-stack should fail: stdout={stdout}");
+    assert!(
+        stderr.contains("Current branch 'bare-feature' is not a stack branch"),
+        "stderr should include current branch: {stderr}"
+    );
+    assert!(
+        stderr.contains("git branch -m testuser/bare-feature"),
+        "stderr should include rename hint: {stderr}"
+    );
 }
 
 #[test]

@@ -111,6 +111,24 @@ pub struct Stack {
     pub current_position: Option<usize>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackPrefixMismatch {
+    pub current_branch: String,
+    pub actual_prefix: String,
+    pub expected_prefix: String,
+    pub stack_name: String,
+    pub suggested_branch: String,
+}
+
+impl StackPrefixMismatch {
+    pub fn warning_message(&self) -> String {
+        format!(
+            "current branch '{}' does not use the configured prefix '{}/'. Some stack discovery, listing, and saved PR/MR mappings may be inaccurate. Consider renaming it: git branch -m {}",
+            self.current_branch, self.expected_prefix, self.suggested_branch
+        )
+    }
+}
+
 impl Stack {
     /// Load stack from the current branch (or stored stack if in detached HEAD)
     pub fn load(repo: &Repository, config: &Config) -> Result<Self> {
@@ -125,7 +143,9 @@ impl Stack {
             })
             .ok_or(GgError::NotOnStack)?;
 
-        let (username, name) = git::parse_stack_branch(&branch_name).ok_or(GgError::NotOnStack)?;
+        let (username, name) = git::parse_stack_branch(&branch_name).ok_or_else(|| {
+            GgError::NotOnStackBranch(format_not_stack_branch_error(&branch_name, config))
+        })?;
 
         // Determine base branch
         let base = config
@@ -170,6 +190,21 @@ impl Stack {
             base,
             entries,
             current_position,
+        })
+    }
+
+    pub fn prefix_mismatch(&self, config: &Config) -> Option<StackPrefixMismatch> {
+        let expected_prefix = config.defaults.branch_username.as_deref()?;
+        if expected_prefix.is_empty() || expected_prefix == self.username {
+            return None;
+        }
+
+        Some(StackPrefixMismatch {
+            current_branch: self.branch_name(),
+            actual_prefix: self.username.clone(),
+            expected_prefix: expected_prefix.to_string(),
+            stack_name: self.name.clone(),
+            suggested_branch: git::format_stack_branch(expected_prefix, &self.name),
         })
     }
 
@@ -312,6 +347,27 @@ impl Stack {
             }
         }
         Ok(())
+    }
+}
+
+fn format_not_stack_branch_error(branch_name: &str, config: &Config) -> String {
+    if let Some(expected_prefix) = config
+        .defaults
+        .branch_username
+        .as_deref()
+        .filter(|prefix| !prefix.is_empty())
+        .filter(|_| !branch_name.contains('/'))
+    {
+        let suggested_branch = git::format_stack_branch(expected_prefix, branch_name);
+        format!(
+            "Current branch '{}' is not a stack branch. Expected format: '<prefix>/<stack-name>', for example '{}'. Rename it with: git branch -m {}",
+            branch_name, suggested_branch, suggested_branch
+        )
+    } else {
+        format!(
+            "Current branch '{}' is not a stack branch. Expected format: '<prefix>/<stack-name>'. Use `gg co <stack-name>` to create or switch to a stack.",
+            branch_name
+        )
     }
 }
 
@@ -491,5 +547,69 @@ mod tests {
         };
 
         assert_eq!(stack.expected_parent_gg_id(2), Some("c-a"));
+    }
+
+    #[test]
+    fn prefix_mismatch_returns_warning_data_for_wrong_configured_prefix() {
+        let stack = Stack {
+            name: "feature".to_string(),
+            username: "other".to_string(),
+            base: "main".to_string(),
+            entries: vec![],
+            current_position: None,
+        };
+        let mut config = Config::default();
+        config.defaults.branch_username = Some("testuser".to_string());
+
+        let mismatch = stack.prefix_mismatch(&config).expect("should mismatch");
+
+        assert_eq!(mismatch.current_branch, "other/feature");
+        assert_eq!(mismatch.actual_prefix, "other");
+        assert_eq!(mismatch.expected_prefix, "testuser");
+        assert_eq!(mismatch.stack_name, "feature");
+        assert_eq!(mismatch.suggested_branch, "testuser/feature");
+        assert!(mismatch
+            .warning_message()
+            .contains("git branch -m testuser/feature"));
+    }
+
+    #[test]
+    fn prefix_mismatch_is_none_without_configured_prefix() {
+        let stack = Stack {
+            name: "feature".to_string(),
+            username: "other".to_string(),
+            base: "main".to_string(),
+            entries: vec![],
+            current_position: None,
+        };
+
+        assert!(stack.prefix_mismatch(&Config::default()).is_none());
+    }
+
+    #[test]
+    fn prefix_mismatch_is_none_when_prefix_matches() {
+        let stack = Stack {
+            name: "feature".to_string(),
+            username: "testuser".to_string(),
+            base: "main".to_string(),
+            entries: vec![],
+            current_position: None,
+        };
+        let mut config = Config::default();
+        config.defaults.branch_username = Some("testuser".to_string());
+
+        assert!(stack.prefix_mismatch(&config).is_none());
+    }
+
+    #[test]
+    fn non_stack_branch_error_includes_configured_prefix_hint() {
+        let mut config = Config::default();
+        config.defaults.branch_username = Some("testuser".to_string());
+
+        let message = format_not_stack_branch_error("feature", &config);
+
+        assert!(message.contains("Current branch 'feature' is not a stack branch"));
+        assert!(message.contains("testuser/feature"));
+        assert!(message.contains("git branch -m testuser/feature"));
     }
 }

@@ -47,6 +47,10 @@ Example:
 - `nacho/user-auth--c-abc1234`
 
 This convention is what makes remote discovery (`gg ls --remote`) and reconciliation possible.
+If a stack-shaped branch uses a different prefix than `defaults.branch_username`,
+commands such as `gg sync`, `gg log`, and `gg ls` warn that discovery and saved
+PR/MR mappings may be inaccurate. Rename the branch to the configured prefix to
+keep stack metadata aligned.
 
 ## PR/MR dependency chains
 

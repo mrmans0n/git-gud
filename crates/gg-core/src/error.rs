@@ -23,6 +23,9 @@ pub enum GgError {
     #[error("Not on a stack branch. Use `gg co <stack-name>` to create or switch to a stack.")]
     NotOnStack,
 
+    #[error("{0}")]
+    NotOnStackBranch(String),
+
     #[error("Stack '{0}' not found")]
     StackNotFound(String),
 

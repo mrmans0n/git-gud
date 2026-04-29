@@ -234,6 +234,16 @@ pub fn run(
 
     // Load stack early to validate --until
     let initial_stack = Stack::load(&repo, &config)?;
+    let warnings: Vec<String> = initial_stack
+        .prefix_mismatch(&config)
+        .map(|mismatch| mismatch.warning_message())
+        .into_iter()
+        .collect();
+    if !json {
+        for warning in &warnings {
+            println!("{} {}", style("Warning:").yellow(), warning);
+        }
+    }
     if initial_stack.is_empty() {
         if json {
             print_json(&SyncResponse {
@@ -242,7 +252,7 @@ pub fn run(
                     stack: initial_stack.name.clone(),
                     base: initial_stack.base.clone(),
                     rebased_before_sync: false,
-                    warnings: vec![],
+                    warnings,
                     metadata: SyncMetadataJson::default(),
                     entries: vec![],
                 },
@@ -285,8 +295,6 @@ pub fn run(
     // we restore to this post-rebase state rather than silently undoing rebase.
     let sync_start_branch = git::current_branch_name(&repo);
     let sync_start_head = repo.head()?.peel_to_commit()?.id();
-
-    let warnings: Vec<String> = Vec::new();
 
     // Run lint ONCE if requested (before GG-ID addition loop)
     if run_lint {

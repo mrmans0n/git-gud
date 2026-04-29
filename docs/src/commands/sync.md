@@ -25,6 +25,11 @@ When you run `gg sync --lint`, lint runs before any push/PR updates. If lint fai
 
 Before pushing, `gg sync` also normalizes commit metadata (`GG-ID` and `GG-Parent`) for the whole stack. This normalization is always enforced during sync (including adding missing `GG-ID` trailers) to keep stack identity and PR/MR mappings stable.
 
+If the current stack branch has a valid stack shape but uses a different prefix
+than `defaults.branch_username`, `gg sync` continues and warns that stack
+discovery, listing, and saved PR/MR mappings may be inaccurate. In `--json`
+mode, this message is included in `sync.warnings`.
+
 If an existing mapped PR/MR is attached to the wrong source branch (for
 example after moving commits into a new stack with `gg unstack`), providers
 cannot retarget that source branch in place. `gg sync` creates a replacement

@@ -462,6 +462,11 @@ Entry fields match `gg ls --json` so consumers can share parsers.
 }
 ```
 
+`sync.warnings` includes non-fatal diagnostics. For example, when the current
+stack branch uses a different prefix than `defaults.branch_username`, `gg sync`
+continues but reports that stack discovery, listing, and saved PR/MR mappings
+may be inaccurate until the branch is renamed.
+
 Field types for `entries`:
 - `action` (string): `"created"`, `"updated"`, `"up_to_date"`,
   `"skipped_closed"`, `"recreated"`, or `"error"`.

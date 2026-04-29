@@ -16,7 +16,9 @@ glab auth login
 
 ## "Not on a stack branch"
 
-You're on a branch that doesn't match the stack naming scheme.
+You're on a branch that doesn't match the stack naming scheme,
+`<username>/<stack-name>`. If `branch_username` is configured, gg prints a
+rename hint like `git branch -m <username>/<stack-name>`.
 
 ```bash
 gg co <stack-name>

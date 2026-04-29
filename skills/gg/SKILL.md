@@ -120,6 +120,11 @@ If a mapped PR/MR still points at an old source branch after a stack split,
 the new number, comments on the old one, and closes it. JSON action is
 `"recreated"`.
 
+If `gg sync --json` returns a warning that the stack branch does not use the
+configured prefix, surface it to the user. The command may continue, but stack
+discovery/listing and saved PR/MR mappings can be inaccurate until the branch is
+renamed to match `defaults.branch_username`.
+
 5. When approved + green CI, land **only after user confirmation**:
 
 ```bash

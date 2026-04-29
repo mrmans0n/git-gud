@@ -4,6 +4,12 @@ List the current stack, all local stacks, or remote-only stacks.
 
 When the stack base is behind `origin/<base>`, output includes a `↓N` indicator (`N` = commits behind).
 
+When showing the current stack, if the current branch has a valid stack shape
+but uses a different prefix than `defaults.branch_username`, `gg ls` warns that
+stack discovery, listing, and saved PR/MR mappings may be inaccurate. Rename the
+branch to the configured prefix to keep stack metadata aligned. `gg ls --all`
+and `gg ls --remote` do not show this warning.
+
 ```bash
 gg ls [OPTIONS]
 ```

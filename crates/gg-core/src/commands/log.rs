@@ -20,6 +20,16 @@ pub fn run(json: bool, refresh: bool) -> Result<()> {
     let config = Config::load_with_global(git_dir)?;
 
     let mut stack = Stack::load(&repo, &config)?;
+    if !json {
+        if let Some(mismatch) = stack.prefix_mismatch(&config) {
+            println!(
+                "{} {}",
+                style("Warning:").yellow(),
+                mismatch.warning_message()
+            );
+            println!();
+        }
+    }
 
     if should_refresh_mr_info(refresh, json) {
         if refresh {

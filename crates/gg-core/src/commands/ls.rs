@@ -31,6 +31,17 @@ pub fn run(all: bool, refresh: bool, remote: bool, json: bool) -> Result<()> {
             list_all_stacks(&repo, &config, json)?;
         }
         Some(mut stack) if !all => {
+            if !json {
+                if let Some(mismatch) = stack.prefix_mismatch(&config) {
+                    println!(
+                        "{} {}",
+                        style("Warning:").yellow(),
+                        mismatch.warning_message()
+                    );
+                    println!();
+                }
+            }
+
             if should_refresh_mr_info(refresh, json) {
                 if refresh {
                     let provider = Provider::detect(&repo)?;

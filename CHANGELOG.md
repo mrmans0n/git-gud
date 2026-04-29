@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-04-29
+
+### Added
+- `gg unstack` command to split a stack into multiple independent stacks (#309).
+- Worktree support for `gg unstack` via `--wt/--worktree` (#313).
+
+### Changed
+- Provider default detection now follows the remote host more reliably (#303).
+- `gg inbox` now uses provider-specific PR/MR labels (#306).
+- Updated dependencies: `skim` to v4.6.1 and `clap_complete` to v4.6.3 (#304, #307).
+- Skills setup docs are now agent-neutral (#308).
+
+### Fixed
+- `gg unstack` now hardens name resolution and rebase cleanup paths (#310).
+- `gg sync` now recreates PRs when the source branch changes after unstack (#314).
+- `gg land --clean` now preserves verified merge state during auto-cleanup so remote branches are deleted after successful landing (#318).
+
 ## [0.9.1] - 2026-04-24
 
 ### Changed
@@ -426,7 +443,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/mrmans0n/git-gud/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/mrmans0n/git-gud/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/mrmans0n/git-gud/compare/v0.8.3...v0.9.0
 [0.8.3]: https://github.com/mrmans0n/git-gud/compare/v0.8.2...v0.8.3

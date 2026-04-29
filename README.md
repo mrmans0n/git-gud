@@ -344,6 +344,10 @@ PR/MR descriptions created by `gg sync` are wrapped in managed markers (`<!-- gg
 - **Stack branch**: `<username>/<stack-name>` (e.g., `nacho/my-feature`)
 - **Per-commit branches**: `<username>/<stack-name>--<entry-id>` (e.g., `nacho/my-feature--c-abc1234`)
 
+If a stack branch uses a different prefix than `branch_username`, `gg sync`,
+`gg log`, and current-stack `gg ls` warn that discovery and saved PR/MR mappings
+may be inaccurate until the branch is renamed.
+
 ### GG Metadata Trailers
 
 Each commit gets stable metadata trailers that persist across rebases:

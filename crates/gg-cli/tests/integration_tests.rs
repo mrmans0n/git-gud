@@ -4869,14 +4869,14 @@ fn test_rebase_without_stack_requires_target() {
     run_git(&repo_path, &["add", "."]);
     run_git(&repo_path, &["commit", "-m", "Feature commit"]);
 
-    // Try rebase without target (should fail - not on stack)
+    // Try rebase without target (should fail - not on a stack branch)
     let (success, _stdout, stderr) = run_gg(&repo_path, &["rebase"]);
     assert!(
         !success,
         "Rebase without target should fail when not on a stack"
     );
     assert!(
-        stderr.contains("Not on a stack"),
+        stderr.contains("not a stack branch"),
         "Should indicate not on a stack. Got: {}",
         stderr
     );
@@ -4899,7 +4899,7 @@ fn test_nav_requires_stack() {
     let (success, _stdout, stderr) = run_gg(&repo_path, &["first"]);
     assert!(!success, "Nav first should fail when not on a stack");
     assert!(
-        stderr.contains("Not on a stack"),
+        stderr.contains("not a stack branch"),
         "Should indicate not on a stack. Got: {}",
         stderr
     );
@@ -4907,17 +4907,17 @@ fn test_nav_requires_stack() {
     // Try nav last while not on a stack
     let (success, _stdout, stderr) = run_gg(&repo_path, &["last"]);
     assert!(!success, "Nav last should fail when not on a stack");
-    assert!(stderr.contains("Not on a stack"));
+    assert!(stderr.contains("not a stack branch"));
 
     // Try nav next while not on a stack
     let (success, _stdout, stderr) = run_gg(&repo_path, &["next"]);
     assert!(!success, "Nav next should fail when not on a stack");
-    assert!(stderr.contains("Not on a stack"));
+    assert!(stderr.contains("not a stack branch"));
 
     // Try nav prev while not on a stack
     let (success, _stdout, stderr) = run_gg(&repo_path, &["prev"]);
     assert!(!success, "Nav prev should fail when not on a stack");
-    assert!(stderr.contains("Not on a stack"));
+    assert!(stderr.contains("not a stack branch"));
 }
 
 #[test]
@@ -9619,7 +9619,7 @@ fn test_gg_log_not_on_stack() {
     let (success, stdout, stderr) = run_gg(&repo_path, &["log"]);
     assert!(!success, "gg log off-stack should fail: stdout={stdout}");
     assert!(
-        stderr.contains("Not on a stack"),
+        stderr.contains("not a stack branch"),
         "stderr should explain we are not on a stack: {stderr}"
     );
 

@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c892ee18.js";
+            window.path_to_searchindex_js = "searchindex-66f35505.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-09a1e4c5.js"></script>
@@ -703,6 +703,11 @@ gg co user-auth --worktree
 <h1 id="gg-ls"><a class="header" href="#gg-ls"><code>gg ls</code></a></h1>
 <p>List the current stack, all local stacks, or remote-only stacks.</p>
 <p>When the stack base is behind <code>origin/&lt;base&gt;</code>, output includes a <code>↓N</code> indicator (<code>N</code> = commits behind).</p>
+<p>When showing the current stack, if the current branch has a valid stack shape
+but uses a different prefix than <code>defaults.branch_username</code>, <code>gg ls</code> warns that
+stack discovery, listing, and saved PR/MR mappings may be inaccurate. Rename the
+branch to the configured prefix to keep stack metadata aligned. <code>gg ls --all</code>
+and <code>gg ls --remote</code> do not show this warning.</p>
 <pre><code class="language-bash">gg ls [OPTIONS]
 </code></pre>
 <h2 id="options-1"><a class="header" href="#options-1">Options</a></h2>
@@ -737,6 +742,10 @@ gg ls --remote --json
 with each commit’s position, short SHA, title, PR/MR state, CI badge, and a
 <code>&lt;- HEAD</code> marker on the currently-checked-out commit. For a cross-stack
 overview use <a href="#gg-ls"><code>gg ls --all</code></a>.</p>
+<p>If the current stack branch has a valid stack shape but uses a different prefix
+than <code>defaults.branch_username</code>, <code>gg log</code> warns that stack discovery, listing,
+and saved PR/MR mappings may be inaccurate. Rename the branch to the configured
+prefix to keep stack metadata aligned.</p>
 <pre><code class="language-bash">gg log [OPTIONS]
 </code></pre>
 <h2 id="options-2"><a class="header" href="#options-2">Options</a></h2>

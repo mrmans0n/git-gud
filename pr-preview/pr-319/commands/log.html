@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-c892ee18.js";
+            window.path_to_searchindex_js = "../searchindex-66f35505.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-09a1e4c5.js"></script>
@@ -180,6 +180,10 @@
 with each commit’s position, short SHA, title, PR/MR state, CI badge, and a
 <code>&lt;- HEAD</code> marker on the currently-checked-out commit. For a cross-stack
 overview use <a href="./ls.html"><code>gg ls --all</code></a>.</p>
+<p>If the current stack branch has a valid stack shape but uses a different prefix
+than <code>defaults.branch_username</code>, <code>gg log</code> warns that stack discovery, listing,
+and saved PR/MR mappings may be inaccurate. Rename the branch to the configured
+prefix to keep stack metadata aligned.</p>
 <pre><code class="language-bash">gg log [OPTIONS]
 </code></pre>
 <h2 id="options"><a class="header" href="#options">Options</a></h2>

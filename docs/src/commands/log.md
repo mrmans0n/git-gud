@@ -7,6 +7,11 @@ with each commit's position, short SHA, title, PR/MR state, CI badge, and a
 `<- HEAD` marker on the currently-checked-out commit. For a cross-stack
 overview use [`gg ls --all`](./ls.md).
 
+If the current stack branch has a valid stack shape but uses a different prefix
+than `defaults.branch_username`, `gg log` warns that stack discovery, listing,
+and saved PR/MR mappings may be inaccurate. Rename the branch to the configured
+prefix to keep stack metadata aligned.
+
 ```bash
 gg log [OPTIONS]
 ```

@@ -1041,8 +1041,8 @@ pub fn run(opts: LandOptions) -> Result<()> {
     // breaking machine consumers that expect a single JSON document.
     if json {
         Ok(())
-    } else if let Some(error) = land_error {
-        Err(GgError::Other(error))
+    } else if let Some(_error) = land_error {
+        Err(GgError::Silenced)
     } else {
         Ok(())
     }

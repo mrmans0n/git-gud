@@ -406,6 +406,14 @@ enum Commands {
         shell: clap_complete::Shell,
     },
 
+    /// Generate shell integration for parent-shell features
+    #[command(name = "init")]
+    Init {
+        /// Shell to generate integration for
+        #[arg(value_enum)]
+        shell: gg_core::commands::init::Shell,
+    },
+
     /// Arrange commits in the stack: reorder and/or drop interactively (alias for reorder)
     #[command(name = "arrange")]
     Arrange {
@@ -743,6 +751,7 @@ fn main() {
         Some(Commands::Completions { shell }) => {
             (gg_core::commands::completions::run(shell), false)
         }
+        Some(Commands::Init { shell }) => (gg_core::commands::init::run(shell), false),
         Some(Commands::Reconcile { dry_run }) => {
             (gg_core::commands::reconcile::run(dry_run), false)
         }

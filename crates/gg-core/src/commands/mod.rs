@@ -6,6 +6,7 @@ pub mod clean;
 pub mod completions;
 pub mod drop_cmd;
 pub mod inbox;
+pub mod init;
 pub mod land;
 pub mod lint;
 pub mod log;

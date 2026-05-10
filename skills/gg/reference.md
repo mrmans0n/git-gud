@@ -59,6 +59,13 @@ Create/switch stack, optionally worktree-backed.
 - `-b, --base <BASE>`
 - `-w, --worktree`
 
+With shell integration installed, worktree checkout also changes the current shell directory to the stack worktree after success:
+
+```bash
+eval "$(gg init zsh)"  # or bash
+gg init fish | source # fish
+```
+
 #### `gg ls [OPTIONS]`
 List current/all/remote stacks.
 
@@ -280,6 +287,9 @@ Supports global config at `~/.config/gg/config.json` for shared defaults across 
 
 #### `gg completions <SHELL>`
 Generate shell completion (`bash|elvish|fish|powershell|zsh`).
+
+#### `gg init <SHELL>`
+Generate shell integration (`bash|fish|zsh`). This is required for `gg co --wt` to auto-cd into the created or reused worktree.
 
 ---
 

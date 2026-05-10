@@ -100,6 +100,18 @@ gg co my-feature --worktree
 ```
 
 This creates (or reuses) a managed worktree for the stack and checks it out there.
+To also move your shell into that worktree automatically, enable shell integration:
+
+```bash
+# zsh
+eval "$(gg init zsh)"
+
+# bash
+eval "$(gg init bash)"
+
+# fish
+gg init fish | source
+```
 
 ### Unstack into a worktree
 
@@ -244,6 +256,7 @@ gg clean
 | `gg abort` | Abort current operation |
 | `gg undo [OP_ID]` | Reverse the local ref/HEAD effects of the most recent mutating `gg` command (refuses on remote-touching ops) |
 | `gg undo --list` | Show recent operations from the per-repo operation log |
+| `gg init <shell>` | Generate shell integration for auto-cd |
 | `gg completions <shell>` | Generate shell completions |
 
 ## Configuration
@@ -551,6 +564,23 @@ git-gud includes an MCP (Model Context Protocol) server that lets AI assistants 
 | **Output** | Typed JSON responses | Parses CLI text or `--json` output |
 
 Use **MCP** when your AI client supports it. Use **Skills** when the agent has direct terminal access and you want zero extra setup.
+
+## Shell Integration
+
+Shell integration lets `gg co <stack> --wt` move your current shell into the created or reused worktree. Add the matching line to your shell config:
+
+```bash
+# Bash
+eval "$(gg init bash)"
+
+# Zsh
+eval "$(gg init zsh)"
+
+# Fish
+gg init fish | source
+```
+
+Without shell integration, `gg co --wt` still creates or reuses the worktree and prints its path, but your shell stays in the original checkout.
 
 ## Shell Completions
 

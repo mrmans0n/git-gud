@@ -37,5 +37,5 @@
   - [undo](./commands/undo.md)
 - [MCP Server](./mcp-server.md)
 - [Configuration](./configuration.md)
-- [Shell Completions](./shell-completions.md)
+- [Shell Integration and Completions](./shell-completions.md)
 - [Troubleshooting / FAQ](./faq.md)

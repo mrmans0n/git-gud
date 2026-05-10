@@ -10,6 +10,15 @@ gg co my-feature --wt
 gg co my-feature --worktree
 ```
 
+Enable shell integration to automatically enter the stack worktree after `gg co --wt` succeeds:
+
+```bash
+eval "$(gg init zsh)"  # or bash
+gg init fish | source # fish
+```
+
+Without shell integration, git-gud prints the worktree path and your shell remains in the original checkout.
+
 ## Unstack into a worktree
 
 ```bash

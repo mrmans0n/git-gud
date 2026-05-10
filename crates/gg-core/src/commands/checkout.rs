@@ -92,6 +92,7 @@ pub fn run(stack_name: Option<String>, base: Option<String>, use_worktree: bool)
         if use_worktree {
             let worktree_path =
                 ensure_stack_worktree(&repo, &mut config, &stack_name, &branch_name)?;
+            request_shell_cd(&worktree_path);
             println!(
                 "{} Opened stack {} in worktree {}",
                 style("OK").green().bold(),
@@ -114,6 +115,7 @@ pub fn run(stack_name: Option<String>, base: Option<String>, use_worktree: bool)
         if use_worktree {
             let worktree_path =
                 ensure_stack_worktree(&repo, &mut config, &stack_name, &entry_branch)?;
+            request_shell_cd(&worktree_path);
             println!(
                 "{} Opened stack {} in worktree {}",
                 style("OK").green().bold(),
@@ -167,12 +169,18 @@ pub fn run(stack_name: Option<String>, base: Option<String>, use_worktree: bool)
             let local_branch = git::format_stack_branch(&username, &stack_name);
             repo.branch(&local_branch, &remote_commit, false)?;
 
-            if use_worktree {
-                ensure_stack_worktree(&repo, &mut config, &stack_name, &local_branch)?;
+            let worktree_path = if use_worktree {
+                Some(ensure_stack_worktree(
+                    &repo,
+                    &mut config,
+                    &stack_name,
+                    &local_branch,
+                )?)
             } else {
                 // Checkout the branch
                 git::checkout_branch(&repo, &local_branch)?;
-            }
+                None
+            };
 
             // Import PR mappings from remote
             if let Err(e) =
@@ -198,15 +206,13 @@ pub fn run(stack_name: Option<String>, base: Option<String>, use_worktree: bool)
             }
 
             if use_worktree {
-                let worktree_path = config
-                    .get_stack(&stack_name)
-                    .and_then(|stack| stack.worktree_path.as_deref())
-                    .unwrap_or("<unknown>");
+                let worktree_path = worktree_path.expect("worktree path should be set");
+                request_shell_cd(&worktree_path);
                 println!(
                     "{} Checked out remote stack {} in worktree {}",
                     style("OK").green().bold(),
                     style(&stack_name).cyan(),
-                    style(worktree_path).yellow()
+                    style(worktree_path.display()).yellow()
                 );
             } else {
                 println!(
@@ -259,6 +265,7 @@ pub fn run(stack_name: Option<String>, base: Option<String>, use_worktree: bool)
             if use_worktree {
                 let worktree_path =
                     ensure_stack_worktree(&repo, &mut config, &stack_name, &branch_name)?;
+                request_shell_cd(&worktree_path);
                 println!(
                     "{} Created stack {} based on {} in worktree {}",
                     style("OK").green().bold(),
@@ -337,6 +344,14 @@ pub(crate) fn ensure_stack_worktree(
     Ok(target_path)
 }
 
+fn request_shell_cd(path: &Path) {
+    let Ok(cd_file) = std::env::var("GG_CD_FILE") else {
+        return;
+    };
+
+    let _ = std::fs::write(cd_file, path.to_string_lossy().as_bytes());
+}
+
 fn is_worktree_registered(repo_root: &Path, target_path: &Path) -> bool {
     let output = Command::new("git")
         .arg("worktree")
@@ -353,11 +368,24 @@ fn is_worktree_registered(repo_root: &Path, target_path: &Path) -> bool {
         return false;
     }
 
+    let canonical_target = target_path.canonicalize().ok();
     let target = target_path.to_string_lossy();
     let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
-        .lines()
-        .any(|line| line == format!("worktree {}", target))
+    stdout.lines().any(|line| {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            if path == target {
+                return true;
+            }
+
+            if let Some(canonical_target) = &canonical_target {
+                return Path::new(path)
+                    .canonicalize()
+                    .is_ok_and(|worktree_path| worktree_path == *canonical_target);
+            }
+        }
+
+        false
+    })
 }
 
 /// Find a remote entry branch for a stack (returns the first one found)

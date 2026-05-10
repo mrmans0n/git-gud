@@ -87,6 +87,8 @@ Store shared defaults in `~/.config/gg/config.json` that apply to all repos. Loc
 gg co -w feature-auth
 ```
 
+When shell integration is installed (`eval "$(gg init zsh)"`, `eval "$(gg init bash)"`, or `gg init fish | source`), `gg co -w` changes into the stack worktree after checkout succeeds. Without it, read the printed worktree path and `cd` there before editing.
+
 When splitting an existing stack into lower and upper stacks, prefer a managed
 worktree for the new upper stack:
 
@@ -135,7 +137,7 @@ gg land -a -c --json
 
 1. **Never run `gg land` without explicit user confirmation.**
 2. **Always use `--json`** for `gg ls`, `gg sync`, `gg land`, `gg clean -a`, and `gg lint`.
-3. **Prefer worktrees** for isolation (`gg co -w <stack>`).
+3. **Prefer worktrees** for isolation (`gg co -w <stack>`). If shell integration is unavailable, manually `cd` to the printed worktree path before editing.
 4. Verify `approved: true` and `ci_status` success before landing. If the user requests `--admin`, skip the approval check (GitHub only — GitLab ignores the flag).
 5. If sync warns stack is behind base, run `gg rebase` first.
 6. Prefer `gg absorb -s` for multi-commit edits.

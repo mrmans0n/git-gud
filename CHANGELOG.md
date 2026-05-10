@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-05-10
+
+### Added
+- `gg co --wt` can now emit shell auto-cd snippets for worktree checkout flows (#328).
+- `gg` now warns when stack branch prefixes do not match the expected stack naming pattern (#319).
+
+### Changed
+- Split `gg-cli` integration tests for smaller, more focused coverage.
+- Updated dependencies: `rmcp` to v1.6.0, `skim` to v4.6.2, `tokio` to v1.52.3, and `clap_complete` to v4.6.4 (#321, #323, #326, #327).
+
+### Fixed
+- `gg land --wait` no longer prints a duplicate error when interrupted (#325).
+
 ## [0.9.2] - 2026-04-29
 
 ### Added
@@ -443,7 +456,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.9.3...HEAD
+[0.9.3]: https://github.com/mrmans0n/git-gud/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/mrmans0n/git-gud/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/mrmans0n/git-gud/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/mrmans0n/git-gud/compare/v0.8.3...v0.9.0

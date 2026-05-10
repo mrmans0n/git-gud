@@ -1,4 +1,25 @@
-# Shell Completions
+# Shell Integration and Completions
+
+## Shell integration
+
+Shell integration enables parent-shell features. Today that means `gg co <stack> --wt` can move your shell into the created or reused worktree after the command succeeds.
+
+Add the matching line to your shell config:
+
+```bash
+# Bash
+eval "$(gg init bash)"
+
+# Zsh
+eval "$(gg init zsh)"
+
+# Fish
+gg init fish | source
+```
+
+Without shell integration, `gg co --wt` still creates or reuses the worktree and prints its path, but your shell stays in the original checkout.
+
+## Shell completions
 
 Generate completions with:
 

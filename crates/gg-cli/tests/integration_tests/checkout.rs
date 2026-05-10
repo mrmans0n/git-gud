@@ -1,6 +1,9 @@
-use crate::helpers::{create_test_repo, create_test_repo_with_remote, run_gg, run_git};
+use crate::helpers::{
+    create_test_repo, create_test_repo_with_remote, run_gg, run_gg_with_env, run_git,
+};
 
 use std::fs;
+use std::path::Path;
 
 #[test]
 fn test_gg_checkout_creates_branch() {
@@ -179,4 +182,137 @@ fn test_gg_checkout_with_worktree_creates_worktree_and_preserves_main_repo_head(
         "Expected worktree path to exist: {}",
         expected_path.display()
     );
+}
+
+#[test]
+fn test_gg_checkout_with_worktree_requests_shell_cd() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let cd_file = repo_path.join(".git/gg/cd-target");
+    let cd_file_os = cd_file.as_os_str();
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["co", "cd-stack", "--wt"],
+        &[("GG_CD_FILE", cd_file_os)],
+    );
+    assert!(
+        success,
+        "checkout --wt should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+
+    let cd_target = fs::read_to_string(&cd_file).expect("Failed to read cd target");
+    assert!(
+        Path::new(&cd_target).exists(),
+        "cd target should exist: {}",
+        cd_target
+    );
+    assert!(
+        cd_target.ends_with(".cd-stack"),
+        "cd target should point to the stack worktree: {}",
+        cd_target
+    );
+}
+
+#[test]
+fn test_gg_checkout_existing_worktree_requests_shell_cd() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["co", "existing-cd-stack", "--wt"]);
+    assert!(
+        success,
+        "initial checkout --wt should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+
+    let cd_file = repo_path.join(".git/gg/cd-target-existing");
+    let cd_file_os = cd_file.as_os_str();
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["co", "existing-cd-stack", "--wt"],
+        &[("GG_CD_FILE", cd_file_os)],
+    );
+    assert!(
+        success,
+        "existing checkout --wt should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+
+    let cd_target = fs::read_to_string(&cd_file).expect("Failed to read cd target");
+    assert!(
+        Path::new(&cd_target).exists(),
+        "cd target should exist: {}",
+        cd_target
+    );
+    assert!(
+        cd_target.ends_with(".existing-cd-stack"),
+        "cd target should point to the stack worktree: {}",
+        cd_target
+    );
+}
+
+#[test]
+fn test_gg_checkout_without_worktree_does_not_request_shell_cd() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let cd_file = repo_path.join(".git/gg/cd-target-plain");
+    let cd_file_os = cd_file.as_os_str();
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["co", "plain-stack"],
+        &[("GG_CD_FILE", cd_file_os)],
+    );
+    assert!(
+        success,
+        "plain checkout should succeed: stdout={}, stderr={}",
+        stdout, stderr
+    );
+    assert!(!cd_file.exists(), "plain checkout should not request cd");
+}
+
+#[test]
+fn test_gg_checkout_failure_does_not_request_shell_cd() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let cd_file = repo_path.join(".git/gg/cd-target-failed");
+    let cd_file_os = cd_file.as_os_str();
+    let (success, _stdout, _stderr) = run_gg_with_env(
+        &repo_path,
+        &["co", "bad/stack", "--wt"],
+        &[("GG_CD_FILE", cd_file_os)],
+    );
+    assert!(!success, "invalid stack checkout should fail");
+    assert!(!cd_file.exists(), "failed checkout should not request cd");
 }

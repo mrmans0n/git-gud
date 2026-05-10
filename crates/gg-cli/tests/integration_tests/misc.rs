@@ -44,6 +44,41 @@ fn test_completions() {
 }
 
 #[test]
+fn test_init_shell_integration() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["init", "bash"]);
+    assert!(success, "bash init should succeed: {}", stderr);
+    assert!(stdout.contains("gg()"));
+    assert!(stdout.contains("GG_CD_FILE"));
+    assert!(stdout.contains("command gg"));
+    assert!(stdout.contains("cd \"$gg_cd_target\""));
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["init", "zsh"]);
+    assert!(success, "zsh init should succeed: {}", stderr);
+    assert!(stdout.contains("gg()"));
+    assert!(stdout.contains("GG_CD_FILE"));
+    assert!(stdout.contains("command gg"));
+    assert!(stdout.contains("cd \"$gg_cd_target\""));
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["init", "fish"]);
+    assert!(success, "fish init should succeed: {}", stderr);
+    assert!(stdout.contains("function gg"));
+    assert!(stdout.contains("GG_CD_FILE"));
+    assert!(stdout.contains("command gg $argv"));
+    assert!(stdout.contains("cd \"$gg_cd_target\""));
+}
+
+#[test]
+fn test_init_rejects_unsupported_shell() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["init", "powershell"]);
+
+    assert!(!success);
+    assert!(stderr.contains("invalid value") || stderr.contains("possible values"));
+}
+
+#[test]
 fn test_stack_name_sanitization_spaces_to_kebab() {
     let (_temp_dir, repo_path) = create_test_repo();
 

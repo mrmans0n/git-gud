@@ -96,6 +96,11 @@ enum Commands {
     },
     #[command(name = "absorb")]
     Absorb,
+    #[command(name = "init")]
+    Init {
+        #[arg(value_enum)]
+        shell: crate::commands::init::Shell,
+    },
     #[command(name = "completions")]
     Completions {
         #[arg(value_enum)]

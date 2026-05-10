@@ -23,3 +23,12 @@ gg co user-auth --base develop
 # Create stack in worktree
 gg co user-auth --worktree
 ```
+
+With shell integration enabled, `gg co user-auth --worktree` also changes your current shell directory to the stack worktree after the command succeeds:
+
+```bash
+eval "$(gg init zsh)"  # or bash
+gg init fish | source # fish
+```
+
+Without shell integration, git-gud prints the worktree path and leaves your shell in the original checkout.

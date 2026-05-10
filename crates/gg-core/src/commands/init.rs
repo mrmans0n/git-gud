@@ -81,7 +81,7 @@ function gg
         return
     end
 
-    env GG_CD_FILE="$gg_cd_file" command gg $argv
+    GG_CD_FILE="$gg_cd_file" command gg $argv
     set -l gg_status $status
 
     if test $gg_status -eq 0; and test -s "$gg_cd_file"

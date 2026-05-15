@@ -40,14 +40,44 @@ struct PrMapping {
     pr_number: u64,
 }
 
+/// Decide whether to normalize metadata, respecting `--yes`.
+///
+/// When `yes` is true, the interactive prompt is skipped and the operation
+/// proceeds. When false, the user is asked via `dialoguer::Confirm`.
+fn should_normalize_metadata_with<F>(yes: bool, confirm: F) -> bool
+where
+    F: FnOnce() -> bool,
+{
+    yes || confirm()
+}
+
+/// Production wrapper that uses `dialoguer::Confirm`.
+fn should_normalize_metadata(yes: bool) -> bool {
+    should_normalize_metadata_with(yes, || {
+        Confirm::new()
+            .with_prompt("Normalize GG metadata on commits? (requires rebase)")
+            .default(true)
+            .interact()
+            .unwrap_or(false)
+    })
+}
+
 impl ReconcileActions {
     fn is_empty(&self) -> bool {
         self.commits_needing_ids.is_empty() && self.prs_to_map.is_empty()
     }
 }
 
+/// Options for the reconcile command.
+pub struct ReconcileOptions {
+    /// Preview only; make no changes.
+    pub dry_run: bool,
+    /// Skip the metadata normalization confirmation prompt.
+    pub yes: bool,
+}
+
 /// Run the reconcile command
-pub fn run(dry_run: bool) -> Result<()> {
+pub fn run(options: ReconcileOptions) -> Result<()> {
     let repo = git::open_repo()?;
     let git_dir = repo.commondir();
     let mut config = Config::load_with_global(git_dir)?;
@@ -70,7 +100,7 @@ pub fn run(dry_run: bool) -> Result<()> {
 
     // Only check installed/auth if not doing a dry run
     // (dry run can show what would be done without actual provider access)
-    if !dry_run {
+    if !options.dry_run {
         provider.check_installed()?;
         provider.check_auth()?;
     }
@@ -116,7 +146,7 @@ pub fn run(dry_run: bool) -> Result<()> {
 
     // Phase 2: Find PRs/MRs for entry branches that aren't mapped
     // In dry-run mode, try to find PRs but don't fail if provider isn't available
-    let prs_to_map = if dry_run {
+    let prs_to_map = if options.dry_run {
         // Check if provider is available before trying to list PRs
         if provider.check_installed().is_ok() && provider.check_auth().is_ok() {
             find_unmapped_prs(&repo, &stack, &config, &provider)?
@@ -154,7 +184,7 @@ pub fn run(dry_run: bool) -> Result<()> {
         return Ok(());
     }
 
-    if dry_run {
+    if options.dry_run {
         println!("\n{} Dry run complete. No changes made.", style("→").cyan());
         guard.finalize_with_scope(
             &repo,
@@ -166,13 +196,9 @@ pub fn run(dry_run: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Confirm before proceeding
+    // Confirm before proceeding (skipped when --yes is passed)
     if !actions.commits_needing_ids.is_empty() {
-        let should_add_ids = Confirm::new()
-            .with_prompt("Normalize GG metadata on commits? (requires rebase)")
-            .default(true)
-            .interact()
-            .unwrap_or(false);
+        let should_add_ids = should_normalize_metadata(options.yes);
 
         if should_add_ids {
             git::normalize_stack_metadata(&repo, &stack)?;
@@ -325,6 +351,58 @@ fn map_prs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_should_normalize_metadata_with_yes_true() {
+        let called = std::cell::Cell::new(false);
+        let result = should_normalize_metadata_with(true, || {
+            called.set(true);
+            false
+        });
+        assert!(result, "yes=true should always return true");
+        assert!(
+            !called.get(),
+            "confirm closure should not be called when yes=true"
+        );
+    }
+
+    #[test]
+    fn test_should_normalize_metadata_with_yes_false_delegates() {
+        let called = std::cell::Cell::new(false);
+        let result = should_normalize_metadata_with(false, || {
+            called.set(true);
+            true
+        });
+        assert!(result);
+        assert!(
+            called.get(),
+            "confirm closure should be called when yes=false"
+        );
+    }
+
+    #[test]
+    fn test_should_normalize_metadata_with_yes_false_respects_negative() {
+        let called = std::cell::Cell::new(false);
+        let result = should_normalize_metadata_with(false, || {
+            called.set(true);
+            false
+        });
+        assert!(!result);
+        assert!(
+            called.get(),
+            "confirm closure should be called when yes=false"
+        );
+    }
+
+    #[test]
+    fn test_reconcile_options_defaults() {
+        let opts = ReconcileOptions {
+            dry_run: false,
+            yes: false,
+        };
+        assert!(!opts.dry_run);
+        assert!(!opts.yes);
+    }
 
     #[test]
     fn test_reconcile_actions_is_empty() {

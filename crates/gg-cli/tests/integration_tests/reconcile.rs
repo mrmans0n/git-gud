@@ -9,6 +9,7 @@ fn test_reconcile_help() {
 
     assert!(success);
     assert!(stdout.contains("--dry-run") || stdout.contains("-n"));
+    assert!(stdout.contains("--yes") || stdout.contains("-y"));
     assert!(stdout.contains("Reconcile") || stdout.contains("reconcile"));
 }
 
@@ -133,6 +134,44 @@ fn test_reconcile_not_on_stack() {
             || stderr.contains("error"),
         "Should fail with error when not on a stack: {}",
         stderr
+    );
+}
+
+#[test]
+fn test_reconcile_yes_flag_parsing() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Set up config
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","provider":"github"}}"#,
+    )
+    .expect("Failed to write config");
+
+    // Create a stack
+    run_gg(&repo_path, &["co", "test-yes-parsing"]);
+
+    // Make a commit without GG-ID
+    fs::write(repo_path.join("file.txt"), "content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit without GG-ID"]);
+
+    // --dry-run --yes should parse and run (yes has no effect in dry-run)
+    let (success, stdout, stderr) = run_gg(&repo_path, &["reconcile", "--dry-run", "--yes"]);
+    assert!(
+        success,
+        "--dry-run --yes should parse and succeed: {} {}",
+        stdout, stderr
+    );
+
+    // -y short form should also parse
+    let (success2, stdout2, stderr2) = run_gg(&repo_path, &["reconcile", "--dry-run", "-y"]);
+    assert!(
+        success2,
+        "--dry-run -y should parse and succeed: {} {}",
+        stdout2, stderr2
     );
 }
 

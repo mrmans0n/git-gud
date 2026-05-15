@@ -233,6 +233,7 @@ Repair metadata after external branch/PR/MR manipulation.
 
 - Normalizes `GG-ID` and `GG-Parent` trailers across the stack
 - `-n, --dry-run`
+- `-y, --yes` — skip the metadata normalization confirmation prompt for non-interactive callers. Does not bypass safety checks or immutability protections.
 
 #### `gg continue` / `gg abort`
 Resume/abort paused operations.
@@ -843,7 +844,7 @@ Auto-absorb staged changes into correct commits.
 
 #### `stack_reconcile`
 Reconcile out-of-sync remote branches.
-- **Params:** `dry_run` (bool)
+- **Params:** `dry_run` (bool), `yes` (bool, default false) — skip the metadata normalization confirmation prompt for non-interactive callers
 
 #### `stack_move`
 Move to a specific commit in the stack.

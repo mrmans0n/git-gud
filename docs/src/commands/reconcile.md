@@ -9,6 +9,7 @@ gg reconcile [OPTIONS]
 ## Options
 
 - `-n, --dry-run`: Preview only; make no changes
+- `-y, --yes`: Skip the metadata normalization confirmation prompt. Use for non-interactive callers such as agents, MCP, or CI when you intentionally want reconciliation to proceed.
 
 ## What it does
 
@@ -23,4 +24,7 @@ gg reconcile --dry-run
 
 # Apply reconciliation
 gg reconcile
+
+# Non-interactive / agent usage — skip the confirmation prompt
+gg reconcile --yes
 ```

@@ -272,6 +272,11 @@ pub struct StackReconcileParams {
     /// Show what would change without making changes
     #[serde(default)]
     pub dry_run: bool,
+    /// Skip the metadata normalization confirmation prompt.
+    /// Use for non-interactive callers (CI, MCP) that intentionally want
+    /// the reconcile operation to proceed.
+    #[serde(default)]
+    pub yes: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -871,7 +876,7 @@ impl GgMcpServer {
 
     /// Reconcile remotely-pushed branches with the local stack.
     #[tool(
-        description = "Reconcile out-of-sync branches that were pushed outside of gg (e.g., from CI or web UI edits)"
+        description = "Reconcile out-of-sync branches that were pushed outside of gg (e.g., from CI or web UI edits). Pass yes=true to skip the confirmation prompt for non-interactive callers."
     )]
     fn stack_reconcile(
         &self,
@@ -880,6 +885,9 @@ impl GgMcpServer {
         let mut args = vec!["reconcile".to_string()];
         if params.dry_run {
             args.push("--dry-run".to_string());
+        }
+        if params.yes {
+            args.push("--yes".to_string());
         }
         run_gg_command(&args)
     }
@@ -1221,6 +1229,21 @@ mod tests {
         }
         // Verify server is usable (not consumed by tests above)
         assert!(server.get_info().instructions.is_some());
+    }
+
+    #[test]
+    fn test_reconcile_params_defaults() {
+        let params: StackReconcileParams = serde_json::from_str("{}").unwrap();
+        assert!(!params.dry_run);
+        assert!(!params.yes);
+    }
+
+    #[test]
+    fn test_reconcile_params_with_yes() {
+        let params: StackReconcileParams =
+            serde_json::from_str(r#"{"yes": true, "dry_run": true}"#).unwrap();
+        assert!(params.yes);
+        assert!(params.dry_run);
     }
 
     #[test]

@@ -437,6 +437,11 @@ enum Commands {
         /// Show what would be done without making changes
         #[arg(short = 'n', long)]
         dry_run: bool,
+        /// Skip the metadata normalization confirmation prompt. Use this for
+        /// non-interactive callers (CI, MCP) that intentionally want the
+        /// reconcile operation to proceed.
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
     },
 
     /// Show actionable inbox triage across all stacks
@@ -752,9 +757,13 @@ fn main() {
             (gg_core::commands::completions::run(shell), false)
         }
         Some(Commands::Init { shell }) => (gg_core::commands::init::run(shell), false),
-        Some(Commands::Reconcile { dry_run }) => {
-            (gg_core::commands::reconcile::run(dry_run), false)
-        }
+        Some(Commands::Reconcile { dry_run, yes }) => (
+            gg_core::commands::reconcile::run(gg_core::commands::reconcile::ReconcileOptions {
+                dry_run,
+                yes,
+            }),
+            false,
+        ),
         Some(Commands::Inbox { all, json }) => (gg_core::commands::inbox::run(all, json), json),
         Some(Commands::Restack {
             dry_run,

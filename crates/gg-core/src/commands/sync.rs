@@ -1563,6 +1563,7 @@ mod tests {
             approved: false,
             mergeable: true,
             changes_requested: false,
+            detailed_merge_status: None,
         };
 
         assert_eq!(
@@ -1583,6 +1584,7 @@ mod tests {
             approved: false,
             mergeable: true,
             changes_requested: false,
+            detailed_merge_status: None,
         };
         let unknown = crate::provider::PrInfo {
             head_branch: None,

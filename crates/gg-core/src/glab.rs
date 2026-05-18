@@ -33,6 +33,7 @@ pub struct MrInfo {
     pub approved: bool,
     pub mergeable: bool,
     pub changes_requested: bool,
+    pub detailed_merge_status: Option<String>,
 }
 
 /// JSON response from `glab mr view --json`
@@ -45,6 +46,7 @@ struct GlabMrJson {
     source_branch: Option<String>,
     draft: Option<bool>,
     work_in_progress: Option<bool>,
+    detailed_merge_status: Option<String>,
 }
 
 /// Check if glab is installed
@@ -341,6 +343,7 @@ pub fn view_mr(mr_number: u64) -> Result<MrInfo> {
         approved: false, // Would need additional API call
         mergeable,
         changes_requested: false, // GitLab doesn't expose this directly
+        detailed_merge_status: mr_json.detailed_merge_status,
     })
 }
 
@@ -841,47 +844,80 @@ pub fn format_failed_jobs(jobs: &[FailedJob]) -> String {
 /// Get merge train status for an MR
 /// Returns information about the MR's position and status in the merge train
 pub fn get_merge_train_status(mr_number: u64, target_branch: &str) -> Result<MergeTrainInfo> {
-    // First, check if the MR is in the merge train by listing all merge trains
-    let output = Command::new("glab")
-        .args([
-            "api",
-            &format!("projects/:id/merge_trains/{}?sort=asc", target_branch),
-        ])
-        .output()?;
+    const PER_PAGE: usize = 100;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(GgError::GlabError(format!(
-            "Failed to query merge train for target branch {}: {}",
-            target_branch,
-            stderr.trim()
-        )));
+    let mut page = 1usize;
+    let mut position_offset = 0usize;
+
+    loop {
+        let output = Command::new("glab")
+            .args([
+                "api",
+                &format!(
+                    "projects/:id/merge_trains/{}?sort=asc&per_page={}&page={}",
+                    target_branch, PER_PAGE, page
+                ),
+            ])
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(GgError::GlabError(format!(
+                "Failed to query merge train for target branch {}: {}",
+                target_branch,
+                stderr.trim()
+            )));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let page_entries = parse_merge_train_page(&stdout);
+        if let Some(info) = find_mr_in_merge_train_page(mr_number, &page_entries, position_offset) {
+            return Ok(info);
+        }
+
+        if page_entries.len() < PER_PAGE {
+            break;
+        }
+
+        position_offset += page_entries.len();
+        page += 1;
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    // MR not found in train
+    Ok(MergeTrainInfo {
+        status: MergeTrainStatus::Idle,
+        position: None,
+        pipeline_running: false,
+    })
+}
 
-    // Parse the JSON array of merge trains
-    #[derive(Deserialize)]
-    struct MergeTrainEntry {
-        merge_request: MergeTrainMr,
-        status: String,
-        #[serde(default)]
-        pipeline: Option<MergeTrainPipeline>,
-    }
+#[derive(Deserialize)]
+struct MergeTrainEntry {
+    merge_request: MergeTrainMr,
+    status: String,
+    #[serde(default)]
+    pipeline: Option<MergeTrainPipeline>,
+}
 
-    #[derive(Deserialize)]
-    struct MergeTrainMr {
-        iid: u64,
-    }
+#[derive(Deserialize)]
+struct MergeTrainMr {
+    iid: u64,
+}
 
-    #[derive(Deserialize)]
-    struct MergeTrainPipeline {
-        status: String,
-    }
+#[derive(Deserialize)]
+struct MergeTrainPipeline {
+    status: String,
+}
 
-    let trains: Vec<MergeTrainEntry> = serde_json::from_str(&stdout).unwrap_or_default();
+fn parse_merge_train_page(stdout: &str) -> Vec<MergeTrainEntry> {
+    serde_json::from_str(stdout).unwrap_or_default()
+}
 
-    // Find this MR in the merge train
+fn find_mr_in_merge_train_page(
+    mr_number: u64,
+    trains: &[MergeTrainEntry],
+    position_offset: usize,
+) -> Option<MergeTrainInfo> {
     for (idx, entry) in trains.iter().enumerate() {
         if entry.merge_request.iid == mr_number {
             let status = match entry.status.as_str() {
@@ -900,20 +936,15 @@ pub fn get_merge_train_status(mr_number: u64, target_branch: &str) -> Result<Mer
                 .map(|p| matches!(p.status.as_str(), "running" | "pending"))
                 .unwrap_or(false);
 
-            return Ok(MergeTrainInfo {
+            return Some(MergeTrainInfo {
                 status,
-                position: Some(idx + 1), // 1-indexed position
+                position: Some(position_offset + idx + 1),
                 pipeline_running,
             });
         }
     }
 
-    // MR not found in train
-    Ok(MergeTrainInfo {
-        status: MergeTrainStatus::Idle,
-        position: None,
-        pipeline_running: false,
-    })
+    None
 }
 
 /// A GitLab MR note (a discussion entry on the merge request).
@@ -1387,6 +1418,65 @@ mod tests {
     }
 
     #[test]
+    fn test_merge_train_page_finds_mr_on_first_page() {
+        let entries = parse_merge_train_page(
+            r#"[
+                {"merge_request":{"iid":8513},"status":"fresh","pipeline":{"status":"running"}},
+                {"merge_request":{"iid":8514},"status":"stale","pipeline":{"status":"success"}}
+            ]"#,
+        );
+
+        let info = find_mr_in_merge_train_page(8513, &entries, 0).unwrap();
+        assert_eq!(info.status, MergeTrainStatus::Fresh);
+        assert_eq!(info.position, Some(1));
+        assert!(info.pipeline_running);
+    }
+
+    #[test]
+    fn test_merge_train_page_position_accounts_for_prior_pages() {
+        let entries = parse_merge_train_page(
+            r#"[
+                {"merge_request":{"iid":8510},"status":"fresh"},
+                {"merge_request":{"iid":8513},"status":"merging","pipeline":{"status":"pending"}}
+            ]"#,
+        );
+
+        let info = find_mr_in_merge_train_page(8513, &entries, 100).unwrap();
+        assert_eq!(info.status, MergeTrainStatus::Merging);
+        assert_eq!(info.position, Some(102));
+        assert!(info.pipeline_running);
+    }
+
+    #[test]
+    fn test_merge_train_page_not_found_returns_none() {
+        let entries = parse_merge_train_page(
+            r#"[
+                {"merge_request":{"iid":8510},"status":"fresh"},
+                {"merge_request":{"iid":8511},"status":"stale"}
+            ]"#,
+        );
+
+        assert!(find_mr_in_merge_train_page(8513, &entries, 0).is_none());
+    }
+
+    #[test]
+    fn test_merge_train_empty_page_is_parsed_as_empty() {
+        let entries = parse_merge_train_page("[]");
+        assert!(entries.is_empty());
+        assert!(find_mr_in_merge_train_page(8513, &entries, 0).is_none());
+    }
+
+    #[test]
+    fn test_merge_train_skip_merged_is_terminal_status() {
+        let entries =
+            parse_merge_train_page(r#"[{"merge_request":{"iid":8513},"status":"skip_merged"}]"#);
+
+        let info = find_mr_in_merge_train_page(8513, &entries, 0).unwrap();
+        assert_eq!(info.status, MergeTrainStatus::SkipMerged);
+        assert_eq!(info.position, Some(1));
+    }
+
+    #[test]
     fn test_auto_merge_result_equality() {
         assert_eq!(AutoMergeResult::Queued, AutoMergeResult::Queued);
         assert_eq!(
@@ -1530,7 +1620,8 @@ mod tests {
             "web_url": "https://gitlab.com/group/project/-/merge_requests/428",
             "source_branch": "testuser/stack--c-8b999da",
             "draft": false,
-            "work_in_progress": false
+            "work_in_progress": false,
+            "detailed_merge_status": "ci_still_running"
         }"#;
 
         let parsed: GlabMrJson = serde_json::from_str(json).unwrap();
@@ -1538,6 +1629,10 @@ mod tests {
         assert_eq!(
             parsed.source_branch.as_deref(),
             Some("testuser/stack--c-8b999da")
+        );
+        assert_eq!(
+            parsed.detailed_merge_status.as_deref(),
+            Some("ci_still_running")
         );
     }
 

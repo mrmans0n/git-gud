@@ -302,6 +302,7 @@ Generate shell integration (`bash|fish|zsh`). This is required for `gg co --wt` 
   - `in_merge_train: boolean`
   - `merge_train_position: number | null`
 - With `-w/--wait`, `gg land` can wait for approval/readiness transitions.
+- After queueing into a GitLab merge train, a missing train-list entry is treated as a transient polling state until `land_wait_timeout_minutes` unless GitLab reports a terminal state.
 - GitLab land actions can be `queued`/`already_queued` (in addition to `merged`).
 - When `--wait` detects CI failure, the error includes failed job names and stages (e.g., `Failed jobs: lint (stage: test), build-android (stage: build)`).
 

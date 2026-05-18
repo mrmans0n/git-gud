@@ -323,6 +323,7 @@ Reconcile is skipped under `--until` to avoid partial-stack inconsistencies.
 
 - `gg land --auto-merge` is GitLab-only and requests queueing/auto-merge.
 - With merge trains enabled, landing may enqueue MRs instead of immediate merge.
+- After queueing, GitLab may temporarily omit the MR from the merge-train listing. Treat the `gg land --wait` "not reported yet; still polling" status as non-terminal unless the command reports closed, skipped, failed CI, timeout, or repeated API errors.
 - Track train state in `gg ls --json` with:
   - `in_merge_train`
   - `merge_train_position`

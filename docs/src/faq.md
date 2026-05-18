@@ -53,6 +53,8 @@ Increase timeout in config:
 }
 ```
 
+For GitLab merge trains, `gg land --wait` may show that GitLab has not reported an MR in the train yet. That is a polling state after queueing, not an immediate failure. `gg` keeps waiting until this timeout unless GitLab reports a terminal state such as closed, skipped, or failed CI.
+
 ## When should I use `gg absorb` vs `gg sc`?
 
 - Use `gg sc` when you're on the exact commit you want to modify.

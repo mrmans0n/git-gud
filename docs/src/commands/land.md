@@ -68,6 +68,8 @@ When merge trains are enabled on the target branch, `gg land` automatically adds
 
 **Approval is always required** before an MR can enter the merge train queue — even with `--all`. If using `--wait`, the command will show "Waiting for approval..." until a reviewer approves the MR.
 
+After queueing, GitLab can take time to report the MR in the merge train listing. With `--wait`, `gg` keeps polling until the configured `land_wait_timeout_minutes` instead of failing after a short not-found window. It still stops promptly if the MR is closed, GitLab reports it was skipped from the train, CI fails, or repeated API errors occur.
+
 ## CI Failure Details
 
 When using `--wait`, if CI fails on an MR the command stops and shows which jobs failed:

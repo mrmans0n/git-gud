@@ -237,6 +237,7 @@ gg clean
 
 **Notes:**
 - The `--wait` flag polls for CI status and approvals with a configurable timeout (default: 30 minutes). Configure with `land_wait_timeout_minutes` in `.git/gg/config.json`.
+- On GitLab merge trains, `--wait` treats a just-queued MR missing from the train listing as a transient state and keeps polling until the timeout or a terminal GitLab state.
 - The `--auto-merge` flag is GitLab-only and requests "merge when pipeline succeeds" instead of an immediate merge. You can enable this behavior by default with `defaults.gitlab.auto_merge_on_land` in `.git/gg/config.json`.
 - The `--clean` and `--no-clean` flags control automatic stack cleanup after landing all PRs/MRs. If neither is specified, the behavior is controlled by the `land_auto_clean` config option (default: `false`). Use `--clean` to enable cleanup for a single command, or `--no-clean` to override a `true` config default.
 - The `--admin` flag is GitHub-only and uses `gh pr merge --admin` to bypass branch protection rules. Use `--wait --admin` to still wait for CI while skipping approval requirements. On GitLab, the flag is a no-op (a warning is printed). Enable by default with `land_admin` in `.git/gg/config.json`.

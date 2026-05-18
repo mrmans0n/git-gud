@@ -94,16 +94,32 @@ const MAX_CONSECUTIVE_API_ERRORS: u32 = 5;
 /// aggressive and can fail healthy `gg land --wait --all` flows.
 const IDLE_STILL_WAITING_POLLS: u32 = 6;
 
-fn merge_train_idle_state_message(idle_count: u32) -> &'static str {
-    if idle_count > IDLE_STILL_WAITING_POLLS {
-        "Merge train status temporarily unavailable; still waiting..."
+fn merge_train_idle_state_message(idle_count: u32, seen_in_train: bool) -> &'static str {
+    if seen_in_train {
+        "MR was previously visible in the merge train but is not currently reported; still polling..."
+    } else if idle_count > IDLE_STILL_WAITING_POLLS {
+        "GitLab has not reported this MR in the merge train yet; still polling..."
     } else {
         "Waiting for merge train to pick up MR..."
     }
 }
 
-fn should_fail_idle_not_in_train(idle_count: u32, seen_in_train: bool) -> bool {
-    !seen_in_train && idle_count > IDLE_STILL_WAITING_POLLS
+fn terminal_detailed_merge_status_message(status: Option<&str>) -> Option<String> {
+    let status = status?.trim();
+    let normalized = status.to_ascii_lowercase();
+
+    match normalized.as_str() {
+        // GitLab uses this for failed required pipelines.
+        "broken_status" => Some(
+            "GitLab reports the MR cannot merge because a required status check or pipeline failed"
+                .to_string(),
+        ),
+        // These are explicit merge blockers, not transient train-list gaps.
+        "cannot_be_merged" | "cannot_merge" | "conflict" => {
+            Some(format!("GitLab reports terminal merge status '{}'", status))
+        }
+        _ => None,
+    }
 }
 
 fn should_count_merge_train_status_as_api_error(train_info: &crate::glab::MergeTrainInfo) -> bool {
@@ -1346,9 +1362,9 @@ fn wait_for_merge_train_completion(
     let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
     let mut consecutive_errors: u32 = 0;
 
-    // Grace period: after adding to merge train, the MR may not appear in the
-    // train list immediately. Allow some polls with Idle status before treating
-    // it as a terminal "not in train" condition when we've never seen it there.
+    // After adding to merge train, the MR may not appear in the train list
+    // immediately. Idle/not-found is a polling state; the overall timeout is
+    // the hard limit unless MR-level state reports a terminal condition.
     let mut idle_count: u32 = 0;
     let mut seen_in_train = false;
 
@@ -1511,19 +1527,22 @@ fn wait_for_merge_train_completion(
                     }
                     MergeTrainStatus::Idle => {
                         idle_count += 1;
-                        if should_fail_idle_not_in_train(idle_count, seen_in_train) {
+                        if let Some(message) = terminal_detailed_merge_status_message(
+                            pr_info.detailed_merge_status.as_deref(),
+                        ) {
                             if let Some(ref spinner) = current_spinner {
                                 spinner.finish_and_clear();
                             }
                             return Err(GgError::Other(format!(
-                                "{} {}{} is not in the merge train (waited {}s). If it was removed, check GitLab and re-queue it.",
+                                "{} {}{} cannot continue in the merge train: {}",
                                 provider.pr_label(),
                                 provider.pr_number_prefix(),
                                 pr_num,
-                                IDLE_STILL_WAITING_POLLS as u64 * POLL_INTERVAL_SECS
+                                message
                             )));
                         }
-                        new_state = merge_train_idle_state_message(idle_count).to_string();
+                        new_state =
+                            merge_train_idle_state_message(idle_count, seen_in_train).to_string();
                     }
                     MergeTrainStatus::Unknown => {
                         if should_count_merge_train_status_as_api_error(&train_info) {
@@ -2585,14 +2604,19 @@ mod tests {
     fn test_idle_counter_enters_still_waiting_state() {
         for idle_count in 1..=IDLE_STILL_WAITING_POLLS {
             assert_eq!(
-                merge_train_idle_state_message(idle_count),
+                merge_train_idle_state_message(idle_count, false),
                 "Waiting for merge train to pick up MR..."
             );
         }
 
         assert_eq!(
-            merge_train_idle_state_message(IDLE_STILL_WAITING_POLLS + 1),
-            "Merge train status temporarily unavailable; still waiting..."
+            merge_train_idle_state_message(IDLE_STILL_WAITING_POLLS + 1, false),
+            "GitLab has not reported this MR in the merge train yet; still polling..."
+        );
+
+        assert_eq!(
+            merge_train_idle_state_message(1, true),
+            "MR was previously visible in the merge train but is not currently reported; still polling..."
         );
     }
 
@@ -2604,7 +2628,7 @@ mod tests {
         idle_count += 1;
         idle_count += 1;
         assert_eq!(
-            merge_train_idle_state_message(idle_count),
+            merge_train_idle_state_message(idle_count, false),
             "Waiting for merge train to pick up MR..."
         );
 
@@ -2613,8 +2637,8 @@ mod tests {
 
         idle_count += 1;
         assert_eq!(
-            merge_train_idle_state_message(idle_count),
-            "Waiting for merge train to pick up MR..."
+            merge_train_idle_state_message(idle_count, true),
+            "MR was previously visible in the merge train but is not currently reported; still polling..."
         );
     }
 
@@ -2625,10 +2649,10 @@ mod tests {
         // 2) GitLab temporarily reports Idle while recalculating train
         // 3) gg must keep waiting (not fail with "no longer in the merge train")
         for idle_count in 1..=(IDLE_STILL_WAITING_POLLS + 3) {
-            let state = merge_train_idle_state_message(idle_count);
+            let state = merge_train_idle_state_message(idle_count, true);
             assert!(
-                state == "Waiting for merge train to pick up MR..."
-                    || state == "Merge train status temporarily unavailable; still waiting..."
+                state
+                    == "MR was previously visible in the merge train but is not currently reported; still polling..."
             );
         }
     }
@@ -2638,29 +2662,28 @@ mod tests {
         // Once we've observed the MR in train, temporary Idle transitions should
         // continue waiting (GitLab recalculation window).
         for idle_count in 1..=(IDLE_STILL_WAITING_POLLS + 3) {
-            assert!(
-                !should_fail_idle_not_in_train(idle_count, true),
-                "should not fail when MR was previously seen in train"
+            assert_eq!(
+                merge_train_idle_state_message(idle_count, true),
+                "MR was previously visible in the merge train but is not currently reported; still polling..."
             );
         }
     }
 
     #[test]
-    fn test_persistent_idle_without_seen_train_fails_after_grace_period() {
-        // If we've never seen the MR in train and Idle persists past the grace
-        // window, fail with a specific not-in-train signal instead of waiting
-        // until global timeout.
+    fn test_persistent_idle_without_seen_train_keeps_waiting_after_grace_period() {
+        // If we've never seen the MR in train and Idle persists past the old
+        // grace window, keep polling until the global land wait timeout.
         for idle_count in 1..=IDLE_STILL_WAITING_POLLS {
-            assert!(
-                !should_fail_idle_not_in_train(idle_count, false),
-                "should keep waiting during grace period"
+            assert_eq!(
+                merge_train_idle_state_message(idle_count, false),
+                "Waiting for merge train to pick up MR..."
             );
         }
 
-        assert!(should_fail_idle_not_in_train(
-            IDLE_STILL_WAITING_POLLS + 1,
-            false
-        ));
+        assert_eq!(
+            merge_train_idle_state_message(IDLE_STILL_WAITING_POLLS + 1, false),
+            "GitLab has not reported this MR in the merge train yet; still polling..."
+        );
     }
 
     #[test]
@@ -2669,10 +2692,30 @@ mod tests {
         // recalculation should not trigger a hard "not in train" failure.
         let seen_in_train = true;
         for idle_count in 1..=(IDLE_STILL_WAITING_POLLS + 5) {
-            assert!(
-                !should_fail_idle_not_in_train(idle_count, seen_in_train),
-                "temporary Idle must be tolerated after MR was seen in train"
+            assert_eq!(
+                merge_train_idle_state_message(idle_count, seen_in_train),
+                "MR was previously visible in the merge train but is not currently reported; still polling..."
             );
+        }
+    }
+
+    #[test]
+    fn test_terminal_detailed_merge_status_detects_failed_pipeline() {
+        let message = terminal_detailed_merge_status_message(Some("broken_status")).unwrap();
+        assert!(message.contains("pipeline failed"));
+    }
+
+    #[test]
+    fn test_non_terminal_detailed_merge_statuses_keep_polling() {
+        for status in [
+            None,
+            Some("checking"),
+            Some("ci_still_running"),
+            Some("mergeable"),
+            Some("not_approved"),
+            Some("unchecked"),
+        ] {
+            assert_eq!(terminal_detailed_merge_status_message(status), None);
         }
     }
 

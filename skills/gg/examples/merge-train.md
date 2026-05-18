@@ -29,6 +29,8 @@ For each entry, inspect:
 - `in_merge_train`
 - `merge_train_position`
 
+Immediately after queueing, GitLab can temporarily omit an MR from the train listing. If `gg land --wait` says GitLab has not reported the MR in the train yet, keep polling unless the command reports a terminal error such as closed, skipped, failed CI, timeout, or repeated API errors.
+
 Example status check with `jq`:
 
 ```bash

@@ -68,6 +68,7 @@ pub struct PrInfo {
     pub approved: bool,
     pub mergeable: bool,
     pub changes_requested: bool,
+    pub detailed_merge_status: Option<String>,
 }
 
 /// Result of creating a PR/MR
@@ -199,6 +200,7 @@ impl Provider {
                     approved: info.approved,
                     mergeable: info.mergeable,
                     changes_requested: info.changes_requested,
+                    detailed_merge_status: None,
                 })
             }
             Provider::GitLab => {
@@ -213,6 +215,7 @@ impl Provider {
                     approved: info.approved,
                     mergeable: info.mergeable,
                     changes_requested: info.changes_requested,
+                    detailed_merge_status: info.detailed_merge_status,
                 })
             }
         }
@@ -567,6 +570,7 @@ mod tests {
             approved: true,
             mergeable: true,
             changes_requested: false,
+            detailed_merge_status: None,
         };
         assert_eq!(info.number, 42);
         assert_eq!(info.title, "Test PR");

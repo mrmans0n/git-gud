@@ -727,6 +727,10 @@ To override intentionally, pass `-f` / `--force` (or the longer alias
 `--ignore-immutable`) to the command. The override emits a warning listing
 what is being rewritten and then proceeds.
 
+If this error is surfaced from `gg sync` during its pre-sync auto-rebase,
+`gg sync --force` is not the override. Run `gg rebase --force` or
+`gg rebase --ignore-immutable`, then retry `gg sync`.
+
 Notes for agents:
 
 - Before offering `--force`, surface the guard output to the user and get

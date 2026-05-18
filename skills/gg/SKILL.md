@@ -142,7 +142,7 @@ gg land -a -c --json
 5. If sync warns stack is behind base, run `gg rebase` first.
 6. Prefer `gg absorb -s` for multi-commit edits.
 7. **Never use `git add -A` blindly.** Review `git status` first and only stage intended files. Use `git add <specific-files>` to avoid leaking secrets, env files, or unrelated changes.
-8. **Respect the immutability guard.** Rewrite-style commands (`gg sc`, `gg absorb`, `gg reorder`/`gg arrange`, `gg split`, `gg unstack`, `gg drop`, `gg rebase`, `gg restack`) refuse to rewrite merged PRs/MRs or commits already on the base branch, except that `gg rebase` silently skips base-ancestor commits that naturally drop out when rebasing onto the refreshed base. If a command exits with `ImmutableTargets`, surface the listed commits and reasons to the user and get explicit confirmation before retrying with `-f` / `--force` (alias `--ignore-immutable`).
+8. **Respect the immutability guard.** Rewrite-style commands (`gg sc`, `gg absorb`, `gg reorder`/`gg arrange`, `gg split`, `gg unstack`, `gg drop`, `gg rebase`, `gg restack`) refuse to rewrite merged PRs/MRs or commits already on the base branch, except that `gg rebase` silently skips base-ancestor commits that naturally drop out when rebasing onto the refreshed base. If a command exits with `ImmutableTargets`, surface the listed commits and reasons to the user and get explicit confirmation before retrying with `-f` / `--force` (alias `--ignore-immutable`). If the error comes from `gg sync`'s auto-rebase, the override is `gg rebase --force` / `gg rebase --ignore-immutable`, not `gg sync --force`.
 
 ## Common operations
 
@@ -277,6 +277,10 @@ The guard protects `gg sc`, `gg absorb`, `gg reorder` / `gg arrange`,
 To bypass it intentionally, pass `-f` / `--force` (long alias
 `--ignore-immutable`). Always surface the listed commits and reasons to the
 user first; the override still emits a warning and proceeds.
+
+If `gg sync` surfaces the guard during auto-rebase, run `gg rebase --force` or
+`gg rebase --ignore-immutable` after user confirmation, then retry `gg sync`.
+`gg sync --force` only affects push behavior.
 
 `gg land`'s post-merge cleanup bypasses the guard by design, and
 `gg absorb --dry-run` skips it (no rewrite happens). See

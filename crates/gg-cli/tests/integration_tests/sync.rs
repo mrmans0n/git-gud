@@ -792,3 +792,118 @@ fn test_sync_until_nonexistent_target() {
         stderr
     );
 }
+
+#[test]
+fn test_sync_auto_rebase_shows_rebase_force_hint_on_immutable_commit() {
+    // Reproduces the confusing UX where `gg sync --force` still fails with
+    // an immutable-commit error, because the actual override is on
+    // `gg rebase --force` / `gg rebase --ignore-immutable`.
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","provider":"github","sync_auto_rebase":true,"sync_behind_threshold":1}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "immutable-sync-test"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    // Create two commits on the stack.
+    // Commit #1 stays mutable so the guard cannot drop #2 via
+    // without_bottom_merged_prs().
+    fs::write(repo_path.join("stack1.txt"), "stack1\n").expect("Failed to write stack1 file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Stack commit 1\n\nGG-ID: c-1111111"],
+    );
+
+    fs::write(repo_path.join("stack2.txt"), "stack2\n").expect("Failed to write stack2 file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Stack commit 2\n\nGG-ID: c-2222222"],
+    );
+
+    // Inject a merged MR mapping for commit #2 into the config after gg co
+    // created the stack entry.
+    let stack_branch = git_current_branch(&repo_path);
+    let config_json = fs::read_to_string(gg_dir.join("config.json")).unwrap_or_default();
+    let mut config: serde_json::Value =
+        serde_json::from_str(&config_json).expect("config.json must be valid JSON after gg co");
+    config["stacks"]["immutable-sync-test"]["mrs"]["c-2222222"] = serde_json::json!(99);
+    fs::write(
+        gg_dir.join("config.json"),
+        serde_json::to_string_pretty(&config).unwrap(),
+    )
+    .expect("Failed to write merged config");
+
+    // Advance origin/main so the behind-base check triggers auto-rebase.
+    run_git(&repo_path, &["checkout", "main"]);
+    fs::write(repo_path.join("base.txt"), "base update\n").expect("Failed to write base file");
+    run_git(&repo_path, &["add", "base.txt"]);
+    run_git(&repo_path, &["commit", "-m", "Merged upstream"]);
+    run_git(&repo_path, &["push", "origin", "main"]);
+    run_git(&repo_path, &["checkout", &stack_branch]);
+
+    // The fake gh exists so provider checks pass, and also returns Merged for
+    // the MR so refresh_mr_state_for_guard populates mr_state correctly.
+    let fake_bin = repo_path.join("fake-bin");
+    fs::create_dir_all(&fake_bin).expect("Failed to create fake bin dir");
+    fs::write(
+        fake_bin.join("gh"),
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo 'gh version 2.0.0'\n  exit 0\nfi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then\n  exit 0\nfi\nif [ \"$1\" = \"pr\" ] && [ \"$2\" = \"view\" ] && [ \"$3\" = \"99\" ]; then\n  echo '{\"number\":99,\"title\":\"Stack commit 2\",\"state\":\"MERGED\",\"url\":\"https://github.com/test/repo/pull/99\",\"headRefName\":\"testuser/immutable-sync-test--c-2222222\",\"isDraft\":false,\"mergeable\":\"MERGEABLE\",\"reviews\":[]}'\n  exit 0\nfi\necho 'unexpected gh invocation' >&2\nexit 1\n",
+    )
+    .expect("Failed to write fake gh");
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(fake_bin.join("gh"))
+            .expect("Failed to stat fake gh")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(fake_bin.join("gh"), perms).expect("Failed to chmod fake gh");
+    }
+
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut new_path = std::ffi::OsString::from(fake_bin.as_os_str());
+    new_path.push(":");
+    new_path.push(old_path);
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["sync", "--force"],
+        &[("PATH", new_path.as_os_str())],
+    );
+    assert!(
+        !success,
+        "sync should fail when auto-rebase hits immutable commit\nstdout: {}\nstderr: {}",
+        stdout, stderr
+    );
+    assert!(
+        stderr.contains("cannot rewrite immutable commits during sync"),
+        "error should mention 'during sync', got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("gg rebase --force") || stderr.contains("gg rebase --ignore-immutable"),
+        "error should point to `gg rebase --force`, got: {}",
+        stderr
+    );
+    assert!(
+        !stderr.contains("pass --force / --ignore-immutable to override"),
+        "error should not imply `gg sync --force` is sufficient, got: {}",
+        stderr
+    );
+}
+
+fn git_current_branch(repo_path: &std::path::Path) -> String {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(repo_path)
+        .output()
+        .expect("git rev-parse failed");
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}

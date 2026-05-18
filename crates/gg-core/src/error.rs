@@ -71,6 +71,11 @@ pub enum GgError {
     )]
     ImmutableTargets(String),
 
+    #[error(
+        "cannot rewrite immutable commits during sync (run `gg rebase --force` or `gg rebase --ignore-immutable` to override):\n{0}"
+    )]
+    ImmutableTargetsDuringSync(String),
+
     #[error("Git error: {0}")]
     Git(#[from] git2::Error),
 

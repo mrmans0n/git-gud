@@ -95,6 +95,10 @@ If you genuinely want to rewrite history anyway, pass `--force` (or
 rewrite command accepts both spellings. The guard still emits a warning so
 scripts see that they are bypassing a safety check.
 
+When the guard is hit by `gg sync` while it is auto-rebasing before push, the
+override belongs to the rebase step, not sync's push `--force`. Run
+`gg rebase --force` or `gg rebase --ignore-immutable`, then rerun `gg sync`.
+
 ### Keeping PR state fresh
 
 Each rewrite command runs a best-effort PR-state refresh against the

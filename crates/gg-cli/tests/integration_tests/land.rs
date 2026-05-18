@@ -79,6 +79,11 @@ fn test_land_help_shows_admin_option() {
         "Should show --admin option: {}",
         stdout
     );
+    assert!(
+        stdout.contains("GitHub only") || stdout.contains("GitHub-only"),
+        "Should indicate --admin is GitHub-only: {}",
+        stdout
+    );
 }
 
 #[test]

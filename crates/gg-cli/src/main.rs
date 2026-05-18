@@ -278,7 +278,7 @@ enum Commands {
         #[arg(long = "no-clean", conflicts_with = "clean")]
         no_clean: bool,
 
-        /// Use admin privileges to bypass branch protection approval requirements
+        /// (GitHub only) Use admin privileges to bypass branch protection approval requirements
         #[arg(long)]
         admin: bool,
     },

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-05-18
+
+### Added
+- `gg reconcile --yes` can now run non-interactively for automation flows (#332).
+
+### Fixed
+- `gg sync` now shows actionable `gg rebase --force` / `gg rebase --ignore-immutable` guidance when auto-rebase hits immutable commits (#333).
+
+### Changed
+- Updated dependencies: `clap_complete` to v4.6.5 and `rmcp` to v1.7.0 (#329, #330).
+
 ## [0.9.3] - 2026-05-10
 
 ### Added

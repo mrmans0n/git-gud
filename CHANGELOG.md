@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-05-19
+
+### Fixed
+- `gg land --wait` now handles GitLab merge-train polling more robustly (#334).
+
+### Changed
+- `gg land --admin` help now states its GitHub-only scope more clearly (#335).
+- Updated dependencies: `git2` to v0.21 (#337).
+
 ## [0.9.4] - 2026-05-18
 
 ### Added
@@ -467,7 +476,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.9.3...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.9.5...HEAD
+[0.9.5]: https://github.com/mrmans0n/git-gud/compare/v0.9.4...v0.9.5
+[0.9.4]: https://github.com/mrmans0n/git-gud/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/mrmans0n/git-gud/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/mrmans0n/git-gud/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/mrmans0n/git-gud/compare/v0.9.0...v0.9.1

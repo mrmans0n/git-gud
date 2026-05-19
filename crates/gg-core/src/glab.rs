@@ -841,6 +841,14 @@ pub fn format_failed_jobs(jobs: &[FailedJob]) -> String {
         .join(", ")
 }
 
+/// Build the `glab api` merge-train endpoint path.
+fn merge_train_endpoint(target_branch: &str, per_page: usize, page: usize) -> String {
+    format!(
+        "projects/:id/merge_trains/{}?scope=active&sort=asc&per_page={}&page={}",
+        target_branch, per_page, page
+    )
+}
+
 /// Get merge train status for an MR
 /// Returns information about the MR's position and status in the merge train
 pub fn get_merge_train_status(mr_number: u64, target_branch: &str) -> Result<MergeTrainInfo> {
@@ -851,13 +859,7 @@ pub fn get_merge_train_status(mr_number: u64, target_branch: &str) -> Result<Mer
 
     loop {
         let output = Command::new("glab")
-            .args([
-                "api",
-                &format!(
-                    "projects/:id/merge_trains/{}?sort=asc&per_page={}&page={}",
-                    target_branch, PER_PAGE, page
-                ),
-            ])
+            .args(["api", &merge_train_endpoint(target_branch, PER_PAGE, page)])
             .output()?;
 
         if !output.status.success() {
@@ -1474,6 +1476,34 @@ mod tests {
         let info = find_mr_in_merge_train_page(8513, &entries, 0).unwrap();
         assert_eq!(info.status, MergeTrainStatus::SkipMerged);
         assert_eq!(info.position, Some(1));
+    }
+
+    #[test]
+    fn test_merge_train_endpoint_includes_active_scope() {
+        assert_eq!(
+            merge_train_endpoint("main", 100, 1),
+            "projects/:id/merge_trains/main?scope=active&sort=asc&per_page=100&page=1"
+        );
+        assert_eq!(
+            merge_train_endpoint("feature/foo", 50, 3),
+            "projects/:id/merge_trains/feature/foo?scope=active&sort=asc&per_page=50&page=3"
+        );
+    }
+
+    #[test]
+    fn test_merge_train_active_list_position_is_queue_position() {
+        // When only active entries are returned, position should reflect queue order.
+        let entries = parse_merge_train_page(
+            r#"[
+                {"merge_request":{"iid":8527},"status":"fresh","pipeline":{"status":"success"}},
+                {"merge_request":{"iid":8528},"status":"fresh","pipeline":{"status":"running"}}
+            ]"#,
+        );
+
+        let info = find_mr_in_merge_train_page(8528, &entries, 0).unwrap();
+        assert_eq!(info.status, MergeTrainStatus::Fresh);
+        assert_eq!(info.position, Some(2));
+        assert!(info.pipeline_running);
     }
 
     #[test]

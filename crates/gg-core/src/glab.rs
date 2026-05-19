@@ -844,19 +844,22 @@ pub fn format_failed_jobs(jobs: &[FailedJob]) -> String {
 /// Build the `glab api` merge-train endpoint path.
 ///
 /// `scope` can be `"active"`, `"complete"`, or `None` for an unscoped lookup.
+/// `sort` controls result ordering — `"asc"` for active (queue positions) and
+/// `"desc"` for complete (most recent first, avoids paging through history).
 fn merge_train_endpoint(
     target_branch: &str,
     per_page: usize,
     page: usize,
     scope: Option<&str>,
+    sort: &str,
 ) -> String {
     let scope_query = match scope {
         Some(s) => format!("scope={}&", s),
         None => String::new(),
     };
     format!(
-        "projects/:id/merge_trains/{}?{}sort=asc&per_page={}&page={}",
-        target_branch, scope_query, per_page, page
+        "projects/:id/merge_trains/{}?{}sort={}&per_page={}&page={}",
+        target_branch, scope_query, sort, per_page, page
     )
 }
 
@@ -899,12 +902,20 @@ fn query_merge_train(
     let mut page = 1usize;
     let mut position_offset = 0usize;
     let include_position = scope == Some("active");
+    // Active entries need ascending order to compute queue positions correctly.
+    // Completed entries use descending order so the most recently completed MR
+    // appears on the first page, avoiding pagination through the full history.
+    let sort = if scope == Some("complete") {
+        "desc"
+    } else {
+        "asc"
+    };
 
     loop {
         let output = Command::new("glab")
             .args([
                 "api",
-                &merge_train_endpoint(target_branch, per_page, page, scope),
+                &merge_train_endpoint(target_branch, per_page, page, scope, sort),
             ])
             .output()?;
 
@@ -1525,15 +1536,15 @@ mod tests {
     #[test]
     fn test_merge_train_endpoint_includes_requested_scope() {
         assert_eq!(
-            merge_train_endpoint("main", 100, 1, Some("active")),
+            merge_train_endpoint("main", 100, 1, Some("active"), "asc"),
             "projects/:id/merge_trains/main?scope=active&sort=asc&per_page=100&page=1"
         );
         assert_eq!(
-            merge_train_endpoint("main", 100, 1, Some("complete")),
-            "projects/:id/merge_trains/main?scope=complete&sort=asc&per_page=100&page=1"
+            merge_train_endpoint("main", 100, 1, Some("complete"), "desc"),
+            "projects/:id/merge_trains/main?scope=complete&sort=desc&per_page=100&page=1"
         );
         assert_eq!(
-            merge_train_endpoint("feature/foo", 50, 3, Some("active")),
+            merge_train_endpoint("feature/foo", 50, 3, Some("active"), "asc"),
             "projects/:id/merge_trains/feature/foo?scope=active&sort=asc&per_page=50&page=3"
         );
     }
@@ -1541,7 +1552,7 @@ mod tests {
     #[test]
     fn test_merge_train_endpoint_can_be_unscoped() {
         assert_eq!(
-            merge_train_endpoint("main", 100, 1, None),
+            merge_train_endpoint("main", 100, 1, None, "asc"),
             "projects/:id/merge_trains/main?sort=asc&per_page=100&page=1"
         );
     }

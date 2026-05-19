@@ -842,24 +842,70 @@ pub fn format_failed_jobs(jobs: &[FailedJob]) -> String {
 }
 
 /// Build the `glab api` merge-train endpoint path.
-fn merge_train_endpoint(target_branch: &str, per_page: usize, page: usize) -> String {
+///
+/// `scope` can be `"active"`, `"complete"`, or `None` for an unscoped lookup.
+fn merge_train_endpoint(
+    target_branch: &str,
+    per_page: usize,
+    page: usize,
+    scope: Option<&str>,
+) -> String {
+    let scope_query = match scope {
+        Some(s) => format!("scope={}&", s),
+        None => String::new(),
+    };
     format!(
-        "projects/:id/merge_trains/{}?scope=active&sort=asc&per_page={}&page={}",
-        target_branch, per_page, page
+        "projects/:id/merge_trains/{}?{}sort=asc&per_page={}&page={}",
+        target_branch, scope_query, per_page, page
     )
 }
 
-/// Get merge train status for an MR
-/// Returns information about the MR's position and status in the merge train
+/// Get merge train status for an MR.
+///
+/// Queries the active train first so that queue positions are accurate.
+/// If the MR is not found there, falls back to a complete lookup so
+/// terminal states (`merged`, `skip_merged`) that have left the active
+/// train are still surfaced instead of being misreported as `Idle`.
 pub fn get_merge_train_status(mr_number: u64, target_branch: &str) -> Result<MergeTrainInfo> {
     const PER_PAGE: usize = 100;
 
+    // Active scope gives accurate, current queue positions.
+    if let Some(info) = query_merge_train(mr_number, target_branch, PER_PAGE, Some("active"))? {
+        return Ok(info);
+    }
+
+    // Terminal entries (merged / skip_merged) disappear from `scope=active`.
+    // A complete fallback preserves those states instead of timing out on Idle.
+    if let Some(info) = query_merge_train(mr_number, target_branch, PER_PAGE, Some("complete"))? {
+        return Ok(info);
+    }
+
+    // MR not found in train at all.
+    Ok(MergeTrainInfo {
+        status: MergeTrainStatus::Idle,
+        position: None,
+        pipeline_running: false,
+    })
+}
+
+/// Query one scope of the merge-train API, paginating until the MR is found
+/// or the list is exhausted.
+fn query_merge_train(
+    mr_number: u64,
+    target_branch: &str,
+    per_page: usize,
+    scope: Option<&str>,
+) -> Result<Option<MergeTrainInfo>> {
     let mut page = 1usize;
     let mut position_offset = 0usize;
+    let include_position = scope == Some("active");
 
     loop {
         let output = Command::new("glab")
-            .args(["api", &merge_train_endpoint(target_branch, PER_PAGE, page)])
+            .args([
+                "api",
+                &merge_train_endpoint(target_branch, per_page, page, scope),
+            ])
             .output()?;
 
         if !output.status.success() {
@@ -873,11 +919,13 @@ pub fn get_merge_train_status(mr_number: u64, target_branch: &str) -> Result<Mer
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let page_entries = parse_merge_train_page(&stdout);
-        if let Some(info) = find_mr_in_merge_train_page(mr_number, &page_entries, position_offset) {
-            return Ok(info);
+        if let Some(info) =
+            find_mr_in_merge_train_page(mr_number, &page_entries, position_offset, include_position)
+        {
+            return Ok(Some(info));
         }
 
-        if page_entries.len() < PER_PAGE {
+        if page_entries.len() < per_page {
             break;
         }
 
@@ -885,12 +933,7 @@ pub fn get_merge_train_status(mr_number: u64, target_branch: &str) -> Result<Mer
         page += 1;
     }
 
-    // MR not found in train
-    Ok(MergeTrainInfo {
-        status: MergeTrainStatus::Idle,
-        position: None,
-        pipeline_running: false,
-    })
+    Ok(None)
 }
 
 #[derive(Deserialize)]
@@ -919,6 +962,7 @@ fn find_mr_in_merge_train_page(
     mr_number: u64,
     trains: &[MergeTrainEntry],
     position_offset: usize,
+    include_position: bool,
 ) -> Option<MergeTrainInfo> {
     for (idx, entry) in trains.iter().enumerate() {
         if entry.merge_request.iid == mr_number {
@@ -940,7 +984,7 @@ fn find_mr_in_merge_train_page(
 
             return Some(MergeTrainInfo {
                 status,
-                position: Some(position_offset + idx + 1),
+                position: include_position.then_some(position_offset + idx + 1),
                 pipeline_running,
             });
         }
@@ -1428,7 +1472,7 @@ mod tests {
             ]"#,
         );
 
-        let info = find_mr_in_merge_train_page(8513, &entries, 0).unwrap();
+        let info = find_mr_in_merge_train_page(8513, &entries, 0, true).unwrap();
         assert_eq!(info.status, MergeTrainStatus::Fresh);
         assert_eq!(info.position, Some(1));
         assert!(info.pipeline_running);
@@ -1443,7 +1487,7 @@ mod tests {
             ]"#,
         );
 
-        let info = find_mr_in_merge_train_page(8513, &entries, 100).unwrap();
+        let info = find_mr_in_merge_train_page(8513, &entries, 100, true).unwrap();
         assert_eq!(info.status, MergeTrainStatus::Merging);
         assert_eq!(info.position, Some(102));
         assert!(info.pipeline_running);
@@ -1458,14 +1502,14 @@ mod tests {
             ]"#,
         );
 
-        assert!(find_mr_in_merge_train_page(8513, &entries, 0).is_none());
+        assert!(find_mr_in_merge_train_page(8513, &entries, 0, true).is_none());
     }
 
     #[test]
     fn test_merge_train_empty_page_is_parsed_as_empty() {
         let entries = parse_merge_train_page("[]");
         assert!(entries.is_empty());
-        assert!(find_mr_in_merge_train_page(8513, &entries, 0).is_none());
+        assert!(find_mr_in_merge_train_page(8513, &entries, 0, true).is_none());
     }
 
     #[test]
@@ -1473,20 +1517,32 @@ mod tests {
         let entries =
             parse_merge_train_page(r#"[{"merge_request":{"iid":8513},"status":"skip_merged"}]"#);
 
-        let info = find_mr_in_merge_train_page(8513, &entries, 0).unwrap();
+        let info = find_mr_in_merge_train_page(8513, &entries, 0, true).unwrap();
         assert_eq!(info.status, MergeTrainStatus::SkipMerged);
         assert_eq!(info.position, Some(1));
     }
 
     #[test]
-    fn test_merge_train_endpoint_includes_active_scope() {
+    fn test_merge_train_endpoint_includes_requested_scope() {
         assert_eq!(
-            merge_train_endpoint("main", 100, 1),
+            merge_train_endpoint("main", 100, 1, Some("active")),
             "projects/:id/merge_trains/main?scope=active&sort=asc&per_page=100&page=1"
         );
         assert_eq!(
-            merge_train_endpoint("feature/foo", 50, 3),
+            merge_train_endpoint("main", 100, 1, Some("complete")),
+            "projects/:id/merge_trains/main?scope=complete&sort=asc&per_page=100&page=1"
+        );
+        assert_eq!(
+            merge_train_endpoint("feature/foo", 50, 3, Some("active")),
             "projects/:id/merge_trains/feature/foo?scope=active&sort=asc&per_page=50&page=3"
+        );
+    }
+
+    #[test]
+    fn test_merge_train_endpoint_can_be_unscoped() {
+        assert_eq!(
+            merge_train_endpoint("main", 100, 1, None),
+            "projects/:id/merge_trains/main?sort=asc&per_page=100&page=1"
         );
     }
 
@@ -1500,10 +1556,25 @@ mod tests {
             ]"#,
         );
 
-        let info = find_mr_in_merge_train_page(8528, &entries, 0).unwrap();
+        let info = find_mr_in_merge_train_page(8528, &entries, 0, true).unwrap();
         assert_eq!(info.status, MergeTrainStatus::Fresh);
         assert_eq!(info.position, Some(2));
         assert!(info.pipeline_running);
+    }
+
+    #[test]
+    fn test_merge_train_complete_entry_preserves_terminal_status_without_position() {
+        let entries = parse_merge_train_page(
+            r#"[
+                {"merge_request":{"iid":8520},"status":"merged"},
+                {"merge_request":{"iid":8528},"status":"skip_merged","pipeline":{"status":"success"}}
+            ]"#,
+        );
+
+        let info = find_mr_in_merge_train_page(8528, &entries, 0, false).unwrap();
+        assert_eq!(info.status, MergeTrainStatus::SkipMerged);
+        assert_eq!(info.position, None);
+        assert!(!info.pipeline_running);
     }
 
     #[test]

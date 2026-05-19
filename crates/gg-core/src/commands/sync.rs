@@ -1707,7 +1707,7 @@ mod tests {
 
     fn make_test_entry(gg_id: &str) -> crate::stack::StackEntry {
         crate::stack::StackEntry {
-            oid: git2::Oid::zero(),
+            oid: git2::Oid::ZERO_SHA1,
             short_sha: "abc1234".to_string(),
             title: "Test entry".to_string(),
             gg_id: Some(gg_id.to_string()),

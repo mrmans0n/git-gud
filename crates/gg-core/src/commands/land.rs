@@ -234,7 +234,7 @@ fn rebase_remaining_branches(
     // Save current branch
     let current_branch = if let Ok(head) = repo.head() {
         if head.is_branch() {
-            head.shorthand().map(String::from)
+            head.shorthand().ok().map(String::from)
         } else {
             None
         }
@@ -2376,7 +2376,7 @@ mod tests {
         use crate::stack::StackEntry;
 
         // Create a mock entry without MR (unsynced)
-        let commit_oid = git2::Oid::zero();
+        let commit_oid = git2::Oid::ZERO_SHA1;
         let commit = StackEntry {
             oid: commit_oid,
             short_sha: "abc1234".to_string(),
@@ -2438,7 +2438,7 @@ mod tests {
         // Create a mix of synced and unsynced entries
         let entries = [
             StackEntry {
-                oid: git2::Oid::zero(),
+                oid: git2::Oid::ZERO_SHA1,
                 short_sha: "a1".to_string(),
                 title: "Merged".to_string(),
                 gg_id: Some("c-aaa".to_string()),
@@ -2454,7 +2454,7 @@ mod tests {
                 merge_train_position: None,
             },
             StackEntry {
-                oid: git2::Oid::zero(),
+                oid: git2::Oid::ZERO_SHA1,
                 short_sha: "b2".to_string(),
                 title: "Also merged".to_string(),
                 gg_id: Some("c-bbb".to_string()),
@@ -2470,7 +2470,7 @@ mod tests {
                 merge_train_position: None,
             },
             StackEntry {
-                oid: git2::Oid::zero(),
+                oid: git2::Oid::ZERO_SHA1,
                 short_sha: "c3".to_string(),
                 title: "New unsynced commit".to_string(),
                 gg_id: Some("c-ccc".to_string()),
@@ -2486,7 +2486,7 @@ mod tests {
                 merge_train_position: None,
             },
             StackEntry {
-                oid: git2::Oid::zero(),
+                oid: git2::Oid::ZERO_SHA1,
                 short_sha: "d4".to_string(),
                 title: "Another new commit".to_string(),
                 gg_id: Some("c-ddd".to_string()),

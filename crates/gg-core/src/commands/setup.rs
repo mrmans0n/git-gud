@@ -297,7 +297,7 @@ fn prompt_provider(
     let remote_url = repo
         .find_remote("origin")
         .ok()
-        .and_then(|r| r.url().map(|s| s.to_string()));
+        .and_then(|r| r.url().ok().map(|s| s.to_string()));
 
     let detected_default = remote_url.as_ref().and_then(|url| {
         git::detect_remote_provider_from_url(url).map(|provider| match provider {

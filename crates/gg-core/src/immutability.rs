@@ -349,7 +349,7 @@ mod tests {
 
     fn mk_entry(pos: usize, sha: &str, title: &str) -> StackEntry {
         StackEntry {
-            oid: git2::Oid::zero(),
+            oid: git2::Oid::ZERO_SHA1,
             short_sha: sha.to_string(),
             title: title.to_string(),
             gg_id: None,
@@ -443,7 +443,7 @@ mod tests {
     #[test]
     fn reasons_for_merged_pr_returns_merged_pr_reason() {
         // Use an in-memory bare repo so `graph_descendant_of` can run on OIDs
-        // that don't match any real commit (Oid::zero() is unknown).
+        // that don't match any real commit (Oid::ZERO_SHA1 is unknown).
         let temp = tempfile::tempdir().unwrap();
         let repo = Repository::init(temp.path()).unwrap();
 

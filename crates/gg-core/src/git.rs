@@ -266,7 +266,7 @@ pub fn find_base_branch(repo: &Repository) -> Result<String> {
 pub fn current_branch_name(repo: &Repository) -> Option<String> {
     let head = repo.head().ok()?;
     if head.is_branch() {
-        head.shorthand().map(|s| s.to_string())
+        head.shorthand().ok().map(|s| s.to_string())
     } else {
         None
     }
@@ -340,7 +340,7 @@ pub fn find_entry_branch_for_stack(
 /// Returns the worktree name if the branch is checked out, None otherwise
 pub fn is_branch_checked_out_in_worktree(repo: &Repository, branch_name: &str) -> Option<String> {
     if let Ok(worktrees) = repo.worktrees() {
-        for name in worktrees.iter().flatten() {
+        for name in worktrees.iter().flatten().flatten() {
             if let Ok(wt) = repo.find_worktree(name) {
                 // Open repo from worktree to check its HEAD
                 if let Ok(wt_repo) = Repository::open_from_worktree(&wt) {
@@ -455,7 +455,7 @@ pub fn get_stack_commit_oids(
 
 /// Extract the GG-ID from a commit message (case-insensitive)
 pub fn get_gg_id(commit: &Commit) -> Option<String> {
-    let message = commit.message()?;
+    let message = commit.message().ok()?;
     let re = Regex::new(r"(?i)^GG-ID:\s*(.+)$").ok()?;
 
     for line in message.lines() {
@@ -474,7 +474,7 @@ pub fn generate_gg_id() -> String {
 
 /// Extract the GG-Parent from a commit message (case-insensitive)
 pub fn get_gg_parent(commit: &Commit) -> Option<String> {
-    let message = commit.message()?;
+    let message = commit.message().ok()?;
     let re = Regex::new(r"(?i)^GG-Parent:\s*(.+)$").ok()?;
 
     for line in message.lines() {
@@ -644,7 +644,7 @@ pub fn normalize_stack_metadata(
             stack_refname
         } else {
             let head = repo.head()?;
-            if let Some(branch_name) = head.shorthand() {
+            if let Ok(branch_name) = head.shorthand() {
                 format!("refs/heads/{}", branch_name)
             } else {
                 return Err(GgError::Other(format!(
@@ -681,12 +681,17 @@ fn extract_description_from_message(message: &str) -> Option<String> {
 
 /// Get the commit message title (first line)
 pub fn get_commit_title(commit: &Commit) -> String {
-    commit.summary().unwrap_or("<no summary>").to_string()
+    commit
+        .summary()
+        .ok()
+        .flatten()
+        .unwrap_or("<no summary>")
+        .to_string()
 }
 
 /// Get the commit message description (body), if present
 pub fn get_commit_description(commit: &Commit) -> Option<String> {
-    let message = commit.message()?;
+    let message = commit.message().ok()?;
     extract_description_from_message(message)
 }
 
@@ -2287,7 +2292,7 @@ pub fn detect_remote_provider(repo: &Repository) -> Result<RemoteProvider> {
 
     let url = remote
         .url()
-        .ok_or_else(|| GgError::Other("Origin remote has no URL".to_string()))?;
+        .map_err(|_| GgError::Other("Origin remote has no URL".to_string()))?;
 
     detect_remote_provider_from_url(url).ok_or_else(|| {
         GgError::Other(format!(

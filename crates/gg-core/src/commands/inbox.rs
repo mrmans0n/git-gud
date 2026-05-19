@@ -96,7 +96,7 @@ fn resolve_base_branch(
 ) -> Result<String> {
     fn remote_head_base_branch(repo: &git2::Repository) -> Option<String> {
         let head_ref = repo.find_reference("refs/remotes/origin/HEAD").ok()?;
-        let target = head_ref.symbolic_target()?;
+        let target = head_ref.symbolic_target().ok().flatten()?;
         let branch = target.strip_prefix("refs/remotes/origin/")?;
         repo.find_reference(target).ok()?;
         Some(branch.to_string())

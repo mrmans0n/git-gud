@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-05-19
+
+### Fixed
+- `gg land --wait --all` now reports GitLab merge-train queue positions from active train entries instead of stale historical IDs (#338).
+- `gg land --wait` now preserves terminal GitLab merge-train states when active lookup misses, avoiding timeout loops after merged or skipped entries (#339).
+- Completed GitLab merge-train lookup now prefers the newest matching entry to avoid stale terminal-state results (#340).
+
 ## [0.9.5] - 2026-05-19
 
 ### Fixed
@@ -476,7 +483,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.9.5...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.9.6...HEAD
+[0.9.6]: https://github.com/mrmans0n/git-gud/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/mrmans0n/git-gud/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/mrmans0n/git-gud/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/mrmans0n/git-gud/compare/v0.9.2...v0.9.3

@@ -267,7 +267,7 @@ mod tests {
 
     fn fake_entry(position: usize, title: &str) -> StackEntry {
         StackEntry {
-            oid: git2::Oid::zero(),
+            oid: git2::Oid::ZERO_SHA1,
             short_sha: format!("sha{position}"),
             title: title.to_string(),
             gg_id: Some(format!("c-fake{position}")),

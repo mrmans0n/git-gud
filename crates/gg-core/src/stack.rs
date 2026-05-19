@@ -506,7 +506,7 @@ mod tests {
 
     fn mk_entry(pos: usize, gg_id: Option<&str>) -> StackEntry {
         StackEntry {
-            oid: git2::Oid::zero(),
+            oid: git2::Oid::ZERO_SHA1,
             short_sha: format!("sha{}", pos),
             title: format!("commit {}", pos),
             gg_id: gg_id.map(ToString::to_string),

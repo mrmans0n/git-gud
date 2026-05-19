@@ -433,7 +433,7 @@ mod tests {
     fn make_test_stack() -> Stack {
         use crate::stack::StackEntry;
         let make_entry = |sha: &str, title: &str, gg_id: &str, pos: usize| StackEntry {
-            oid: git2::Oid::zero(),
+            oid: git2::Oid::ZERO_SHA1,
             short_sha: sha.to_string(),
             title: title.to_string(),
             gg_id: Some(gg_id.to_string()),

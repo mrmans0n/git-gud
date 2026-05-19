@@ -255,7 +255,12 @@ fn get_stack_commits_info(
         let oid = oid?;
         let commit = repo.find_commit(oid)?;
         let sha = oid.to_string()[..7].to_string();
-        let title = commit.summary().unwrap_or("<no message>").to_string();
+        let title = commit
+            .summary()
+            .ok()
+            .flatten()
+            .unwrap_or("<no message>")
+            .to_string();
         commits.push((sha, title));
     }
 

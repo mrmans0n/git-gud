@@ -19,6 +19,33 @@ use super::run::{self, ChangeMode, RunOptions};
 /// Returns `Ok(true)` when all lint commands passed for all linted commits,
 /// `Ok(false)` when one or more commits had lint failures.
 pub fn run(until: Option<usize>, json: bool, emit_json_output: bool) -> Result<bool> {
+    run_with_no_commands_help(until, json, emit_json_output, NoCommandsHelp::Example)
+}
+
+/// Run the lint command with a shorter no-config message for parent commands.
+///
+/// Parent commands such as `gg sync --lint` already have their own workflow
+/// output, so they should not print the full standalone `gg lint` example.
+pub fn run_brief_no_commands(
+    until: Option<usize>,
+    json: bool,
+    emit_json_output: bool,
+) -> Result<bool> {
+    run_with_no_commands_help(until, json, emit_json_output, NoCommandsHelp::Brief)
+}
+
+#[derive(Clone, Copy)]
+enum NoCommandsHelp {
+    Brief,
+    Example,
+}
+
+fn run_with_no_commands_help(
+    until: Option<usize>,
+    json: bool,
+    emit_json_output: bool,
+    no_commands_help: NoCommandsHelp,
+) -> Result<bool> {
     let repo = git::open_repo()?;
     let config = Config::load_with_global(repo.commondir())?;
 
@@ -32,13 +59,15 @@ pub fn run(until: Option<usize>, json: bool, emit_json_output: bool) -> Result<b
                 style("No lint commands configured. Run 'gg setup' to configure lint commands.")
                     .dim()
             );
-            println!();
-            println!("Example configuration:");
-            println!("  {{");
-            println!("    \"defaults\": {{");
-            println!("      \"lint\": [\"cargo fmt\", \"cargo clippy -- -D warnings\"]");
-            println!("    }}");
-            println!("  }}");
+            if matches!(no_commands_help, NoCommandsHelp::Example) {
+                println!();
+                println!("Example configuration:");
+                println!("  {{");
+                println!("    \"defaults\": {{");
+                println!("      \"lint\": [\"cargo fmt\", \"cargo clippy -- -D warnings\"]");
+                println!("    }}");
+                println!("  }}");
+            }
         }
         return Ok(true);
     }

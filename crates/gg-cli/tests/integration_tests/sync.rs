@@ -101,6 +101,82 @@ fn test_gg_sync_help_has_no_verify() {
 }
 
 #[test]
+fn test_sync_lint_no_commands_omits_example_configuration() {
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","provider":"github","base":"main","sync_behind_threshold":0}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "sync-no-lint-config"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("entry.txt"), "content\n").expect("Failed to write entry");
+    run_git(&repo_path, &["add", "entry.txt"]);
+    run_git(&repo_path, &["commit", "-m", "Entry\n\nGG-ID: c-8fd7581"]);
+
+    let fake_bin = repo_path.join("fake-bin");
+    fs::create_dir_all(&fake_bin).expect("Failed to create fake bin dir");
+    fs::write(
+        fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+
+if [ "$1" = "--version" ]; then
+  echo "gh version 2.0.0"
+  exit 0
+fi
+
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  exit 0
+fi
+
+if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
+  echo "https://github.com/test/repo/pull/915"
+  exit 0
+fi
+
+echo "unexpected gh invocation: $@" >&2
+exit 1
+"#,
+    )
+    .expect("Failed to write fake gh");
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(fake_bin.join("gh"))
+            .expect("Failed to stat fake gh")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(fake_bin.join("gh"), perms).expect("Failed to chmod fake gh");
+    }
+
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut new_path = std::ffi::OsString::from(fake_bin.as_os_str());
+    new_path.push(":");
+    new_path.push(old_path);
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["sync", "--lint", "--no-rebase-check"],
+        &[("PATH", new_path.as_os_str())],
+    );
+    assert!(
+        success,
+        "sync failed\nstdout:\n{}\nstderr:\n{}",
+        stdout, stderr
+    );
+    assert!(
+        stdout.contains("No lint commands configured. Run 'gg setup' to configure lint commands.")
+    );
+    assert!(!stdout.contains("Example configuration:"));
+    assert!(!stdout.contains(r#""lint": ["cargo fmt", "cargo clippy -- -D warnings"]"#));
+}
+
+#[test]
 fn test_sync_recreates_mapped_pr_when_head_branch_changed() {
     let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
 

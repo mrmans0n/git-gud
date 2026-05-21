@@ -56,6 +56,32 @@ fn test_gg_lint_json_no_lint_commands() {
 }
 
 #[test]
+fn test_gg_lint_no_commands_shows_example_configuration() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", "lint-no-commands"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("test.txt"), "content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Test commit"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["lint"]);
+    assert!(success, "gg lint failed: {}", stderr);
+    assert!(stdout.contains("No lint commands configured"));
+    assert!(stdout.contains("Example configuration:"));
+    assert!(stdout.contains(r#""lint": ["cargo fmt", "cargo clippy -- -D warnings"]"#));
+}
+
+#[test]
 fn test_gg_lint_json_empty_stack() {
     let (_temp_dir, repo_path) = create_test_repo();
 

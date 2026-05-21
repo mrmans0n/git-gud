@@ -320,7 +320,7 @@ pub fn run(
         if !json {
             println!("{}", console::style("Running lint before sync...").dim());
         }
-        let lint_passed = crate::commands::lint::run(Some(end_pos), json, false)?;
+        let lint_passed = crate::commands::lint::run_brief_no_commands(Some(end_pos), json, false)?;
         if !lint_passed {
             restore_sync_start_position(
                 &repo,

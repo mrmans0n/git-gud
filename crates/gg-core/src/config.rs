@@ -953,14 +953,19 @@ mod tests {
     }
 
     #[test]
-    fn test_load_with_global_returns_default_when_no_configs() {
+    fn test_load_with_global_uses_global_or_default_when_no_local_config() {
         let temp_dir = TempDir::new().unwrap();
         let git_dir = temp_dir.path();
 
         // No local config exists, global may or may not exist
+        let expected = Config::load_global()
+            .unwrap_or_default()
+            .unwrap_or_default();
         let loaded = Config::load_with_global(git_dir).unwrap();
-        // Should at least have default values
-        assert!(!loaded.get_sync_draft()); // Default
-        assert!(loaded.get_sync_update_descriptions()); // Default is true
+        assert_eq!(loaded.get_sync_draft(), expected.get_sync_draft());
+        assert_eq!(
+            loaded.get_sync_update_descriptions(),
+            expected.get_sync_update_descriptions()
+        );
     }
 }

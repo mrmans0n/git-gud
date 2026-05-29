@@ -4,6 +4,12 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
+fn isolated_home(repo_path: &std::path::Path) -> PathBuf {
+    let home = repo_path.join(".test-home");
+    fs::create_dir_all(&home).expect("Failed to create isolated test home");
+    home
+}
+
 pub(crate) fn create_test_repo() -> (TempDir, PathBuf) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let repo_path = temp_dir.path().to_path_buf();
@@ -53,6 +59,7 @@ pub(crate) fn run_gg(repo_path: &std::path::Path, args: &[&str]) -> (bool, Strin
     let output = Command::new(gg_path)
         .args(args)
         .current_dir(repo_path)
+        .env("HOME", isolated_home(repo_path))
         .output()
         .expect("Failed to run gg");
 
@@ -70,7 +77,9 @@ pub(crate) fn run_gg_with_env(
     let gg_path = env!("CARGO_BIN_EXE_gg");
 
     let mut cmd = Command::new(gg_path);
-    cmd.args(args).current_dir(repo_path);
+    cmd.args(args)
+        .current_dir(repo_path)
+        .env("HOME", isolated_home(repo_path));
     for (key, value) in envs {
         cmd.env(key, value);
     }

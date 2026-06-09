@@ -382,3 +382,43 @@ fn test_restack_without_orphan_is_unchanged() {
         "expected normal restack path (reconcile guidance): {combined}"
     );
 }
+
+#[test]
+fn test_restack_integrates_amended_midstack_commit() {
+    use crate::helpers::{create_test_repo, run_gg, run_git};
+    use std::fs;
+
+    let (_temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    run_gg(&repo_path, &["co", "testing"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "one"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "two"]);
+    run_gg(&repo_path, &["mv", "1"]);
+    // Amend the navigated commit in place (rewrites "one").
+    // --allow-empty is required because the original commit had no tree changes.
+    run_git(
+        &repo_path,
+        &["commit", "--allow-empty", "--amend", "-m", "one_amended"],
+    );
+
+    let (ok, out, err) = run_gg(&repo_path, &["restack"]);
+    assert!(ok, "restack failed: {out}{err}");
+
+    // HEAD stays on the amended commit.
+    let (_ok, head_subj) = run_git(&repo_path, &["log", "-1", "--pretty=%s", "HEAD"]);
+    assert_eq!(head_subj.trim(), "one_amended", "HEAD subject: {head_subj}");
+
+    // Branch is one_amended -> two (2 commits, "one" gone).
+    let (_ok, log) = run_git(&repo_path, &["log", "--oneline", "testuser/testing"]);
+    assert!(
+        log.contains("one_amended") && log.contains("two"),
+        "log: {log}"
+    );
+}

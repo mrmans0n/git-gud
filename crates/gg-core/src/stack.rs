@@ -16,6 +16,11 @@ use crate::provider::{CiStatus, PrState, Provider};
 /// File to store the current stack when in detached HEAD mode
 const CURRENT_STACK_FILE: &str = "gg/current_stack";
 
+/// File marking a mid-stack integration whose rebase paused on a conflict, so
+/// `gg continue` can finish the integration-specific cleanup. Format:
+/// `branch_name|head_oid`.
+const PENDING_INTEGRATION_FILE: &str = "gg/pending_integration";
+
 /// A single entry in a stack (one commit)
 #[derive(Debug, Clone)]
 pub struct StackEntry {
@@ -463,6 +468,46 @@ pub fn read_nav_context(git_dir: &Path) -> Option<(String, usize, git2::Oid)> {
         // Old format (just branch name) - return None
         None
     }
+}
+
+/// Record that a mid-stack integration rebase paused on a conflict, so that
+/// `gg continue` can finish the integration-specific cleanup once the rebase
+/// completes. `head_oid` is the inserted/amended commit (the rebase's new base),
+/// whose OID survives conflict resolution.
+pub fn save_pending_integration(
+    git_dir: &Path,
+    branch_name: &str,
+    head_oid: git2::Oid,
+) -> Result<()> {
+    let file = git_dir.join(PENDING_INTEGRATION_FILE);
+    if let Some(parent) = file.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(file, format!("{}|{}", branch_name, head_oid))?;
+    Ok(())
+}
+
+/// Read a pending mid-stack integration marker (branch, head_oid) if present.
+pub fn read_pending_integration(git_dir: &Path) -> Option<(String, git2::Oid)> {
+    let file = git_dir.join(PENDING_INTEGRATION_FILE);
+    let content = fs::read_to_string(file).ok()?;
+    let parts: Vec<&str> = content.trim().split('|').collect();
+    if parts.len() == 2 {
+        let branch = parts[0].to_string();
+        let oid = git2::Oid::from_str(parts[1]).ok()?;
+        Some((branch, oid))
+    } else {
+        None
+    }
+}
+
+/// Clear the pending mid-stack integration marker, if any.
+pub fn clear_pending_integration(git_dir: &Path) -> Result<()> {
+    let file = git_dir.join(PENDING_INTEGRATION_FILE);
+    if file.exists() {
+        fs::remove_file(file)?;
+    }
+    Ok(())
 }
 
 /// A commit (or chain of commits) made at a detached mid-stack HEAD that has not

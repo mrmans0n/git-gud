@@ -91,7 +91,7 @@ gg restack          # folds "inserted" into the stack; HEAD stays on it
 
 After `gg restack` completes, HEAD is left on the just-inserted (or just-amended) commit. Run `gg sync` to push the updated stack.
 
-> **Note:** If folding the commit in hits a conflict, resolve it and run `gg continue` (or `gg abort`). The conflict path goes through Git's normal rebase-continue, so afterwards you are returned to the stack head rather than left on the integrated commit, and the freshly folded commit may not yet have its `GG-ID`/`GG-Parent` assigned. The commit is still folded in correctly — run `gg sync` (or `gg reconcile`) to finish normalizing the metadata, and `gg mv` to navigate back to it if you want to keep working there. (This matches how `gg restack` behaves after any rebase conflict.)
+> **Note:** If folding the commit in hits a conflict, resolve it (stage the fixes with `git add`) and run `gg continue` — or `gg abort` to cancel the fold-in entirely. `gg continue` finishes the integration just like the non-conflict path: it normalizes the metadata (assigning the inserted commit its `GG-ID`/`GG-Parent`) and leaves HEAD on the integrated commit.
 
 ## Edge Cases
 

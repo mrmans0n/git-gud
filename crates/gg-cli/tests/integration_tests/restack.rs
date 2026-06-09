@@ -496,6 +496,62 @@ fn test_restack_integration_conflict_reports_guidance() {
 }
 
 #[test]
+fn test_restack_integration_conflict_continue_finishes_integration() {
+    use crate::helpers::{create_test_repo, run_gg, run_git};
+    use std::fs;
+
+    let (_temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    run_gg(&repo_path, &["co", "testing"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "one"]);
+    fs::write(repo_path.join("conflict.txt"), "two\n").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "two"]);
+
+    run_gg(&repo_path, &["mv", "1"]);
+    fs::write(repo_path.join("conflict.txt"), "inserted\n").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "inserted"]);
+
+    // Conflicts while replaying "two" onto "inserted".
+    let (ok, _out, _err) = run_gg(&repo_path, &["restack"]);
+    assert!(!ok, "expected conflict");
+
+    // Resolve the conflict and continue.
+    fs::write(repo_path.join("conflict.txt"), "resolved\n").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    let (ok, out, err) = run_gg(&repo_path, &["continue"]);
+    assert!(ok, "gg continue failed: {out}{err}");
+
+    // Integration finished: HEAD is back on the inserted commit (detached).
+    let (_ok, head_subj) = run_git(&repo_path, &["log", "-1", "--pretty=%s", "HEAD"]);
+    assert_eq!(head_subj.trim(), "inserted", "HEAD subject: {head_subj}");
+
+    // Branch contains all three in order.
+    let (_ok, log) = run_git(&repo_path, &["log", "--oneline", "testuser/testing"]);
+    assert!(
+        log.contains("one") && log.contains("inserted") && log.contains("two"),
+        "log: {log}"
+    );
+
+    // Metadata was normalized: a follow-up `gg restack` is a no-op, not a
+    // missing-GG-ID error.
+    let (ok, out, err) = run_gg(&repo_path, &["restack"]);
+    assert!(ok, "follow-up restack failed: {out}{err}");
+    assert!(
+        out.contains("consistent"),
+        "follow-up restack should be a no-op: {out}"
+    );
+}
+
+#[test]
 fn test_restack_integrates_amended_midstack_commit() {
     use crate::helpers::{create_test_repo, run_gg, run_git};
     use std::fs;

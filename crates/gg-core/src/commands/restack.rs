@@ -136,6 +136,43 @@ impl RestackPlan {
     }
 }
 
+/// Finish a mid-stack integration whose `rebase --onto` has already moved the
+/// upper commits onto the inserted/amended work. With HEAD set to detached on
+/// `head_oid`, normalize GG metadata across the folded-in stack (assigning the
+/// inserted commit a GG-ID / GG-Parent, exactly as the normal restack path does)
+/// and rewrite the nav context, leaving HEAD on the (possibly rewritten)
+/// integrated commit. Returns the post-normalization HEAD oid and stack name.
+///
+/// Shared by the clean fold-in path and the `gg continue` conflict-resume path.
+pub(crate) fn finalize_detached_integration(
+    repo: &git2::Repository,
+    config: &Config,
+    branch_name: &str,
+    head_oid: git2::Oid,
+) -> Result<(git2::Oid, String)> {
+    // Stay on the integrated commit (detached HEAD) so normalization can remap
+    // HEAD onto its rewritten counterpart.
+    let head_commit = repo.find_commit(head_oid)?;
+    git::checkout_commit(repo, &head_commit)?;
+
+    let folded = Stack::load(repo, config)?;
+    git::normalize_stack_metadata(repo, &folded)?;
+
+    // Normalization remaps the detached HEAD, so read the current HEAD oid; the
+    // reloaded stack must contain it (fail loudly rather than persist a wrong
+    // position).
+    let reloaded = Stack::load(repo, config)?;
+    let new_head_oid = repo.head()?.peel_to_commit()?.id();
+    let new_position = reloaded.current_position.ok_or_else(|| {
+        GgError::Other(
+            "Integrated commit not found in the reloaded stack. Run `gg last` to recover."
+                .to_string(),
+        )
+    })?;
+    stack::save_nav_context(repo.path(), branch_name, new_position, new_head_oid)?;
+    Ok((new_head_oid, reloaded.name))
+}
+
 /// Integrate a commit made at a detached mid-stack HEAD into the stack branch,
 /// then leave HEAD detached on that commit. Returns early from `run`.
 fn integrate_unintegrated(
@@ -210,6 +247,15 @@ fn integrate_unintegrated(
             || stdout.contains("CONFLICT")
             || stdout.contains("conflict")
         {
+            // Record what `gg continue` needs to finish the integration once the
+            // conflict is resolved (detach back to the inserted commit, normalize
+            // metadata, rewrite the nav context). `head_oid` is the rebase's new
+            // base, so its OID survives conflict resolution.
+            stack::save_pending_integration(
+                repo.path(),
+                &unintegrated.branch_name,
+                unintegrated.head_oid,
+            )?;
             return Err(GgError::RebaseConflict);
         }
         return Err(GgError::Other(format!(
@@ -218,38 +264,15 @@ fn integrate_unintegrated(
         )));
     }
 
-    // Stay on the integrated commit (detached HEAD) so the metadata
-    // normalization below can remap HEAD onto its rewritten counterpart.
-    let head_commit = repo.find_commit(unintegrated.head_oid)?;
-    git::checkout_commit(repo, &head_commit)?;
-
-    // Normalize GG metadata across the folded-in stack, exactly as the normal
-    // restack path does: assign the newly inserted commit a GG-ID and fix
-    // GG-Parent trailers so a follow-up command that requires IDs (e.g. another
-    // `gg restack`) does not fail. This rewrites commits and remaps the detached
-    // HEAD onto the rewritten inserted commit, so reload afterwards.
-    let folded = Stack::load(repo, config)?;
-    git::normalize_stack_metadata(repo, &folded)?;
-
-    // Rewrite the nav context to the new position of the integrated commit.
-    // Normalization remaps the detached HEAD, so read the current HEAD oid; the
-    // reloaded stack must contain it (fail loudly rather than persist a wrong
-    // position).
-    let reloaded = Stack::load(repo, config)?;
-    let new_head_oid = repo.head()?.peel_to_commit()?.id();
-    let new_position = reloaded.current_position.ok_or_else(|| {
-        GgError::Other(
-            "Integrated commit not found in the reloaded stack. Run `gg last` to recover."
-                .to_string(),
-        )
-    })?;
-    stack::save_nav_context(
-        repo.path(),
+    // Fold-in succeeded: normalize metadata and leave HEAD on the integrated
+    // commit (shared with the `gg continue` conflict-resume path).
+    let (new_head_oid, _) = finalize_detached_integration(
+        repo,
+        config,
         &unintegrated.branch_name,
-        new_position,
-        new_head_oid,
+        unintegrated.head_oid,
     )?;
-
+    let reloaded = Stack::load(repo, config)?;
     let new_short_sha = repo
         .find_object(new_head_oid, None)?
         .short_id()?

@@ -335,6 +335,42 @@ pub fn continue_rebase() -> Result<()> {
 
     match git::rebase_continue() {
         Ok(_) => {
+            // If the paused rebase was a mid-stack integration (`gg restack`
+            // folding in a detached commit), finish the integration-specific
+            // cleanup that the conflict short-circuited: normalize GG metadata,
+            // land HEAD back on the inserted commit, and rewrite the nav context.
+            if let Some((branch_name, head_oid)) =
+                crate::stack::read_pending_integration(repo.path())
+            {
+                let config = Config::load_with_global(repo.commondir())?;
+                let (new_head_oid, stack_name) =
+                    crate::commands::restack::finalize_detached_integration(
+                        &repo,
+                        &config,
+                        &branch_name,
+                        head_oid,
+                    )?;
+                crate::stack::clear_pending_integration(repo.path())?;
+
+                let short = repo
+                    .find_object(new_head_oid, None)?
+                    .short_id()?
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                println!(
+                    "{} Integrated mid-stack commit into stack {:?}; HEAD stays on {}",
+                    style("OK").green().bold(),
+                    stack_name,
+                    style(&short).yellow()
+                );
+                println!(
+                    "  {}",
+                    style("Run `gg sync` to push the updated stack.").dim()
+                );
+                return Ok(());
+            }
+
             println!(
                 "{} Rebase continued successfully",
                 style("OK").green().bold()
@@ -375,6 +411,9 @@ pub fn abort_rebase() -> Result<()> {
     }
 
     git::rebase_abort()?;
+
+    // Discard any pending mid-stack integration: the fold-in is cancelled.
+    crate::stack::clear_pending_integration(repo.path())?;
 
     println!("{} Rebase aborted", style("OK").green().bold());
 

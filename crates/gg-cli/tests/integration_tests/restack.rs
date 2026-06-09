@@ -384,6 +384,45 @@ fn test_restack_without_orphan_is_unchanged() {
 }
 
 #[test]
+fn test_restack_integration_conflict_reports_guidance() {
+    use crate::helpers::{create_test_repo, run_gg, run_git};
+    use std::fs;
+
+    let (_temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    run_gg(&repo_path, &["co", "testing"]);
+    // "one" leaves conflict.txt absent; "two" adds conflict.txt = "two".
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "one"]);
+    fs::write(repo_path.join("conflict.txt"), "two\n").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "two"]);
+
+    run_gg(&repo_path, &["mv", "1"]);
+    // Inserted commit writes the same file with different content -> conflict
+    // when "two" is replayed on top.
+    fs::write(repo_path.join("conflict.txt"), "inserted\n").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "inserted"]);
+
+    let (ok, out, err) = run_gg(&repo_path, &["restack"]);
+    assert!(!ok, "expected conflict failure: {out}{err}");
+    let combined = format!("{out}{err}");
+    assert!(
+        combined.contains("gg continue")
+            || combined.contains("gg abort")
+            || combined.contains("conflict"),
+        "expected conflict guidance: {combined}"
+    );
+}
+
+#[test]
 fn test_restack_integrates_amended_midstack_commit() {
     use crate::helpers::{create_test_repo, run_gg, run_git};
     use std::fs;

@@ -201,7 +201,7 @@ Rebase current stack onto base or explicit target.
 - `-f, --force` (alias: `--ignore-immutable`) — bypass the [immutability guard](#immutable-commits)
 
 #### `gg restack [OPTIONS]`
-Repair stack ancestry after manual history changes (amend, cherry-pick, upstream rebase).
+Repair stack ancestry after manual history changes (amend, cherry-pick, upstream rebase). Also integrates commits made at a detached HEAD after `gg mv` — folds them into the stack and leaves HEAD on the inserted/amended commit.
 
 - `-n, --dry-run`: Show what would be done without making changes
 - `--from <TARGET>`: Repair only from this commit upward (position, SHA, or GG-ID)
@@ -355,6 +355,14 @@ All JSON payloads include `version` (`u32`, current value: `1`).
         "in_merge_train": false,
         "merge_train_position": null
       }
+    ],
+    "unintegrated_commits": [
+      {
+        "sha": "3fb873d",
+        "subject": "inserted",
+        "sits_on_position": 1,
+        "count": 1
+      }
     ]
   }
 }
@@ -370,6 +378,7 @@ Field types:
 - `ci_status`: `string | null`
 - `in_merge_train`: `boolean` *(GitLab-specific)*
 - `merge_train_position`: `number | null` *(GitLab-specific)*
+- `unintegrated_commits`: array, **omitted when empty** — commits at a detached HEAD that haven't been folded into the stack yet. Each entry: `sha` (string), `subject` (string), `sits_on_position` (number — the stack position this commit sits on top of), `count` (number — total un-integrated commits at HEAD). Run `gg restack` to integrate them.
 
 ### `gg ls --all --json` (all local stacks)
 

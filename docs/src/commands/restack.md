@@ -91,6 +91,8 @@ gg restack          # folds "inserted" into the stack; HEAD stays on it
 
 After `gg restack` completes, HEAD is left on the just-inserted (or just-amended) commit. Run `gg sync` to push the updated stack.
 
+> **Note:** If folding the commit in hits a conflict, resolve it and run `gg continue` (or `gg abort`). After resolving a conflict this way you are returned to the stack head rather than left on the integrated commit — the commit is still folded in correctly; use `gg mv` to navigate back to it if you want to keep working there.
+
 ## Edge Cases
 
 - **Empty stack** produces an error

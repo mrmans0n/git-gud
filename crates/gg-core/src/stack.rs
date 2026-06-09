@@ -465,14 +465,6 @@ pub fn read_nav_context(git_dir: &Path) -> Option<(String, usize, git2::Oid)> {
     }
 }
 
-/// Whether the detached-HEAD commit was added on top of the navigated commit
-/// (`Inserted`) or rewrites it in place (`Amended`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnintegratedKind {
-    Inserted,
-    Amended,
-}
-
 /// A commit (or chain of commits) made at a detached mid-stack HEAD that has not
 /// yet been folded into the stack branch.
 #[derive(Debug, Clone)]
@@ -493,7 +485,6 @@ pub struct UnintegratedCommit {
     pub subject: String,
     /// Number of un-integrated commits (1 for an amend).
     pub count: usize,
-    pub kind: UnintegratedKind,
 }
 
 /// Detect a commit made at a detached mid-stack HEAD that has not been folded
@@ -524,18 +515,19 @@ pub fn detect_unintegrated(repo: &Repository, stack: &Stack) -> Result<Option<Un
         return Ok(None);
     }
 
-    let kind = if repo.graph_descendant_of(head_oid, original_oid)? {
-        UnintegratedKind::Inserted
-    } else {
+    // Accept only two shapes, both folded in by the same `rebase --onto`:
+    //   - inserted: a commit (chain) built on top of the navigated commit, or
+    //   - amended: the navigated commit rewritten in place (same first parent).
+    // Anything else is unrelated detached state we must not touch.
+    if !repo.graph_descendant_of(head_oid, original_oid)? {
         let original = repo.find_commit(original_oid)?;
         let original_parent = original.parent_id(0).ok();
         let head_parent = head.parent_id(0).ok();
-        if original_parent.is_some() && original_parent == head_parent {
-            UnintegratedKind::Amended
-        } else {
+        let is_amended = original_parent.is_some() && original_parent == head_parent;
+        if !is_amended {
             return Ok(None);
         }
-    };
+    }
 
     let branch_tip = match stack.entries.last() {
         Some(entry) => entry.oid,
@@ -565,7 +557,6 @@ pub fn detect_unintegrated(repo: &Repository, stack: &Stack) -> Result<Option<Un
         short_sha,
         subject,
         count,
-        kind,
     }))
 }
 

@@ -532,12 +532,17 @@ fn show_stack(stack: &Stack, json: bool) -> Result<()> {
             .current_position
             .unwrap_or(stack.len().saturating_sub(1));
 
+        // When an un-integrated commit exists, HEAD is on that orphan, not on any
+        // listed entry — so no entry is current (mirrors the text view).
+        let has_orphan = unintegrated.is_some();
+
         let entries = stack
             .entries
             .iter()
             .map(|entry| {
-                let is_current = entry.position == current_pos + 1
-                    || (stack.current_position.is_none() && entry.position == stack.len());
+                let is_current = !has_orphan
+                    && (entry.position == current_pos + 1
+                        || (stack.current_position.is_none() && entry.position == stack.len()));
 
                 StackEntryJson {
                     position: entry.position,

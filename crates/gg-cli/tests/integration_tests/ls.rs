@@ -477,4 +477,12 @@ fn test_ls_json_includes_unintegrated_commits() {
     assert_eq!(arr.len(), 1, "json: {out}");
     assert_eq!(arr[0]["subject"], "inserted", "json: {out}");
     assert_eq!(arr[0]["sits_on_position"], 1, "json: {out}");
+
+    // With an orphan present, HEAD is on the orphan — no listed entry is current
+    // (parity with the human-readable view).
+    let entries = v["stack"]["entries"].as_array().expect("entries array");
+    assert!(
+        entries.iter().all(|e| e["is_current"] == false),
+        "no entry should be current while an orphan exists: {out}"
+    );
 }

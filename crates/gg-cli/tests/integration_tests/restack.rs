@@ -380,6 +380,14 @@ fn test_restack_dry_run_does_not_integrate_midstack_commit() {
             && !repo_path.join(".git/rebase-apply").exists(),
         "dry-run must not leave a rebase in progress"
     );
+
+    // --dry-run --json reports the stack name ("testing"), not the branch name
+    // ("testuser/testing"), for parity with every other restack JSON path.
+    let (ok, out, err) = run_gg(&repo_path, &["restack", "--dry-run", "--json"]);
+    assert!(ok, "restack --dry-run --json failed: {out}{err}");
+    let v: serde_json::Value = serde_json::from_str(&out).expect("valid json");
+    assert_eq!(v["restack"]["stack_name"], "testing", "json: {out}");
+    assert_eq!(v["restack"]["dry_run"], true, "json: {out}");
 }
 
 #[test]

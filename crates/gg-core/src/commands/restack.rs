@@ -142,6 +142,7 @@ fn integrate_unintegrated(
     repo: &git2::Repository,
     config: &Config,
     unintegrated: stack::UnintegratedCommit,
+    stack_name: &str,
     dry_run: bool,
     json: bool,
 ) -> Result<()> {
@@ -151,7 +152,10 @@ fn integrate_unintegrated(
             print_json(&RestackResponse {
                 version: OUTPUT_VERSION,
                 restack: RestackResultJson {
-                    stack_name: unintegrated.branch_name.clone(),
+                    // Report the stack name (e.g. "testing"), not the branch name
+                    // (e.g. "user/testing"), for parity with every other restack
+                    // JSON path.
+                    stack_name: stack_name.to_string(),
                     total_entries: 0,
                     entries_restacked: unintegrated.count,
                     entries_ok: 0,
@@ -320,7 +324,15 @@ pub fn run(options: RestackOptions) -> Result<()> {
     // stay on it (early return). This is the only restack path that mutates
     // while keeping HEAD detached.
     if let Some(unintegrated) = stack::detect_unintegrated(&repo, &stack)? {
-        return integrate_unintegrated(&repo, &config, unintegrated, options.dry_run, options.json);
+        let stack_name = stack.name.clone();
+        return integrate_unintegrated(
+            &repo,
+            &config,
+            unintegrated,
+            &stack_name,
+            options.dry_run,
+            options.json,
+        );
     }
 
     // Resolve --from target

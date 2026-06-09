@@ -465,6 +465,105 @@ pub fn read_nav_context(git_dir: &Path) -> Option<(String, usize, git2::Oid)> {
     }
 }
 
+/// Whether the detached-HEAD commit was added on top of the navigated commit
+/// (`Inserted`) or rewrites it in place (`Amended`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnintegratedKind {
+    Inserted,
+    Amended,
+}
+
+/// A commit (or chain of commits) made at a detached mid-stack HEAD that has not
+/// yet been folded into the stack branch.
+#[derive(Debug, Clone)]
+pub struct UnintegratedCommit {
+    /// Current detached HEAD oid (the tip of the un-integrated work).
+    pub head_oid: git2::Oid,
+    /// The commit we navigated to (`gg mv`), recorded in the nav context.
+    pub original_oid: git2::Oid,
+    /// Stack branch name from the nav context.
+    pub branch_name: String,
+    /// 0-indexed position of the navigated commit within the stack.
+    pub saved_position: usize,
+    /// 1-indexed display position the un-integrated work sits on.
+    pub sits_on_position: usize,
+    /// Short sha of `head_oid`.
+    pub short_sha: String,
+    /// First line of the head commit message.
+    pub subject: String,
+    /// Number of un-integrated commits (1 for an amend).
+    pub count: usize,
+    pub kind: UnintegratedKind,
+}
+
+/// Detect a commit made at a detached mid-stack HEAD that has not been folded
+/// into the stack yet. Returns `None` when there is nothing to integrate.
+///
+/// Pure detection — never mutates the repository.
+pub fn detect_unintegrated(repo: &Repository, stack: &Stack) -> Result<Option<UnintegratedCommit>> {
+    let (branch_name, saved_position, original_oid) = match read_nav_context(repo.path()) {
+        Some(ctx) => ctx,
+        None => return Ok(None),
+    };
+
+    if !repo.head_detached()? {
+        return Ok(None);
+    }
+    let head = repo.head()?.peel_to_commit()?;
+    let head_oid = head.id();
+    if head_oid == original_oid {
+        return Ok(None);
+    }
+
+    if saved_position + 1 >= stack.len() {
+        return Ok(None);
+    }
+
+    let kind = if repo.graph_descendant_of(head_oid, original_oid)? {
+        UnintegratedKind::Inserted
+    } else {
+        let original = repo.find_commit(original_oid)?;
+        let original_parent = original.parent_id(0).ok();
+        let head_parent = head.parent_id(0).ok();
+        if original_parent.is_some() && original_parent == head_parent {
+            UnintegratedKind::Amended
+        } else {
+            return Ok(None);
+        }
+    };
+
+    let branch_tip = match stack.entries.last() {
+        Some(entry) => entry.oid,
+        None => return Ok(None),
+    };
+    if branch_tip == head_oid || repo.graph_descendant_of(branch_tip, head_oid)? {
+        return Ok(None);
+    }
+
+    let (count, _) = repo.graph_ahead_behind(head_oid, original_oid)?;
+    let count = count.max(1);
+
+    let subject = head.summary()?.unwrap_or("(no message)").to_string();
+    let short_sha = repo
+        .find_object(head_oid, None)?
+        .short_id()?
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    Ok(Some(UnintegratedCommit {
+        head_oid,
+        original_oid,
+        branch_name,
+        saved_position,
+        sits_on_position: saved_position + 1,
+        short_sha,
+        subject,
+        count,
+        kind,
+    }))
+}
+
 /// List all stacks in the repository
 pub fn list_all_stacks(repo: &Repository, config: &Config, username: &str) -> Result<Vec<String>> {
     let mut stacks = Vec::new();

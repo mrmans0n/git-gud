@@ -525,6 +525,7 @@ fn show_stack(stack: &Stack, json: bool) -> Result<()> {
     let total = stack.len();
 
     let repo = git::open_repo()?;
+    let unintegrated = stack::detect_unintegrated(&repo, stack)?;
 
     if json {
         let current_pos = stack
@@ -565,6 +566,15 @@ fn show_stack(stack: &Stack, json: bool) -> Result<()> {
                 current_position: stack.current_position.map(|p| p + 1),
                 behind_base: behind_count(&repo, &stack.base),
                 entries,
+                unintegrated_commits: unintegrated
+                    .iter()
+                    .map(|u| crate::output::UnintegratedCommitJson {
+                        sha: u.short_sha.clone(),
+                        subject: u.subject.clone(),
+                        sits_on_position: u.sits_on_position,
+                        count: u.count,
+                    })
+                    .collect(),
             },
         });
 
@@ -613,9 +623,12 @@ fn show_stack(stack: &Stack, json: bool) -> Result<()> {
         .current_position
         .unwrap_or(stack.len().saturating_sub(1));
 
+    let has_orphan = unintegrated.is_some();
+
     for entry in &stack.entries {
-        let is_current = entry.position == current_pos + 1
-            || (stack.current_position.is_none() && entry.position == stack.len());
+        let is_current = !has_orphan
+            && (entry.position == current_pos + 1
+                || (stack.current_position.is_none() && entry.position == stack.len()));
 
         let position = format!("[{}]", entry.position);
         let sha = &entry.short_sha;
@@ -685,6 +698,30 @@ fn show_stack(stack: &Stack, json: bool) -> Result<()> {
 
             println!("      {}", style(&mr_line).blue());
         }
+    }
+
+    if let Some(u) = &unintegrated {
+        println!();
+        let more = if u.count > 1 {
+            format!(" (+{} more)", u.count - 1)
+        } else {
+            String::new()
+        };
+        println!(
+            "  {} Un-integrated commit at HEAD (detached):",
+            style("⚠").yellow().bold()
+        );
+        println!(
+            "      {} {}{}  — sits on top of [{}]",
+            style(&u.short_sha).yellow(),
+            u.subject,
+            more,
+            u.sits_on_position
+        );
+        println!(
+            "    {}",
+            style("Run `gg restack` to fold it into the stack.").dim()
+        );
     }
 
     println!();

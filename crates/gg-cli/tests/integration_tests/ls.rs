@@ -417,3 +417,64 @@ fn test_gg_ls_marks_stacks_with_worktree_indicator() {
     assert!(stdout.contains("wt-list"), "ls should show stack name");
     assert!(stdout.contains("[wt]"), "ls should show worktree indicator");
 }
+
+#[test]
+fn test_ls_reports_unintegrated_midstack_commit() {
+    use std::fs;
+
+    let (_temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    run_gg(&repo_path, &["co", "testing"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "one"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "two"]);
+    let (ok, out, err) = run_gg(&repo_path, &["mv", "1"]);
+    assert!(ok, "mv failed: {out}{err}");
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "inserted"]);
+
+    let (ok, out, err) = run_gg(&repo_path, &["ls"]);
+    assert!(ok, "ls failed: {out}{err}");
+    assert!(out.contains("Un-integrated commit"), "ls output: {out}");
+    assert!(out.contains("inserted"), "ls output: {out}");
+    assert!(out.contains("gg restack"), "ls output: {out}");
+
+    let (_ok, log) = run_git(&repo_path, &["log", "--oneline", "testuser/testing"]);
+    assert!(log.contains("two"), "branch log: {log}");
+    assert!(!log.contains("inserted"), "branch must be untouched: {log}");
+}
+
+#[test]
+fn test_ls_json_includes_unintegrated_commits() {
+    use std::fs;
+
+    let (_temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    run_gg(&repo_path, &["co", "testing"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "one"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "two"]);
+    run_gg(&repo_path, &["mv", "1"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "inserted"]);
+
+    let (ok, out, err) = run_gg(&repo_path, &["ls", "--json"]);
+    assert!(ok, "ls --json failed: {out}{err}");
+    let v: serde_json::Value = serde_json::from_str(&out).expect("valid json");
+    let arr = v["stack"]["unintegrated_commits"]
+        .as_array()
+        .expect("unintegrated_commits array present");
+    assert_eq!(arr.len(), 1, "json: {out}");
+    assert_eq!(arr[0]["subject"], "inserted", "json: {out}");
+    assert_eq!(arr[0]["sits_on_position"], 1, "json: {out}");
+}

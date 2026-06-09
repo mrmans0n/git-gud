@@ -16,6 +16,11 @@ use crate::provider::{CiStatus, PrState, Provider};
 /// File to store the current stack when in detached HEAD mode
 const CURRENT_STACK_FILE: &str = "gg/current_stack";
 
+/// File marking a mid-stack integration whose rebase paused on a conflict, so
+/// `gg continue` can finish the integration-specific cleanup. Format:
+/// `branch_name|head_oid`.
+const PENDING_INTEGRATION_FILE: &str = "gg/pending_integration";
+
 /// A single entry in a stack (one commit)
 #[derive(Debug, Clone)]
 pub struct StackEntry {
@@ -463,6 +468,141 @@ pub fn read_nav_context(git_dir: &Path) -> Option<(String, usize, git2::Oid)> {
         // Old format (just branch name) - return None
         None
     }
+}
+
+/// Record that a mid-stack integration rebase paused on a conflict, so that
+/// `gg continue` can finish the integration-specific cleanup once the rebase
+/// completes. `head_oid` is the inserted/amended commit (the rebase's new base),
+/// whose OID survives conflict resolution.
+pub fn save_pending_integration(
+    git_dir: &Path,
+    branch_name: &str,
+    head_oid: git2::Oid,
+) -> Result<()> {
+    let file = git_dir.join(PENDING_INTEGRATION_FILE);
+    if let Some(parent) = file.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(file, format!("{}|{}", branch_name, head_oid))?;
+    Ok(())
+}
+
+/// Read a pending mid-stack integration marker (branch, head_oid) if present.
+pub fn read_pending_integration(git_dir: &Path) -> Option<(String, git2::Oid)> {
+    let file = git_dir.join(PENDING_INTEGRATION_FILE);
+    let content = fs::read_to_string(file).ok()?;
+    let parts: Vec<&str> = content.trim().split('|').collect();
+    if parts.len() == 2 {
+        let branch = parts[0].to_string();
+        let oid = git2::Oid::from_str(parts[1]).ok()?;
+        Some((branch, oid))
+    } else {
+        None
+    }
+}
+
+/// Clear the pending mid-stack integration marker, if any.
+pub fn clear_pending_integration(git_dir: &Path) -> Result<()> {
+    let file = git_dir.join(PENDING_INTEGRATION_FILE);
+    if file.exists() {
+        fs::remove_file(file)?;
+    }
+    Ok(())
+}
+
+/// A commit (or chain of commits) made at a detached mid-stack HEAD that has not
+/// yet been folded into the stack branch.
+#[derive(Debug, Clone)]
+pub struct UnintegratedCommit {
+    /// Current detached HEAD oid (the tip of the un-integrated work).
+    pub head_oid: git2::Oid,
+    /// The commit we navigated to (`gg mv`), recorded in the nav context.
+    pub original_oid: git2::Oid,
+    /// Stack branch name from the nav context.
+    pub branch_name: String,
+    /// 0-indexed position of the navigated commit within the stack.
+    pub saved_position: usize,
+    /// 1-indexed display position the un-integrated work sits on.
+    pub sits_on_position: usize,
+    /// Short sha of `head_oid`.
+    pub short_sha: String,
+    /// First line of the head commit message.
+    pub subject: String,
+    /// Number of un-integrated commits (1 for an amend).
+    pub count: usize,
+}
+
+/// Detect a commit made at a detached mid-stack HEAD that has not been folded
+/// into the stack yet. Returns `None` when there is nothing to integrate.
+///
+/// Pure detection — never mutates the repository.
+pub fn detect_unintegrated(repo: &Repository, stack: &Stack) -> Result<Option<UnintegratedCommit>> {
+    let (branch_name, saved_position, original_oid) = match read_nav_context(repo.path()) {
+        Some(ctx) => ctx,
+        None => return Ok(None),
+    };
+
+    if !repo.head_detached()? {
+        return Ok(None);
+    }
+    let head = repo.head()?.peel_to_commit()?;
+    let head_oid = head.id();
+    if head_oid == original_oid {
+        return Ok(None);
+    }
+
+    // Only mid-stack positions can have un-integrated work: there must be at
+    // least one commit above the navigated position to rebase onto the new
+    // HEAD. At the tip there is nothing to move (`rebase --onto` would span an
+    // empty range), and `gg` checks out the branch rather than detaching there
+    // anyway. Mirrors the guard in `check_and_rebase_if_modified`.
+    if saved_position + 1 >= stack.len() {
+        return Ok(None);
+    }
+
+    // Accept only two shapes, both folded in by the same `rebase --onto`:
+    //   - inserted: a commit (chain) built on top of the navigated commit, or
+    //   - amended: the navigated commit rewritten in place (same first parent).
+    // Anything else is unrelated detached state we must not touch.
+    if !repo.graph_descendant_of(head_oid, original_oid)? {
+        let original = repo.find_commit(original_oid)?;
+        let original_parent = original.parent_id(0).ok();
+        let head_parent = head.parent_id(0).ok();
+        let is_amended = original_parent.is_some() && original_parent == head_parent;
+        if !is_amended {
+            return Ok(None);
+        }
+    }
+
+    let branch_tip = match stack.entries.last() {
+        Some(entry) => entry.oid,
+        None => return Ok(None),
+    };
+    if branch_tip == head_oid || repo.graph_descendant_of(branch_tip, head_oid)? {
+        return Ok(None);
+    }
+
+    let (count, _) = repo.graph_ahead_behind(head_oid, original_oid)?;
+    let count = count.max(1);
+
+    let subject = head.summary()?.unwrap_or("(no message)").to_string();
+    let short_sha = repo
+        .find_object(head_oid, None)?
+        .short_id()?
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    Ok(Some(UnintegratedCommit {
+        head_oid,
+        original_oid,
+        branch_name,
+        saved_position,
+        sits_on_position: saved_position + 1,
+        short_sha,
+        subject,
+        count,
+    }))
 }
 
 /// List all stacks in the repository

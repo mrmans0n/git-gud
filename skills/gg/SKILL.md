@@ -198,6 +198,31 @@ interrupted/pending records are never pruned.
 `git stash`), does **not** touch remotes, and does **not** support an
 `--all` / `--range` mode.
 
+## Inserting a commit in the middle of a stack
+
+To add a new commit between two existing stack entries, navigate to the target position with `gg mv`, make the commit, then run `gg restack`:
+
+```bash
+gg mv 1              # detach HEAD at position 1
+git add <files>
+git commit -m "inserted"
+gg restack           # folds "inserted" into the stack: ..., [1], inserted, [2], ...
+```
+
+After `gg restack`, HEAD is left on the just-inserted commit. Run `gg sync` to push the updated stack.
+
+The same flow works when you `git commit --amend` the navigated commit rather than creating a new one.
+
+**Detecting un-integrated commits:** `gg ls` is read-only — it never mutates the stack. When a commit exists at a detached HEAD that hasn't been folded in yet, `gg ls` shows a callout:
+
+```
+⚠ Un-integrated commit at HEAD (detached):
+    3fb873d inserted  — sits on top of [1]
+  Run `gg restack` to fold it into the stack.
+```
+
+`gg ls --json` surfaces this via the `unintegrated_commits` array on the stack object (omitted when empty). Each entry has `sha`, `subject`, `sits_on_position`, and `count` fields. Agents should check for this array and surface the callout to the user; `gg restack` is the only command that integrates these commits.
+
 ## Repairing stack ancestry (`gg restack`)
 
 `gg restack` detects and repairs ancestry drift — when a commit's `GG-Parent`

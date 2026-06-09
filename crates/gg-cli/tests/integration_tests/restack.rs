@@ -271,3 +271,322 @@ fn test_restack_missing_gg_ids_errors() {
         stderr
     );
 }
+
+#[test]
+fn test_restack_integrates_inserted_midstack_commit() {
+    use crate::helpers::{create_test_repo, run_gg, run_git};
+    use std::fs;
+
+    let (_temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    run_gg(&repo_path, &["co", "testing"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "one"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "two"]);
+    run_gg(&repo_path, &["mv", "1"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "inserted"]);
+
+    let (ok, out, err) = run_gg(&repo_path, &["restack"]);
+    assert!(ok, "restack failed: {out}{err}");
+
+    let (_ok, log) = run_git(&repo_path, &["log", "--oneline", "testuser/testing"]);
+    assert!(
+        log.contains("one") && log.contains("inserted") && log.contains("two"),
+        "log: {log}"
+    );
+
+    let (_ok, head_subj) = run_git(&repo_path, &["log", "-1", "--pretty=%s", "HEAD"]);
+    assert_eq!(head_subj.trim(), "inserted", "HEAD subject: {head_subj}");
+
+    let (ok, out, err) = run_gg(&repo_path, &["ls"]);
+    assert!(ok, "ls failed: {out}{err}");
+    assert!(out.contains("3 commits"), "ls: {out}");
+    assert!(
+        !out.contains("Un-integrated commit"),
+        "ls should be clean: {out}"
+    );
+    assert!(
+        out.contains("inserted") && out.contains("<- HEAD"),
+        "ls: {out}"
+    );
+
+    // Metadata was normalized during integration, so the inserted commit now has
+    // a GG-ID: a follow-up `gg restack` must succeed (already consistent), not
+    // fail with a missing-GG-ID error.
+    let (ok, out, err) = run_gg(&repo_path, &["restack"]);
+    assert!(ok, "follow-up restack failed: {out}{err}");
+    assert!(
+        out.contains("consistent"),
+        "follow-up restack should be a no-op: {out}"
+    );
+}
+
+#[test]
+fn test_restack_dry_run_does_not_integrate_midstack_commit() {
+    use crate::helpers::{create_test_repo, run_gg, run_git};
+    use std::fs;
+
+    let (_temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    run_gg(&repo_path, &["co", "testing"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "one"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "two"]);
+    run_gg(&repo_path, &["mv", "1"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "inserted"]);
+
+    let head_before = run_git(&repo_path, &["rev-parse", "HEAD"]).1;
+    let branch_before = run_git(&repo_path, &["rev-parse", "testuser/testing"]).1;
+
+    // --dry-run must preview without mutating anything.
+    let (ok, out, err) = run_gg(&repo_path, &["restack", "--dry-run"]);
+    assert!(ok, "restack --dry-run failed: {out}{err}");
+    assert!(
+        out.contains("Would integrate"),
+        "dry-run should preview: {out}"
+    );
+
+    // The branch tip is unchanged: "inserted" was NOT folded in.
+    let (_ok, log) = run_git(&repo_path, &["log", "--oneline", "testuser/testing"]);
+    assert!(!log.contains("inserted"), "branch must be untouched: {log}");
+
+    // HEAD and the branch ref are byte-for-byte unchanged.
+    assert_eq!(
+        run_git(&repo_path, &["rev-parse", "HEAD"]).1,
+        head_before,
+        "HEAD moved under --dry-run"
+    );
+    assert_eq!(
+        run_git(&repo_path, &["rev-parse", "testuser/testing"]).1,
+        branch_before,
+        "branch moved under --dry-run"
+    );
+
+    // No rebase was left in progress.
+    assert!(
+        !repo_path.join(".git/rebase-merge").exists()
+            && !repo_path.join(".git/rebase-apply").exists(),
+        "dry-run must not leave a rebase in progress"
+    );
+
+    // --dry-run --json reports the stack name ("testing"), not the branch name
+    // ("testuser/testing"), for parity with every other restack JSON path.
+    let (ok, out, err) = run_gg(&repo_path, &["restack", "--dry-run", "--json"]);
+    assert!(ok, "restack --dry-run --json failed: {out}{err}");
+    let v: serde_json::Value = serde_json::from_str(&out).expect("valid json");
+    assert_eq!(v["restack"]["stack_name"], "testing", "json: {out}");
+    assert_eq!(v["restack"]["dry_run"], true, "json: {out}");
+}
+
+#[test]
+fn test_restack_integrates_multiple_inserted_commits() {
+    use crate::helpers::{create_test_repo, run_gg, run_git};
+    use std::fs;
+
+    let (_temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    run_gg(&repo_path, &["co", "testing"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "one"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "two"]);
+    run_gg(&repo_path, &["mv", "1"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "ins_a"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "ins_b"]);
+
+    let (ok, out, err) = run_gg(&repo_path, &["restack"]);
+    assert!(ok, "restack failed: {out}{err}");
+
+    let (_ok, head_subj) = run_git(&repo_path, &["log", "-1", "--pretty=%s", "HEAD"]);
+    assert_eq!(head_subj.trim(), "ins_b", "HEAD subject: {head_subj}");
+
+    let (_ok, log) = run_git(&repo_path, &["log", "--oneline", "testuser/testing"]);
+    for m in ["one", "ins_a", "ins_b", "two"] {
+        assert!(log.contains(m), "missing {m} in log: {log}");
+    }
+}
+
+#[test]
+fn test_restack_without_orphan_is_unchanged() {
+    use crate::helpers::{create_test_repo, run_gg, run_git};
+    use std::fs;
+
+    let (_temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    run_gg(&repo_path, &["co", "testing"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "one"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "two"]);
+
+    // No detached orphan: the integration path must NOT fire. restack falls
+    // through to its normal path, which (on a stack without GG-IDs) reports the
+    // usual reconcile guidance rather than integrating anything.
+    let (_ok, out, err) = run_gg(&repo_path, &["restack"]);
+    let combined = format!("{out}{err}");
+    assert!(
+        !combined.contains("Integrated"),
+        "should not integrate: {combined}"
+    );
+    assert!(
+        combined.contains("GG-ID") || combined.contains("reconcile"),
+        "expected normal restack path (reconcile guidance): {combined}"
+    );
+}
+
+#[test]
+fn test_restack_integration_conflict_reports_guidance() {
+    use crate::helpers::{create_test_repo, run_gg, run_git};
+    use std::fs;
+
+    let (_temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    run_gg(&repo_path, &["co", "testing"]);
+    // "one" leaves conflict.txt absent; "two" adds conflict.txt = "two".
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "one"]);
+    fs::write(repo_path.join("conflict.txt"), "two\n").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "two"]);
+
+    run_gg(&repo_path, &["mv", "1"]);
+    // Inserted commit writes the same file with different content -> conflict
+    // when "two" is replayed on top.
+    fs::write(repo_path.join("conflict.txt"), "inserted\n").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "inserted"]);
+
+    let (ok, out, err) = run_gg(&repo_path, &["restack"]);
+    assert!(!ok, "expected conflict failure: {out}{err}");
+    let combined = format!("{out}{err}");
+    assert!(
+        combined.contains("gg continue")
+            || combined.contains("gg abort")
+            || combined.contains("conflict"),
+        "expected conflict guidance: {combined}"
+    );
+}
+
+#[test]
+fn test_restack_integration_conflict_continue_finishes_integration() {
+    use crate::helpers::{create_test_repo, run_gg, run_git};
+    use std::fs;
+
+    let (_temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    run_gg(&repo_path, &["co", "testing"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "one"]);
+    fs::write(repo_path.join("conflict.txt"), "two\n").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "two"]);
+
+    run_gg(&repo_path, &["mv", "1"]);
+    fs::write(repo_path.join("conflict.txt"), "inserted\n").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "inserted"]);
+
+    // Conflicts while replaying "two" onto "inserted".
+    let (ok, _out, _err) = run_gg(&repo_path, &["restack"]);
+    assert!(!ok, "expected conflict");
+
+    // Resolve the conflict and continue.
+    fs::write(repo_path.join("conflict.txt"), "resolved\n").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    let (ok, out, err) = run_gg(&repo_path, &["continue"]);
+    assert!(ok, "gg continue failed: {out}{err}");
+
+    // Integration finished: HEAD is back on the inserted commit (detached).
+    let (_ok, head_subj) = run_git(&repo_path, &["log", "-1", "--pretty=%s", "HEAD"]);
+    assert_eq!(head_subj.trim(), "inserted", "HEAD subject: {head_subj}");
+
+    // Branch contains all three in order.
+    let (_ok, log) = run_git(&repo_path, &["log", "--oneline", "testuser/testing"]);
+    assert!(
+        log.contains("one") && log.contains("inserted") && log.contains("two"),
+        "log: {log}"
+    );
+
+    // Metadata was normalized: a follow-up `gg restack` is a no-op, not a
+    // missing-GG-ID error.
+    let (ok, out, err) = run_gg(&repo_path, &["restack"]);
+    assert!(ok, "follow-up restack failed: {out}{err}");
+    assert!(
+        out.contains("consistent"),
+        "follow-up restack should be a no-op: {out}"
+    );
+}
+
+#[test]
+fn test_restack_integrates_amended_midstack_commit() {
+    use crate::helpers::{create_test_repo, run_gg, run_git};
+    use std::fs;
+
+    let (_temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    run_gg(&repo_path, &["co", "testing"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "one"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "two"]);
+    run_gg(&repo_path, &["mv", "1"]);
+    // Amend the navigated commit in place (rewrites "one").
+    // --allow-empty is required because the original commit had no tree changes.
+    run_git(
+        &repo_path,
+        &["commit", "--allow-empty", "--amend", "-m", "one_amended"],
+    );
+
+    let (ok, out, err) = run_gg(&repo_path, &["restack"]);
+    assert!(ok, "restack failed: {out}{err}");
+
+    // HEAD stays on the amended commit.
+    let (_ok, head_subj) = run_git(&repo_path, &["log", "-1", "--pretty=%s", "HEAD"]);
+    assert_eq!(head_subj.trim(), "one_amended", "HEAD subject: {head_subj}");
+
+    // Branch is one_amended -> two (2 commits, "one" gone).
+    let (_ok, log) = run_git(&repo_path, &["log", "--oneline", "testuser/testing"]);
+    assert!(
+        log.contains("one_amended") && log.contains("two"),
+        "log: {log}"
+    );
+}

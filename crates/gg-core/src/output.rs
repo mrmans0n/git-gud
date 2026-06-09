@@ -39,6 +39,16 @@ pub struct StackJson {
     pub current_position: Option<usize>,
     pub behind_base: Option<usize>,
     pub entries: Vec<StackEntryJson>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unintegrated_commits: Vec<UnintegratedCommitJson>,
+}
+
+#[derive(Serialize)]
+pub struct UnintegratedCommitJson {
+    pub sha: String,
+    pub subject: String,
+    pub sits_on_position: usize,
+    pub count: usize,
 }
 
 #[derive(Serialize)]

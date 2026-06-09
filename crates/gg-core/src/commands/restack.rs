@@ -136,6 +136,186 @@ impl RestackPlan {
     }
 }
 
+/// Finish a mid-stack integration whose `rebase --onto` has already moved the
+/// upper commits onto the inserted/amended work. With HEAD set to detached on
+/// `head_oid`, normalize GG metadata across the folded-in stack (assigning the
+/// inserted commit a GG-ID / GG-Parent, exactly as the normal restack path does)
+/// and rewrite the nav context, leaving HEAD on the (possibly rewritten)
+/// integrated commit. Returns the post-normalization HEAD oid and stack name.
+///
+/// Shared by the clean fold-in path and the `gg continue` conflict-resume path.
+pub(crate) fn finalize_detached_integration(
+    repo: &git2::Repository,
+    config: &Config,
+    branch_name: &str,
+    head_oid: git2::Oid,
+) -> Result<(git2::Oid, String)> {
+    // Stay on the integrated commit (detached HEAD) so normalization can remap
+    // HEAD onto its rewritten counterpart.
+    let head_commit = repo.find_commit(head_oid)?;
+    git::checkout_commit(repo, &head_commit)?;
+
+    let folded = Stack::load(repo, config)?;
+    git::normalize_stack_metadata(repo, &folded)?;
+
+    // Normalization remaps the detached HEAD, so read the current HEAD oid; the
+    // reloaded stack must contain it (fail loudly rather than persist a wrong
+    // position).
+    let reloaded = Stack::load(repo, config)?;
+    let new_head_oid = repo.head()?.peel_to_commit()?.id();
+    let new_position = reloaded.current_position.ok_or_else(|| {
+        GgError::Other(
+            "Integrated commit not found in the reloaded stack. Run `gg last` to recover."
+                .to_string(),
+        )
+    })?;
+    stack::save_nav_context(repo.path(), branch_name, new_position, new_head_oid)?;
+    Ok((new_head_oid, reloaded.name))
+}
+
+/// Integrate a commit made at a detached mid-stack HEAD into the stack branch,
+/// then leave HEAD detached on that commit. Returns early from `run`.
+fn integrate_unintegrated(
+    repo: &git2::Repository,
+    config: &Config,
+    unintegrated: stack::UnintegratedCommit,
+    stack_name: &str,
+    dry_run: bool,
+    json: bool,
+) -> Result<()> {
+    // Preview only: never record an op or run the rebase under `--dry-run`.
+    if dry_run {
+        if json {
+            print_json(&RestackResponse {
+                version: OUTPUT_VERSION,
+                restack: RestackResultJson {
+                    // Report the stack name (e.g. "testing"), not the branch name
+                    // (e.g. "user/testing"), for parity with every other restack
+                    // JSON path.
+                    stack_name: stack_name.to_string(),
+                    total_entries: 0,
+                    entries_restacked: unintegrated.count,
+                    entries_ok: 0,
+                    dry_run: true,
+                    steps: vec![],
+                },
+            });
+        } else {
+            println!(
+                "{} Would integrate {} commit(s) at HEAD ({} {}) into the stack at position {}.",
+                style("→").cyan().bold(),
+                unintegrated.count,
+                style(&unintegrated.short_sha).yellow(),
+                unintegrated.subject,
+                unintegrated.sits_on_position,
+            );
+            println!("  {}", style("Run without --dry-run to fold it in.").dim());
+        }
+        return Ok(());
+    }
+
+    let guard = git::begin_recorded_op(
+        repo,
+        config,
+        OperationKind::Restack,
+        std::env::args().skip(1).collect(),
+        None,
+        SnapshotScope::AllUserBranches,
+    )?;
+
+    // Move the commits above the navigated position onto the detached HEAD work.
+    // The same `rebase --onto` handles both kinds (`Inserted` and `Amended`):
+    // whether `head_oid` descends from `original_oid` or merely replaces it, the
+    // commits above `original_oid` are replayed onto `head_oid` identically.
+    // git rebase --onto <new_base> <old_base> <branch>
+    let output = std::process::Command::new("git")
+        .args([
+            "rebase",
+            "--onto",
+            &unintegrated.head_oid.to_string(),
+            &unintegrated.original_oid.to_string(),
+            &unintegrated.branch_name,
+        ])
+        .current_dir(repo.workdir().unwrap_or_else(|| repo.path()))
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stderr.contains("CONFLICT")
+            || stderr.contains("conflict")
+            || stdout.contains("CONFLICT")
+            || stdout.contains("conflict")
+        {
+            // Record what `gg continue` needs to finish the integration once the
+            // conflict is resolved (detach back to the inserted commit, normalize
+            // metadata, rewrite the nav context). `head_oid` is the rebase's new
+            // base, so its OID survives conflict resolution.
+            stack::save_pending_integration(
+                repo.path(),
+                &unintegrated.branch_name,
+                unintegrated.head_oid,
+            )?;
+            return Err(GgError::RebaseConflict);
+        }
+        return Err(GgError::Other(format!(
+            "Failed to integrate commit: {}",
+            if stderr.is_empty() { stdout } else { stderr }
+        )));
+    }
+
+    // Fold-in succeeded: normalize metadata and leave HEAD on the integrated
+    // commit (shared with the `gg continue` conflict-resume path).
+    let (new_head_oid, _) = finalize_detached_integration(
+        repo,
+        config,
+        &unintegrated.branch_name,
+        unintegrated.head_oid,
+    )?;
+    let reloaded = Stack::load(repo, config)?;
+    let new_short_sha = repo
+        .find_object(new_head_oid, None)?
+        .short_id()?
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    guard.finalize_with_scope(repo, config, SnapshotScope::AllUserBranches, vec![], false)?;
+
+    if json {
+        print_json(&RestackResponse {
+            version: OUTPUT_VERSION,
+            restack: RestackResultJson {
+                stack_name: reloaded.name.clone(),
+                total_entries: reloaded.entries.len(),
+                entries_restacked: unintegrated.count,
+                entries_ok: reloaded.entries.len().saturating_sub(unintegrated.count),
+                dry_run: false,
+                steps: vec![],
+            },
+        });
+    } else {
+        println!(
+            "{} Integrated {} commit(s) into stack {:?}; HEAD stays on {} {}",
+            style("✓").green().bold(),
+            unintegrated.count,
+            reloaded.name,
+            style(&new_short_sha).yellow(),
+            unintegrated.subject,
+        );
+        println!(
+            "  {}",
+            style("Note: HEAD is detached on the integrated commit. Use `gg last` to return to stack head.").dim()
+        );
+        println!(
+            "  {}",
+            style("Hint: Run `gg sync` to push the updated stack.").dim()
+        );
+    }
+
+    Ok(())
+}
+
 /// Run the restack command.
 pub fn run(options: RestackOptions) -> Result<()> {
     let repo = git::open_repo()?;
@@ -161,6 +341,21 @@ pub fn run(options: RestackOptions) -> Result<()> {
 
     if stack.is_empty() {
         return Err(GgError::Other("Stack is empty".to_string()));
+    }
+
+    // If there is a commit made at a detached mid-stack HEAD, fold it in and
+    // stay on it (early return). This is the only restack path that mutates
+    // while keeping HEAD detached.
+    if let Some(unintegrated) = stack::detect_unintegrated(&repo, &stack)? {
+        let stack_name = stack.name.clone();
+        return integrate_unintegrated(
+            &repo,
+            &config,
+            unintegrated,
+            &stack_name,
+            options.dry_run,
+            options.json,
+        );
     }
 
     // Resolve --from target

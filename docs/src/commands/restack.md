@@ -79,6 +79,20 @@ gg restack --dry-run --json
 }
 ```
 
+## Inserting a commit mid-stack
+
+`gg restack` also integrates commits you make at a detached HEAD after navigating to a mid-stack position with `gg mv`:
+
+```bash
+gg mv 1             # detach HEAD at position 1
+git commit -m "inserted"
+gg restack          # folds "inserted" into the stack; HEAD stays on it
+```
+
+After `gg restack` completes, HEAD is left on the just-inserted (or just-amended) commit. Run `gg sync` to push the updated stack.
+
+> **Note:** If folding the commit in hits a conflict, resolve it (stage the fixes with `git add`) and run `gg continue` — or `gg abort` to cancel the fold-in entirely. `gg continue` finishes the integration just like the non-conflict path: it normalizes the metadata (assigning the inserted commit its `GG-ID`/`GG-Parent`) and leaves HEAD on the integrated commit.
+
 ## Edge Cases
 
 - **Empty stack** produces an error
@@ -86,3 +100,4 @@ gg restack --dry-run --json
 - **Rebase in progress** blocks with a clear error message
 - **Rebase conflicts** are handled the same as `gg reorder` — resolve with `gg continue` or `gg abort`
 - **`--from 1`** is equivalent to a full restack
+- **Detached HEAD with un-integrated commits** — `gg restack` detects and folds them in automatically

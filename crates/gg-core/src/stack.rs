@@ -515,6 +515,11 @@ pub fn detect_unintegrated(repo: &Repository, stack: &Stack) -> Result<Option<Un
         return Ok(None);
     }
 
+    // Only mid-stack positions can have un-integrated work: there must be at
+    // least one commit above the navigated position to rebase onto the new
+    // HEAD. At the tip there is nothing to move (`rebase --onto` would span an
+    // empty range), and `gg` checks out the branch rather than detaching there
+    // anyway. Mirrors the guard in `check_and_rebase_if_modified`.
     if saved_position + 1 >= stack.len() {
         return Ok(None);
     }

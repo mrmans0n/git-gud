@@ -2,6 +2,12 @@ use crate::helpers::{create_test_repo, run_gg, run_git};
 
 use std::fs;
 
+fn head_sha(repo_path: &std::path::Path) -> String {
+    let (success, stdout) = run_git(repo_path, &["rev-parse", "HEAD"]);
+    assert!(success, "git rev-parse HEAD failed");
+    stdout.trim().to_string()
+}
+
 #[test]
 fn test_gg_squash_with_staged_changes() {
     let (_temp_dir, repo_path) = create_test_repo();
@@ -225,6 +231,85 @@ fn test_gg_squash_rejects_unstaged_when_needs_rebase() {
         "gg sc should reject unstaged changes when rebase is needed. stdout={}, stderr={}",
         stdout,
         stderr
+    );
+}
+
+#[test]
+fn test_gg_squash_continue_restores_squashed_commit_navigation() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let branch_name = "testuser/squash-continue-nav";
+    run_gg(&repo_path, &["co", "squash-continue-nav"]);
+
+    fs::write(repo_path.join("README.md"), "one\n").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 1"]);
+
+    fs::write(repo_path.join("README.md"), "two\n").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit 2"]);
+
+    let (success, _, _) = run_gg(&repo_path, &["mv", "1"]);
+    assert!(success, "Failed to navigate to first commit");
+    let head_before_squash = head_sha(&repo_path);
+
+    fs::write(repo_path.join("README.md"), "amended one\n").expect("Failed to write file");
+    run_git(&repo_path, &["add", "README.md"]);
+    let (success, stdout, stderr) = run_gg(&repo_path, &["sc"]);
+    assert!(
+        !success,
+        "squash should conflict while rebasing descendants: stdout={stdout} stderr={stderr}"
+    );
+
+    fs::write(repo_path.join("README.md"), "resolved two\n").expect("Failed to write file");
+    run_git(&repo_path, &["add", "README.md"]);
+    let (success, stdout, stderr) = run_gg(&repo_path, &["continue"]);
+    assert!(
+        success,
+        "continue should complete interrupted squash: stdout={stdout} stderr={stderr}"
+    );
+
+    let (success, stdout) = run_git(&repo_path, &["log", "-1", "--pretty=%s"]);
+    assert!(success, "git log failed");
+    assert_eq!(
+        stdout.trim(),
+        "Commit 1",
+        "continued squash should leave HEAD on the squashed commit"
+    );
+
+    let (success, stdout) = run_git(
+        &repo_path,
+        &[
+            "log",
+            "-1",
+            "--pretty=%s",
+            &format!("refs/heads/{branch_name}"),
+        ],
+    );
+    assert!(success, "git log branch tip failed");
+    assert_eq!(
+        stdout.trim(),
+        "Commit 2",
+        "stack branch tip should remain on the rebased descendant"
+    );
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["undo", "--json"]);
+    assert!(success, "undo failed: stdout={stdout} stderr={stderr}");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("stdout must be JSON");
+    assert_eq!(parsed["status"], "succeeded");
+    assert_eq!(parsed["undone"]["kind"], "squash");
+    assert_eq!(
+        head_sha(&repo_path),
+        head_before_squash,
+        "undo should restore pre-squash HEAD"
     );
 }
 

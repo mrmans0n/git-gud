@@ -183,13 +183,18 @@ and `run --amend`) snapshots the refs it will touch before mutating and
 records the operation on success. The log keeps the last 100 records;
 interrupted/pending records are never pruned.
 
+If a recorded operation pauses on a rebase conflict, resolve the conflict,
+stage the files, and run `gg continue`; completion finalizes the original
+operation record so it remains available to `gg undo`.
+
 **Refusal modes** (exit 1, no refs touched, JSON includes `refusal.reason`):
 
 - `remote` — target operation pushed/merged/closed/created a PR/MR.
   gg prints a provider-specific revert hint (`gh pr close <n>`,
   `glab mr close <n>`, `git push --delete …`). Agents must surface the
   hint to the user rather than attempt silent remote rollback.
-- `interrupted` — operation crashed or was Ctrl-C'd mid-flight.
+- `interrupted` — operation crashed, was Ctrl-C'd, or was aborted before
+  completion.
 - `stale` — refs moved since the target operation finalised. The error
   names the ref, expected OID, and actual OID.
 - `unsupported_schema` — record was written by a newer `gg` binary.

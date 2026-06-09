@@ -44,6 +44,7 @@ pub(crate) const PENDING_STALENESS_MS: u64 = 30_000;
 /// Reserved top-level branch names that never belong to a user namespace,
 /// excluded from `SnapshotScope::AllUserBranches`.
 const TRUNK_EXCLUSIONS: &[&str] = &["main", "master", "trunk"];
+const INTERRUPTED_REBASE_MARKER: &str = "interrupted-rebase-operation.json";
 
 // ---------------------------------------------------------------------------
 // Record schema
@@ -155,6 +156,23 @@ pub struct OperationRecord {
     /// use (e.g. partial-rebase state).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_plan: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct InterruptedRebaseMarker {
+    operation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rebase_state: Option<RebaseStateMarker>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct RebaseStateMarker {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    head_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    orig_head: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    onto: Option<String>,
 }
 
 impl OperationRecord {
@@ -357,6 +375,127 @@ impl OperationStore {
 }
 
 // ---------------------------------------------------------------------------
+// Cross-invocation finalization for interrupted rebases
+// ---------------------------------------------------------------------------
+
+fn interrupted_rebase_marker_path(repo: &Repository) -> PathBuf {
+    repo.path().join("gg").join(INTERRUPTED_REBASE_MARKER)
+}
+
+fn current_rebase_state(repo: &Repository) -> Option<RebaseStateMarker> {
+    let git_dir = repo.path();
+    let rebase_dir = if git_dir.join("rebase-merge").exists() {
+        git_dir.join("rebase-merge")
+    } else if git_dir.join("rebase-apply").exists() {
+        git_dir.join("rebase-apply")
+    } else {
+        return None;
+    };
+
+    Some(RebaseStateMarker {
+        head_name: read_trimmed_file(&rebase_dir.join("head-name")),
+        orig_head: read_trimmed_file(&rebase_dir.join("orig-head")),
+        onto: read_trimmed_file(&rebase_dir.join("onto")),
+    })
+}
+
+fn read_trimmed_file(path: &Path) -> Option<String> {
+    let value = fs::read_to_string(path).ok()?;
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+/// Remember which operation owns the current Git rebase state.
+///
+/// Commands call this when a recorded operation stops on a rebase conflict.
+/// A later `gg continue` invocation uses the marker to finalize the original
+/// operation record after `git rebase --continue` completes.
+pub fn remember_interrupted_rebase_operation(repo: &Repository, operation_id: &str) -> Result<()> {
+    if !is_valid_operation_id(operation_id) {
+        return Err(GgError::OperationRecordNotFound(operation_id.to_string()));
+    }
+
+    let path = interrupted_rebase_marker_path(repo);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    let marker = InterruptedRebaseMarker {
+        operation_id: operation_id.to_string(),
+        rebase_state: current_rebase_state(repo),
+    };
+    let json = serde_json::to_vec_pretty(&marker)?;
+    {
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(&json)?;
+        f.sync_all()?;
+    }
+    fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
+/// Load the operation record associated with the current interrupted rebase.
+pub fn interrupted_rebase_operation(repo: &Repository) -> Result<Option<OperationRecord>> {
+    let path = interrupted_rebase_marker_path(repo);
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let bytes = fs::read(&path)?;
+    let marker: InterruptedRebaseMarker = serde_json::from_slice(&bytes)?;
+    if let Some(expected) = &marker.rebase_state {
+        if current_rebase_state(repo).as_ref() != Some(expected) {
+            clear_interrupted_rebase_operation(repo)?;
+            return Ok(None);
+        }
+    }
+    let store = OperationStore::new(&crate::git::gg_dir(repo));
+    Ok(Some(store.load(&marker.operation_id)?))
+}
+
+/// Remove the interrupted-rebase marker.
+pub fn clear_interrupted_rebase_operation(repo: &Repository) -> Result<()> {
+    match fs::remove_file(interrupted_rebase_marker_path(repo)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(GgError::Io(e)),
+    }
+}
+
+/// Finalize an existing Pending/Interrupted operation record by id.
+///
+/// This is used by `gg continue`: the operation guard that wrote the record
+/// belonged to the earlier invocation that hit the conflict, so the success
+/// path must reopen and commit that record directly.
+pub fn finalize_operation_by_id(
+    repo: &Repository,
+    config: &Config,
+    operation_id: &str,
+    scope: SnapshotScope<'_>,
+    remote_effects: Vec<RemoteEffect>,
+    touched_remote: bool,
+) -> Result<OperationRecord> {
+    let store = OperationStore::new(&crate::git::gg_dir(repo));
+    let mut record = store.load(operation_id)?;
+
+    match record.status {
+        OperationStatus::Pending | OperationStatus::Interrupted => {}
+        OperationStatus::Committed => return Ok(record),
+    }
+
+    record.status = OperationStatus::Committed;
+    record.refs_after = snapshot_refs(repo, config, scope)?;
+    record.remote_effects = remote_effects;
+    record.touched_remote = touched_remote;
+    store.save(&record)?;
+    Ok(record)
+}
+
+// ---------------------------------------------------------------------------
 // snapshot_refs + SnapshotScope
 // ---------------------------------------------------------------------------
 
@@ -532,6 +671,13 @@ impl OperationGuard {
             return;
         }
         self.record.touched_remote = true;
+        let _ = self.store.save(&self.record);
+    }
+
+    /// Persist command-specific state needed to finish a conflict-resumed
+    /// operation from a later `gg continue` invocation.
+    pub fn set_pending_plan(&mut self, pending_plan: serde_json::Value) {
+        self.record.pending_plan = Some(pending_plan);
         let _ = self.store.save(&self.record);
     }
 
@@ -1029,6 +1175,77 @@ pub(crate) mod tests {
         let fresh_loaded = store.load(&fresh.id).unwrap();
         assert_eq!(stale_loaded.status, OperationStatus::Interrupted);
         assert_eq!(fresh_loaded.status, OperationStatus::Pending);
+    }
+
+    #[test]
+    fn interrupted_rebase_marker_is_scoped_to_worktree_git_dir() {
+        let parent = tempfile::tempdir().unwrap();
+        let repo_path = parent.path().join("repo");
+        let worktree_path = parent.path().join("linked");
+        let repo = Repository::init(&repo_path).unwrap();
+        let sig = git2::Signature::now("gg-test", "gg@test").unwrap();
+        let tree_oid = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        let commit_oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        let commit = repo.find_commit(commit_oid).unwrap();
+        repo.branch("linked-branch", &commit, true).unwrap();
+
+        let status = std::process::Command::new("git")
+            .args([
+                "-C",
+                repo_path.to_str().unwrap(),
+                "worktree",
+                "add",
+                worktree_path.to_str().unwrap(),
+                "linked-branch",
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let worktree_repo = Repository::open(&worktree_path).unwrap();
+
+        let gg_dir = crate::git::gg_dir(&repo);
+        let store = OperationStore::new(&gg_dir);
+        let mut main_record = make_record(OperationKind::Rebase, 11);
+        let mut worktree_record = make_record(OperationKind::Restack, 12);
+        main_record.status = OperationStatus::Pending;
+        worktree_record.status = OperationStatus::Pending;
+        store.save(&main_record).unwrap();
+        store.save(&worktree_record).unwrap();
+
+        write_rebase_state(&repo, "refs/heads/main", "aaaaaaaa", "bbbbbbbb");
+        write_rebase_state(
+            &worktree_repo,
+            "refs/heads/linked-branch",
+            "cccccccc",
+            "dddddddd",
+        );
+
+        remember_interrupted_rebase_operation(&repo, &main_record.id).unwrap();
+        remember_interrupted_rebase_operation(&worktree_repo, &worktree_record.id).unwrap();
+
+        let main_marker = interrupted_rebase_marker_path(&repo);
+        let worktree_marker = interrupted_rebase_marker_path(&worktree_repo);
+        assert_ne!(main_marker, worktree_marker);
+        assert!(main_marker.exists());
+        assert!(worktree_marker.exists());
+
+        let loaded_main = interrupted_rebase_operation(&repo).unwrap().unwrap();
+        let loaded_worktree = interrupted_rebase_operation(&worktree_repo)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded_main.id, main_record.id);
+        assert_eq!(loaded_worktree.id, worktree_record.id);
+    }
+
+    fn write_rebase_state(repo: &Repository, head_name: &str, orig_head: &str, onto: &str) {
+        let rebase_dir = repo.path().join("rebase-merge");
+        fs::create_dir_all(&rebase_dir).unwrap();
+        fs::write(rebase_dir.join("head-name"), head_name).unwrap();
+        fs::write(rebase_dir.join("orig-head"), orig_head).unwrap();
+        fs::write(rebase_dir.join("onto"), onto).unwrap();
     }
 
     #[test]

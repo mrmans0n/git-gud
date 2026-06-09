@@ -5,7 +5,7 @@ use console::style;
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
-use crate::operations::{OperationKind, SnapshotScope};
+use crate::operations::{self, OperationKind, SnapshotScope};
 use crate::stack::{self, Stack, StackEntry};
 
 /// Acquire the operation lock, record a Pending Nav op, run the given
@@ -26,7 +26,12 @@ where
         None,
         SnapshotScope::AllUserBranches,
     )?;
-    f(&repo, &config)?;
+    if let Err(e) = f(&repo, &config) {
+        if matches!(e, GgError::RebaseConflict) {
+            let _ = operations::remember_interrupted_rebase_operation(&repo, guard.id());
+        }
+        return Err(e);
+    }
     guard.finalize_with_scope(
         &repo,
         &config,

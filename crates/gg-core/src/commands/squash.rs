@@ -4,12 +4,13 @@ use std::process::Command;
 
 use console::{style, Term};
 use dialoguer::Select;
+use serde_json::json;
 
 use crate::config::{Config, UnstagedAction};
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::immutability::{self, ImmutabilityPolicy};
-use crate::operations::{OperationKind, SnapshotScope};
+use crate::operations::{self, OperationKind, SnapshotScope};
 use crate::stack;
 use crate::stack::Stack;
 
@@ -229,7 +230,7 @@ pub fn run(all: bool, force: bool) -> Result<()> {
     // All validation passed and we are about to mutate: write the Pending
     // op-log record now so a failure beyond this point leaves a record the
     // sweep can promote to Interrupted.
-    let guard = git::begin_recorded_op(
+    let mut guard = git::begin_recorded_op(
         &repo,
         &config,
         OperationKind::Squash,
@@ -285,6 +286,17 @@ pub fn run(all: bool, force: bool) -> Result<()> {
 
         // Get the stack branch name
         let branch_name = stack.branch_name();
+        let target_position = stack.current_position.unwrap() + 1;
+        let target_gg_id = stack
+            .get_entry_by_position(target_position)
+            .and_then(|entry| entry.gg_id.clone());
+        guard.set_pending_plan(json!({
+            "squash": {
+                "branch_name": branch_name,
+                "target_position": target_position,
+                "target_gg_id": target_gg_id,
+            }
+        }));
 
         // Use git rebase to rebase remaining commits
         // git rebase --onto <new_head> <old_head> <branch>
@@ -315,6 +327,7 @@ pub fn run(all: bool, force: bool) -> Result<()> {
                 if auto_stashed {
                     restore_auto_stash();
                 }
+                let _ = operations::remember_interrupted_rebase_operation(&repo, guard.id());
                 return Err(GgError::RebaseConflict);
             }
 

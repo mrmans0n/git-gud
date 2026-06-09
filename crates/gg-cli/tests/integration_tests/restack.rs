@@ -519,6 +519,8 @@ fn test_restack_integration_conflict_continue_finishes_integration() {
     fs::write(repo_path.join("conflict.txt"), "inserted\n").unwrap();
     run_git(&repo_path, &["add", "."]);
     run_git(&repo_path, &["commit", "-m", "inserted"]);
+    let (_ok, branch_before_restack) = run_git(&repo_path, &["rev-parse", "testuser/testing"]);
+    let branch_before_restack = branch_before_restack.trim().to_string();
 
     // Conflicts while replaying "two" onto "inserted".
     let (ok, _out, _err) = run_gg(&repo_path, &["restack"]);
@@ -549,6 +551,16 @@ fn test_restack_integration_conflict_continue_finishes_integration() {
         out.contains("consistent"),
         "follow-up restack should be a no-op: {out}"
     );
+
+    let (ok, out, err) = run_gg(&repo_path, &["undo", "--json"]);
+    assert!(ok, "undo failed: {out}{err}");
+    let v: Value = serde_json::from_str(&out).expect("valid json");
+    assert_eq!(
+        v["undone"]["kind"], "restack",
+        "continued restack should be finalized for undo: {out}"
+    );
+    let (_ok, branch_after_undo) = run_git(&repo_path, &["rev-parse", "testuser/testing"]);
+    assert_eq!(branch_after_undo.trim(), branch_before_restack);
 }
 
 #[test]

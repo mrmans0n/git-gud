@@ -10,7 +10,7 @@ use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::immutability::{self, ImmutabilityPolicy};
-use crate::operations::{OperationKind, SnapshotScope};
+use crate::operations::{self, OperationKind, SnapshotScope};
 use crate::stack::Stack;
 
 /// Options for the reorder command
@@ -123,7 +123,12 @@ pub fn run(options: ReorderOptions) -> Result<()> {
     }
 
     // Perform the rebase with the new order
-    perform_reorder(&repo, &stack, &new_order)?;
+    if let Err(e) = perform_reorder(&repo, &stack, &new_order) {
+        if matches!(e, GgError::RebaseConflict) {
+            let _ = operations::remember_interrupted_rebase_operation(&repo, guard.id());
+        }
+        return Err(e);
+    }
 
     // Ensure GG metadata reflects the new stack order
     let rewritten_stack = Stack::load(&repo, &config)?;

@@ -32,6 +32,11 @@ will touch before mutating and finalises the record on success. `gg
 undo` replays the `refs_before` snapshot of the target record, moving
 refs back to where they were.
 
+If one of those operations pauses on a rebase conflict, resolving the
+conflict and running `gg continue` finalises the original operation
+record. The completed operation then appears as undoable in `gg undo
+--list`.
+
 A second `gg undo` redoes the first — because `undo` is itself
 recorded as an operation, running it twice reverses the reversal.
 Entries created by `gg undo` appear in `--list` with a `↶` marker and
@@ -44,7 +49,7 @@ an `undoes` field pointing at the original operation id.
 | Reason | Condition | What to do |
 |---|---|---|
 | `remote` | The target op pushed/merged/closed/created a PR or MR. | Use the printed provider hint (`gh pr close <n>`, `glab mr close <n>`, `git push --delete …`). Local state is unchanged. |
-| `interrupted` | The op crashed or was Ctrl-C'd mid-flight and has `status: Interrupted`. | Fix the underlying state manually; the stale Pending record is swept into Interrupted on the next lock-acquiring op. |
+| `interrupted` | The op crashed, was Ctrl-C'd, or was aborted before completion and has `status: Interrupted`. | Fix the underlying state manually; the stale Pending record is swept into Interrupted on the next lock-acquiring op. |
 | `stale` | Refs have moved since the target op finalised. | Run `gg undo --list` and target a more recent record instead. The error names the ref, the expected OID, and the actual OID. |
 | `unsupported_schema` | The record was written by a newer `gg` with a schema version this binary does not understand. | Upgrade `gg` or delete the offending record. |
 

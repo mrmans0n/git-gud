@@ -142,8 +142,37 @@ fn integrate_unintegrated(
     repo: &git2::Repository,
     config: &Config,
     unintegrated: stack::UnintegratedCommit,
+    dry_run: bool,
     json: bool,
 ) -> Result<()> {
+    // Preview only: never record an op or run the rebase under `--dry-run`.
+    if dry_run {
+        if json {
+            print_json(&RestackResponse {
+                version: OUTPUT_VERSION,
+                restack: RestackResultJson {
+                    stack_name: unintegrated.branch_name.clone(),
+                    total_entries: 0,
+                    entries_restacked: unintegrated.count,
+                    entries_ok: 0,
+                    dry_run: true,
+                    steps: vec![],
+                },
+            });
+        } else {
+            println!(
+                "{} Would integrate {} commit(s) at HEAD ({} {}) into the stack at position {}.",
+                style("→").cyan().bold(),
+                unintegrated.count,
+                style(&unintegrated.short_sha).yellow(),
+                unintegrated.subject,
+                unintegrated.sits_on_position,
+            );
+            println!("  {}", style("Run without --dry-run to fold it in.").dim());
+        }
+        return Ok(());
+    }
+
     let guard = git::begin_recorded_op(
         repo,
         config,
@@ -274,7 +303,7 @@ pub fn run(options: RestackOptions) -> Result<()> {
     // stay on it (early return). This is the only restack path that mutates
     // while keeping HEAD detached.
     if let Some(unintegrated) = stack::detect_unintegrated(&repo, &stack)? {
-        return integrate_unintegrated(&repo, &config, unintegrated, options.json);
+        return integrate_unintegrated(&repo, &config, unintegrated, options.dry_run, options.json);
     }
 
     // Resolve --from target

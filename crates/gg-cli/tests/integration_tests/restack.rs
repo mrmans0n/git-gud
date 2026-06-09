@@ -318,6 +318,61 @@ fn test_restack_integrates_inserted_midstack_commit() {
 }
 
 #[test]
+fn test_restack_dry_run_does_not_integrate_midstack_commit() {
+    use crate::helpers::{create_test_repo, run_gg, run_git};
+    use std::fs;
+
+    let (_temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    run_gg(&repo_path, &["co", "testing"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "one"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "two"]);
+    run_gg(&repo_path, &["mv", "1"]);
+    run_git(&repo_path, &["commit", "--allow-empty", "-m", "inserted"]);
+
+    let head_before = run_git(&repo_path, &["rev-parse", "HEAD"]).1;
+    let branch_before = run_git(&repo_path, &["rev-parse", "testuser/testing"]).1;
+
+    // --dry-run must preview without mutating anything.
+    let (ok, out, err) = run_gg(&repo_path, &["restack", "--dry-run"]);
+    assert!(ok, "restack --dry-run failed: {out}{err}");
+    assert!(
+        out.contains("Would integrate"),
+        "dry-run should preview: {out}"
+    );
+
+    // The branch tip is unchanged: "inserted" was NOT folded in.
+    let (_ok, log) = run_git(&repo_path, &["log", "--oneline", "testuser/testing"]);
+    assert!(!log.contains("inserted"), "branch must be untouched: {log}");
+
+    // HEAD and the branch ref are byte-for-byte unchanged.
+    assert_eq!(
+        run_git(&repo_path, &["rev-parse", "HEAD"]).1,
+        head_before,
+        "HEAD moved under --dry-run"
+    );
+    assert_eq!(
+        run_git(&repo_path, &["rev-parse", "testuser/testing"]).1,
+        branch_before,
+        "branch moved under --dry-run"
+    );
+
+    // No rebase was left in progress.
+    assert!(
+        !repo_path.join(".git/rebase-merge").exists()
+            && !repo_path.join(".git/rebase-apply").exists(),
+        "dry-run must not leave a rebase in progress"
+    );
+}
+
+#[test]
 fn test_restack_integrates_multiple_inserted_commits() {
     use crate::helpers::{create_test_repo, run_gg, run_git};
     use std::fs;

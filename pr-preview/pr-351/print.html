@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c5642d08.js";
+            window.path_to_searchindex_js = "searchindex-6bb90163.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-95fa4ef1.js"></script>
@@ -1986,7 +1986,7 @@ gg restack          # folds "inserted" into the stack; HEAD stays on it
 </code></pre>
 <p>After <code>gg restack</code> completes, HEAD is left on the just-inserted (or just-amended) commit. Run <code>gg sync</code> to push the updated stack.</p>
 <blockquote>
-<p><strong>Note:</strong> If folding the commit in hits a conflict, resolve it and run <code>gg continue</code> (or <code>gg abort</code>). After resolving a conflict this way you are returned to the stack head rather than left on the integrated commit — the commit is still folded in correctly; use <code>gg mv</code> to navigate back to it if you want to keep working there.</p>
+<p><strong>Note:</strong> If folding the commit in hits a conflict, resolve it and run <code>gg continue</code> (or <code>gg abort</code>). The conflict path goes through Git’s normal rebase-continue, so afterwards you are returned to the stack head rather than left on the integrated commit, and the freshly folded commit may not yet have its <code>GG-ID</code>/<code>GG-Parent</code> assigned. The commit is still folded in correctly — run <code>gg sync</code> (or <code>gg reconcile</code>) to finish normalizing the metadata, and <code>gg mv</code> to navigate back to it if you want to keep working there. (This matches how <code>gg restack</code> behaves after any rebase conflict.)</p>
 </blockquote>
 <h2 id="edge-cases-2"><a class="header" href="#edge-cases-2">Edge Cases</a></h2>
 <ul>

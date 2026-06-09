@@ -214,15 +214,25 @@ fn integrate_unintegrated(
         )));
     }
 
-    // Stay on the integrated commit (detached HEAD).
+    // Stay on the integrated commit (detached HEAD) so the metadata
+    // normalization below can remap HEAD onto its rewritten counterpart.
     let head_commit = repo.find_commit(unintegrated.head_oid)?;
     git::checkout_commit(repo, &head_commit)?;
 
+    // Normalize GG metadata across the folded-in stack, exactly as the normal
+    // restack path does: assign the newly inserted commit a GG-ID and fix
+    // GG-Parent trailers so a follow-up command that requires IDs (e.g. another
+    // `gg restack`) does not fail. This rewrites commits and remaps the detached
+    // HEAD onto the rewritten inserted commit, so reload afterwards.
+    let folded = Stack::load(repo, config)?;
+    git::normalize_stack_metadata(repo, &folded)?;
+
     // Rewrite the nav context to the new position of the integrated commit.
-    // The rebase does not rewrite `head_oid` itself (it is the new base), so the
-    // reloaded stack must contain it; if it somehow does not, fail loudly rather
-    // than persist a wrong position.
+    // Normalization remaps the detached HEAD, so read the current HEAD oid; the
+    // reloaded stack must contain it (fail loudly rather than persist a wrong
+    // position).
     let reloaded = Stack::load(repo, config)?;
+    let new_head_oid = repo.head()?.peel_to_commit()?.id();
     let new_position = reloaded.current_position.ok_or_else(|| {
         GgError::Other(
             "Integrated commit not found in the reloaded stack. Run `gg last` to recover."
@@ -233,8 +243,15 @@ fn integrate_unintegrated(
         repo.path(),
         &unintegrated.branch_name,
         new_position,
-        unintegrated.head_oid,
+        new_head_oid,
     )?;
+
+    let new_short_sha = repo
+        .find_object(new_head_oid, None)?
+        .short_id()?
+        .as_str()
+        .unwrap_or("")
+        .to_string();
 
     guard.finalize_with_scope(repo, config, SnapshotScope::AllUserBranches, vec![], false)?;
 
@@ -256,7 +273,7 @@ fn integrate_unintegrated(
             style("✓").green().bold(),
             unintegrated.count,
             reloaded.name,
-            style(&unintegrated.short_sha).yellow(),
+            style(&new_short_sha).yellow(),
             unintegrated.subject,
         );
         println!(

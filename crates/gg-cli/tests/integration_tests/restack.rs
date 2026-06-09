@@ -315,6 +315,16 @@ fn test_restack_integrates_inserted_midstack_commit() {
         out.contains("inserted") && out.contains("<- HEAD"),
         "ls: {out}"
     );
+
+    // Metadata was normalized during integration, so the inserted commit now has
+    // a GG-ID: a follow-up `gg restack` must succeed (already consistent), not
+    // fail with a missing-GG-ID error.
+    let (ok, out, err) = run_gg(&repo_path, &["restack"]);
+    assert!(ok, "follow-up restack failed: {out}{err}");
+    assert!(
+        out.contains("consistent"),
+        "follow-up restack should be a no-op: {out}"
+    );
 }
 
 #[test]

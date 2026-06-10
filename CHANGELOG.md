@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-06-10
+
+### Added
+- `gg ls` now detects and reports detached mid-stack commits that have not been integrated back into their stack (#348).
+- `gg restack` can integrate detached mid-stack commits back into the stack, including amended commits after conflict resolution (#348).
+- `gg continue` now resumes interrupted mid-stack integration flows after conflicts (#348).
+
+### Fixed
+- Interrupted operations are now finalized correctly by `gg continue`.
+- Mid-stack integration dry-run output now reports stack names consistently in JSON and honors `--dry-run` for detached commits (#348).
+- Stack metadata is normalized after folding mid-stack commits, keeping follow-up operations aligned with the updated history (#348).
+- `gg sync --no-lint` output is simpler and avoids confusing lint messaging (#342).
+
+### Changed
+- Updated dependencies including `skim`, `serde_json`, `ratatui`, `uuid`, and `regex`.
+- Integration tests now isolate global config state and cover the new mid-stack integration paths.
+
 ## [0.9.6] - 2026-05-19
 
 ### Fixed

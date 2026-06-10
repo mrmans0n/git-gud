@@ -256,12 +256,16 @@ Every mutating command (`sc`, `drop`, `split`, `unstack`, `rebase`, `reorder`,
 and records the operation on success. A second `gg undo` redoes the
 first — `undo` itself is recorded.
 
+When a recorded operation pauses on a rebase conflict, `gg continue`
+finalizes that same operation record after the rebase completes, so the
+completed operation is still undoable.
+
 **Refusals** (exit 1, no refs touched):
 
 | `refusal.reason` | Condition | Handling |
 |---|---|---|
 | `remote` | Op pushed/merged/closed/created a PR or MR | Use the printed provider hint (`gh pr close <n>`, `glab mr close <n>`, `git push --delete …`). |
-| `interrupted` | Op was Ctrl-C'd or crashed mid-flight | Fix state manually; stale Pending records are swept on the next lock-acquiring op. |
+| `interrupted` | Op was Ctrl-C'd, crashed, or aborted before completion | Fix state manually; stale Pending records are swept on the next lock-acquiring op. |
 | `stale` | Refs moved since the target op finalised | Run `gg undo --list` and pick a more recent record. Error names the ref, expected OID, actual OID. |
 | `unsupported_schema` | Record was written by a newer `gg` binary | Upgrade `gg` or delete the record. |
 

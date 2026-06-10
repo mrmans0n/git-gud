@@ -8,7 +8,7 @@ use git2::Oid;
 
 use crate::error::{GgError, Result};
 use crate::git;
-use crate::operations::{OperationKind, SnapshotScope};
+use crate::operations::{self, OperationKind, SnapshotScope};
 use crate::output::{
     self, RunCommandResult, RunCommitResult, RunResponse, RunResultJson, OUTPUT_VERSION,
 };
@@ -147,14 +147,22 @@ pub fn execute(options: RunOptions) -> Result<bool> {
     // Finalize only on success. On error the guard is dropped without
     // finalize; the sweep promotes the Pending record to Interrupted on the
     // next lock acquisition.
-    if let (Ok(_), Some((_lock, guard))) = (&result, recorded) {
-        guard.finalize_with_scope(
-            &repo,
-            &config,
-            SnapshotScope::AllUserBranches,
-            vec![],
-            false,
-        )?;
+    if let Some((_lock, guard)) = recorded {
+        match &result {
+            Ok(_) => {
+                guard.finalize_with_scope(
+                    &repo,
+                    &config,
+                    SnapshotScope::AllUserBranches,
+                    vec![],
+                    false,
+                )?;
+            }
+            Err(_) if git::is_rebase_in_progress(&repo) => {
+                let _ = operations::remember_interrupted_rebase_operation(&repo, guard.id());
+            }
+            Err(_) => {}
+        }
     }
 
     let result = result?;

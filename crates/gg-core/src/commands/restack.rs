@@ -7,7 +7,7 @@ use console::style;
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
-use crate::operations::{OperationKind, SnapshotScope};
+use crate::operations::{self, OperationKind, SnapshotScope};
 use crate::output::{
     print_json, RestackResponse, RestackResultJson, RestackStepJson, OUTPUT_VERSION,
 };
@@ -256,6 +256,7 @@ fn integrate_unintegrated(
                 &unintegrated.branch_name,
                 unintegrated.head_oid,
             )?;
+            let _ = operations::remember_interrupted_rebase_operation(repo, guard.id());
             return Err(GgError::RebaseConflict);
         }
         return Err(GgError::Other(format!(
@@ -524,6 +525,7 @@ pub fn run(options: RestackOptions) -> Result<()> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("CONFLICT") || stderr.contains("conflict") {
+            let _ = operations::remember_interrupted_rebase_operation(&repo, guard.id());
             return Err(GgError::RebaseConflict);
         }
         return Err(GgError::Other(format!("Rebase failed: {}", stderr)));

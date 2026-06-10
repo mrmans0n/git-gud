@@ -4,12 +4,13 @@ use std::io::Write;
 
 use console::style;
 use dialoguer::Confirm;
+use serde_json::json;
 
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::immutability::{self, ImmutabilityPolicy};
-use crate::operations::{OperationKind, SnapshotScope};
+use crate::operations::{self, OperationKind, SnapshotScope};
 use crate::output::{print_json, DropResponse, DropResultJson, DroppedEntryJson, OUTPUT_VERSION};
 use crate::stack::{self, Stack};
 
@@ -141,7 +142,7 @@ pub fn run(options: DropOptions) -> Result<()> {
     // is not required) — now write the Pending op-log record. Any later
     // failure leaves a Pending record that the sweep promotes to Interrupted,
     // which `gg undo` will refuse.
-    let guard = git::begin_recorded_op(
+    let mut guard = git::begin_recorded_op(
         &repo,
         &config,
         OperationKind::Drop,
@@ -149,6 +150,16 @@ pub fn run(options: DropOptions) -> Result<()> {
         None,
         SnapshotScope::AllUserBranches,
     )?;
+    let dropped_entry_branches: Vec<String> = dropped_entries
+        .iter()
+        .filter_map(|entry| stack_obj.get_entry_by_position(entry.position))
+        .filter_map(|entry| stack_obj.entry_branch_name(entry))
+        .collect();
+    guard.set_pending_plan(json!({
+        "drop": {
+            "entry_branches": dropped_entry_branches,
+        }
+    }));
 
     // Build the rebase todo list, omitting dropped commits
     let drop_indices: Vec<usize> = drop_positions.iter().map(|p| p - 1).collect();
@@ -200,6 +211,7 @@ pub fn run(options: DropOptions) -> Result<()> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("CONFLICT") || stderr.contains("conflict") {
+            let _ = operations::remember_interrupted_rebase_operation(&repo, guard.id());
             return Err(GgError::RebaseConflict);
         }
         return Err(GgError::Other(format!("Rebase failed: {}", stderr)));
@@ -210,16 +222,11 @@ pub fn run(options: DropOptions) -> Result<()> {
     git::normalize_stack_metadata(&repo, &rewritten_stack)?;
 
     // Clean up per-commit branches for dropped commits
-    for entry in &dropped_entries {
-        // Find the matching stack entry to get the GG-ID for branch name
-        if let Some(stack_entry) = stack_obj.get_entry_by_position(entry.position) {
-            if let Some(branch_name) = stack_obj.entry_branch_name(stack_entry) {
-                // Delete local branch (ignore errors if it doesn't exist)
-                let _ = repo
-                    .find_branch(&branch_name, git2::BranchType::Local)
-                    .and_then(|mut b| b.delete());
-            }
-        }
+    for branch_name in &dropped_entry_branches {
+        // Delete local branch (ignore errors if it doesn't exist)
+        let _ = repo
+            .find_branch(branch_name, git2::BranchType::Local)
+            .and_then(|mut b| b.delete());
     }
 
     let remaining = stack_obj.len() - dropped_entries.len();

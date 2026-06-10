@@ -6,12 +6,13 @@ use std::process::Command;
 
 use console::{style, Term};
 use dialoguer::Editor;
+use serde_json::json;
 
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::immutability::{self, ImmutabilityPolicy};
-use crate::operations::{OperationKind, SnapshotScope};
+use crate::operations::{self, OperationKind, SnapshotScope};
 use crate::stack::{self, Stack};
 
 /// Options for the split command
@@ -268,7 +269,7 @@ pub fn run(options: SplitOptions) -> Result<()> {
     // before the first actual repo mutation. A failure beyond this point
     // leaves a Pending record the sweep promotes to Interrupted, which
     // `gg undo` refuses (avoiding an unsafe partial-state rewind).
-    let guard = git::begin_recorded_op(
+    let mut guard = git::begin_recorded_op(
         &repo,
         &config,
         OperationKind::Split,
@@ -276,6 +277,13 @@ pub fn run(options: SplitOptions) -> Result<()> {
         None,
         SnapshotScope::AllUserBranches,
     )?;
+    guard.set_pending_plan(json!({
+        "split": {
+            "branch_name": stack.branch_name(),
+            "remainder_position": target_pos + 1,
+            "remainder_gg_id": original_gg_id.clone(),
+        }
+    }));
 
     // 2. Create the first (new, lower) commit
     let sig = git::get_signature(&repo)?;
@@ -310,14 +318,21 @@ pub fn run(options: SplitOptions) -> Result<()> {
     let second_commit = repo.find_commit(second_oid)?;
 
     // 4. Rebase descendants onto second commit
-    let num_rebased = rebase_descendants(
+    let num_rebased = match rebase_descendants(
         &repo,
         &stack,
         &config,
         target_pos,
         &target_commit,
         &second_commit,
-    )?;
+    ) {
+        Ok(num_rebased) => num_rebased,
+        Err(GgError::RebaseConflict) => {
+            let _ = operations::remember_interrupted_rebase_operation(&repo, guard.id());
+            return Err(GgError::RebaseConflict);
+        }
+        Err(e) => return Err(e),
+    };
 
     // Print results
     println!("{} Split complete!", style("✔").green().bold());
@@ -574,16 +589,8 @@ fn rebase_descendants(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("CONFLICT") || stderr.contains("conflict") {
-            // Abort the rebase to leave repo in clean state
-            let _ = Command::new("git").args(["rebase", "--abort"]).output();
-            return Err(GgError::Other(
-                "Split aborted: merge conflict during descendant rebase. \
-                 The original commit has been left unchanged."
-                    .to_string(),
-            ));
-        }
-        return Err(GgError::Other(format!("Rebase failed: {}", stderr)));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(rebase_descendants_error(&stdout, &stderr));
     }
 
     // Re-attach HEAD if needed
@@ -604,6 +611,18 @@ fn rebase_descendants(
     }
 
     Ok(remaining)
+}
+
+fn rebase_descendants_error(stdout: &str, stderr: &str) -> GgError {
+    if stderr.contains("CONFLICT")
+        || stderr.contains("conflict")
+        || stdout.contains("CONFLICT")
+        || stdout.contains("conflict")
+    {
+        GgError::RebaseConflict
+    } else {
+        GgError::Other(format!("Rebase failed: {}", stderr))
+    }
 }
 
 /// Update branch pointer when splitting the stack head
@@ -1328,6 +1347,20 @@ mod tests {
         assert!(opts.files.is_empty());
         assert!(opts.message.is_none());
         assert!(!opts.no_edit);
+    }
+
+    #[test]
+    fn test_rebase_descendants_conflict_stays_continuable() {
+        let err = rebase_descendants_error("", "CONFLICT (content): Merge conflict");
+
+        assert!(matches!(err, GgError::RebaseConflict));
+    }
+
+    #[test]
+    fn test_rebase_descendants_non_conflict_preserves_git_error() {
+        let err = rebase_descendants_error("", "fatal: bad revision");
+
+        assert!(matches!(err, GgError::Other(message) if message.contains("bad revision")));
     }
 
     #[test]

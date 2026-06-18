@@ -80,6 +80,10 @@ enum Commands {
         #[arg(long)]
         json: bool,
 
+        /// Output streaming NDJSON (one event per line; flushed after each)
+        #[arg(long = "jsonl", conflicts_with = "json")]
+        jsonl: bool,
+
         /// Skip checking whether base is behind origin/<base>
         #[arg(long)]
         no_rebase_check: bool,
@@ -495,10 +499,11 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
 
-    let (result, json_mode) = match cli.command {
+    let (result, json_mode, jsonl) = match cli.command {
         // No command = show stacks (like `gg ls`)
         None => (
             gg_core::commands::ls::run(false, false, false, false),
+            false,
             false,
         ),
 
@@ -509,17 +514,25 @@ fn main() {
         }) => (
             gg_core::commands::checkout::run(stack_name, base, worktree),
             false,
+            false,
         ),
         Some(Commands::List {
             all,
             refresh,
             remote,
             json,
-        }) => (gg_core::commands::ls::run(all, refresh, remote, json), json),
-        Some(Commands::Log { json, refresh }) => (gg_core::commands::log::run(json, refresh), json),
+        }) => (
+            gg_core::commands::ls::run(all, refresh, remote, json),
+            json,
+            false,
+        ),
+        Some(Commands::Log { json, refresh }) => {
+            (gg_core::commands::log::run(json, refresh), json, false)
+        }
         Some(Commands::Sync {
             draft,
             json,
+            jsonl,
             no_rebase_check,
             force,
             update_descriptions,
@@ -550,6 +563,7 @@ fn main() {
                 gg_core::commands::sync::run(
                     draft,
                     json,
+                    jsonl,
                     no_rebase_check,
                     force,
                     update_descriptions,
@@ -558,16 +572,17 @@ fn main() {
                     until,
                     no_verify,
                 ),
-                json,
+                json || jsonl,
+                jsonl,
             )
         }
-        Some(Commands::Move { target }) => (gg_core::commands::nav::move_to(&target), false),
-        Some(Commands::First) => (gg_core::commands::nav::first(), false),
-        Some(Commands::Last) => (gg_core::commands::nav::last(), false),
-        Some(Commands::Prev) => (gg_core::commands::nav::prev(), false),
-        Some(Commands::Next) => (gg_core::commands::nav::next(), false),
+        Some(Commands::Move { target }) => (gg_core::commands::nav::move_to(&target), false, false),
+        Some(Commands::First) => (gg_core::commands::nav::first(), false, false),
+        Some(Commands::Last) => (gg_core::commands::nav::last(), false, false),
+        Some(Commands::Prev) => (gg_core::commands::nav::prev(), false, false),
+        Some(Commands::Next) => (gg_core::commands::nav::next(), false, false),
         Some(Commands::Squash { all, force }) => {
-            (gg_core::commands::squash::run(all, force), false)
+            (gg_core::commands::squash::run(all, force), false, false)
         }
         Some(Commands::Drop {
             targets,
@@ -582,6 +597,7 @@ fn main() {
                 json,
             }),
             json,
+            false,
         ),
         Some(Commands::Reorder {
             order,
@@ -593,6 +609,7 @@ fn main() {
                 no_tui,
                 force,
             }),
+            false,
             false,
         ),
         Some(Commands::Split {
@@ -612,6 +629,7 @@ fn main() {
                 force,
             }),
             false,
+            false,
         ),
         Some(Commands::Unstack {
             target,
@@ -630,6 +648,7 @@ fn main() {
                 worktree,
             }),
             json,
+            false,
         ),
         Some(Commands::Land {
             all,
@@ -671,17 +690,21 @@ fn main() {
                     admin,
                 }),
                 json,
+                false,
             )
         }
-        Some(Commands::Clean { all, json }) => (gg_core::commands::clean::run(all, json), json),
-        Some(Commands::Rebase { target, force }) => {
-            (gg_core::commands::rebase::run(target, force), false)
+        Some(Commands::Clean { all, json }) => {
+            (gg_core::commands::clean::run(all, json), json, false)
         }
-        Some(Commands::Continue) => (gg_core::commands::rebase::continue_rebase(), false),
-        Some(Commands::Abort) => (gg_core::commands::rebase::abort_rebase(), false),
+        Some(Commands::Rebase { target, force }) => {
+            (gg_core::commands::rebase::run(target, force), false, false)
+        }
+        Some(Commands::Continue) => (gg_core::commands::rebase::continue_rebase(), false, false),
+        Some(Commands::Abort) => (gg_core::commands::rebase::abort_rebase(), false, false),
         Some(Commands::Lint { until, json }) => (
             gg_core::commands::lint::run(until, json, json).map(|_| ()),
             json,
+            false,
         ),
         Some(Commands::Run {
             command,
@@ -710,17 +733,17 @@ fn main() {
                 header_label: None,
                 jobs,
             }) {
-                Ok(true) => (Ok(()), json),
+                Ok(true) => (Ok(()), json, false),
                 // `execute` has already emitted the JSON run payload (when
                 // `json` is true) and/or the terminal output (when not).
                 // Exiting directly with code 1 avoids the generic error path
                 // appending a second `{"error":...}` document to stdout,
                 // which would break JSON consumers expecting one object.
                 Ok(false) => exit(1),
-                Err(e) => (Err(e), json),
+                Err(e) => (Err(e), json, false),
             }
         }
-        Some(Commands::Setup { all }) => (gg_core::commands::setup::run(all), false),
+        Some(Commands::Setup { all }) => (gg_core::commands::setup::run(all), false, false),
         Some(Commands::Absorb {
             dry_run,
             and_rebase,
@@ -740,6 +763,7 @@ fn main() {
                 force,
             }),
             false,
+            false,
         ),
         Some(Commands::Arrange {
             order,
@@ -752,19 +776,23 @@ fn main() {
                 force,
             }),
             false,
+            false,
         ),
         Some(Commands::Completions { shell }) => {
-            (gg_core::commands::completions::run(shell), false)
+            (gg_core::commands::completions::run(shell), false, false)
         }
-        Some(Commands::Init { shell }) => (gg_core::commands::init::run(shell), false),
+        Some(Commands::Init { shell }) => (gg_core::commands::init::run(shell), false, false),
         Some(Commands::Reconcile { dry_run, yes }) => (
             gg_core::commands::reconcile::run(gg_core::commands::reconcile::ReconcileOptions {
                 dry_run,
                 yes,
             }),
             false,
+            false,
         ),
-        Some(Commands::Inbox { all, json }) => (gg_core::commands::inbox::run(all, json), json),
+        Some(Commands::Inbox { all, json }) => {
+            (gg_core::commands::inbox::run(all, json), json, false)
+        }
         Some(Commands::Restack {
             dry_run,
             from,
@@ -776,6 +804,7 @@ fn main() {
                 json,
             }),
             json,
+            false,
         ),
         Some(Commands::Undo {
             list,
@@ -790,6 +819,7 @@ fn main() {
                 limit,
             }),
             json,
+            false,
         ),
     };
 
@@ -801,6 +831,18 @@ fn main() {
             exit(1);
         }
         if json_mode {
+            if jsonl {
+                gg_core::output::StreamingJson::emit_and_exit(
+                    &gg_core::output::SyncStreamingResponse {
+                        version: gg_core::output::OUTPUT_VERSION,
+                        command: "sync".to_string(),
+                        event: gg_core::output::SyncStreamingEvent::Error {
+                            message: e.to_string(),
+                        },
+                    },
+                    1,
+                );
+            }
             gg_core::output::print_json_error(&e.to_string());
         } else {
             eprintln!("{} {}", style("error:").red().bold(), e);

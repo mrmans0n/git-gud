@@ -1,6 +1,8 @@
 //! Structured output helpers.
 
-use serde::Serialize;
+use std::io::{self, Write};
+
+use serde::{Serialize, Serializer};
 
 pub const OUTPUT_VERSION: u32 = 1;
 
@@ -9,6 +11,47 @@ pub fn print_json<T: Serialize>(data: &T) {
         "{}",
         serde_json::to_string_pretty(data).expect("failed to serialize JSON output")
     );
+}
+
+/// Streaming NDJSON helper: emits one compact JSON object per line and flushes
+/// after every write so long-running commands can be consumed incrementally.
+#[derive(Debug)]
+pub struct StreamingJson {
+    stdout: io::Stdout,
+}
+
+impl Default for StreamingJson {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StreamingJson {
+    pub fn new() -> Self {
+        Self {
+            stdout: io::stdout(),
+        }
+    }
+
+    /// Emit a single NDJSON line and flush immediately.
+    pub fn emit<T: Serialize>(&mut self, event: &T) {
+        let line = serde_json::to_string(event).expect("failed to serialize streaming event");
+        let mut lock = self.stdout.lock();
+        writeln!(lock, "{}", line).expect("failed to write streaming event");
+        lock.flush().expect("failed to flush streaming event");
+    }
+
+    /// Emit an event and terminate the process with the given exit code.
+    ///
+    /// This is the streaming equivalent of `print_json_error` + `exit(1)`: it
+    /// guarantees the consumer sees the error event before the process ends.
+    pub fn emit_and_exit<T: Serialize>(event: &T, code: i32) -> ! {
+        let line = serde_json::to_string(event).expect("failed to serialize streaming event");
+        let mut stdout = io::stdout();
+        writeln!(stdout, "{}", line).expect("failed to write streaming event");
+        stdout.flush().expect("failed to flush streaming event");
+        std::process::exit(code);
+    }
 }
 
 #[derive(Serialize)]
@@ -111,6 +154,95 @@ pub struct SyncResponse {
     pub sync: SyncResultJson,
 }
 
+pub struct SyncStreamingResponse {
+    pub version: u32,
+    pub command: String,
+    pub event: SyncStreamingEvent,
+}
+
+impl Serialize for SyncStreamingResponse {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let status = match &self.event {
+            SyncStreamingEvent::Error { .. } | SyncStreamingEvent::PushError { .. } => "error",
+            _ => "ok",
+        };
+        let mut value = serde_json::to_value(&self.event).map_err(serde::ser::Error::custom)?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| serde::ser::Error::custom("streaming event serialized non-object"))?;
+        object.insert("version".to_string(), serde_json::json!(self.version));
+        object.insert("command".to_string(), serde_json::json!(self.command));
+        object.insert("status".to_string(), serde_json::json!(status));
+        value.serialize(serializer)
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case", tag = "event")]
+pub enum SyncStreamingEvent {
+    Start {
+        stack: String,
+        base: String,
+        total_entries: usize,
+    },
+    EntryStarted {
+        position: usize,
+        sha: String,
+        title: String,
+        gg_id: String,
+        branch: String,
+    },
+    PushStarted {
+        position: usize,
+        branch: String,
+    },
+    PushDone {
+        position: usize,
+        branch: String,
+        forced: bool,
+    },
+    PushError {
+        position: usize,
+        branch: String,
+        error: String,
+    },
+    PrCreated {
+        position: usize,
+        pr_number: u64,
+        pr_url: Option<String>,
+        draft: bool,
+    },
+    PrUpdated {
+        position: usize,
+        pr_number: u64,
+        action: String,
+    },
+    PrSkippedClosed {
+        position: usize,
+        pr_number: u64,
+    },
+    NavComment {
+        position: usize,
+        pr_number: u64,
+        action: String,
+        error: Option<String>,
+    },
+    Error {
+        message: String,
+    },
+    Summary {
+        stack: String,
+        base: String,
+        rebased_before_sync: bool,
+        warnings: Vec<String>,
+        metadata: SyncMetadataJson,
+        entries: Vec<SyncEntryResultJson>,
+    },
+}
+
 #[derive(Serialize)]
 pub struct SyncResultJson {
     pub stack: String,
@@ -128,7 +260,7 @@ pub struct SyncMetadataJson {
     pub gg_parents_removed: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct SyncEntryResultJson {
     pub position: usize,
     pub sha: String,
@@ -458,6 +590,66 @@ mod tests {
         };
         let json = serde_json::to_value(&entry).unwrap();
         assert_eq!(json["nav_comment_action"], "created");
+    }
+
+    #[test]
+    fn sync_streaming_event_serializes_with_tag_and_version() {
+        let response = SyncStreamingResponse {
+            version: OUTPUT_VERSION,
+            command: "sync".to_string(),
+            event: SyncStreamingEvent::Start {
+                stack: "my-feature".to_string(),
+                base: "main".to_string(),
+                total_entries: 3,
+            },
+        };
+        let v = serde_json::to_value(&response).unwrap();
+        assert_eq!(v["version"], OUTPUT_VERSION);
+        assert_eq!(v["command"], "sync");
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["event"], "start");
+        assert_eq!(v["stack"], "my-feature");
+        assert_eq!(v["base"], "main");
+        assert_eq!(v["total_entries"], 3);
+    }
+
+    #[test]
+    fn sync_streaming_summary_includes_entries() {
+        let response = SyncStreamingResponse {
+            version: OUTPUT_VERSION,
+            command: "sync".to_string(),
+            event: SyncStreamingEvent::Summary {
+                stack: "s".to_string(),
+                base: "main".to_string(),
+                rebased_before_sync: false,
+                warnings: vec!["w".to_string()],
+                metadata: SyncMetadataJson {
+                    gg_ids_added: 1,
+                    gg_parents_updated: 2,
+                    gg_parents_removed: 0,
+                },
+                entries: vec![],
+            },
+        };
+        let v = serde_json::to_value(&response).unwrap();
+        assert_eq!(v["event"], "summary");
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["metadata"]["gg_ids_added"], 1);
+        assert_eq!(v["warnings"][0], "w");
+    }
+
+    #[test]
+    fn sync_streaming_error_status_serializes_as_error() {
+        let response = SyncStreamingResponse {
+            version: OUTPUT_VERSION,
+            command: "sync".to_string(),
+            event: SyncStreamingEvent::Error {
+                message: "boom".to_string(),
+            },
+        };
+        let v = serde_json::to_value(&response).unwrap();
+        assert_eq!(v["event"], "error");
+        assert_eq!(v["status"], "error");
     }
 }
 

@@ -11,7 +11,8 @@ use crate::git::{self, get_commit_description, strip_gg_id_from_message};
 use crate::managed_body;
 use crate::operations::{OperationKind, RemoteEffect, SnapshotScope};
 use crate::output::{
-    print_json, SyncEntryResultJson, SyncMetadataJson, SyncResponse, SyncResultJson, OUTPUT_VERSION,
+    print_json, StreamingJson, SyncEntryResultJson, SyncMetadataJson, SyncResponse, SyncResultJson,
+    SyncStreamingEvent, SyncStreamingResponse, OUTPUT_VERSION,
 };
 use crate::provider::Provider;
 use crate::stack::{resolve_target, Stack};
@@ -33,6 +34,7 @@ fn maybe_rebase_if_base_is_behind(
     config: &Config,
     base_branch: &str,
     json: bool,
+    jsonl: bool,
 ) -> Result<bool> {
     let threshold = config.get_sync_behind_threshold();
     if threshold == 0 {
@@ -58,7 +60,7 @@ fn maybe_rebase_if_base_is_behind(
         .unwrap_or_else(|| "PRs/MRs".to_string());
 
     if config.get_sync_auto_rebase() {
-        if !json {
+        if !json && !jsonl {
             println!(
                 "{} Your stack is {} commits behind origin/{}. {} may show unrelated changes. Auto-rebasing...",
                 style("⚠").yellow().bold(),
@@ -70,7 +72,7 @@ fn maybe_rebase_if_base_is_behind(
         // Internal auto-rebase during sync: the user hasn't been asked to
         // --force, so respect the immutability guard rather than silently
         // bypassing it.
-        match crate::commands::rebase::run_with_repo(repo, None, json, false) {
+        match crate::commands::rebase::run_with_repo(repo, None, json || jsonl, false) {
             Ok(()) => return Ok(true),
             Err(GgError::ImmutableTargets(msg)) => {
                 return Err(GgError::ImmutableTargetsDuringSync(msg));
@@ -79,7 +81,7 @@ fn maybe_rebase_if_base_is_behind(
         }
     }
 
-    if !json {
+    if !json && !jsonl {
         println!(
             "{} Your stack is {} commits behind origin/{}. {} may show unrelated changes. Run 'gg rebase' first to update.",
             style("⚠").yellow().bold(),
@@ -89,7 +91,7 @@ fn maybe_rebase_if_base_is_behind(
         );
     }
 
-    if json {
+    if json || jsonl {
         return Ok(false);
     }
 
@@ -100,7 +102,7 @@ fn maybe_rebase_if_base_is_behind(
         .unwrap_or(true);
 
     if should_rebase {
-        match crate::commands::rebase::run_with_repo(repo, None, json, false) {
+        match crate::commands::rebase::run_with_repo(repo, None, json || jsonl, false) {
             Ok(()) => return Ok(true),
             Err(GgError::ImmutableTargets(msg)) => {
                 return Err(GgError::ImmutableTargetsDuringSync(msg));
@@ -204,6 +206,7 @@ fn compute_target_branch(
 pub fn run(
     draft: bool,
     json: bool,
+    jsonl: bool,
     no_rebase_check: bool,
     force: bool,
     update_descriptions: bool,
@@ -249,7 +252,7 @@ pub fn run(
         .map(|mismatch| mismatch.warning_message())
         .into_iter()
         .collect();
-    if !json {
+    if !json && !jsonl {
         for warning in &warnings {
             println!("{} {}", style("Warning:").yellow(), warning);
         }
@@ -262,13 +265,28 @@ pub fn run(
                     stack: initial_stack.name.clone(),
                     base: initial_stack.base.clone(),
                     rebased_before_sync: false,
+                    warnings: warnings.clone(),
+                    metadata: SyncMetadataJson::default(),
+                    entries: vec![],
+                },
+            });
+        } else if !jsonl {
+            println!("{}", style("Stack is empty. Nothing to sync.").dim());
+        }
+        if jsonl {
+            let mut streamer = StreamingJson::new();
+            streamer.emit(&SyncStreamingResponse {
+                version: OUTPUT_VERSION,
+                command: "sync".to_string(),
+                event: SyncStreamingEvent::Summary {
+                    stack: initial_stack.name,
+                    base: initial_stack.base,
+                    rebased_before_sync: false,
                     warnings,
                     metadata: SyncMetadataJson::default(),
                     entries: vec![],
                 },
             });
-        } else {
-            println!("{}", style("Stack is empty. Nothing to sync.").dim());
         }
         guard.finalize_with_scope(
             &repo,
@@ -297,9 +315,21 @@ pub fn run(
 
     let mut rebased_before_sync = false;
     if !no_rebase_check {
-        rebased_before_sync =
-            maybe_rebase_if_base_is_behind(&repo, &config, initial_stack.base.as_str(), json)?;
+        rebased_before_sync = maybe_rebase_if_base_is_behind(
+            &repo,
+            &config,
+            initial_stack.base.as_str(),
+            json,
+            jsonl,
+        )?;
     }
+
+    let streamer = if jsonl {
+        Some(StreamingJson::new())
+    } else {
+        None
+    };
+    let mut streamer = streamer;
 
     // Capture restore snapshot after optional pre-sync rebase. If lint fails,
     // we restore to this post-rebase state rather than silently undoing rebase.
@@ -317,23 +347,25 @@ pub fn run(
         let end_pos = lint_end_pos
             .map(|pos| pos.min(current_stack.len()))
             .unwrap_or(current_stack.len());
-        if !json {
+        if !json && !jsonl {
             println!("{}", console::style("Running lint before sync...").dim());
         }
-        let lint_passed = crate::commands::lint::run_brief_no_commands(Some(end_pos), json, false)?;
+        let lint_passed =
+            crate::commands::lint::run_brief_no_commands(Some(end_pos), json || jsonl, false)?;
         if !lint_passed {
             restore_sync_start_position(
                 &repo,
                 sync_start_branch.as_deref(),
                 sync_start_head,
                 json,
+                jsonl,
             )?;
             return Err(GgError::Other(
                 "Lint failed for one or more commits. Sync aborted; repository restored to its original state."
                     .to_string(),
             ));
         }
-        if !json {
+        if !json && !jsonl {
             println!();
         }
     }
@@ -353,8 +385,22 @@ pub fn run(
                     entries: vec![],
                 },
             });
-        } else {
+        } else if !jsonl {
             println!("{}", style("Stack is empty. Nothing to sync.").dim());
+        }
+        if let Some(s) = streamer.as_mut() {
+            s.emit(&SyncStreamingResponse {
+                version: OUTPUT_VERSION,
+                command: "sync".to_string(),
+                event: SyncStreamingEvent::Summary {
+                    stack: stack.name,
+                    base: stack.base,
+                    rebased_before_sync,
+                    warnings: warnings.clone(),
+                    metadata: SyncMetadataJson::default(),
+                    entries: vec![],
+                },
+            });
         }
         guard.finalize_with_scope(
             &repo,
@@ -371,7 +417,7 @@ pub fn run(
         resolve_target(&stack, target)?;
     }
 
-    if !json {
+    if !json && !jsonl {
         println!("{}", style("Normalizing GG metadata...").dim());
     }
     // Intentional: sync always enforces GG-ID / GG-Parent invariants for the
@@ -396,7 +442,7 @@ pub fn run(
     let pr_template = template::load_template(git_dir);
 
     // Sync progress
-    let pb = if json {
+    let pb = if json || jsonl {
         ProgressBar::hidden()
     } else if atty::is(atty::Stream::Stderr) {
         let pb = ProgressBar::new(entries_to_sync.len() as u64);
@@ -421,11 +467,37 @@ pub fn run(
     // when computing their target branch (walk-back algorithm for stacked MRs).
     let mut entry_is_closed: Vec<bool> = Vec::with_capacity(entries_to_sync.len());
 
+    if let Some(s) = streamer.as_mut() {
+        s.emit(&SyncStreamingResponse {
+            version: OUTPUT_VERSION,
+            command: "sync".to_string(),
+            event: SyncStreamingEvent::Start {
+                stack: stack.name.clone(),
+                base: stack.base.clone(),
+                total_entries: entries_to_sync.len(),
+            },
+        });
+    }
+
     for (i, entry) in entries_to_sync.iter().enumerate() {
         let gg_id = entry.gg_id.as_ref().unwrap();
         let entry_branch = stack.entry_branch_name(entry).unwrap();
         let commit = repo.find_commit(entry.oid)?;
         let raw_title = strip_gg_id_from_message(&entry.title);
+
+        if let Some(s) = streamer.as_mut() {
+            s.emit(&SyncStreamingResponse {
+                version: OUTPUT_VERSION,
+                command: "sync".to_string(),
+                event: SyncStreamingEvent::EntryStarted {
+                    position: entry.position,
+                    sha: entry.short_sha.clone(),
+                    title: entry.title.clone(),
+                    gg_id: gg_id.clone(),
+                    branch: entry_branch.clone(),
+                },
+            });
+        }
 
         if !force_draft && is_wip_or_draft_prefix(&raw_title) {
             force_draft = true;
@@ -462,6 +534,16 @@ pub fn run(
 
         // Only push if the remote is different or doesn't exist
         if needs_push {
+            if let Some(s) = streamer.as_mut() {
+                s.emit(&SyncStreamingResponse {
+                    version: OUTPUT_VERSION,
+                    command: "sync".to_string(),
+                    event: SyncStreamingEvent::PushStarted {
+                        position: entry.position,
+                        branch: entry_branch.clone(),
+                    },
+                });
+            }
             pushed = true;
             // Push the branch (always force-push with lease because rebases change commit SHAs)
             // This is safe because each entry branch is owned by this stack
@@ -469,7 +551,18 @@ pub fn run(
             let push_result = git::push_branch(&entry_branch, true, force, no_verify);
             if let Err(e) = push_result {
                 pb.finish_and_clear();
-                if json {
+                if json || jsonl {
+                    if let Some(s) = streamer.as_mut() {
+                        s.emit(&SyncStreamingResponse {
+                            version: OUTPUT_VERSION,
+                            command: "sync".to_string(),
+                            event: SyncStreamingEvent::PushError {
+                                position: entry.position,
+                                branch: entry_branch.clone(),
+                                error: e.to_string(),
+                            },
+                        });
+                    }
                     action = "error".to_string();
                     entry_error = Some(e.to_string());
 
@@ -494,6 +587,18 @@ pub fn run(
 
                 format_push_error(&e, &entry_branch);
                 return Err(e);
+            }
+
+            if let Some(s) = streamer.as_mut() {
+                s.emit(&SyncStreamingResponse {
+                    version: OUTPUT_VERSION,
+                    command: "sync".to_string(),
+                    event: SyncStreamingEvent::PushDone {
+                        position: entry.position,
+                        branch: entry_branch.clone(),
+                        forced: force,
+                    },
+                });
             }
 
             // Record the push as a remote effect. `sync` always pushes with
@@ -543,8 +648,18 @@ pub fn run(
 
                 if is_closed {
                     action = "skipped_closed".to_string();
+                    if let Some(s) = streamer.as_mut() {
+                        s.emit(&SyncStreamingResponse {
+                            version: OUTPUT_VERSION,
+                            command: "sync".to_string(),
+                            event: SyncStreamingEvent::PrSkippedClosed {
+                                position: entry.position,
+                                pr_number: pr_num,
+                            },
+                        });
+                    }
                     // Skip updating closed/merged PRs
-                    if !json {
+                    if !json && !jsonl {
                         pb.println(format!(
                             "{} {} {}{} already closed/merged, skipping",
                             style("○").dim(),
@@ -573,6 +688,22 @@ pub fn run(
                         replacement_draft,
                     ) {
                         Ok(result) => {
+                            if let Some(s) = streamer.as_mut() {
+                                s.emit(&SyncStreamingResponse {
+                                    version: OUTPUT_VERSION,
+                                    command: "sync".to_string(),
+                                    event: SyncStreamingEvent::PrCreated {
+                                        position: entry.position,
+                                        pr_number: result.number,
+                                        pr_url: if result.url.is_empty() {
+                                            None
+                                        } else {
+                                            Some(result.url.clone())
+                                        },
+                                        draft: replacement_draft,
+                                    },
+                                });
+                            }
                             config.set_mr_for_entry(&stack.name, gg_id, result.number);
                             pr_number = Some(result.number);
                             pr_url = if result.url.is_empty() {
@@ -603,7 +734,7 @@ pub fn run(
                                 &result.url,
                             );
                             if let Err(e) = provider.create_pr_comment(pr_num, &close_comment) {
-                                if !json {
+                                if !json && !jsonl {
                                     pb.println(format!(
                                         "{} Could not comment on old {} {}{}: {}",
                                         style("Warning:").yellow(),
@@ -638,7 +769,7 @@ pub fn run(
                                     guard.record_remote_effect(closed_effect);
                                 }
                                 Err(e) => {
-                                    if !json {
+                                    if !json && !jsonl {
                                         pb.println(format!(
                                             "{} Could not close old {} {}{}: {}",
                                             style("Warning:").yellow(),
@@ -657,7 +788,7 @@ pub fn run(
                                 }
                             }
 
-                            if !json {
+                            if !json && !jsonl {
                                 let status_msg = if needs_push { "Pushed" } else { "Up to date" };
                                 pb.println(format!(
                                     "{} {} {} -> {} {}{} (recreated from {}{})",
@@ -681,7 +812,7 @@ pub fn run(
                         Err(e) => {
                             action = "error".to_string();
                             entry_error = Some(e.to_string());
-                            if !json {
+                            if !json && !jsonl {
                                 pb.println(format!(
                                     "{} Failed to recreate {} for {} after source branch changed from {}: {}",
                                     style("Error:").red().bold(),
@@ -696,7 +827,7 @@ pub fn run(
                 } else {
                     if update_title {
                         if let Err(e) = provider.update_pr_title(pr_num, &title) {
-                            if !json {
+                            if !json && !jsonl {
                                 pb.println(format!(
                                     "{} Could not update {} {}{} title: {}",
                                     style("Warning:").yellow(),
@@ -732,7 +863,7 @@ pub fn run(
                                             provider.pr_number_prefix(),
                                             pr_num
                                         );
-                                        if !json {
+                                        if !json && !jsonl {
                                             pb.println(format!(
                                                 "{} {}",
                                                 style("Warning:").yellow(),
@@ -749,7 +880,7 @@ pub fn run(
                                     if let Err(e) =
                                         provider.update_pr_description(pr_num, &new_body)
                                     {
-                                        if !json {
+                                        if !json && !jsonl {
                                             pb.println(format!(
                                                 "{} Could not update {} {}{} description: {}",
                                                 style("Warning:").yellow(),
@@ -768,7 +899,7 @@ pub fn run(
                             }
                             Err(e) => {
                                 // Could not read remote body — skip update to be safe
-                                if !json {
+                                if !json && !jsonl {
                                     pb.println(format!(
                                         "{} Could not read {} {}{} body, skipping description update: {}",
                                         style("Warning:").yellow(),
@@ -798,7 +929,7 @@ pub fn run(
                             guard.mark_touched_remote();
                         }
                         Err(e) => {
-                            if !json {
+                            if !json && !jsonl {
                                 pb.println(format!(
                                     "{} Could not update {} {}{}: {}",
                                     style("Warning:").yellow(),
@@ -820,7 +951,7 @@ pub fn run(
                     } else {
                         "Up to date"
                     };
-                    if !json {
+                    if !json && !jsonl {
                         pb.println(format!(
                             "{} {} {} -> {} {}{}",
                             style("OK").green().bold(),
@@ -833,6 +964,17 @@ pub fn run(
                     }
                     if needs_push || update_descriptions || update_title {
                         action = "updated".to_string();
+                    }
+                    if let Some(s) = streamer.as_mut() {
+                        s.emit(&SyncStreamingResponse {
+                            version: OUTPUT_VERSION,
+                            command: "sync".to_string(),
+                            event: SyncStreamingEvent::PrUpdated {
+                                position: entry.position,
+                                pr_number: pr_num,
+                                action: action.clone(),
+                            },
+                        });
                     }
                 }
             }
@@ -847,6 +989,22 @@ pub fn run(
                     entry_draft,
                 ) {
                     Ok(result) => {
+                        if let Some(s) = streamer.as_mut() {
+                            s.emit(&SyncStreamingResponse {
+                                version: OUTPUT_VERSION,
+                                command: "sync".to_string(),
+                                event: SyncStreamingEvent::PrCreated {
+                                    position: entry.position,
+                                    pr_number: result.number,
+                                    pr_url: if result.url.is_empty() {
+                                        None
+                                    } else {
+                                        Some(result.url.clone())
+                                    },
+                                    draft: entry_draft,
+                                },
+                            });
+                        }
                         config.set_mr_for_entry(&stack.name, gg_id, result.number);
                         pr_number = Some(result.number);
                         pr_url = if result.url.is_empty() {
@@ -868,7 +1026,7 @@ pub fn run(
                         touched_remote = true;
                         guard.record_remote_effect(effect);
 
-                        if !json {
+                        if !json && !jsonl {
                             let draft_label = if entry_draft { " (draft)" } else { "" };
                             let status_msg = if needs_push { "Pushed" } else { "Up to date" };
                             pb.println(format!(
@@ -893,7 +1051,7 @@ pub fn run(
                     Err(e) => {
                         action = "error".to_string();
                         entry_error = Some(e.to_string());
-                        if !json {
+                        if !json && !jsonl {
                             pb.println(format!(
                                 "{} Failed to create {} for {}: {}",
                                 style("Error:").red().bold(),
@@ -907,7 +1065,7 @@ pub fn run(
             }
         }
 
-        if json {
+        if json || jsonl {
             json_entries.push(SyncEntryResultJson {
                 position: entry.position,
                 sha: entry.short_sha.clone(),
@@ -947,7 +1105,7 @@ pub fn run(
             };
             // json_entries.len() - 1 = the index of the entry we just pushed (JSON mode).
             // In non-JSON mode, json_entries is empty — use a sentinel index.
-            let json_index = if json {
+            let json_index = if json || jsonl {
                 json_entries.len().saturating_sub(1)
             } else {
                 0
@@ -966,7 +1124,7 @@ pub fn run(
         pb.inc(1);
     }
 
-    if !json {
+    if !json && !jsonl {
         pb.finish_with_message("Done!");
     }
 
@@ -1010,7 +1168,7 @@ pub fn run(
             let existing = match provider.find_managed_comment(snap.pr_number) {
                 Ok(v) => v,
                 Err(e) => {
-                    if !json {
+                    if !json && !jsonl {
                         println!(
                             "{} Could not list comments on {} {}{}: {}",
                             style("Warning:").yellow(),
@@ -1020,7 +1178,7 @@ pub fn run(
                             e
                         );
                     }
-                    if json {
+                    if json || jsonl {
                         if let Some(entry_json) = json_entries.get_mut(snap.json_index) {
                             entry_json.nav_comment_action = Some("error".to_string());
                         }
@@ -1049,28 +1207,30 @@ pub fn run(
                         .collect();
                     let body = stack_nav::render(&stack.name, &nav_entries, number_prefix);
 
-                    match existing {
-                        Some(c) if c.body == body => Some("unchanged"),
-                        Some(c) => match provider.update_pr_comment(snap.pr_number, c.id, &body) {
-                            Ok(()) => Some("updated"),
-                            Err(e) => {
-                                if !json {
-                                    println!(
-                                        "{} Could not update nav comment on {} {}{}: {}",
-                                        style("Warning:").yellow(),
-                                        provider.pr_label(),
-                                        number_prefix,
-                                        snap.pr_number,
-                                        e
-                                    );
+                    let result = match existing {
+                        Some(ref c) if c.body == body => Some("unchanged"),
+                        Some(ref c) => {
+                            match provider.update_pr_comment(snap.pr_number, c.id, &body) {
+                                Ok(()) => Some("updated"),
+                                Err(e) => {
+                                    if !json && !jsonl {
+                                        println!(
+                                            "{} Could not update nav comment on {} {}{}: {}",
+                                            style("Warning:").yellow(),
+                                            provider.pr_label(),
+                                            number_prefix,
+                                            snap.pr_number,
+                                            e
+                                        );
+                                    }
+                                    Some("error")
                                 }
-                                Some("error")
                             }
-                        },
+                        }
                         None => match provider.create_pr_comment(snap.pr_number, &body) {
                             Ok(()) => Some("created"),
                             Err(e) => {
-                                if !json {
+                                if !json && !jsonl {
                                     println!(
                                         "{} Could not create nav comment on {} {}{}: {}",
                                         style("Warning:").yellow(),
@@ -1083,31 +1243,83 @@ pub fn run(
                                 Some("error")
                             }
                         },
+                    };
+                    if let Some(s) = streamer.as_mut() {
+                        let error = if result == Some("error") {
+                            Some(format!(
+                                "Could not {} nav comment on {} {}{}",
+                                if existing.is_some() {
+                                    "update"
+                                } else {
+                                    "create"
+                                },
+                                provider.pr_label(),
+                                number_prefix,
+                                snap.pr_number
+                            ))
+                        } else {
+                            None
+                        };
+                        s.emit(&SyncStreamingResponse {
+                            version: OUTPUT_VERSION,
+                            command: "sync".to_string(),
+                            event: SyncStreamingEvent::NavComment {
+                                position: snap.json_index + 1,
+                                pr_number: snap.pr_number,
+                                action: result.unwrap_or("skip").to_string(),
+                                error,
+                            },
+                        });
                     }
+                    result
                 }
-                stack_nav::NavAction::Delete => match existing {
-                    Some(c) => match provider.delete_pr_comment(snap.pr_number, c.id) {
-                        Ok(()) => Some("deleted"),
-                        Err(e) => {
-                            if !json {
-                                println!(
-                                    "{} Could not delete nav comment on {} {}{}: {}",
-                                    style("Warning:").yellow(),
-                                    provider.pr_label(),
-                                    number_prefix,
-                                    snap.pr_number,
-                                    e
-                                );
+                stack_nav::NavAction::Delete => {
+                    let result = match existing {
+                        Some(c) => match provider.delete_pr_comment(snap.pr_number, c.id) {
+                            Ok(()) => Some("deleted"),
+                            Err(e) => {
+                                if !json && !jsonl {
+                                    println!(
+                                        "{} Could not delete nav comment on {} {}{}: {}",
+                                        style("Warning:").yellow(),
+                                        provider.pr_label(),
+                                        number_prefix,
+                                        snap.pr_number,
+                                        e
+                                    );
+                                }
+                                Some("error")
                             }
-                            Some("error")
-                        }
-                    },
-                    None => None,
-                },
+                        },
+                        None => None,
+                    };
+                    if let Some(s) = streamer.as_mut() {
+                        s.emit(&SyncStreamingResponse {
+                            version: OUTPUT_VERSION,
+                            command: "sync".to_string(),
+                            event: SyncStreamingEvent::NavComment {
+                                position: snap.json_index + 1,
+                                pr_number: snap.pr_number,
+                                action: result.unwrap_or("skip").to_string(),
+                                error: if result == Some("error") {
+                                    Some(format!(
+                                        "Could not delete nav comment on {} {}{}",
+                                        provider.pr_label(),
+                                        number_prefix,
+                                        snap.pr_number
+                                    ))
+                                } else {
+                                    None
+                                },
+                            },
+                        });
+                    }
+                    result
+                }
             };
 
             if let Some(action) = action_result {
-                if json {
+                if json || jsonl {
                     if let Some(entry_json) = json_entries.get_mut(snap.json_index) {
                         entry_json.nav_comment_action = Some(action.to_string());
                     }
@@ -1123,18 +1335,37 @@ pub fn run(
         print_json(&SyncResponse {
             version: OUTPUT_VERSION,
             sync: SyncResultJson {
-                stack: stack.name,
-                base: stack.base,
+                stack: stack.name.clone(),
+                base: stack.base.clone(),
                 rebased_before_sync,
-                warnings,
+                warnings: warnings.clone(),
                 metadata: SyncMetadataJson {
                     gg_ids_added: metadata_counts.gg_ids_added,
                     gg_parents_updated: metadata_counts.gg_parents_updated,
                     gg_parents_removed: metadata_counts.gg_parents_removed,
                 },
-                entries: json_entries,
+                entries: json_entries.clone(),
             },
         });
+    } else if jsonl {
+        if let Some(s) = streamer.as_mut() {
+            s.emit(&SyncStreamingResponse {
+                version: OUTPUT_VERSION,
+                command: "sync".to_string(),
+                event: SyncStreamingEvent::Summary {
+                    stack: stack.name,
+                    base: stack.base,
+                    rebased_before_sync,
+                    warnings: warnings.clone(),
+                    metadata: SyncMetadataJson {
+                        gg_ids_added: metadata_counts.gg_ids_added,
+                        gg_parents_updated: metadata_counts.gg_parents_updated,
+                        gg_parents_removed: metadata_counts.gg_parents_removed,
+                    },
+                    entries: json_entries,
+                },
+            });
+        }
     } else {
         println!();
         println!(
@@ -1160,8 +1391,9 @@ fn restore_sync_start_position(
     start_branch: Option<&str>,
     start_head: git2::Oid,
     json: bool,
+    jsonl: bool,
 ) -> Result<()> {
-    if !json {
+    if !json && !jsonl {
         println!(
             "{} Restoring repository to pre-sync state...",
             style("→").cyan()
@@ -1178,7 +1410,7 @@ fn restore_sync_start_position(
         git::checkout_commit(repo, &commit)?;
     }
 
-    if !json {
+    if !json && !jsonl {
         println!("{} Repository restored", style("OK").green());
     }
 

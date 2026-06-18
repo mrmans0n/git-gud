@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.8] - 2026-06-18
+
+### Added
+- `gg sync --json --stream` can now emit newline-delimited JSON events as sync progresses (#355).
+
+### Fixed
+- `gg sync --json --stream` now handles closed output pipes without surfacing spurious broken-pipe errors (#356).
+
+### Changed
+- Updated dependencies: `skim` to v4.8.0 (#354).
+
 ## [0.9.7] - 2026-06-10
 
 ### Added
@@ -500,7 +511,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.9.6...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.9.8...HEAD
+[0.9.8]: https://github.com/mrmans0n/git-gud/compare/v0.9.7...v0.9.8
+[0.9.7]: https://github.com/mrmans0n/git-gud/compare/v0.9.6...v0.9.7
 [0.9.6]: https://github.com/mrmans0n/git-gud/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/mrmans0n/git-gud/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/mrmans0n/git-gud/compare/v0.9.3...v0.9.4

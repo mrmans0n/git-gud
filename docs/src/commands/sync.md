@@ -18,6 +18,7 @@ gg sync [OPTIONS]
 - `--no-verify`: Skip the pre-push hook for pushes performed by this sync (forwards `git push --no-verify`). Opt-in per invocation; does not affect other hooks.
 - `-u, --until <UNTIL>`: Sync up to target commit (position, GG-ID, or SHA)
 - `--json`: Output structured JSON for automation (suppresses human/progress output)
+- `--jsonl`: Output streaming NDJSON for automation (one JSON event per line, flushed after each; see Streaming Events below)
 
 Before pushing, `gg sync` checks whether your stack base is behind `origin/<base>`. If it is behind by at least the configured threshold, git-gud warns and suggests rebasing first (`gg rebase`).
 
@@ -111,9 +112,61 @@ re-syncing cleans up any previously-posted comments automatically.
 Merged or closed PRs are left alone — `gg sync` never modifies comments on
 historical PRs.
 
-When running with `--json`, each entry includes an optional `nav_comment_action`
-field (one of `"created"`, `"updated"`, `"unchanged"`, `"deleted"`, `"error"`)
-when a reconcile decision was made.
+When running with `--json` or `--jsonl`, each entry includes an optional
+`nav_comment_action` field (one of `"created"`, `"updated"`, `"unchanged"`,
+`"deleted"`, `"error"`) when a reconcile decision was made.
+
+## Streaming NDJSON (`--jsonl`)
+
+`gg sync --jsonl` emits one compact JSON object per line on stdout and flushes
+after each line. Human/progress output is suppressed on stdout but diagnostics
+may still appear on stderr. This mode is intended for agents and long-running
+pipelines that want incremental updates instead of waiting for a final aggregate
+payload.
+
+Every line is a valid JSON object with at least:
+
+- `version`: output schema version (`1`)
+- `command`: always `"sync"`
+- `event`: event kind (see below)
+
+Event kinds:
+
+| Event | Fields | Emitted when |
+|---|---|---|
+| `start` | `stack`, `base`, `total_entries` | Sync begins |
+| `entry_started` | `position`, `sha`, `title`, `gg_id`, `branch` | Processing begins for a stack entry |
+| `push_started` | `position`, `branch` | A push is about to start |
+| `push_done` | `position`, `branch`, `forced` | Push succeeded |
+| `push_error` | `position`, `branch`, `error` | Push failed (entry is skipped) |
+| `pr_created` | `position`, `pr_number`, `pr_url`, `draft` | New PR/MR created |
+| `pr_updated` | `position`, `pr_number`, `action` | Existing PR/MR updated (`updated`/`recreated`) |
+| `pr_skipped_closed` | `position`, `pr_number` | Existing PR/MR is merged/closed and skipped |
+| `nav_comment` | `position`, `pr_number`, `action`, `error` | Managed nav comment reconciled (`created`/`updated`/`unchanged`/`deleted`/`error`/`skip`) |
+| `error` | `message` | Fatal error before completion |
+| `summary` | same shape as `--json` `sync` object | Sync finished (success or partial failure) |
+
+The last event is always `summary`, so consumers can detect completion without
+reconstructing state. If an unrecoverable error happens before the summary,
+an `error` event is emitted and the process exits non-zero.
+
+### Example `--jsonl` output
+
+```ndjson
+{"version":1,"command":"sync","event":"start","stack":"my-stack","base":"main","total_entries":2}
+{"version":1,"command":"sync","event":"entry_started","position":1,"sha":"abc1234","title":"Add feature","gg_id":"c-abc1234","branch":"user/my-stack--c-abc1234"}
+{"version":1,"command":"sync","event":"push_started","position":1,"branch":"user/my-stack--c-abc1234"}
+{"version":1,"command":"sync","event":"push_done","position":1,"branch":"user/my-stack--c-abc1234","forced":false}
+{"version":1,"command":"sync","event":"pr_created","position":1,"pr_number":42,"pr_url":"https://github.com/org/repo/pull/42","draft":false}
+{"version":1,"command":"sync","event":"summary","stack":"my-stack","base":"main","rebased_before_sync":false,"warnings":[],"metadata":{"gg_ids_added":0,"gg_parents_updated":0,"gg_parents_removed":0},"entries":[{"position":1,"sha":"abc1234","title":"Add feature","gg_id":"c-abc1234","branch":"user/my-stack--c-abc1234","action":"created","pr_number":42,"pr_url":"https://github.com/org/repo/pull/42","draft":false,"pushed":true,"error":null}]}
+```
+
+### When to use `--json` vs `--jsonl`
+
+- Use `--json` when you want a single, complete aggregate payload at the end and
+  do not need progress while the command runs.
+- Use `--jsonl` when you want to stream events as they happen, monitor progress,
+  or pipe the output to a line-oriented consumer. Every line is self-contained.
 
 Example JSON (shape):
 

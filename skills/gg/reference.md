@@ -110,7 +110,9 @@ Push and create/update PRs/MRs.
 - `--no-rebase-check`
 - `--no-verify`: Skip the pre-push hook for pushes performed by this sync (forwards `git push --no-verify`)
 - `-u, --until <UNTIL>`
-- `--json`
+- `--json` — emit a single aggregate `SyncResponse` at the end
+- `--jsonl` — emit streaming NDJSON events (one per line, flushed after each); see
+  `docs/src/commands/sync.md` for the event schema
 
 If a mapped PR/MR's source branch no longer matches the current entry branch
 (for example after `gg unstack` moved entries to a new stack name), `gg sync`

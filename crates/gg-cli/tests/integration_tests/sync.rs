@@ -28,6 +28,58 @@ fn test_gg_sync_json_help() {
 }
 
 #[test]
+fn test_gg_sync_jsonl_help() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    let (success, stdout, _stderr) = run_gg(&repo_path, &["sync", "--help"]);
+
+    assert!(success);
+    assert!(stdout.contains("--jsonl"), "help should mention --jsonl");
+}
+
+#[test]
+fn test_gg_sync_jsonl_error_output_without_provider() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", "jsonl-sync-error"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("file.txt"), "content").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Test commit"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["sync", "--jsonl"]);
+    assert!(!success, "sync --jsonl should fail without provider");
+    assert!(
+        stderr.trim().is_empty(),
+        "stderr should be empty in --jsonl mode: {stderr}"
+    );
+
+    let mut found_error = false;
+    for line in stdout.lines() {
+        let parsed: Value = serde_json::from_str(line)
+            .unwrap_or_else(|_| panic!("every --jsonl line must be valid JSON: {line}"));
+        assert_eq!(parsed["version"], 1);
+        assert_eq!(parsed["command"], "sync");
+        if parsed["event"] == "error" {
+            found_error = true;
+            assert!(
+                parsed["message"].is_string(),
+                "error message must be string"
+            );
+        }
+    }
+    assert!(found_error, "--jsonl output must contain an error event");
+}
+
+#[test]
 fn test_gg_sync_json_error_output_without_provider() {
     let (_temp_dir, repo_path) = create_test_repo();
 
@@ -56,6 +108,135 @@ fn test_gg_sync_json_error_output_without_provider() {
     let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
     assert_eq!(parsed["version"], 1);
     assert!(parsed["error"].is_string(), "error field must be string");
+}
+
+#[test]
+fn test_gg_sync_jsonl_success_emits_ndjson_events_and_summary() {
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","provider":"github","base":"main","sync_behind_threshold":0}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "jsonl-success"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("entry.txt"), "a\n").expect("Failed to write entry");
+    run_git(&repo_path, &["add", "entry.txt"]);
+    run_git(&repo_path, &["commit", "-m", "Entry\n\nGG-ID: c-8fd7581"]);
+
+    let fake_bin = repo_path.join("fake-bin");
+    fs::create_dir_all(&fake_bin).expect("Failed to create fake bin dir");
+    fs::write(
+        fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+
+if [ "$1" = "--version" ]; then
+  echo "gh version 2.0.0"
+  exit 0
+fi
+
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  exit 0
+fi
+
+if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
+  echo "https://github.com/test/repo/pull/101"
+  exit 0
+fi
+
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  echo '{"number":101,"title":"Entry","state":"OPEN","url":"https://github.com/test/repo/pull/101","headRefName":"testuser/jsonl-success--c-8fd7581","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
+  exit 0
+fi
+
+if [ "$1" = "api" ] && [ "$2" = "-X" ] && [ "$3" = "POST" ]; then
+  exit 0
+fi
+
+echo "unexpected gh invocation: $@" >&2
+exit 1
+"#,
+    )
+    .expect("Failed to write fake gh");
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(fake_bin.join("gh"))
+            .expect("Failed to stat fake gh")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(fake_bin.join("gh"), perms).expect("Failed to chmod fake gh");
+    }
+
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut new_path = std::ffi::OsString::from(fake_bin.as_os_str());
+    new_path.push(":");
+    new_path.push(old_path);
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["sync", "--jsonl", "--no-rebase-check"],
+        &[("PATH", new_path.as_os_str())],
+    );
+    assert!(
+        success,
+        "sync --jsonl failed\nstdout:\n{}\nstderr:\n{}",
+        stdout, stderr
+    );
+    assert!(
+        stderr.trim().is_empty(),
+        "stderr should be empty in --jsonl mode: {stderr}"
+    );
+
+    let mut events: Vec<Value> = Vec::new();
+    for line in stdout.lines() {
+        let parsed: Value = serde_json::from_str(line)
+            .unwrap_or_else(|_| panic!("every --jsonl line must be valid JSON: {line}"));
+        assert_eq!(parsed["version"], 1);
+        assert_eq!(parsed["command"], "sync");
+        events.push(parsed);
+    }
+
+    assert!(
+        !events.is_empty(),
+        "--jsonl output must contain at least one event"
+    );
+    assert_eq!(events[0]["event"], "start", "first event must be start");
+    assert!(
+        events[0]["total_entries"].is_number(),
+        "start event must include total_entries"
+    );
+
+    let summary = events.last().unwrap();
+    assert_eq!(summary["event"], "summary", "last event must be summary");
+    assert!(
+        summary["entries"].is_array(),
+        "summary must include entries"
+    );
+    assert_eq!(summary["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(summary["entries"][0]["action"], "created");
+    assert_eq!(summary["entries"][0]["pr_number"], 101);
+
+    let events_before_summary = &events[..events.len() - 1];
+    let has_entry_started = events_before_summary
+        .iter()
+        .any(|e| e["event"] == "entry_started");
+    let has_pr_created = events_before_summary
+        .iter()
+        .any(|e| e["event"] == "pr_created");
+    assert!(has_entry_started, "must emit entry_started event");
+    assert!(has_pr_created, "must emit pr_created event");
+
+    let line_count = stdout.lines().count();
+    assert!(
+        line_count >= 3,
+        "expected at least start, entry_started/created, summary lines, got {line_count}"
+    );
 }
 
 #[test]

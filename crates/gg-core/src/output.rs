@@ -37,8 +37,9 @@ impl StreamingJson {
     pub fn emit<T: Serialize>(&mut self, event: &T) {
         let line = serde_json::to_string(event).expect("failed to serialize streaming event");
         let mut lock = self.stdout.lock();
-        writeln!(lock, "{}", line).expect("failed to write streaming event");
-        lock.flush().expect("failed to flush streaming event");
+        if let Err(error) = write_streaming_line(&mut lock, &line) {
+            handle_streaming_write_error(error, 0);
+        }
     }
 
     /// Emit an event and terminate the process with the given exit code.
@@ -48,10 +49,23 @@ impl StreamingJson {
     pub fn emit_and_exit<T: Serialize>(event: &T, code: i32) -> ! {
         let line = serde_json::to_string(event).expect("failed to serialize streaming event");
         let mut stdout = io::stdout();
-        writeln!(stdout, "{}", line).expect("failed to write streaming event");
-        stdout.flush().expect("failed to flush streaming event");
+        if let Err(error) = write_streaming_line(&mut stdout, &line) {
+            handle_streaming_write_error(error, code);
+        }
         std::process::exit(code);
     }
+}
+
+fn write_streaming_line(writer: &mut impl Write, line: &str) -> io::Result<()> {
+    writeln!(writer, "{}", line)?;
+    writer.flush()
+}
+
+fn handle_streaming_write_error(error: io::Error, code: i32) -> ! {
+    if error.kind() == io::ErrorKind::BrokenPipe {
+        std::process::exit(code);
+    }
+    panic!("failed to write streaming event: {}", error);
 }
 
 #[derive(Serialize)]
@@ -409,6 +423,36 @@ pub struct InboxStackErrorJson {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{self, Write};
+
+    struct BrokenPipeWriter;
+
+    impl Write for BrokenPipeWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed pipe"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct TrackingWriter {
+        bytes: Vec<u8>,
+        flushed: bool,
+    }
+
+    impl Write for TrackingWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushed = true;
+            Ok(())
+        }
+    }
 
     #[test]
     fn run_response_serializes() {
@@ -650,6 +694,31 @@ mod tests {
         let v = serde_json::to_value(&response).unwrap();
         assert_eq!(v["event"], "error");
         assert_eq!(v["status"], "error");
+    }
+
+    #[test]
+    fn write_streaming_line_writes_newline_and_flushes() {
+        let mut writer = TrackingWriter {
+            bytes: vec![],
+            flushed: false,
+        };
+
+        write_streaming_line(&mut writer, r#"{"event":"start"}"#).unwrap();
+
+        assert_eq!(
+            writer.bytes,
+            br#"{"event":"start"}"#.iter().copied().chain([b'\n']).collect::<Vec<_>>()
+        );
+        assert!(writer.flushed);
+    }
+
+    #[test]
+    fn write_streaming_line_returns_broken_pipe() {
+        let mut writer = BrokenPipeWriter;
+
+        let error = write_streaming_line(&mut writer, r#"{"event":"start"}"#).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
     }
 }
 

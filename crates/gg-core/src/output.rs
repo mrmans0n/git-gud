@@ -5,6 +5,7 @@ use std::io::{self, Write};
 use serde::{Serialize, Serializer};
 
 pub const OUTPUT_VERSION: u32 = 1;
+const STREAMING_ABORT_EXIT_CODE: i32 = 1;
 
 pub fn print_json<T: Serialize>(data: &T) {
     println!(
@@ -38,7 +39,7 @@ impl StreamingJson {
         let line = serde_json::to_string(event).expect("failed to serialize streaming event");
         let mut lock = self.stdout.lock();
         if let Err(error) = write_streaming_line(&mut lock, &line) {
-            handle_streaming_write_error(error, 0);
+            handle_streaming_write_error(error, STREAMING_ABORT_EXIT_CODE);
         }
     }
 
@@ -719,6 +720,11 @@ mod tests {
         let error = write_streaming_line(&mut writer, r#"{"event":"start"}"#).unwrap_err();
 
         assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    #[test]
+    fn ordinary_streaming_broken_pipe_exits_nonzero() {
+        assert_eq!(STREAMING_ABORT_EXIT_CODE, 1);
     }
 }
 

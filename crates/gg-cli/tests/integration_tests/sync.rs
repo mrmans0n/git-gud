@@ -80,6 +80,47 @@ fn test_gg_sync_jsonl_error_output_without_provider() {
 }
 
 #[test]
+fn test_gg_sync_jsonl_empty_stack_emits_summary_only() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", "jsonl-empty-stack"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["sync", "--jsonl"]);
+    assert!(
+        success,
+        "sync --jsonl on empty stack failed\nstdout:\n{}\nstderr:\n{}",
+        stdout, stderr
+    );
+    assert!(
+        stderr.trim().is_empty(),
+        "stderr should be empty in --jsonl mode: {stderr}"
+    );
+
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 1, "empty stack should emit one summary event");
+    let parsed: Value = serde_json::from_str(lines[0])
+        .unwrap_or_else(|_| panic!("summary line must be valid JSON: {}", lines[0]));
+    assert_eq!(parsed["version"], 1);
+    assert_eq!(parsed["command"], "sync");
+    assert_eq!(parsed["event"], "summary");
+    assert_eq!(parsed["status"], "ok");
+    assert_eq!(parsed["stack"], "jsonl-empty-stack");
+    assert!(
+        parsed["entries"].as_array().unwrap().is_empty(),
+        "empty stack summary should include no entries"
+    );
+}
+
+#[test]
 fn test_gg_sync_json_error_output_without_provider() {
     let (_temp_dir, repo_path) = create_test_repo();
 
@@ -180,7 +221,7 @@ exit 1
 
     let (success, stdout, stderr) = run_gg_with_env(
         &repo_path,
-        &["sync", "--jsonl", "--no-rebase-check"],
+        &["sync", "--jsonl", "--lint", "--no-rebase-check"],
         &[("PATH", new_path.as_os_str())],
     );
     assert!(

@@ -72,7 +72,7 @@ fn maybe_rebase_if_base_is_behind(
         // Internal auto-rebase during sync: the user hasn't been asked to
         // --force, so respect the immutability guard rather than silently
         // bypassing it.
-        match crate::commands::rebase::run_with_repo(repo, None, json && !jsonl, false) {
+        match crate::commands::rebase::run_with_repo(repo, None, json || jsonl, false) {
             Ok(()) => return Ok(true),
             Err(GgError::ImmutableTargets(msg)) => {
                 return Err(GgError::ImmutableTargetsDuringSync(msg));
@@ -102,7 +102,7 @@ fn maybe_rebase_if_base_is_behind(
         .unwrap_or(true);
 
     if should_rebase {
-        match crate::commands::rebase::run_with_repo(repo, None, json && !jsonl, false) {
+        match crate::commands::rebase::run_with_repo(repo, None, json || jsonl, false) {
             Ok(()) => return Ok(true),
             Err(GgError::ImmutableTargets(msg)) => {
                 return Err(GgError::ImmutableTargetsDuringSync(msg));
@@ -265,13 +265,28 @@ pub fn run(
                     stack: initial_stack.name.clone(),
                     base: initial_stack.base.clone(),
                     rebased_before_sync: false,
+                    warnings: warnings.clone(),
+                    metadata: SyncMetadataJson::default(),
+                    entries: vec![],
+                },
+            });
+        } else if !jsonl {
+            println!("{}", style("Stack is empty. Nothing to sync.").dim());
+        }
+        if jsonl {
+            let mut streamer = StreamingJson::new();
+            streamer.emit(&SyncStreamingResponse {
+                version: OUTPUT_VERSION,
+                command: "sync".to_string(),
+                event: SyncStreamingEvent::Summary {
+                    stack: initial_stack.name,
+                    base: initial_stack.base,
+                    rebased_before_sync: false,
                     warnings,
                     metadata: SyncMetadataJson::default(),
                     entries: vec![],
                 },
             });
-        } else {
-            println!("{}", style("Stack is empty. Nothing to sync.").dim());
         }
         guard.finalize_with_scope(
             &repo,
@@ -335,7 +350,8 @@ pub fn run(
         if !json && !jsonl {
             println!("{}", console::style("Running lint before sync...").dim());
         }
-        let lint_passed = crate::commands::lint::run_brief_no_commands(Some(end_pos), json, false)?;
+        let lint_passed =
+            crate::commands::lint::run_brief_no_commands(Some(end_pos), json || jsonl, false)?;
         if !lint_passed {
             restore_sync_start_position(
                 &repo,
@@ -369,7 +385,7 @@ pub fn run(
                     entries: vec![],
                 },
             });
-        } else {
+        } else if !jsonl {
             println!("{}", style("Stack is empty. Nothing to sync.").dim());
         }
         if let Some(s) = streamer.as_mut() {

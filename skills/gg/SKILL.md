@@ -136,7 +136,7 @@ gg land -a -c --json
 ## Agent operating rules (mandatory)
 
 1. **Never run `gg land` without explicit user confirmation.**
-2. **Always use `--json`** for `gg ls`, `gg sync`, `gg land`, `gg clean -a`, and `gg lint`.
+2. **Always use structured output**: use `--json` for `gg ls`, `gg land`, `gg clean -a`, and `gg lint`. Use `gg sync --json` when you need the final aggregate response, and prefer `gg sync --jsonl` for long-running agent pipelines that need streaming progress and a final summary event.
 3. **Prefer worktrees** for isolation (`gg co -w <stack>`). If shell integration is unavailable, manually `cd` to the printed worktree path before editing.
 4. Verify `approved: true` and `ci_status` success before landing. If the user requests `--admin`, skip the approval check (GitHub only — GitLab ignores the flag).
 5. If sync warns stack is behind base, run `gg rebase` first.
@@ -155,6 +155,7 @@ gg land -a -c --json
 - Reorder/drop stack (TUI): `gg reorder` (or `gg arrange`) — opens interactive TUI for visual reordering and dropping commits. Press `d` to mark a commit for dropping. Use `--no-tui` to fall back to text editor (delete lines to drop).
 - Reorder stack (direct): `gg reorder -o "3,1,2"`
 - Sync subset: `gg sync -u <position|gg-id|sha> --json`
+- Sync with streaming progress: `gg sync --jsonl`
 - Lint stack: `gg lint --json`
 - Run a command across the stack: `gg run -- <cmd...>` (see below)
 - Triage multiple stacks at once: `gg inbox --json`

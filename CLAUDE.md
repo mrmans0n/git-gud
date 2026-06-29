@@ -60,6 +60,7 @@ crates/
 │           ├── completions.rs # Shell completions
 │           ├── drop_cmd.rs   # Drop commits from stack
 │           ├── inbox.rs      # Review inbox for pending PRs/MRs
+│           ├── init.rs       # Initialize gg in a repository
 │           ├── land.rs       # Merge approved PRs/MRs
 │           ├── lint.rs       # Run lint commands per commit
 │           ├── log.rs        # Stack log display
@@ -76,13 +77,15 @@ crates/
 │           ├── split_tui.rs  # TUI for split
 │           ├── squash.rs     # Squash changes into current commit
 │           ├── sync.rs       # Push branches and create/update PRs/MRs
-│           └── undo.rs       # Undo last operation
+│           ├── undo.rs       # Undo last operation
+│           ├── unstack.rs    # Unstack commits from a stack
+│           └── unstack_tui.rs # TUI for unstack
 ├── gg-cli/                   # CLI binary (entry point)
 │   ├── Cargo.toml
 │   ├── src/
 │   │   └── main.rs           # clap parsing + command dispatch
 │   └── tests/
-│       └── integration_tests.rs  # Integration tests with temp repos
+│       └── integration_tests/    # Integration tests with temp repos
 └── gg-mcp/                   # MCP server binary (stub, in development)
     ├── Cargo.toml
     └── src/

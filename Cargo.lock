@@ -1203,9 +1203,9 @@ dependencies = [
 
 [[package]]
 name = "frizbee"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf1203300031cb4fbd90e77833d9b2455f609ba9ab7c1703990d09ebbcd8b5ef"
+checksum = "a151c9ed9ab8cefc76a76b7a15292fc83575f70cf2076d238e0a3251f69738ba"
 
 [[package]]
 name = "fs2"
@@ -3414,9 +3414,9 @@ checksum = "b2aa850e253778c88a04c3d7323b043aeda9d3e30d5971937c1855769763678e"
 
 [[package]]
 name = "skim"
-version = "5.1.0"
+version = "5.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c1044cbd6a9ea36b2f19c6ec62520467d0cd90e12f190e40ae8c465aeaf2e97"
+checksum = "4e61044e7b50048a0dd4061ffb1b8630679a7e974d6c85518fbd043e4be919b8"
 dependencies = [
  "ansi-to-tui",
  "assert_enum_variants",
@@ -3610,7 +3610,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.1",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.59.0",

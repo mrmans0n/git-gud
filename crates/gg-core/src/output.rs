@@ -708,7 +708,7 @@ mod tests {
 
         assert_eq!(
             writer.bytes,
-            br#"{"event":"start"}"#.iter().copied().chain([b'\n']).collect::<Vec<_>>()
+            br#"{"event":"start"}"#.iter().copied().chain(*b"\n").collect::<Vec<_>>()
         );
         assert!(writer.flushed);
     }

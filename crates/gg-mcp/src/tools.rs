@@ -634,7 +634,7 @@ impl GgMcpServer {
         let config = load_config(&repo)?;
         let stack = load_stack(&repo, &config)?;
         let info = build_stack_info(&stack, &repo);
-        let upstream = format!("origin/{}", &stack.base);
+        let upstream = format!("origin/{}", stack.base);
         let behind = git::count_commits_behind(&repo, &stack.base, &upstream).unwrap_or(0);
 
         let status = serde_json::json!({

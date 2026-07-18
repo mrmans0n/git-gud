@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.9] - 2026-07-19
+
+### Changed
+- Updated dependencies across the CLI/MCP stack, including `actions/checkout`, `ratatui`, `rmcp`, `uuid`, `regex`, `skim`, `anyhow`, `clap_complete`, `console`, `indicatif`, `clap`, and `tokio` (#357, #358, #360, #361, #362, #363, #364, #365, #366, #367, #368, #369, #370, #371, #372, #373, #374, #375, #376, #377, #378, #379, #380, #381, #382, #383).
+- Refreshed repository command and test structure guidance.
+
 ## [0.9.8] - 2026-06-18
 
 ### Added
@@ -511,7 +517,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.9.8...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.9.9...HEAD
+[0.9.9]: https://github.com/mrmans0n/git-gud/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/mrmans0n/git-gud/compare/v0.9.7...v0.9.8
 [0.9.7]: https://github.com/mrmans0n/git-gud/compare/v0.9.6...v0.9.7
 [0.9.6]: https://github.com/mrmans0n/git-gud/compare/v0.9.5...v0.9.6

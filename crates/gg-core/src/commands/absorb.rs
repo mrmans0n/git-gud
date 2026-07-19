@@ -242,6 +242,8 @@ fn prepare_git_absorb_env(repo: &git2::Repository) -> GitEnvGuard {
     let mut guard = GitEnvGuard::default();
 
     guard.set("GIT_DIR", repo.path().as_os_str());
+    guard.set("GIT_EDITOR", std::ffi::OsStr::new("true"));
+    guard.set("GIT_SEQUENCE_EDITOR", std::ffi::OsStr::new("true"));
 
     if let Some(workdir) = repo.workdir() {
         guard.set("GIT_WORK_TREE", workdir.as_os_str());

@@ -1,5 +1,6 @@
-use crate::helpers::{create_test_repo, run_gg, run_git};
+use crate::helpers::{create_test_repo, run_gg, run_gg_with_env, run_git};
 
+use std::ffi::OsStr;
 use std::fs;
 
 fn setup_test_config(repo_path: &std::path::Path) {
@@ -77,6 +78,37 @@ fn test_absorb_and_rebase_autosquashes() {
         "Expected --and-rebase to autosquash or run rebase. log={}, reflog={}",
         log,
         reflog
+    );
+}
+
+#[test]
+fn test_absorb_and_rebase_ignores_hostile_editor_env() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    setup_absorb_stack(&repo_path, "absorb-and-rebase-hostile-editor");
+
+    fs::write(repo_path.join("stack.txt"), "line1 updated\nline2\n").expect("Failed to write file");
+    run_git(&repo_path, &["add", "stack.txt"]);
+
+    let false_editor = OsStr::new("/bin/false");
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["absorb", "--and-rebase"],
+        &[
+            ("GIT_EDITOR", false_editor),
+            ("GIT_SEQUENCE_EDITOR", false_editor),
+        ],
+    );
+    assert!(
+        success,
+        "absorb --and-rebase should override hostile editor env: {} {}",
+        stdout, stderr
+    );
+
+    let (_, log) = run_git(&repo_path, &["log", "--oneline", "-5"]);
+    assert!(
+        !log.contains("fixup!"),
+        "Expected --and-rebase to autosquash with hostile editor env. log={}",
+        log
     );
 }
 

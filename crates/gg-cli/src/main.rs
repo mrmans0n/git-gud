@@ -215,9 +215,18 @@ enum Commands {
         #[arg(
             long,
             requires = "json",
-            conflicts_with_all = ["message", "no_edit", "no_tui", "files"]
+            conflicts_with_all = ["plan_json", "message", "no_edit", "no_tui", "files"]
         )]
         describe: bool,
+
+        /// Apply a previously described split plan from JSON
+        #[arg(
+            long,
+            value_name = "PATH",
+            requires = "json",
+            conflicts_with_all = ["describe", "message", "no_edit", "no_tui", "files"]
+        )]
+        plan_json: Option<std::path::PathBuf>,
 
         /// Emit machine-readable JSON output
         #[arg(long)]
@@ -631,6 +640,7 @@ fn main() {
             no_tui,
             force,
             describe,
+            plan_json,
             json,
             files,
         }) => (
@@ -642,9 +652,10 @@ fn main() {
                 no_tui,
                 force,
                 describe,
+                plan_json: plan_json.clone(),
                 json,
             }),
-            describe,
+            describe || plan_json.is_some(),
             false,
         ),
         Some(Commands::Unstack {

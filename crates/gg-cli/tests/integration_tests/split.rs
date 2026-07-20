@@ -1,7 +1,10 @@
-use crate::helpers::{create_test_repo, run_gg, run_git, run_git_full};
+use crate::helpers::{create_test_repo, run_gg, run_gg_with_env, run_git, run_git_full};
 
 use std::fs;
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 fn create_two_hunk_split_commit() -> (tempfile::TempDir, std::path::PathBuf) {
@@ -21,7 +24,7 @@ fn create_two_hunk_split_commit() -> (tempfile::TempDir, std::path::PathBuf) {
     fs::write(repo_path.join("multi_hunk.txt"), initial_content)
         .expect("Failed to write initial file");
     run_git(&repo_path, &["add", "multi_hunk.txt"]);
-    run_git(&repo_path, &["commit", "-m", "Add multi-hunk fixture"]);
+    run_git(&repo_path, &["commit", "--amend", "--no-edit"]);
 
     let (success, _, stderr) = run_gg(&repo_path, &["co", "test-split-describe"]);
     assert!(success, "Failed to create stack: {stderr}");
@@ -35,13 +38,405 @@ fn create_two_hunk_split_commit() -> (tempfile::TempDir, std::path::PathBuf) {
         .collect::<String>();
     fs::write(repo_path.join("multi_hunk.txt"), modified_content)
         .expect("Failed to write modified file");
-    run_git(&repo_path, &["add", "multi_hunk.txt"]);
+    fs::write(repo_path.join("binary.dat"), [0, 159, 146, 150]).expect("write binary fixture");
+    run_git(&repo_path, &["add", "multi_hunk.txt", "binary.dat"]);
     run_git(
         &repo_path,
         &["commit", "-m", "Two separated hunks\n\nGG-ID: c-abc1234"],
     );
 
     (temp_dir, repo_path)
+}
+
+fn describe_split(repo_path: &Path, target: &str) -> serde_json::Value {
+    let (success, stdout, stderr) = run_gg(
+        repo_path,
+        &["split", "--describe", "--commit", target, "--json"],
+    );
+    assert!(success, "describe failed: {stderr}");
+    serde_json::from_str(&stdout).expect("describe should return JSON")
+}
+
+fn write_split_plan(
+    repo_path: &Path,
+    describe: &serde_json::Value,
+    selected_hunk_ids: Vec<serde_json::Value>,
+) -> std::path::PathBuf {
+    let path = repo_path.join(".git/gg/test-split-plan.json");
+    let plan = serde_json::json!({
+        "version": 1,
+        "plan_token": describe["plan_token"],
+        "target": describe["target"],
+        "selected_hunk_ids": selected_hunk_ids,
+        "first_message": "Structured first",
+        "remainder_message": "Structured remainder",
+    });
+    fs::write(&path, serde_json::to_vec_pretty(&plan).unwrap()).expect("write split plan");
+    path
+}
+
+fn operation_records(repo_path: &Path) -> Vec<std::ffi::OsString> {
+    let operations_dir = repo_path.join(".git/gg/operations");
+    if !operations_dir.exists() {
+        return Vec::new();
+    }
+    let mut records = fs::read_dir(operations_dir)
+        .expect("read operation records")
+        .map(|entry| entry.expect("read operation record").file_name())
+        .collect::<Vec<_>>();
+    records.sort();
+    records
+}
+
+fn apply_split_plan(repo_path: &Path, plan_path: &Path) -> (bool, String, String) {
+    run_gg(
+        repo_path,
+        &[
+            "split",
+            "--plan-json",
+            plan_path.to_str().unwrap(),
+            "--json",
+        ],
+    )
+}
+
+#[test]
+fn test_split_plan_applies_selected_hunk_and_undo_restores_stack() {
+    let (_temp_dir, repo_path) = create_two_hunk_split_commit();
+    let describe = describe_split(&repo_path, "1");
+    let original_sha = describe["target"]["sha"].as_str().unwrap().to_string();
+    let original_head = run_git_full(&repo_path, &["rev-parse", "HEAD"]).1;
+    let selected = vec![describe["hunks"][0]["id"].clone()];
+    let plan_path = write_split_plan(&repo_path, &describe, selected);
+
+    let (success, stdout, stderr) = apply_split_plan(&repo_path, &plan_path);
+    assert!(success, "apply failed: {stderr}");
+    let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(result["version"], 1);
+    assert!(result["operation_id"].as_str().unwrap().starts_with("op_"));
+    assert_eq!(result["original_sha"], original_sha);
+    assert!(result["first"]["sha"].as_str().is_some());
+    assert!(result["first"]["gg_id"].as_str().is_some());
+    assert!(result["remainder"]["sha"].as_str().is_some());
+    assert_eq!(result["remainder"]["gg_id"], "c-abc1234");
+    assert_eq!(result["rewritten_descendants"], serde_json::json!([]));
+    let first_sha = result["first"]["sha"].as_str().unwrap();
+    let remainder_sha = result["remainder"]["sha"].as_str().unwrap();
+    assert!(
+        !run_git(
+            &repo_path,
+            &["cat-file", "-e", &format!("{first_sha}:binary.dat")]
+        )
+        .0
+    );
+    assert!(
+        run_git(
+            &repo_path,
+            &["cat-file", "-e", &format!("{remainder_sha}:binary.dat")],
+        )
+        .0
+    );
+    assert_eq!(
+        run_git_full(&repo_path, &["rev-list", "--count", "HEAD"])
+            .1
+            .trim(),
+        "3"
+    );
+
+    let operation_id = result["operation_id"].as_str().unwrap();
+    let (success, stdout, stderr) = run_gg(&repo_path, &["undo", operation_id, "--json"]);
+    assert!(success, "undo failed: stdout={stdout} stderr={stderr}");
+    assert_eq!(
+        run_git_full(&repo_path, &["rev-parse", "HEAD"]).1,
+        original_head
+    );
+    assert_eq!(
+        run_git_full(&repo_path, &["rev-list", "--count", "HEAD"])
+            .1
+            .trim(),
+        "2"
+    );
+}
+
+#[test]
+fn test_split_plan_rejects_stale_target_without_mutation() {
+    let (_temp_dir, repo_path) = create_two_hunk_split_commit();
+    let describe = describe_split(&repo_path, "1");
+    let plan_path = write_split_plan(
+        &repo_path,
+        &describe,
+        vec![describe["hunks"][0]["id"].clone()],
+    );
+    run_git(
+        &repo_path,
+        &[
+            "commit",
+            "--amend",
+            "-m",
+            "Changed after describe\n\nGG-ID: c-abc1234",
+        ],
+    );
+    let refs_before = run_git_full(&repo_path, &["show-ref"]).1;
+    let operations_before = operation_records(&repo_path);
+
+    let (success, stdout, stderr) = apply_split_plan(&repo_path, &plan_path);
+    assert!(!success, "stale plan unexpectedly applied: {stdout}");
+    let error: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(error["error"]
+        .as_str()
+        .unwrap()
+        .contains("stale split plan"));
+    assert!(
+        stderr.is_empty(),
+        "structured error should use stdout: {stderr}"
+    );
+    assert_eq!(run_git_full(&repo_path, &["show-ref"]).1, refs_before);
+    assert_eq!(operation_records(&repo_path), operations_before);
+}
+
+#[test]
+fn test_split_plan_rejects_stale_target_without_gg_id_as_stale_plan() {
+    let (_temp_dir, repo_path) = create_two_hunk_split_commit();
+    assert!(
+        run_git(
+            &repo_path,
+            &["commit", "--amend", "-m", "Two separated hunks"],
+        )
+        .0
+    );
+    let describe = describe_split(&repo_path, "1");
+    assert!(describe["target"]["gg_id"].is_null());
+    let plan_path = write_split_plan(
+        &repo_path,
+        &describe,
+        vec![describe["hunks"][0]["id"].clone()],
+    );
+    assert!(
+        run_git(
+            &repo_path,
+            &["commit", "--amend", "-m", "Changed after describe"],
+        )
+        .0
+    );
+    let refs_before = run_git_full(&repo_path, &["show-ref"]).1;
+    let operations_before = operation_records(&repo_path);
+
+    let (success, stdout, stderr) = apply_split_plan(&repo_path, &plan_path);
+    assert!(!success, "stale plan unexpectedly applied: {stdout}");
+    let error: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(error["error"]
+        .as_str()
+        .unwrap()
+        .contains("stale split plan"));
+    assert!(
+        stderr.is_empty(),
+        "structured error should use stdout: {stderr}"
+    );
+    assert_eq!(run_git_full(&repo_path, &["show-ref"]).1, refs_before);
+    assert_eq!(operation_records(&repo_path), operations_before);
+}
+
+#[test]
+fn test_split_plan_rejects_stale_target_after_gg_id_is_removed() {
+    let (_temp_dir, repo_path) = create_two_hunk_split_commit();
+    let describe = describe_split(&repo_path, "1");
+    assert_eq!(describe["target"]["gg_id"], "c-abc1234");
+    let plan_path = write_split_plan(
+        &repo_path,
+        &describe,
+        vec![describe["hunks"][0]["id"].clone()],
+    );
+    assert!(
+        run_git(
+            &repo_path,
+            &["commit", "--amend", "-m", "Changed after describe"],
+        )
+        .0
+    );
+    let refs_before = run_git_full(&repo_path, &["show-ref"]).1;
+    let operations_before = operation_records(&repo_path);
+
+    let (success, stdout, stderr) = apply_split_plan(&repo_path, &plan_path);
+    assert!(!success, "stale plan unexpectedly applied: {stdout}");
+    let error: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(error["error"]
+        .as_str()
+        .unwrap()
+        .contains("stale split plan"));
+    assert!(
+        stderr.is_empty(),
+        "structured error should use stdout: {stderr}"
+    );
+    assert_eq!(run_git_full(&repo_path, &["show-ref"]).1, refs_before);
+    assert_eq!(operation_records(&repo_path), operations_before);
+}
+
+#[test]
+fn test_split_plan_rejects_invalid_inputs_before_mutation() {
+    let invalid_cases = [
+        ("zero selected hunks", serde_json::json!([])),
+        (
+            "all selected hunks",
+            serde_json::json!(["$first", "$second"]),
+        ),
+        ("unknown hunk", serde_json::json!(["h-unknown"])),
+        ("duplicate hunk", serde_json::json!(["$first", "$first"])),
+    ];
+
+    for (name, selected_template) in invalid_cases {
+        let (_temp_dir, repo_path) = create_two_hunk_split_commit();
+        let describe = describe_split(&repo_path, "1");
+        let first_id = describe["hunks"][0]["id"].clone();
+        let second_id = describe["hunks"][1]["id"].clone();
+        let selected = selected_template
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|id| match id.as_str().unwrap() {
+                "$first" => first_id.clone(),
+                "$second" => second_id.clone(),
+                _ => id.clone(),
+            })
+            .collect();
+        let plan_path = write_split_plan(&repo_path, &describe, selected);
+        let refs_before = run_git_full(&repo_path, &["show-ref"]).1;
+        let operations_before = operation_records(&repo_path);
+
+        let (success, stdout, _stderr) = apply_split_plan(&repo_path, &plan_path);
+        assert!(!success, "{name} unexpectedly applied: {stdout}");
+        serde_json::from_str::<serde_json::Value>(&stdout)
+            .unwrap_or_else(|_| panic!("{name} should return JSON: {stdout}"));
+        assert_eq!(
+            run_git_full(&repo_path, &["show-ref"]).1,
+            refs_before,
+            "{name}"
+        );
+        assert_eq!(operation_records(&repo_path), operations_before, "{name}");
+    }
+
+    for (name, field, value) in [
+        (
+            "empty first message",
+            "first_message",
+            serde_json::json!("  "),
+        ),
+        (
+            "empty remainder message",
+            "remainder_message",
+            serde_json::json!("\n"),
+        ),
+        ("unsupported version", "version", serde_json::json!(2)),
+    ] {
+        let (_temp_dir, repo_path) = create_two_hunk_split_commit();
+        let describe = describe_split(&repo_path, "1");
+        let plan_path = write_split_plan(
+            &repo_path,
+            &describe,
+            vec![describe["hunks"][0]["id"].clone()],
+        );
+        let mut plan: serde_json::Value =
+            serde_json::from_slice(&fs::read(&plan_path).unwrap()).unwrap();
+        plan[field] = value;
+        fs::write(&plan_path, serde_json::to_vec_pretty(&plan).unwrap()).unwrap();
+        let refs_before = run_git_full(&repo_path, &["show-ref"]).1;
+        let operations_before = operation_records(&repo_path);
+
+        let (success, stdout, _stderr) = apply_split_plan(&repo_path, &plan_path);
+        assert!(!success, "{name} unexpectedly applied: {stdout}");
+        serde_json::from_str::<serde_json::Value>(&stdout)
+            .unwrap_or_else(|_| panic!("{name} should return JSON: {stdout}"));
+        assert_eq!(
+            run_git_full(&repo_path, &["show-ref"]).1,
+            refs_before,
+            "{name}"
+        );
+        assert_eq!(operation_records(&repo_path), operations_before, "{name}");
+    }
+}
+
+#[test]
+fn test_split_plan_reports_rewritten_descendant_identity() {
+    let (_temp_dir, repo_path) = create_two_hunk_split_commit();
+    fs::write(repo_path.join("descendant.txt"), "descendant\n").unwrap();
+    run_git(&repo_path, &["add", "descendant.txt"]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Descendant\n\nGG-ID: c-def5678"],
+    );
+    let describe = describe_split(&repo_path, "1");
+    let plan_path = write_split_plan(
+        &repo_path,
+        &describe,
+        vec![describe["hunks"][0]["id"].clone()],
+    );
+
+    let (success, stdout, stderr) = apply_split_plan(&repo_path, &plan_path);
+    assert!(success, "apply failed: {stderr}");
+    let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let descendants = result["rewritten_descendants"].as_array().unwrap();
+    assert_eq!(descendants.len(), 1);
+    assert_eq!(descendants[0]["gg_id"], "c-def5678");
+    assert!(descendants[0]["sha"].as_str().is_some());
+}
+
+#[test]
+fn test_split_plan_rejects_immutable_target_without_force_path() {
+    let (_temp_dir, repo_path) = create_two_hunk_split_commit();
+    let describe = describe_split(&repo_path, "1");
+    let plan_path = write_split_plan(
+        &repo_path,
+        &describe,
+        vec![describe["hunks"][0]["id"].clone()],
+    );
+    let config_path = repo_path.join(".git/gg/config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["defaults"]["provider"] = serde_json::json!("github");
+    config["stacks"]["test-split-describe"]["mrs"]["c-abc1234"] = serde_json::json!(99);
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+
+    let fake_bin = repo_path.join("fake-bin");
+    fs::create_dir_all(&fake_bin).unwrap();
+    let fake_gh = fake_bin.join("gh");
+    fs::write(
+        &fake_gh,
+        "#!/bin/sh\nif [ \"$1\" = \"pr\" ] && [ \"$2\" = \"view\" ]; then\n  echo '{\"number\":99,\"title\":\"Two separated hunks\",\"state\":\"MERGED\",\"url\":\"https://github.com/test/repo/pull/99\",\"headRefName\":\"testuser/test-split-describe--c-abc1234\",\"isDraft\":false,\"mergeable\":\"MERGEABLE\",\"reviews\":[]}'\n  exit 0\nfi\nexit 1\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        let mut permissions = fs::metadata(&fake_gh).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&fake_gh, permissions).unwrap();
+    }
+    let mut path = std::ffi::OsString::from(fake_bin.as_os_str());
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap_or_default());
+    let refs_before = run_git_full(&repo_path, &["show-ref"]).1;
+    let operations_before = operation_records(&repo_path);
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &[
+            "split",
+            "--plan-json",
+            plan_path.to_str().unwrap(),
+            "--json",
+        ],
+        &[("PATH", path.as_os_str())],
+    );
+    assert!(!success, "immutable target unexpectedly applied: {stdout}");
+    let error: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(error["error"]
+        .as_str()
+        .unwrap()
+        .contains("cannot rewrite immutable commits"));
+    assert!(
+        stderr.is_empty(),
+        "structured error should use stdout: {stderr}"
+    );
+    assert_eq!(run_git_full(&repo_path, &["show-ref"]).1, refs_before);
+    assert_eq!(operation_records(&repo_path), operations_before);
 }
 
 #[test]

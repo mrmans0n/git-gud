@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use console::{style, Term};
@@ -17,7 +18,8 @@ use crate::output;
 use crate::stack::{self, Stack};
 
 use super::split_protocol::{
-    describe_hunk, plan_token, SplitDescribeResponse, SplitTargetIdentity, SPLIT_PROTOCOL_VERSION,
+    describe_hunk, plan_token, read_plan, SplitApplyResponse, SplitApplyResult,
+    SplitCommitIdentity, SplitDescribeResponse, SplitTargetIdentity, SPLIT_PROTOCOL_VERSION,
 };
 pub use super::split_protocol::{DiffHunk, DiffLine};
 
@@ -38,6 +40,8 @@ pub struct SplitOptions {
     pub force: bool,
     /// If true, describe the target commit's hunks without changing the repository.
     pub describe: bool,
+    /// Apply a previously described structured split plan.
+    pub plan_json: Option<PathBuf>,
     /// If true, emit machine-readable JSON output.
     pub json: bool,
 }
@@ -48,6 +52,13 @@ struct ResolvedSplitTarget<'repo> {
     target_commit: git2::Commit<'repo>,
     parent_commit: git2::Commit<'repo>,
     original_gg_id: Option<String>,
+}
+
+struct SplitSelection {
+    selected_indices: Vec<usize>,
+    non_hunk_files: Vec<String>,
+    first_message: String,
+    remainder_message: String,
 }
 
 /// Information about a file changed in a commit
@@ -75,6 +86,11 @@ impl std::fmt::Display for ChangedFile {
 pub fn run(options: SplitOptions) -> Result<()> {
     if options.describe {
         let response = describe(&options)?;
+        output::print_json(&response);
+        return Ok(());
+    }
+    if let Some(path) = options.plan_json.as_deref() {
+        let response = apply_plan(&options, path)?;
         output::print_json(&response);
         return Ok(());
     }
@@ -121,10 +137,6 @@ pub fn run(options: SplitOptions) -> Result<()> {
             "Commit has no file changes to split".to_string(),
         ));
     }
-
-    // Get trees for building the split
-    let parent_tree = parent_commit.tree()?;
-    let target_tree = target_commit.tree()?;
 
     // If the TUI provides commit messages inline, they're stored here to skip the editor
     let mut tui_commit_message: Option<String> = None;
@@ -212,15 +224,6 @@ pub fn run(options: SplitOptions) -> Result<()> {
         );
     }
 
-    let first_tree = build_tree_from_hunks(
-        &repo,
-        &parent_tree,
-        &target_tree,
-        &hunks,
-        &selected_indices,
-        &non_hunk_files,
-    )?;
-
     // Get commit messages
     // Priority: -m flag > TUI inline message > editor prompt
     let new_commit_message = if options.message.is_some() {
@@ -237,74 +240,29 @@ pub fn run(options: SplitOptions) -> Result<()> {
         get_remainder_message(&options, &target_commit)?
     };
 
-    // All validation passed — write the Pending op-log record now, right
-    // before the first actual repo mutation. A failure beyond this point
-    // leaves a Pending record the sweep promotes to Interrupted, which
-    // `gg undo` refuses (avoiding an unsafe partial-state rewind).
-    let mut guard = git::begin_recorded_op(
+    let result = execute_split(
         &repo,
         &config,
-        OperationKind::Split,
+        ResolvedSplitTarget {
+            stack,
+            target_pos,
+            target_commit,
+            parent_commit,
+            original_gg_id,
+        },
+        &hunks,
+        SplitSelection {
+            selected_indices,
+            non_hunk_files,
+            first_message: new_commit_message,
+            remainder_message,
+        },
         std::env::args().skip(1).collect(),
-        None,
-        SnapshotScope::AllUserBranches,
     )?;
-    guard.set_pending_plan(json!({
-        "split": {
-            "branch_name": stack.branch_name(),
-            "remainder_position": target_pos + 1,
-            "remainder_gg_id": original_gg_id.clone(),
-        }
-    }));
 
-    // 2. Create the first (new, lower) commit
-    let sig = git::get_signature(&repo)?;
-    let new_gg_id = git::generate_gg_id();
-    let first_message = git::set_gg_id_in_message(&new_commit_message, &new_gg_id);
-    let first_oid = repo.commit(
-        None, // don't update any ref
-        &sig,
-        &sig,
-        &first_message,
-        &first_tree,
-        &[&parent_commit],
-    )?;
-    let first_commit = repo.find_commit(first_oid)?;
-
-    // 3. Create the second (remainder, upper) commit
-    //    Tree = original target tree (all changes). Parent = first commit.
-    //    This means the diff of second commit = only the non-selected files.
-    let remainder_msg = if let Some(gg_id) = &original_gg_id {
-        git::set_gg_id_in_message(&remainder_message, gg_id)
-    } else {
-        remainder_message.clone()
-    };
-    let second_oid = repo.commit(
-        None,
-        &sig,
-        &sig,
-        &remainder_msg,
-        &target_tree,
-        &[&first_commit],
-    )?;
-    let second_commit = repo.find_commit(second_oid)?;
-
-    // 4. Rebase descendants onto second commit
-    let num_rebased = match rebase_descendants(
-        &repo,
-        &stack,
-        &config,
-        target_pos,
-        &target_commit,
-        &second_commit,
-    ) {
-        Ok(num_rebased) => num_rebased,
-        Err(GgError::RebaseConflict) => {
-            let _ = operations::remember_interrupted_rebase_operation(&repo, guard.id());
-            return Err(GgError::RebaseConflict);
-        }
-        Err(e) => return Err(e),
-    };
+    let first_commit = repo.find_commit(git2::Oid::from_str(&result.first.sha)?)?;
+    let second_commit = repo.find_commit(git2::Oid::from_str(&result.remainder.sha)?)?;
+    let num_rebased = result.rewritten_descendants.len();
 
     // Print results
     println!("{} Split complete!", style("✔").green().bold());
@@ -328,15 +286,233 @@ pub fn run(options: SplitOptions) -> Result<()> {
         );
     }
 
-    guard.finalize_with_scope(
+    Ok(())
+}
+
+/// Apply a versioned split plan after validating it against current repository state.
+pub fn apply_plan(_options: &SplitOptions, path: &Path) -> Result<SplitApplyResponse> {
+    let plan = read_plan(path)?;
+    let repo = git::open_repo()?;
+    let config = Config::load_with_global(repo.commondir())?;
+    let _lock = git::acquire_operation_lock(&repo, "split")?;
+
+    git::require_clean_working_directory(&repo)?;
+
+    let target_selector = plan.target.gg_id.as_deref().unwrap_or(&plan.target.sha);
+    let resolved = match resolve_target(&repo, &config, Some(target_selector), true) {
+        Ok(resolved) => resolved,
+        Err(GgError::Other(message))
+            if message
+                == format!(
+                    "Could not find commit matching '{}' in stack",
+                    target_selector
+                ) =>
+        {
+            return Err(stale_split_plan("target identity changed"));
+        }
+        Err(error) => return Err(error),
+    };
+    let current_target = SplitTargetIdentity {
+        gg_id: resolved.original_gg_id.clone(),
+        sha: resolved.target_commit.id().to_string(),
+        tree: resolved.target_commit.tree_id().to_string(),
+    };
+    if current_target != plan.target {
+        return Err(stale_split_plan("target identity changed"));
+    }
+
+    let hunks = get_hunks(&repo, &resolved.parent_commit, &resolved.target_commit)?;
+    let described_hunks = hunks
+        .iter()
+        .enumerate()
+        .map(|(index, hunk)| describe_hunk(index, hunk))
+        .collect::<Vec<_>>();
+    if plan_token(&current_target, &described_hunks) != plan.plan_token {
+        return Err(stale_split_plan("hunks changed"));
+    }
+
+    let mut indices_by_id: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (index, hunk) in described_hunks.iter().enumerate() {
+        indices_by_id.entry(&hunk.id).or_default().push(index);
+    }
+    let mut selected_indices = Vec::with_capacity(plan.selected_hunk_ids.len());
+    for id in &plan.selected_hunk_ids {
+        match indices_by_id.get(id.as_str()).map(Vec::as_slice) {
+            Some([index]) => selected_indices.push(*index),
+            Some(_) => {
+                return Err(GgError::Other(format!(
+                    "Split plan hunk ID '{id}' is not unique"
+                )))
+            }
+            None => {
+                return Err(GgError::Other(format!(
+                    "Split plan contains unknown hunk ID '{id}'"
+                )))
+            }
+        }
+    }
+
+    if selected_indices.is_empty() {
+        return Err(GgError::Other(
+            "Split plan must select at least one hunk".into(),
+        ));
+    }
+    if selected_indices.len() == described_hunks.len() {
+        return Err(GgError::Other(
+            "No changes would remain in the remainder commit".into(),
+        ));
+    }
+
+    let first_message = plan.first_message.trim().to_string();
+    let remainder_message = plan.remainder_message.trim().to_string();
+    if first_message.is_empty() || remainder_message.is_empty() {
+        return Err(GgError::Other(
+            "Split plan commit messages must not be empty".into(),
+        ));
+    }
+
+    let result = execute_split(
         &repo,
         &config,
-        SnapshotScope::AllUserBranches,
-        vec![],
-        false,
+        resolved,
+        &hunks,
+        SplitSelection {
+            selected_indices,
+            // Structured plans select textual hunks only. All non-textual files
+            // therefore remain in the upper commit.
+            non_hunk_files: vec![],
+            first_message,
+            remainder_message,
+        },
+        std::env::args().skip(1).collect(),
     )?;
 
-    Ok(())
+    Ok(SplitApplyResponse {
+        version: SPLIT_PROTOCOL_VERSION,
+        result,
+    })
+}
+
+fn stale_split_plan(reason: &str) -> GgError {
+    GgError::Other(format!("stale split plan: {reason}"))
+}
+
+fn execute_split(
+    repo: &git2::Repository,
+    config: &Config,
+    resolved: ResolvedSplitTarget<'_>,
+    hunks: &[DiffHunk],
+    selection: SplitSelection,
+    command_args: Vec<String>,
+) -> Result<SplitApplyResult> {
+    let ResolvedSplitTarget {
+        stack,
+        target_pos,
+        target_commit,
+        parent_commit,
+        original_gg_id,
+    } = resolved;
+    let original_sha = target_commit.id().to_string();
+    let parent_tree = parent_commit.tree()?;
+    let target_tree = target_commit.tree()?;
+    let first_tree = build_tree_from_hunks(
+        repo,
+        &parent_tree,
+        &target_tree,
+        hunks,
+        &selection.selected_indices,
+        &selection.non_hunk_files,
+    )?;
+
+    // All validation passed. From here on, failures retain an interrupted
+    // operation marker so partial mutations are never offered as undoable.
+    let mut guard = git::begin_recorded_op(
+        repo,
+        config,
+        OperationKind::Split,
+        command_args,
+        None,
+        SnapshotScope::AllUserBranches,
+    )?;
+    guard.set_pending_plan(json!({
+        "split": {
+            "branch_name": stack.branch_name(),
+            "remainder_position": target_pos + 1,
+            "remainder_gg_id": original_gg_id.clone(),
+        }
+    }));
+    let operation_id = guard.id().to_owned();
+
+    let sig = git::get_signature(repo)?;
+    let new_gg_id = git::generate_gg_id();
+    let first_message = git::set_gg_id_in_message(&selection.first_message, &new_gg_id);
+    let first_oid = repo.commit(
+        None,
+        &sig,
+        &sig,
+        &first_message,
+        &first_tree,
+        &[&parent_commit],
+    )?;
+    let first_commit = repo.find_commit(first_oid)?;
+
+    let remainder_message = if let Some(gg_id) = &original_gg_id {
+        git::set_gg_id_in_message(&selection.remainder_message, gg_id)
+    } else {
+        selection.remainder_message
+    };
+    let second_oid = repo.commit(
+        None,
+        &sig,
+        &sig,
+        &remainder_message,
+        &target_tree,
+        &[&first_commit],
+    )?;
+    let second_commit = repo.find_commit(second_oid)?;
+
+    if let Err(error) = rebase_descendants(
+        repo,
+        &stack,
+        config,
+        target_pos,
+        &target_commit,
+        &second_commit,
+    ) {
+        if matches!(error, GgError::RebaseConflict) {
+            let _ = operations::remember_interrupted_rebase_operation(repo, guard.id());
+        }
+        return Err(error);
+    }
+
+    let rewritten_stack = Stack::load(repo, config)?;
+    let first = split_identity_at(&rewritten_stack, target_pos)?;
+    let remainder = split_identity_at(&rewritten_stack, target_pos + 1)?;
+    let rewritten_descendants = ((target_pos + 2)..=rewritten_stack.len())
+        .map(|position| split_identity_at(&rewritten_stack, position))
+        .collect::<Result<Vec<_>>>()?;
+
+    guard.finalize_with_scope(repo, config, SnapshotScope::AllUserBranches, vec![], false)?;
+
+    Ok(SplitApplyResult {
+        operation_id,
+        original_sha,
+        first,
+        remainder,
+        rewritten_descendants,
+    })
+}
+
+fn split_identity_at(stack: &Stack, position: usize) -> Result<SplitCommitIdentity> {
+    let entry = stack.get_entry_by_position(position).ok_or_else(|| {
+        GgError::Other(format!(
+            "Split result commit at position {position} was not found"
+        ))
+    })?;
+    Ok(SplitCommitIdentity {
+        sha: entry.oid.to_string(),
+        gg_id: entry.gg_id.clone(),
+    })
 }
 
 fn resolve_target<'repo>(

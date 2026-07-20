@@ -15,6 +15,8 @@ use crate::immutability::{self, ImmutabilityPolicy};
 use crate::operations::{self, OperationKind, SnapshotScope};
 use crate::stack::{self, Stack};
 
+pub use super::split_protocol::{DiffHunk, DiffLine};
+
 /// Options for the split command
 #[derive(Debug, Default)]
 pub struct SplitOptions {
@@ -30,36 +32,6 @@ pub struct SplitOptions {
     pub no_tui: bool,
     /// If true, override the immutability check.
     pub force: bool,
-}
-
-/// A single line in a diff hunk
-#[derive(Debug, Clone)]
-pub struct DiffLine {
-    /// Origin character: '+' (added), '-' (deleted), ' ' (context)
-    pub origin: char,
-    /// The line content (without the origin character)
-    pub content: String,
-}
-
-/// A diff hunk representing a contiguous change in a file
-#[derive(Debug, Clone)]
-pub struct DiffHunk {
-    /// File path relative to repo root
-    pub file_path: String,
-    /// Hunk header (e.g., "@@ -10,6 +10,12 @@ fn authenticate...")
-    pub header: String,
-    /// Lines in the hunk
-    pub lines: Vec<DiffLine>,
-    /// Starting line number in the old file
-    pub old_start: u32,
-    /// Number of lines in the old file (used in split/display)
-    #[allow(dead_code)]
-    pub old_lines: u32,
-    /// Starting line number in the new file
-    pub new_start: u32,
-    /// Number of lines in the new file (used in split/display)
-    #[allow(dead_code)]
-    pub new_lines: u32,
 }
 
 /// Information about a file changed in a commit

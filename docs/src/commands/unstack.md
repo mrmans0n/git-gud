@@ -3,7 +3,7 @@
 Split the current stack into two independent stacks.
 
 ```bash
-gg unstack [--target <TARGET>] [--name <STACK_NAME>] [--no-tui] [-f] [--json] [-w]
+gg unstack [--target <TARGET>] [--name <STACK_NAME>] [--no-tui] [-f] [--json] [-w | --keep-current]
 ```
 
 The selected entry becomes the root of a new stack, and all entries above it
@@ -29,6 +29,9 @@ gg unstack --target 3 --json --no-tui
 
 # Put the new upper stack in a managed worktree
 gg unstack --target 3 --name upper-auth --wt
+
+# Keep this worktree on the lower stack without creating another worktree
+gg unstack --target 3 --name upper-auth --keep-current --json
 ```
 
 ## Behavior
@@ -58,9 +61,21 @@ local entry branches under the old stack name are removed for moved entries.
 If moved entries had review mappings, run `gg sync` afterwards to recreate or
 update review branches for the new stack.
 
-Without `--worktree`, the current directory switches to the new upper stack.
-With `--worktree`, the current directory stays on the lower stack and the new
-upper stack is checked out in its managed worktree.
+Placement depends on the selected mode:
+
+| Mode | Invoking worktree after success | Additional upper worktree | JSON `current_stack` |
+|------|---------------------------------|---------------------------|----------------------|
+| default | upper stack | not created | new upper stack name |
+| `--worktree` / `--wt` | lower stack | created or reused | original lower stack name |
+| `--keep-current` | lower stack | not created | original lower stack name |
+
+`--keep-current` is intended for native clients that must keep using the
+invoking worktree but do not want another worktree. It conflicts with
+`--worktree`/`--wt`.
+
+With `--json`, `unstack.current_stack` always reports the stack left in the
+invoking worktree. `unstack.worktree_path` is present only when `--worktree`
+created or reused the upper managed worktree.
 
 ## Options
 
@@ -74,6 +89,8 @@ upper stack is checked out in its managed worktree.
 - `--json`: emit structured JSON.
 - `-w, --worktree`: create or reuse a managed worktree for the new stack
   (`--wt` also works).
+- `--keep-current`: leave the invoking worktree on the lower stack without
+  creating an upper worktree. Conflicts with `--worktree`/`--wt`.
 
 Position `1` is rejected because it would leave the original stack empty. The
 last position is allowed and creates a one-entry new stack.

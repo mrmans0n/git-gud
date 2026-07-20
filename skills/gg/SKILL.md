@@ -96,6 +96,13 @@ worktree for the new upper stack:
 gg unstack --target 3 --name feature-auth-followup --wt
 ```
 
+When a native client must leave its current worktree on the lower stack and
+must not create another worktree, use the explicit keep-current placement:
+
+```bash
+gg unstack --target 3 --name feature-auth-followup --keep-current --json
+```
+
 2. Commit logical changes:
 
 ```bash
@@ -143,14 +150,18 @@ gg land -a -c --json
 6. Prefer `gg absorb -s` for multi-commit edits.
 7. **Never use `git add -A` blindly.** Review `git status` first and only stage intended files. Use `git add <specific-files>` to avoid leaking secrets, env files, or unrelated changes.
 8. **Respect the immutability guard.** Rewrite-style commands (`gg sc`, `gg absorb`, `gg reorder`/`gg arrange`, `gg split`, `gg unstack`, `gg drop`, `gg rebase`, `gg restack`) refuse to rewrite merged PRs/MRs or commits already on the base branch, except that `gg rebase` silently skips base-ancestor commits that naturally drop out when rebasing onto the refreshed base. If a command exits with `ImmutableTargets`, surface the listed commits and reasons to the user and get explicit confirmation before retrying with `-f` / `--force` (alias `--ignore-immutable`). If the error comes from `gg sync`'s auto-rebase, the override is `gg rebase --force` / `gg rebase --ignore-immutable`, not `gg sync --force`.
+9. **Keep terminal Split interactive.** For ordinary terminal use, run `gg split`
+   and use its TUI. Use `gg split --describe --json` followed by
+   `gg split --plan-json <path> --json` only when a native client is collecting
+   hunk choices in its own UI. Structured Apply has no force override.
 
 ## Common operations
 
 - Navigate: `gg mv`, `gg first`, `gg last`, `gg prev`, `gg next`
 - Amend current commit: `gg sc` / `gg sc -a`
 - Auto-distribute staged hunks: `gg absorb -s`
-- Split a commit into two: `gg split` — opens a two-panel TUI for hunk selection (files on the left, colored diff on the right), followed by inline commit message inputs for both the new and remainder commits. Use `--no-tui` to fall back to sequential `git add -p` style prompts. The `-m` flag bypasses the TUI message input for the new commit. The `--no-edit` flag skips the remainder message input. Pass `FILES...` to auto-select all hunks from those files (e.g., `gg split -c 3 file1.rs file2.rs`).
-- Split a stack into two stacks: `gg unstack` — opens a picker by default. The selected entry and descendants become a new independent stack; lower entries remain in the original stack. Use `--target <position|gg-id|sha> --no-tui` for scripts, and `--name <stack>` to choose the new stack name.
+- Split a commit into two: `gg split` — opens a two-panel TUI for hunk selection (files on the left, colored diff on the right), followed by inline commit message inputs for both the new and remainder commits. Use `--no-tui` to fall back to sequential `git add -p` style prompts. The `-m` flag bypasses the TUI message input for the new commit. The `--no-edit` flag skips the remainder message input. Pass `FILES...` to auto-select all hunks from those files (e.g., `gg split -c 3 file1.rs file2.rs`). Native clients with their own hunk picker use the structured Describe/Apply protocol documented in `reference.md`.
+- Split a stack into two stacks: `gg unstack` — opens a picker by default. The selected entry and descendants become a new independent stack; lower entries remain in the original stack. Use `--target <position|gg-id|sha> --no-tui` for scripts, and `--name <stack>` to choose the new stack name. Use `--keep-current` when a native client must leave the invoking worktree on the lower stack without creating an upper worktree; it conflicts with `--worktree`.
 - Drop commits from stack: `gg drop <position|sha|gg-id>... -y` (alias: `gg abandon`). Use `-y` / `--yes` to skip confirmation; add `-f` / `--force` only to bypass the immutability guard for merged/base-ancestor commits.
 - Reorder/drop stack (TUI): `gg reorder` (or `gg arrange`) — opens interactive TUI for visual reordering and dropping commits. Press `d` to mark a commit for dropping. Use `--no-tui` to fall back to text editor (delete lines to drop).
 - Reorder stack (direct): `gg reorder -o "3,1,2"`

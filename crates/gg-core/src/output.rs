@@ -769,6 +769,7 @@ pub struct UnstackResponse {
 pub struct UnstackResultJson {
     pub original_stack: String,
     pub new_stack: String,
+    pub current_stack: String,
     pub split_position: usize,
     pub remaining_entries: Vec<UnstackEntryJson>,
     pub moved_entries: Vec<UnstackEntryJson>,

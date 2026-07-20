@@ -38,7 +38,15 @@ fn test_gg_unstack_worktree_creates_new_stack_worktree_and_preserves_current_bra
 
     let (success, stdout, stderr) = run_gg(
         &repo_path,
-        &["unstack", "-t", "3", "--name", "upper", "--worktree"],
+        &[
+            "unstack",
+            "-t",
+            "3",
+            "--name",
+            "upper",
+            "--worktree",
+            "--json",
+        ],
     );
     assert!(
         success,
@@ -48,6 +56,8 @@ fn test_gg_unstack_worktree_creates_new_stack_worktree_and_preserves_current_bra
 
     let (_, current_branch) = run_git(&repo_path, &["branch", "--show-current"]);
     assert_eq!(current_branch.trim(), "testuser/lower");
+    let value: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(value["unstack"]["current_stack"], "lower");
 
     let (_, lower_log) = run_git(&repo_path, &["log", "--format=%s", "main..HEAD"]);
     assert!(lower_log.contains("commit 1"), "lower log: {lower_log}");
@@ -289,8 +299,10 @@ fn test_gg_unstack_without_worktree_switches_current_repo_to_new_stack() {
         assert!(success, "commit {i} should succeed");
     }
 
-    let (success, stdout, stderr) =
-        run_gg(&repo_path, &["unstack", "-t", "2", "--name", "plain-upper"]);
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &["unstack", "-t", "2", "--name", "plain-upper", "--json"],
+    );
     assert!(
         success,
         "unstack should succeed: stdout={}, stderr={}",
@@ -299,6 +311,8 @@ fn test_gg_unstack_without_worktree_switches_current_repo_to_new_stack() {
 
     let (_, current_branch) = run_git(&repo_path, &["branch", "--show-current"]);
     assert_eq!(current_branch.trim(), "testuser/plain-upper");
+    let value: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(value["unstack"]["current_stack"], "plain-upper");
 
     let (_, upper_log) = run_git(&repo_path, &["log", "--format=%s", "main..HEAD"]);
     assert!(
@@ -355,6 +369,110 @@ fn setup_unstack_repo(stack_name: &str, num_commits: usize) -> (TempDir, PathBuf
     }
 
     (temp_dir, repo_path)
+}
+
+#[test]
+fn test_gg_unstack_keep_current_leaves_invoking_worktree_on_lower_stack() {
+    let (_temp_dir, repo_path) = create_test_repo_with_worktree_support();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","base":"main"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["co", "original", "--worktree"]);
+    assert!(
+        success,
+        "checkout should succeed: stdout={stdout}, stderr={stderr}"
+    );
+    let original_worktree_path = repo_path.parent().expect("repo parent").join(format!(
+        "{}.{}",
+        repo_path.file_name().unwrap().to_string_lossy(),
+        "original"
+    ));
+
+    for i in 1..=4 {
+        fs::write(
+            original_worktree_path.join(format!("keep-current-{i}.txt")),
+            format!("commit {i}\n"),
+        )
+        .expect("Failed to write test file");
+        run_git(&original_worktree_path, &["add", "."]);
+        let (success, _) = run_git(
+            &original_worktree_path,
+            &["commit", "-m", &format!("keep-current commit {i}")],
+        );
+        assert!(success, "commit {i} should succeed");
+    }
+
+    let (success, stdout, stderr) = run_gg(
+        &original_worktree_path,
+        &[
+            "unstack",
+            "--target",
+            "3",
+            "--name",
+            "upper",
+            "--no-tui",
+            "--keep-current",
+            "--json",
+        ],
+    );
+    assert!(success, "keep-current unstack failed: {stderr}");
+
+    let value: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    let (_, current_branch) = run_git(&original_worktree_path, &["branch", "--show-current"]);
+    assert_eq!(current_branch.trim(), "testuser/original");
+    assert_eq!(value["unstack"]["current_stack"], "original");
+    assert!(value["unstack"]["worktree_path"].is_null());
+
+    let config: Value =
+        serde_json::from_str(&fs::read_to_string(gg_dir.join("config.json")).unwrap()).unwrap();
+    assert!(config["stacks"]["original"]["worktree_path"].is_string());
+    assert!(config["stacks"]["upper"]["worktree_path"].is_null());
+}
+
+#[test]
+fn test_gg_unstack_rejects_keep_current_with_worktree_before_mutation() {
+    let (_temp_dir, repo_path) = setup_unstack_repo("conflict-original", 4);
+    let config_path = repo_path.join(".git/gg/config.json");
+    let branch_before = rev_list(&repo_path, "main..testuser/conflict-original");
+    let config_before = fs::read_to_string(&config_path).unwrap();
+
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &[
+            "unstack",
+            "--target",
+            "3",
+            "--name",
+            "conflict-upper",
+            "--no-tui",
+            "--keep-current",
+            "--worktree",
+            "--json",
+        ],
+    );
+    assert!(
+        !success,
+        "conflicting placement flags should fail: {stdout}"
+    );
+    assert!(
+        stderr.contains("cannot be used with"),
+        "Clap should reject conflicting placement flags: {stderr}"
+    );
+
+    let (_, current_branch) = run_git(&repo_path, &["branch", "--show-current"]);
+    assert_eq!(current_branch.trim(), "testuser/conflict-original");
+    assert_eq!(
+        rev_list(&repo_path, "main..testuser/conflict-original"),
+        branch_before
+    );
+    assert_eq!(fs::read_to_string(&config_path).unwrap(), config_before);
+    let (branch_exists, _) = run_git(&repo_path, &["rev-parse", "testuser/conflict-upper"]);
+    assert!(!branch_exists, "conflicting flags must not create a stack");
 }
 
 fn rev_list(repo_path: &std::path::Path, range: &str) -> Vec<String> {

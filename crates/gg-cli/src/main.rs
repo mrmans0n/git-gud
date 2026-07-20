@@ -266,6 +266,10 @@ enum Commands {
         /// Create or reuse a managed worktree for the new stack
         #[arg(long = "worktree", short = 'w', alias = "wt")]
         worktree: bool,
+
+        /// Leave this worktree on the lower stack without creating an upper worktree
+        #[arg(long, conflicts_with = "worktree")]
+        keep_current: bool,
     },
 
     /// Land (merge) approved PRs/MRs starting from the first commit
@@ -665,6 +669,7 @@ fn main() {
             force,
             json,
             worktree,
+            keep_current,
         }) => (
             gg_core::commands::unstack::run(gg_core::commands::unstack::UnstackOptions {
                 target,
@@ -673,6 +678,7 @@ fn main() {
                 force,
                 json,
                 worktree,
+                keep_current,
             }),
             json,
             false,

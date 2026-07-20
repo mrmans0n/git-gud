@@ -1,6 +1,6 @@
 //! `gg split` - Split a commit into two
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use std::process::Command;
 
@@ -13,8 +13,12 @@ use crate::error::{GgError, Result};
 use crate::git;
 use crate::immutability::{self, ImmutabilityPolicy};
 use crate::operations::{self, OperationKind, SnapshotScope};
+use crate::output;
 use crate::stack::{self, Stack};
 
+use super::split_protocol::{
+    describe_hunk, plan_token, SplitDescribeResponse, SplitTargetIdentity, SPLIT_PROTOCOL_VERSION,
+};
 pub use super::split_protocol::{DiffHunk, DiffLine};
 
 /// Options for the split command
@@ -32,6 +36,18 @@ pub struct SplitOptions {
     pub no_tui: bool,
     /// If true, override the immutability check.
     pub force: bool,
+    /// If true, describe the target commit's hunks without changing the repository.
+    pub describe: bool,
+    /// If true, emit machine-readable JSON output.
+    pub json: bool,
+}
+
+struct ResolvedSplitTarget<'repo> {
+    stack: Stack,
+    target_pos: usize,
+    target_commit: git2::Commit<'repo>,
+    parent_commit: git2::Commit<'repo>,
+    original_gg_id: Option<String>,
 }
 
 /// Information about a file changed in a commit
@@ -57,6 +73,12 @@ impl std::fmt::Display for ChangedFile {
 
 /// Run the split command
 pub fn run(options: SplitOptions) -> Result<()> {
+    if options.describe {
+        let response = describe(&options)?;
+        output::print_json(&response);
+        return Ok(());
+    }
+
     let repo = git::open_repo()?;
     let config = Config::load_with_global(repo.commondir())?;
     // Acquire the operation lock up-front but defer writing the op-log
@@ -66,30 +88,13 @@ pub fn run(options: SplitOptions) -> Result<()> {
 
     git::require_clean_working_directory(&repo)?;
 
-    let mut stack = Stack::load(&repo, &config)?;
-    // Best-effort refresh of mr_state for the immutability guard (catches
-    // squash-merged PRs that base-ancestor would otherwise miss).
-    immutability::refresh_mr_state_for_guard(&repo, &mut stack);
-
-    // Resolve target commit position (1-indexed)
-    let target_pos = match &options.target {
-        Some(target) => stack::resolve_target(&stack, target)?,
-        None => {
-            // Default to current position or stack head
-            stack.current_position.map(|p| p + 1).unwrap_or(stack.len())
-        }
-    };
-
-    let entry = stack.get_entry_by_position(target_pos).ok_or_else(|| {
-        GgError::Other(format!(
-            "Commit at position {} not found in stack",
-            target_pos
-        ))
-    })?;
-
-    let target_oid = entry.oid;
-    let target_commit = repo.find_commit(target_oid)?;
-    let original_gg_id = entry.gg_id.clone();
+    let ResolvedSplitTarget {
+        stack,
+        target_pos,
+        target_commit,
+        parent_commit,
+        original_gg_id,
+    } = resolve_target(&repo, &config, options.target.as_deref(), false)?;
 
     // Immutability pre-flight: splitting rewrites the target commit and every
     // commit above it (they get a new parent). Guard against splitting a
@@ -107,11 +112,6 @@ pub fn run(options: SplitOptions) -> Result<()> {
         style(git::get_commit_title(&target_commit)).bold(),
         style(git::short_sha(&target_commit)).yellow()
     );
-
-    // Get parent commit
-    let parent_commit = target_commit
-        .parent(0)
-        .map_err(|_| GgError::Other("Cannot split the root commit (no parent)".to_string()))?;
 
     // Get list of changed files with stats
     let changed_files = get_changed_files(&repo, &parent_commit, &target_commit)?;
@@ -337,6 +337,96 @@ pub fn run(options: SplitOptions) -> Result<()> {
     )?;
 
     Ok(())
+}
+
+fn resolve_target<'repo>(
+    repo: &'repo git2::Repository,
+    config: &Config,
+    target: Option<&str>,
+    check_immutability: bool,
+) -> Result<ResolvedSplitTarget<'repo>> {
+    let mut stack = Stack::load(repo, config)?;
+    // Best-effort refresh of mr_state for the immutability guard (catches
+    // squash-merged PRs that base-ancestor would otherwise miss).
+    immutability::refresh_mr_state_for_guard(repo, &mut stack);
+
+    let target_pos = match target {
+        Some(target) => stack::resolve_target(&stack, target)?,
+        None => stack
+            .current_position
+            .map(|position| position + 1)
+            .unwrap_or(stack.len()),
+    };
+
+    let entry = stack.get_entry_by_position(target_pos).ok_or_else(|| {
+        GgError::Other(format!(
+            "Commit at position {} not found in stack",
+            target_pos
+        ))
+    })?;
+    let target_commit = repo.find_commit(entry.oid)?;
+    let parent_commit = target_commit
+        .parent(0)
+        .map_err(|_| GgError::Other("Cannot split the root commit (no parent)".to_string()))?;
+    let original_gg_id = entry.gg_id.clone();
+
+    if check_immutability {
+        let targets: Vec<usize> = (target_pos..=stack.len()).collect();
+        let policy = ImmutabilityPolicy::for_stack(repo, &stack)?;
+        let report = policy.check_positions(&stack, &targets);
+        immutability::guard(report, false)?;
+    }
+
+    Ok(ResolvedSplitTarget {
+        stack,
+        target_pos,
+        target_commit,
+        parent_commit,
+        original_gg_id,
+    })
+}
+
+/// Describe a split target without changing repository state.
+pub fn describe(options: &SplitOptions) -> Result<SplitDescribeResponse> {
+    let repo = git::open_repo()?;
+    let config = Config::load_with_global(repo.commondir())?;
+    let resolved = resolve_target(&repo, &config, options.target.as_deref(), true)?;
+    let hunks = get_hunks(&repo, &resolved.parent_commit, &resolved.target_commit)?;
+    let described_hunks = hunks
+        .iter()
+        .enumerate()
+        .map(|(index, hunk)| describe_hunk(index, hunk))
+        .collect::<Vec<_>>();
+    let hunk_files = hunks
+        .iter()
+        .map(|hunk| hunk.file_path.as_str())
+        .collect::<HashSet<_>>();
+    let non_textual_files =
+        get_changed_files(&repo, &resolved.parent_commit, &resolved.target_commit)?
+            .into_iter()
+            .filter(|file| !hunk_files.contains(file.path.as_str()))
+            .map(|file| file.path)
+            .collect();
+    let target = SplitTargetIdentity {
+        gg_id: resolved.original_gg_id,
+        sha: resolved.target_commit.id().to_string(),
+        tree: resolved.target_commit.tree_id().to_string(),
+    };
+    let remainder_message =
+        git::strip_gg_id_from_message(resolved.target_commit.message().unwrap_or(""));
+
+    Ok(SplitDescribeResponse {
+        version: SPLIT_PROTOCOL_VERSION,
+        plan_token: plan_token(&target, &described_hunks),
+        target,
+        hunks: described_hunks,
+        non_textual_files,
+        first_message: format!(
+            "Split from: {}",
+            git::get_commit_title(&resolved.target_commit)
+        ),
+        remainder_message,
+    })
 }
 
 /// Get the list of files changed between two commits

@@ -4,6 +4,119 @@ use std::fs;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+fn create_two_hunk_split_commit() -> (tempfile::TempDir, std::path::PathBuf) {
+    let (temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let initial_content = (1..=20)
+        .map(|line| format!("line {line}\n"))
+        .collect::<String>();
+    fs::write(repo_path.join("multi_hunk.txt"), initial_content)
+        .expect("Failed to write initial file");
+    run_git(&repo_path, &["add", "multi_hunk.txt"]);
+    run_git(&repo_path, &["commit", "-m", "Add multi-hunk fixture"]);
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "test-split-describe"]);
+    assert!(success, "Failed to create stack: {stderr}");
+
+    let modified_content = (1..=20)
+        .map(|line| match line {
+            2 => "line 2 modified\n".to_string(),
+            18 => "line 18 modified\n".to_string(),
+            _ => format!("line {line}\n"),
+        })
+        .collect::<String>();
+    fs::write(repo_path.join("multi_hunk.txt"), modified_content)
+        .expect("Failed to write modified file");
+    run_git(&repo_path, &["add", "multi_hunk.txt"]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Two separated hunks\n\nGG-ID: c-abc1234"],
+    );
+
+    (temp_dir, repo_path)
+}
+
+#[test]
+fn test_split_describe_json() {
+    let (_temp_dir, repo_path) = create_two_hunk_split_commit();
+    let refs_before = run_git_full(&repo_path, &["show-ref"]).1;
+    let operation_records = || {
+        let operations_dir = repo_path.join(".git/gg/operations");
+        if !operations_dir.exists() {
+            return Vec::new();
+        }
+        let mut records = fs::read_dir(operations_dir)
+            .expect("Failed to read operation records")
+            .map(|entry| entry.expect("Failed to read operation record").file_name())
+            .collect::<Vec<_>>();
+        records.sort();
+        records
+    };
+    let operations_before = operation_records();
+
+    let describe = || {
+        let (success, stdout, stderr) = run_gg(
+            &repo_path,
+            &["split", "--describe", "--commit", "1", "--json"],
+        );
+        assert!(success, "describe failed: {stderr}");
+        serde_json::from_str::<serde_json::Value>(&stdout).expect("describe should return JSON")
+    };
+
+    let first = describe();
+    assert_eq!(first["version"], 1);
+    assert_eq!(first["hunks"].as_array().unwrap().len(), 2);
+    assert!(first["plan_token"]
+        .as_str()
+        .unwrap()
+        .starts_with("split-v1-"));
+    assert_eq!(first["remainder_message"], "Two separated hunks");
+
+    let second = describe();
+    assert_eq!(second["target"], first["target"]);
+    assert_eq!(second["plan_token"], first["plan_token"]);
+    let hunk_ids = |value: &serde_json::Value| {
+        value["hunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|hunk| hunk["id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(hunk_ids(&second), hunk_ids(&first));
+    assert_eq!(run_git_full(&repo_path, &["status", "--porcelain"]).1, "");
+    assert_eq!(run_git_full(&repo_path, &["show-ref"]).1, refs_before);
+    assert_eq!(operation_records(), operations_before);
+}
+
+#[test]
+fn test_split_describe_json_allows_dirty_worktree() {
+    let (_temp_dir, repo_path) = create_two_hunk_split_commit();
+    fs::write(repo_path.join("README.md"), "dirty but preserved\n")
+        .expect("Failed to dirty worktree");
+    let status_before = run_git_full(&repo_path, &["status", "--porcelain"]).1;
+
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &["split", "--describe", "--commit", "1", "--json"],
+    );
+
+    assert!(success, "describe failed for dirty worktree: {stderr}");
+    serde_json::from_str::<serde_json::Value>(&stdout).expect("describe should return JSON");
+    assert_eq!(
+        run_git_full(&repo_path, &["status", "--porcelain"]).1,
+        status_before
+    );
+}
+
 #[test]
 fn test_split_head_with_file_args() {
     let (_temp_dir, repo_path) = create_test_repo();
@@ -259,6 +372,14 @@ fn test_split_help_no_interactive_flag() {
         !stdout.contains("--interactive"),
         "split help should NOT mention --interactive flag (hunk mode is default): {}",
         stdout
+    );
+    assert!(
+        stdout.contains("--describe"),
+        "split help should mention --describe: {stdout}"
+    );
+    assert!(
+        stdout.contains("--json"),
+        "split help should mention --json: {stdout}"
     );
 }
 

@@ -211,6 +211,18 @@ enum Commands {
         #[arg(short = 'f', long = "force", alias = "ignore-immutable")]
         force: bool,
 
+        /// Describe the target commit's split hunks as JSON
+        #[arg(
+            long,
+            requires = "json",
+            conflicts_with_all = ["message", "no_edit", "no_tui", "files"]
+        )]
+        describe: bool,
+
+        /// Emit machine-readable JSON output
+        #[arg(long)]
+        json: bool,
+
         /// Files to include in the new commit
         #[arg(value_name = "FILES")]
         files: Vec<String>,
@@ -618,6 +630,8 @@ fn main() {
             no_edit,
             no_tui,
             force,
+            describe,
+            json,
             files,
         }) => (
             gg_core::commands::split::run(gg_core::commands::split::SplitOptions {
@@ -627,8 +641,10 @@ fn main() {
                 no_edit,
                 no_tui,
                 force,
+                describe,
+                json,
             }),
-            false,
+            describe,
             false,
         ),
         Some(Commands::Unstack {

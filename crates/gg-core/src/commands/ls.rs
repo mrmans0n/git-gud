@@ -134,6 +134,7 @@ fn list_all_stacks(repo: &git2::Repository, config: &Config, json: bool) -> Resu
 
         print_json(&AllStacksResponse {
             version: OUTPUT_VERSION,
+            operation_id: operations::interrupted_rebase_operation(repo)?.map(|record| record.id),
             current_stack,
             stacks: summaries,
         });

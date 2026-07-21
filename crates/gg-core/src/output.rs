@@ -130,6 +130,8 @@ pub struct StackEntryJson {
 #[derive(Serialize)]
 pub struct AllStacksResponse {
     pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
     pub current_stack: Option<String>,
     pub stacks: Vec<StackSummaryJson>,
 }

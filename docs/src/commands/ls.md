@@ -98,6 +98,11 @@ includes its opaque operation-log ID at the top level:
 }
 ```
 
+If the paused rebase leaves `HEAD` detached and no current-stack navigation
+state is available, the command returns the all-stacks envelope instead. Its
+top level still includes the same `operation_id` alongside `current_stack` and
+`stacks`.
+
 Pass the value unchanged to `gg undo <operation_id> --json` after the operation
 has been completed or aborted. The field is omitted when no operation is paused
 and when a saved marker no longer matches the current Git rebase state.

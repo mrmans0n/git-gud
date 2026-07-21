@@ -165,6 +165,38 @@ fn test_gg_ls_json_reports_valid_interrupted_rebase_operation_id() {
 }
 
 #[test]
+fn test_gg_ls_json_reports_interrupted_rebase_operation_id_while_head_is_detached() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    setup_json_stack(&repo_path, "detached-paused-json-stack");
+
+    let operation_id = latest_operation_id(&repo_path);
+    set_operation_status(&repo_path, &operation_id, "pending");
+    write_rebase_state(
+        &repo_path,
+        "refs/heads/testuser/detached-paused-json-stack",
+        "aaaa",
+        "bbbb",
+    );
+    write_interrupted_rebase_marker(
+        &repo_path,
+        &operation_id,
+        "refs/heads/testuser/detached-paused-json-stack",
+        "aaaa",
+        "bbbb",
+    );
+    run_git(&repo_path, &["checkout", "--detach"]);
+    let _ = fs::remove_file(repo_path.join(".git/gg/current_stack"));
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["ls", "--json"]);
+    assert!(success, "gg ls --json failed: {stderr}");
+
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(parsed["current_stack"], Value::Null);
+    assert!(parsed["stacks"].is_array(), "expected all-stacks response");
+    assert_eq!(parsed["operation_id"], operation_id);
+}
+
+#[test]
 fn test_gg_ls_json_clears_legacy_interrupted_rebase_marker_without_state() {
     let (_temp_dir, repo_path) = create_test_repo();
     setup_json_stack(&repo_path, "legacy-marker-json-stack");

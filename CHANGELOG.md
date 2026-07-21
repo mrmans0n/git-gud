@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.10] - 2026-07-21
+
+### Added
+- Native client protocol support for stacked workflows (#394).
+
+### Fixed
+- `gg absorb --and-rebase` now avoids launching an editor during autosquash rebases (#387).
+
+### Changed
+- Updated dependencies and workflow actions, including `anyhow`, `serde`, `serde_json`, `skim`, `thiserror`, `tokio`, `clap`, and `actions/checkout` (#384, #385, #386, #388, #389, #390, #391, #392, #393, #395).
+
 ## [0.9.9] - 2026-07-19
 
 ### Changed
@@ -517,7 +528,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.9.9...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.9.10...HEAD
+[0.9.10]: https://github.com/mrmans0n/git-gud/compare/v0.9.9...v0.9.10
 [0.9.9]: https://github.com/mrmans0n/git-gud/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/mrmans0n/git-gud/compare/v0.9.7...v0.9.8
 [0.9.7]: https://github.com/mrmans0n/git-gud/compare/v0.9.6...v0.9.7

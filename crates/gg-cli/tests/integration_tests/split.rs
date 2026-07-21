@@ -975,6 +975,75 @@ fn test_split_plan_keeps_same_file_mode_change_in_remainder() {
 }
 
 #[test]
+#[cfg(unix)]
+fn test_split_plan_allows_metadata_only_remainder_for_selected_file() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    fs::write(repo_path.join("script.sh"), "echo parent\n").unwrap();
+    run_git(&repo_path, &["add", "script.sh"]);
+    run_git(&repo_path, &["commit", "--amend", "--no-edit"]);
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "metadata-only-remainder"]);
+    assert!(success, "create stack failed: {stderr}");
+
+    fs::write(repo_path.join("script.sh"), "echo target\n").unwrap();
+    let mut permissions = fs::metadata(repo_path.join("script.sh"))
+        .unwrap()
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(repo_path.join("script.sh"), permissions).unwrap();
+    run_git(&repo_path, &["add", "script.sh"]);
+    run_git(
+        &repo_path,
+        &[
+            "commit",
+            "-m",
+            "Content and mode change\n\nGG-ID: c-meta123",
+        ],
+    );
+
+    let describe = describe_split(&repo_path, "1");
+    assert_eq!(describe["hunks"].as_array().unwrap().len(), 1);
+    let plan_path = write_split_plan(
+        &repo_path,
+        &describe,
+        vec![describe["hunks"][0]["id"].clone()],
+    );
+
+    let (success, stdout, stderr) = apply_split_plan(&repo_path, &plan_path);
+    assert!(success, "apply failed: stdout={stdout} stderr={stderr}");
+    let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let first_sha = result["first"]["sha"].as_str().unwrap();
+    let remainder_sha = result["remainder"]["sha"].as_str().unwrap();
+    assert_eq!(
+        run_git_full(&repo_path, &["show", &format!("{first_sha}:script.sh")]).1,
+        "echo target\n"
+    );
+    assert_eq!(
+        run_git_full(&repo_path, &["show", &format!("{remainder_sha}:script.sh")]).1,
+        "echo target\n"
+    );
+    assert!(
+        run_git_full(&repo_path, &["ls-tree", first_sha, "script.sh"])
+            .1
+            .starts_with("100644 "),
+        "first commit must retain the parent file mode"
+    );
+    assert!(
+        run_git_full(&repo_path, &["ls-tree", remainder_sha, "script.sh"])
+            .1
+            .starts_with("100755 "),
+        "remainder must contain the target file mode"
+    );
+}
+
+#[test]
 fn test_split_plan_rejects_stale_target_without_mutation() {
     let (_temp_dir, repo_path) = create_two_hunk_split_commit();
     let describe = describe_split(&repo_path, "1");

@@ -368,10 +368,15 @@ pub fn apply_plan(_options: &SplitOptions, path: &Path) -> Result<SplitApplyResp
         .iter()
         .map(|hunk| hunk.file_path.as_str())
         .collect::<HashSet<_>>();
-    let has_non_textual_changes = changed_files
+    let parent_tree = resolved.parent_commit.tree()?;
+    let target_tree = resolved.target_commit.tree()?;
+    let has_remainder_changes = changed_files
         .iter()
-        .any(|file| !hunk_files.contains(file.path.as_str()));
-    if selected_indices.len() == described_hunks.len() && !has_non_textual_changes {
+        .any(|file| !hunk_files.contains(file.path.as_str()))
+        || hunk_files
+            .iter()
+            .any(|path| has_regular_file_mode_change(&parent_tree, &target_tree, path));
+    if selected_indices.len() == described_hunks.len() && !has_remainder_changes {
         return Err(GgError::Other(
             "No changes would remain in the remainder commit".into(),
         ));
@@ -389,7 +394,6 @@ pub fn apply_plan(_options: &SplitOptions, path: &Path) -> Result<SplitApplyResp
         .iter()
         .map(|index| hunks[*index].file_path.as_str())
         .collect::<HashSet<_>>();
-    let target_tree = resolved.target_commit.tree()?;
     validate_path_dependent_selection(&target_tree, &changed_files, &selected_paths)?;
 
     let result = execute_split(
@@ -1423,18 +1427,8 @@ fn build_tree_from_hunks<'a>(
                 let target_file = target_diff_files.get(file_path).ok_or_else(|| {
                     GgError::Other(format!("Missing diff identity for '{file_path}'"))
                 })?;
-                let parent_mode = accumulated_tree
-                    .get_path(Path::new(file_path))
-                    .ok()
-                    .map(|entry| entry.filemode());
-                let has_mode_change = target_file.as_ref().is_some_and(|target_file| {
-                    matches!(target_file.mode, 0o100644 | 0o100755)
-                        && match parent_mode {
-                            Some(mode @ (0o100644 | 0o100755)) => mode != target_file.mode,
-                            None => target_file.mode == 0o100755,
-                            _ => false,
-                        }
-                });
+                let has_mode_change =
+                    has_regular_file_mode_change(&accumulated_tree, target_tree, file_path);
                 if has_mode_change {
                     let selected_hunks = file_hunk_list
                         .iter()
@@ -1506,6 +1500,29 @@ fn build_tree_from_hunks<'a>(
     }
 
     Ok(accumulated_tree)
+}
+
+fn has_regular_file_mode_change(
+    parent_tree: &git2::Tree,
+    target_tree: &git2::Tree,
+    file_path: &str,
+) -> bool {
+    let parent_mode = parent_tree
+        .get_path(Path::new(file_path))
+        .ok()
+        .map(|entry| entry.filemode());
+    let target_mode = target_tree
+        .get_path(Path::new(file_path))
+        .ok()
+        .map(|entry| entry.filemode());
+    target_mode.is_some_and(|target_mode| {
+        matches!(target_mode, 0o100644 | 0o100755)
+            && match parent_mode {
+                Some(mode @ (0o100644 | 0o100755)) => mode != target_mode,
+                None => target_mode == 0o100755,
+                _ => false,
+            }
+    })
 }
 
 fn target_diff_files(

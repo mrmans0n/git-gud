@@ -3,7 +3,7 @@ use crate::helpers::{create_test_repo, run_gg, run_gg_with_env, run_git, run_git
 use std::fs;
 use std::io::Write;
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -46,6 +46,223 @@ fn create_two_hunk_split_commit() -> (tempfile::TempDir, std::path::PathBuf) {
     );
 
     (temp_dir, repo_path)
+}
+
+fn create_byte_content_split_commit(
+    stack_name: &str,
+    file_name: &str,
+    initial: &[u8],
+    modified: &[u8],
+) -> (tempfile::TempDir, std::path::PathBuf) {
+    let (temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+    run_git(&repo_path, &["config", "core.autocrlf", "false"]);
+
+    fs::write(repo_path.join(file_name), initial).unwrap();
+    run_git(&repo_path, &["add", file_name]);
+    run_git(&repo_path, &["commit", "--amend", "--no-edit"]);
+    let (success, _, stderr) = run_gg(&repo_path, &["co", stack_name]);
+    assert!(success, "create stack failed: {stderr}");
+
+    fs::write(repo_path.join(file_name), modified).unwrap();
+    run_git(&repo_path, &["add", file_name]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Byte-sensitive change\n\nGG-ID: c-byt1234"],
+    );
+    (temp_dir, repo_path)
+}
+
+fn create_directory_to_file_split_commit(
+    stack_name: &str,
+) -> (tempfile::TempDir, std::path::PathBuf) {
+    let (temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    let node_dir = repo_path.join("node");
+    fs::create_dir_all(&node_dir).unwrap();
+    fs::write(node_dir.join("last.txt"), "nested parent\n").unwrap();
+    fs::write(repo_path.join("remainder.txt"), "remainder parent\n").unwrap();
+    run_git(&repo_path, &["add", "node/last.txt", "remainder.txt"]);
+    run_git(&repo_path, &["commit", "--amend", "--no-edit"]);
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", stack_name]);
+    assert!(success, "create stack failed: {stderr}");
+    fs::remove_file(node_dir.join("last.txt")).unwrap();
+    fs::remove_dir(&node_dir).unwrap();
+    fs::write(&node_dir, "top-level target\n").unwrap();
+    fs::write(repo_path.join("remainder.txt"), "remainder target\n").unwrap();
+    run_git(&repo_path, &["add", "-A"]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Directory to file\n\nGG-ID: c-node123"],
+    );
+
+    (temp_dir, repo_path)
+}
+
+fn create_file_to_directory_split_commit(
+    stack_name: &str,
+) -> (tempfile::TempDir, std::path::PathBuf) {
+    let (temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    fs::write(repo_path.join("node"), "top-level parent\n").unwrap();
+    fs::write(repo_path.join("remainder.txt"), "remainder parent\n").unwrap();
+    run_git(&repo_path, &["add", "node", "remainder.txt"]);
+    run_git(&repo_path, &["commit", "--amend", "--no-edit"]);
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", stack_name]);
+    assert!(success, "create stack failed: {stderr}");
+    fs::remove_file(repo_path.join("node")).unwrap();
+    fs::create_dir(repo_path.join("node")).unwrap();
+    fs::write(repo_path.join("node/last.txt"), "nested target\n").unwrap();
+    fs::write(repo_path.join("remainder.txt"), "remainder target\n").unwrap();
+    run_git(&repo_path, &["add", "-A"]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "File to directory\n\nGG-ID: c-dir1234"],
+    );
+
+    (temp_dir, repo_path)
+}
+
+fn create_file_to_directory_with_non_textual_addition() -> (tempfile::TempDir, std::path::PathBuf) {
+    let (temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    fs::write(repo_path.join("node"), "top-level parent\n").unwrap();
+    fs::write(repo_path.join("remainder.txt"), "remainder parent\n").unwrap();
+    run_git(&repo_path, &["add", "node", "remainder.txt"]);
+    run_git(&repo_path, &["commit", "--amend", "--no-edit"]);
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "file-to-directory-non-textual"]);
+    assert!(success, "create stack failed: {stderr}");
+    fs::remove_file(repo_path.join("node")).unwrap();
+    fs::create_dir(repo_path.join("node")).unwrap();
+    fs::write(repo_path.join("node/last.bin"), b"invalid: \xff\n").unwrap();
+    fs::write(repo_path.join("remainder.txt"), "remainder target\n").unwrap();
+    run_git(&repo_path, &["add", "-A"]);
+    run_git(
+        &repo_path,
+        &[
+            "commit",
+            "-m",
+            "File to non-textual directory\n\nGG-ID: c-non1234",
+        ],
+    );
+
+    (temp_dir, repo_path)
+}
+
+fn create_directory_to_file_with_non_textual_deletion() -> (tempfile::TempDir, std::path::PathBuf) {
+    let (temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    fs::create_dir(repo_path.join("node")).unwrap();
+    fs::write(repo_path.join("node/last.bin"), b"invalid: \xff\n").unwrap();
+    fs::write(repo_path.join("remainder.txt"), "remainder parent\n").unwrap();
+    run_git(&repo_path, &["add", "node/last.bin", "remainder.txt"]);
+    run_git(&repo_path, &["commit", "--amend", "--no-edit"]);
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "non-textual-transition"]);
+    assert!(success, "create stack failed: {stderr}");
+    fs::remove_file(repo_path.join("node/last.bin")).unwrap();
+    fs::remove_dir(repo_path.join("node")).unwrap();
+    fs::write(repo_path.join("node"), "top-level target\n").unwrap();
+    fs::write(repo_path.join("remainder.txt"), "remainder target\n").unwrap();
+    run_git(&repo_path, &["add", "-A"]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Non-textual transition\n\nGG-ID: c-bin1234"],
+    );
+
+    (temp_dir, repo_path)
+}
+
+fn eof_fixture_content(modified_line: bool, trailing_newline: bool) -> Vec<u8> {
+    let mut content = (1..=20)
+        .map(|line| {
+            if line == 2 && modified_line {
+                "line 2 modified".to_string()
+            } else {
+                format!("line {line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .into_bytes();
+    if trailing_newline {
+        content.push(b'\n');
+    }
+    content
+}
+
+fn assert_structured_eof_newline_selection(parent_newline: bool, target_newline: bool) {
+    let parent = eof_fixture_content(false, parent_newline);
+    let target = eof_fixture_content(true, target_newline);
+    let (_temp_dir, repo_path) = create_byte_content_split_commit(
+        if target_newline {
+            "eof-newline-add"
+        } else {
+            "eof-newline-remove"
+        },
+        "eof.txt",
+        &parent,
+        &target,
+    );
+    let describe = describe_split(&repo_path, "1");
+    let eof_hunk = describe["hunks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|hunk| hunk["patch"].as_str().unwrap().contains("line 20"))
+        .expect("Describe should expose the EOF-newline hunk");
+    assert_eq!(describe["hunks"].as_array().unwrap().len(), 2);
+    let plan_path = write_split_plan(&repo_path, &describe, vec![eof_hunk["id"].clone()]);
+
+    let (success, stdout, stderr) = apply_split_plan(&repo_path, &plan_path);
+    assert!(success, "apply failed: stdout={stdout} stderr={stderr}");
+    let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let first_sha = result["first"]["sha"].as_str().unwrap();
+    let first_content = run_git_full(&repo_path, &["show", &format!("{first_sha}:eof.txt")])
+        .1
+        .into_bytes();
+    assert_eq!(
+        first_content,
+        eof_fixture_content(false, target_newline),
+        "first commit must contain only the selected EOF-newline change"
+    );
 }
 
 fn describe_split(repo_path: &Path, target: &str) -> serde_json::Value {
@@ -98,6 +315,472 @@ fn apply_split_plan(repo_path: &Path, plan_path: &Path) -> (bool, String, String
             "--json",
         ],
     )
+}
+
+fn assert_path_dependent_plan_rejected(
+    repo_path: &Path,
+    describe: &serde_json::Value,
+    selected_path: &str,
+) {
+    let selected_hunk = describe["hunks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|hunk| hunk["path"] == selected_path)
+        .unwrap_or_else(|| panic!("Describe should expose {selected_path}"));
+    let plan_path = write_split_plan(repo_path, describe, vec![selected_hunk["id"].clone()]);
+    let refs_before = run_git_full(repo_path, &["show-ref"]).1;
+    let operations_before = operation_records(repo_path);
+
+    let (success, stdout, stderr) = apply_split_plan(repo_path, &plan_path);
+    assert!(!success, "dependent plan unexpectedly applied: {stdout}");
+    let error: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(error["version"], 1);
+    assert!(
+        error["error"].as_str().unwrap().contains("path-dependent"),
+        "error should explain the dependency: {stdout}"
+    );
+    assert!(
+        stderr.is_empty(),
+        "structured error should use stdout: {stderr}"
+    );
+    assert_eq!(run_git_full(repo_path, &["show-ref"]).1, refs_before);
+    assert_eq!(operation_records(repo_path), operations_before);
+}
+
+fn assert_file_to_directory_deletion_only(
+    repo_path: &Path,
+    describe: &serde_json::Value,
+    target_child: &str,
+) {
+    let deletion_hunk = describe["hunks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|hunk| hunk["path"] == "node")
+        .expect("Describe should expose the top-level deletion hunk");
+    let plan_path = write_split_plan(repo_path, describe, vec![deletion_hunk["id"].clone()]);
+    let original_head = run_git_full(repo_path, &["rev-parse", "HEAD"]).1;
+    let operations_before = operation_records(repo_path);
+
+    let (success, stdout, stderr) = apply_split_plan(repo_path, &plan_path);
+    assert!(success, "apply failed: stdout={stdout} stderr={stderr}");
+    let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let first_sha = result["first"]["sha"].as_str().unwrap();
+    let remainder_sha = result["remainder"]["sha"].as_str().unwrap();
+    assert!(
+        !run_git(repo_path, &["cat-file", "-e", &format!("{first_sha}:node")]).0,
+        "deletion-only first commit must not copy the replacement directory"
+    );
+    assert_eq!(
+        run_git_full(
+            repo_path,
+            &["rev-parse", &format!("{remainder_sha}^{{tree}}")]
+        )
+        .1
+        .trim(),
+        describe["target"]["tree"].as_str().unwrap()
+    );
+    assert!(
+        run_git(
+            repo_path,
+            &["cat-file", "-e", &format!("{remainder_sha}:{target_child}")],
+        )
+        .0
+    );
+    assert_eq!(
+        operation_records(repo_path).len(),
+        operations_before.len() + 1
+    );
+
+    let operation_id = result["operation_id"].as_str().unwrap();
+    let (success, stdout, stderr) = run_gg(repo_path, &["undo", operation_id, "--json"]);
+    assert!(success, "undo failed: stdout={stdout} stderr={stderr}");
+    assert_eq!(
+        run_git_full(repo_path, &["rev-parse", "HEAD"]).1,
+        original_head
+    );
+}
+
+#[cfg(unix)]
+fn assert_same_path_type_change_is_non_textual(
+    stack_name: &str,
+    parent_is_symlink: bool,
+    invalid_regular: bool,
+) {
+    let (_temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    let node_path = repo_path.join("node");
+    if parent_is_symlink {
+        symlink("parent-link-target", &node_path).unwrap();
+    } else if invalid_regular {
+        fs::write(&node_path, b"invalid parent: \xff\n").unwrap();
+    } else {
+        fs::write(&node_path, "regular parent\n").unwrap();
+    }
+    fs::write(repo_path.join("selected.txt"), "selected parent\n").unwrap();
+    fs::write(repo_path.join("remainder.txt"), "remainder parent\n").unwrap();
+    run_git(
+        &repo_path,
+        &["add", "node", "selected.txt", "remainder.txt"],
+    );
+    run_git(&repo_path, &["commit", "--amend", "--no-edit"]);
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", stack_name]);
+    assert!(success, "create stack failed: {stderr}");
+    fs::remove_file(&node_path).unwrap();
+    if parent_is_symlink {
+        fs::write(&node_path, "regular target\n").unwrap();
+    } else {
+        symlink("target-link-destination", &node_path).unwrap();
+    }
+    fs::write(repo_path.join("selected.txt"), "selected target\n").unwrap();
+    fs::write(repo_path.join("remainder.txt"), "remainder target\n").unwrap();
+    run_git(&repo_path, &["add", "-A"]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Same-path type change\n\nGG-ID: c-type123"],
+    );
+
+    let original_head = run_git_full(&repo_path, &["rev-parse", "HEAD"]).1;
+    let describe = describe_split(&repo_path, "1");
+    assert!(!describe["hunks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|hunk| hunk["path"] == "node"));
+    assert_eq!(
+        describe["non_textual_files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|path| **path == "node")
+            .count(),
+        1,
+        "type-change path must be classified exactly once"
+    );
+    let selected_hunk = describe["hunks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|hunk| hunk["path"] == "selected.txt")
+        .unwrap();
+    let plan_path = write_split_plan(&repo_path, &describe, vec![selected_hunk["id"].clone()]);
+
+    let (success, stdout, stderr) = apply_split_plan(&repo_path, &plan_path);
+    assert!(success, "apply failed: stdout={stdout} stderr={stderr}");
+    let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let first_sha = result["first"]["sha"].as_str().unwrap();
+    let remainder_sha = result["remainder"]["sha"].as_str().unwrap();
+    assert_eq!(
+        run_git_full(&repo_path, &["rev-parse", &format!("{first_sha}:node")]).1,
+        run_git_full(&repo_path, &["rev-parse", "main:node"]).1,
+        "type change must stay out of the first commit"
+    );
+    assert_eq!(
+        run_git_full(&repo_path, &["ls-tree", first_sha, "node"]).1,
+        run_git_full(&repo_path, &["ls-tree", "main", "node"]).1,
+        "first commit must preserve the parent node mode"
+    );
+    assert_eq!(
+        run_git_full(
+            &repo_path,
+            &["rev-parse", &format!("{remainder_sha}^{{tree}}")],
+        )
+        .1
+        .trim(),
+        describe["target"]["tree"].as_str().unwrap()
+    );
+
+    let operation_id = result["operation_id"].as_str().unwrap();
+    let (success, stdout, stderr) = run_gg(&repo_path, &["undo", operation_id, "--json"]);
+    assert!(success, "undo failed: stdout={stdout} stderr={stderr}");
+    assert_eq!(
+        run_git_full(&repo_path, &["rev-parse", "HEAD"]).1,
+        original_head
+    );
+}
+
+#[test]
+fn test_split_describe_classifies_crlf_file_as_non_textual() {
+    let initial = b"line 1\r\nline 2\r\nline 3\r\n";
+    let modified = b"line 1\r\nline 2 changed\r\nline 3\r\n";
+    let (_temp_dir, repo_path) =
+        create_byte_content_split_commit("crlf", "crlf.txt", initial, modified);
+
+    let describe = describe_split(&repo_path, "1");
+    assert!(describe["hunks"].as_array().unwrap().is_empty());
+    assert_eq!(
+        describe["non_textual_files"],
+        serde_json::json!(["crlf.txt"])
+    );
+}
+
+#[test]
+fn test_split_describe_classifies_invalid_utf8_file_as_non_textual() {
+    let initial = b"line 1\ninvalid: \xff\nline 3\n";
+    let modified = b"line 1 changed\ninvalid: \xff\nline 3\n";
+    let (_temp_dir, repo_path) =
+        create_byte_content_split_commit("invalid-utf8", "invalid.txt", initial, modified);
+
+    let describe = describe_split(&repo_path, "1");
+    assert!(describe["hunks"].as_array().unwrap().is_empty());
+    assert_eq!(
+        describe["non_textual_files"],
+        serde_json::json!(["invalid.txt"])
+    );
+}
+
+#[test]
+fn test_split_plan_selects_eof_newline_addition_exactly() {
+    assert_structured_eof_newline_selection(false, true);
+}
+
+#[test]
+fn test_split_plan_selects_eof_newline_removal_exactly() {
+    assert_structured_eof_newline_selection(true, false);
+}
+
+#[test]
+fn test_split_plan_composes_selected_nested_file_hunks_and_undoes() {
+    let (temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    let nested_dir = repo_path.join("src/shared/deeper");
+    fs::create_dir_all(&nested_dir).unwrap();
+    fs::write(nested_dir.join("a.txt"), "a parent\n").unwrap();
+    fs::write(nested_dir.join("b.txt"), "b parent\n").unwrap();
+    fs::write(repo_path.join("remainder.txt"), "remainder parent\n").unwrap();
+    run_git(&repo_path, &["add", "src", "remainder.txt"]);
+    run_git(&repo_path, &["commit", "--amend", "--no-edit"]);
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "nested-compose"]);
+    assert!(success, "create stack failed: {stderr}");
+    fs::write(nested_dir.join("a.txt"), "a selected\n").unwrap();
+    fs::write(nested_dir.join("b.txt"), "b selected\n").unwrap();
+    fs::write(repo_path.join("remainder.txt"), "remainder target\n").unwrap();
+    run_git(&repo_path, &["add", "src", "remainder.txt"]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Nested siblings\n\nGG-ID: c-nest123"],
+    );
+    let original_head = run_git_full(&repo_path, &["rev-parse", "HEAD"]).1;
+    let describe = describe_split(&repo_path, "1");
+    let selected = describe["hunks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|hunk| {
+            hunk["path"]
+                .as_str()
+                .unwrap()
+                .starts_with("src/shared/deeper/")
+        })
+        .map(|hunk| hunk["id"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(selected.len(), 2);
+    assert_eq!(describe["hunks"].as_array().unwrap().len(), 3);
+    let plan_path = write_split_plan(&repo_path, &describe, selected);
+
+    let (success, stdout, stderr) = apply_split_plan(&repo_path, &plan_path);
+    assert!(success, "apply failed: stdout={stdout} stderr={stderr}");
+    let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let first_sha = result["first"]["sha"].as_str().unwrap();
+    let remainder_sha = result["remainder"]["sha"].as_str().unwrap();
+    for (path, expected) in [
+        ("src/shared/deeper/a.txt", "a selected\n"),
+        ("src/shared/deeper/b.txt", "b selected\n"),
+        ("remainder.txt", "remainder parent\n"),
+    ] {
+        assert_eq!(
+            run_git_full(&repo_path, &["show", &format!("{first_sha}:{path}")]).1,
+            expected,
+            "unexpected first-commit content for {path}"
+        );
+    }
+    for (path, expected) in [
+        ("src/shared/deeper/a.txt", "a selected\n"),
+        ("src/shared/deeper/b.txt", "b selected\n"),
+        ("remainder.txt", "remainder target\n"),
+    ] {
+        assert_eq!(
+            run_git_full(&repo_path, &["show", &format!("{remainder_sha}:{path}")],).1,
+            expected,
+            "unexpected remainder content for {path}"
+        );
+    }
+
+    let operation_id = result["operation_id"].as_str().unwrap();
+    let (success, stdout, stderr) = run_gg(&repo_path, &["undo", operation_id, "--json"]);
+    assert!(success, "undo failed: stdout={stdout} stderr={stderr}");
+    assert_eq!(
+        run_git_full(&repo_path, &["rev-parse", "HEAD"]).1,
+        original_head
+    );
+    drop(temp_dir);
+}
+
+#[test]
+fn test_split_plan_prunes_empty_nested_directory_before_file_transition() {
+    let (_temp_dir, repo_path) = create_directory_to_file_split_commit("directory-to-file");
+    let original_head = run_git_full(&repo_path, &["rev-parse", "HEAD"]).1;
+    let describe = describe_split(&repo_path, "1");
+    let deletion_hunk = describe["hunks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|hunk| hunk["path"] == "node/last.txt")
+        .expect("Describe should expose the nested deletion hunk");
+    assert!(describe["hunks"].as_array().unwrap().len() >= 2);
+    let plan_path = write_split_plan(&repo_path, &describe, vec![deletion_hunk["id"].clone()]);
+
+    let (success, stdout, stderr) = apply_split_plan(&repo_path, &plan_path);
+    assert!(success, "apply failed: stdout={stdout} stderr={stderr}");
+    let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let first_sha = result["first"]["sha"].as_str().unwrap();
+    let remainder_sha = result["remainder"]["sha"].as_str().unwrap();
+    assert!(
+        !run_git(
+            &repo_path,
+            &["cat-file", "-e", &format!("{first_sha}:node")]
+        )
+        .0,
+        "selected deletion must prune the empty node/ tree"
+    );
+    assert_eq!(
+        run_git_full(&repo_path, &["show", &format!("{remainder_sha}:node")]).1,
+        "top-level target\n"
+    );
+
+    let operation_id = result["operation_id"].as_str().unwrap();
+    let (success, stdout, stderr) = run_gg(&repo_path, &["undo", operation_id, "--json"]);
+    assert!(success, "undo failed: stdout={stdout} stderr={stderr}");
+    assert_eq!(
+        run_git_full(&repo_path, &["rev-parse", "HEAD"]).1,
+        original_head
+    );
+}
+
+#[test]
+fn test_split_plan_keeps_selected_file_when_nested_deletion_is_already_applied() {
+    let (_temp_dir, repo_path) = create_directory_to_file_split_commit("directory-to-file-both");
+    let describe = describe_split(&repo_path, "1");
+    let selected = describe["hunks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|hunk| matches!(hunk["path"].as_str().unwrap(), "node" | "node/last.txt"))
+        .map(|hunk| hunk["id"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        selected.len(),
+        2,
+        "Describe must expose both transition sides"
+    );
+    assert!(describe["hunks"].as_array().unwrap().len() >= 3);
+    let plan_path = write_split_plan(&repo_path, &describe, selected);
+
+    let (success, stdout, stderr) = apply_split_plan(&repo_path, &plan_path);
+    assert!(success, "apply failed: stdout={stdout} stderr={stderr}");
+    let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let first_sha = result["first"]["sha"].as_str().unwrap();
+    let remainder_sha = result["remainder"]["sha"].as_str().unwrap();
+    assert_eq!(
+        run_git_full(&repo_path, &["show", &format!("{first_sha}:node")]).1,
+        "top-level target\n"
+    );
+    assert_eq!(
+        run_git_full(&repo_path, &["show", &format!("{first_sha}:remainder.txt")]).1,
+        "remainder parent\n"
+    );
+    assert_eq!(
+        run_git_full(&repo_path, &["show", &format!("{remainder_sha}:node")]).1,
+        "top-level target\n"
+    );
+}
+
+#[test]
+fn test_split_plan_rejects_directory_to_file_addition_without_deletion() {
+    let (_temp_dir, repo_path) =
+        create_directory_to_file_split_commit("directory-to-file-addition-only");
+    let describe = describe_split(&repo_path, "1");
+
+    assert_path_dependent_plan_rejected(&repo_path, &describe, "node");
+}
+
+#[test]
+fn test_split_plan_rejects_file_to_directory_addition_without_deletion() {
+    let (_temp_dir, repo_path) =
+        create_file_to_directory_split_commit("file-to-directory-addition-only");
+    let describe = describe_split(&repo_path, "1");
+
+    assert_path_dependent_plan_rejected(&repo_path, &describe, "node/last.txt");
+}
+
+#[test]
+fn test_split_plan_file_to_directory_deletion_only_does_not_copy_text_child() {
+    let (_temp_dir, repo_path) =
+        create_file_to_directory_split_commit("file-to-directory-deletion-only");
+    let describe = describe_split(&repo_path, "1");
+
+    assert_file_to_directory_deletion_only(&repo_path, &describe, "node/last.txt");
+}
+
+#[test]
+fn test_split_plan_file_to_directory_deletion_only_does_not_copy_non_textual_child() {
+    let (_temp_dir, repo_path) = create_file_to_directory_with_non_textual_addition();
+    let describe = describe_split(&repo_path, "1");
+    assert!(describe["non_textual_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|path| path == "node/last.bin"));
+
+    assert_file_to_directory_deletion_only(&repo_path, &describe, "node/last.bin");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_split_plan_regular_to_symlink_type_change_stays_non_textual() {
+    assert_same_path_type_change_is_non_textual("regular-to-symlink", false, false);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_split_plan_symlink_to_regular_type_change_stays_non_textual() {
+    assert_same_path_type_change_is_non_textual("symlink-to-regular", true, false);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_split_plan_invalid_utf8_regular_to_symlink_stays_non_textual() {
+    assert_same_path_type_change_is_non_textual("invalid-regular-to-symlink", false, true);
+}
+
+#[test]
+fn test_split_plan_rejects_addition_with_non_textual_dependent_deletion() {
+    let (_temp_dir, repo_path) = create_directory_to_file_with_non_textual_deletion();
+    let describe = describe_split(&repo_path, "1");
+    assert!(describe["non_textual_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|path| path == "node/last.bin"));
+
+    assert_path_dependent_plan_rejected(&repo_path, &describe, "node");
 }
 
 #[test]

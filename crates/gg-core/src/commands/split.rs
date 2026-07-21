@@ -1,6 +1,6 @@
 //! `gg split` - Split a commit into two
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -70,6 +70,12 @@ struct ChangedFile {
     additions: usize,
     /// Lines deleted
     deletions: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TargetDiffFile {
+    oid: git2::Oid,
+    mode: i32,
 }
 
 impl std::fmt::Display for ChangedFile {
@@ -371,6 +377,14 @@ pub fn apply_plan(_options: &SplitOptions, path: &Path) -> Result<SplitApplyResp
         ));
     }
 
+    let changed_files = get_changed_files(&repo, &resolved.parent_commit, &resolved.target_commit)?;
+    let selected_paths = selected_indices
+        .iter()
+        .map(|index| hunks[*index].file_path.as_str())
+        .collect::<HashSet<_>>();
+    let target_tree = resolved.target_commit.tree()?;
+    validate_path_dependent_selection(&target_tree, &changed_files, &selected_paths)?;
+
     let result = execute_split(
         &repo,
         &config,
@@ -395,6 +409,51 @@ pub fn apply_plan(_options: &SplitOptions, path: &Path) -> Result<SplitApplyResp
 
 fn stale_split_plan(reason: &str) -> GgError {
     GgError::Other(format!("stale split plan: {reason}"))
+}
+
+fn validate_path_dependent_selection(
+    target_tree: &git2::Tree,
+    changed_files: &[ChangedFile],
+    selected_paths: &HashSet<&str>,
+) -> Result<()> {
+    for (index, first) in changed_files.iter().enumerate() {
+        for second in &changed_files[index + 1..] {
+            if !paths_have_prefix_dependency(&first.path, &second.path) {
+                continue;
+            }
+
+            let first_selected = selected_paths.contains(first.path.as_str());
+            let second_selected = selected_paths.contains(second.path.as_str());
+            if first_selected == second_selected {
+                continue;
+            }
+
+            let (selected, dependent) = if first_selected {
+                (&first.path, &second.path)
+            } else {
+                (&second.path, &first.path)
+            };
+            let selected_is_target_leaf = target_tree
+                .get_path(Path::new(selected))
+                .ok()
+                .is_some_and(|entry| entry.kind() != Some(git2::ObjectType::Tree));
+            if selected_is_target_leaf {
+                return Err(GgError::Other(format!(
+                    "path-dependent split selection: selecting '{selected}' would also apply the unselected change '{dependent}'; select both sides together or leave '{selected}' in the remainder"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn paths_have_prefix_dependency(first: &str, second: &str) -> bool {
+    second
+        .strip_prefix(first)
+        .is_some_and(|suffix| suffix.starts_with('/'))
+        || first
+            .strip_prefix(second)
+            .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 fn execute_split(
@@ -582,6 +641,8 @@ pub fn describe(options: &SplitOptions) -> Result<SplitDescribeResponse> {
             .into_iter()
             .filter(|file| !hunk_files.contains(file.path.as_str()))
             .map(|file| file.path)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect();
     let target = SplitTargetIdentity {
         gg_id: resolved.original_gg_id,
@@ -681,16 +742,13 @@ fn insert_nested_entry(
     repo: &git2::Repository,
     root_builder: &mut git2::TreeBuilder,
     parent_tree: &git2::Tree,
-    target_tree: &git2::Tree,
     file_path: &str,
+    target_file: TargetDiffFile,
 ) -> Result<()> {
     let parts: Vec<&str> = file_path.split('/').collect();
 
-    // Get the target entry (or None if deleted)
-    let target_entry = target_tree.get_path(std::path::Path::new(file_path)).ok();
-
     // Recursively rebuild the tree hierarchy from the top directory down
-    let new_subtree_oid = rebuild_subtree(repo, parent_tree, &parts, 0, target_entry.as_ref())?;
+    let new_subtree_oid = rebuild_subtree(repo, parent_tree, &parts, 0, target_file)?;
 
     // Update the root builder with the new subtree
     root_builder
@@ -706,7 +764,7 @@ fn rebuild_subtree(
     parent_tree: &git2::Tree,
     parts: &[&str],
     depth: usize,
-    target_entry: Option<&git2::TreeEntry>,
+    target_file: TargetDiffFile,
 ) -> std::result::Result<git2::Oid, GgError> {
     // Get the current subtree from parent at this depth
     let subpath = parts[..=depth].join("/");
@@ -732,17 +790,12 @@ fn rebuild_subtree(
     if depth == parts.len() - 2 {
         // This is the parent directory of the file
         let filename = parts[parts.len() - 1];
-        if let Some(entry) = target_entry {
-            builder
-                .insert(filename, entry.id(), entry.filemode())
-                .map_err(|e| GgError::Other(format!("Failed to insert entry: {}", e)))?;
-        } else {
-            // File was deleted
-            let _ = builder.remove(filename);
-        }
+        builder
+            .insert(filename, target_file.oid, target_file.mode)
+            .map_err(|e| GgError::Other(format!("Failed to insert entry: {}", e)))?;
     } else {
         // Intermediate directory - recurse
-        let child_oid = rebuild_subtree(repo, parent_tree, parts, depth + 1, target_entry)?;
+        let child_oid = rebuild_subtree(repo, parent_tree, parts, depth + 1, target_file)?;
         builder
             .insert(parts[depth + 1], child_oid, 0o040000)
             .map_err(|e| GgError::Other(format!("Failed to insert subtree: {}", e)))?;
@@ -910,6 +963,22 @@ fn get_hunks(
     let mut current_file_path;
     let mut current_hunk: Option<DiffHunk> = None;
 
+    let mut non_reconstructable_paths = HashSet::new();
+    for delta in diff.deltas() {
+        let old_file = delta.old_file();
+        let new_file = delta.new_file();
+        if !diff_file_supports_hunk_reconstruction(repo, &old_file)?
+            || !diff_file_supports_hunk_reconstruction(repo, &new_file)?
+        {
+            let path = new_file
+                .path()
+                .or_else(|| old_file.path())
+                .map(|path| path.to_string_lossy().to_string())
+                .unwrap_or_default();
+            non_reconstructable_paths.insert(path);
+        }
+    }
+
     // We need to iterate patch-by-patch to avoid borrow checker issues with foreach
     let num_deltas = diff.deltas().len();
 
@@ -918,12 +987,20 @@ fn get_hunks(
             .get_delta(delta_idx)
             .ok_or_else(|| GgError::Other(format!("Failed to get delta {}", delta_idx)))?;
 
-        current_file_path = delta
-            .new_file()
-            .path()
-            .or_else(|| delta.old_file().path())
+        let old_file = delta.old_file();
+        let new_file = delta.new_file();
+        let old_path = old_file.path().map(Path::to_path_buf);
+        let new_path = new_file.path().map(Path::to_path_buf);
+
+        current_file_path = new_path
+            .as_deref()
+            .or(old_path.as_deref())
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
+
+        if non_reconstructable_paths.contains(&current_file_path) {
+            continue;
+        }
 
         // Get the patch for this delta
         let patch = git2::Patch::from_diff(&diff, delta_idx)?;
@@ -978,6 +1055,27 @@ fn get_hunks(
     }
 
     Ok(hunks)
+}
+
+fn diff_file_supports_hunk_reconstruction(
+    repo: &git2::Repository,
+    file: &git2::DiffFile<'_>,
+) -> Result<bool> {
+    if !file.exists() {
+        return Ok(true);
+    }
+    if !matches!(
+        file.mode(),
+        git2::FileMode::Blob | git2::FileMode::BlobGroupWritable | git2::FileMode::BlobExecutable
+    ) {
+        return Ok(false);
+    }
+    let Ok(blob) = repo.find_blob(file.id()) else {
+        return Ok(false);
+    };
+
+    let content = blob.content();
+    Ok(std::str::from_utf8(content).is_ok() && !content.contains(&b'\r'))
 }
 
 /// Print help for interactive hunk selection
@@ -1282,8 +1380,10 @@ fn build_tree_from_hunks<'a>(
     selected_indices: &[usize],
     non_hunk_files: &[String],
 ) -> Result<git2::Tree<'a>> {
+    let target_diff_files = target_diff_files(repo, parent_tree, target_tree)?;
+
     // Group hunks by file
-    let mut file_hunks: HashMap<String, Vec<(usize, &DiffHunk)>> = HashMap::new();
+    let mut file_hunks: BTreeMap<String, Vec<(usize, &DiffHunk)>> = BTreeMap::new();
     for (idx, hunk) in hunks.iter().enumerate() {
         file_hunks
             .entry(hunk.file_path.clone())
@@ -1295,7 +1395,7 @@ fn build_tree_from_hunks<'a>(
     // - All hunks selected: use target tree entry
     // - No hunks selected: use parent tree entry
     // - Partial: apply selected hunks to parent content
-    let mut builder = repo.treebuilder(Some(parent_tree))?;
+    let mut accumulated_tree = repo.find_tree(parent_tree.id())?;
 
     for (file_path, file_hunk_list) in &file_hunks {
         let file_indices: Vec<usize> = file_hunk_list.iter().map(|(idx, _)| *idx).collect();
@@ -1305,46 +1405,107 @@ fn build_tree_from_hunks<'a>(
             .copied()
             .collect();
 
-        let path = std::path::Path::new(file_path);
-
         if selected_in_file.is_empty() {
             // No hunks selected for this file - keep parent version (no change to builder)
             continue;
-        } else if selected_in_file.len() == file_hunk_list.len() {
-            // All hunks selected - use target tree entry
-            if target_tree.get_path(path).is_ok() {
-                // Update the tree with target entry
-                update_tree_entry(repo, &mut builder, parent_tree, target_tree, file_path)?;
-            } else {
-                // File was deleted in target - apply deletion
-                remove_tree_entry(repo, &mut builder, parent_tree, file_path)?;
-            }
-        } else {
-            // Partial selection - apply hunks
-            let selected_hunks: Vec<&DiffHunk> = file_hunk_list
-                .iter()
-                .filter(|(idx, _)| selected_indices.contains(idx))
-                .map(|(_, h)| *h)
-                .collect();
-
-            apply_hunks_to_tree(repo, &mut builder, parent_tree, file_path, &selected_hunks)?;
         }
+
+        let tree_oid = {
+            let mut builder = repo.treebuilder(Some(&accumulated_tree))?;
+            if selected_in_file.len() == file_hunk_list.len() {
+                let target_file = target_diff_files.get(file_path).ok_or_else(|| {
+                    GgError::Other(format!("Missing diff identity for '{file_path}'"))
+                })?;
+                if let Some(target_file) = target_file {
+                    update_tree_entry(
+                        repo,
+                        &mut builder,
+                        &accumulated_tree,
+                        file_path,
+                        *target_file,
+                    )?;
+                } else {
+                    remove_tree_entry(repo, &mut builder, &accumulated_tree, file_path)?;
+                }
+            } else {
+                // Partial selection - apply hunks
+                let selected_hunks: Vec<&DiffHunk> = file_hunk_list
+                    .iter()
+                    .filter(|(idx, _)| selected_indices.contains(idx))
+                    .map(|(_, h)| *h)
+                    .collect();
+
+                apply_hunks_to_tree(
+                    repo,
+                    &mut builder,
+                    &accumulated_tree,
+                    file_path,
+                    &selected_hunks,
+                )?;
+            }
+            builder.write()?
+        };
+        accumulated_tree = repo.find_tree(tree_oid)?;
     }
 
     // Include non-hunk files (binary, rename-only, mode-only) wholesale from target tree
-    for file_path in non_hunk_files {
-        let path = std::path::Path::new(file_path.as_str());
-        if target_tree.get_path(path).is_ok() {
-            update_tree_entry(repo, &mut builder, parent_tree, target_tree, file_path)?;
-        } else {
-            // File was deleted in target - apply deletion
-            remove_tree_entry(repo, &mut builder, parent_tree, file_path)?;
-        }
+    let mut sorted_non_hunk_files = non_hunk_files.to_vec();
+    sorted_non_hunk_files.sort();
+    sorted_non_hunk_files.dedup();
+    for file_path in &sorted_non_hunk_files {
+        let tree_oid = {
+            let mut builder = repo.treebuilder(Some(&accumulated_tree))?;
+            let target_file = target_diff_files.get(file_path).ok_or_else(|| {
+                GgError::Other(format!("Missing diff identity for '{file_path}'"))
+            })?;
+            if let Some(target_file) = target_file {
+                update_tree_entry(
+                    repo,
+                    &mut builder,
+                    &accumulated_tree,
+                    file_path,
+                    *target_file,
+                )?;
+            } else {
+                remove_tree_entry(repo, &mut builder, &accumulated_tree, file_path)?;
+            }
+            builder.write()?
+        };
+        accumulated_tree = repo.find_tree(tree_oid)?;
     }
 
-    let tree_oid = builder.write()?;
-    let tree = repo.find_tree(tree_oid)?;
-    Ok(tree)
+    Ok(accumulated_tree)
+}
+
+fn target_diff_files(
+    repo: &git2::Repository,
+    parent_tree: &git2::Tree,
+    target_tree: &git2::Tree,
+) -> Result<HashMap<String, Option<TargetDiffFile>>> {
+    let diff = repo.diff_tree_to_tree(Some(parent_tree), Some(target_tree), None)?;
+    let mut files: HashMap<String, Option<TargetDiffFile>> = HashMap::new();
+    for delta in diff.deltas() {
+        let old_file = delta.old_file();
+        let new_file = delta.new_file();
+        let path = new_file
+            .path()
+            .or_else(|| old_file.path())
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let target_file = new_file.exists().then(|| TargetDiffFile {
+            oid: new_file.id(),
+            mode: new_file.mode().into(),
+        });
+        files
+            .entry(path)
+            .and_modify(|existing| {
+                if target_file.is_some() {
+                    *existing = target_file;
+                }
+            })
+            .or_insert(target_file);
+    }
+    Ok(files)
 }
 
 /// Update a tree entry to use the target version
@@ -1352,20 +1513,18 @@ fn update_tree_entry(
     repo: &git2::Repository,
     builder: &mut git2::TreeBuilder,
     parent_tree: &git2::Tree,
-    target_tree: &git2::Tree,
     file_path: &str,
+    target_file: TargetDiffFile,
 ) -> Result<()> {
     let path = std::path::Path::new(file_path);
 
-    if let Ok(entry) = target_tree.get_path(path) {
-        if path.parent().is_some() && path.parent() != Some(std::path::Path::new("")) {
-            // Nested path
-            insert_nested_entry(repo, builder, parent_tree, target_tree, file_path)?;
-        } else {
-            // Top-level file
-            let name = path.file_name().unwrap().to_string_lossy();
-            builder.insert(&*name, entry.id(), entry.filemode())?;
-        }
+    if path.parent().is_some() && path.parent() != Some(std::path::Path::new("")) {
+        // Nested path
+        insert_nested_entry(repo, builder, parent_tree, file_path, target_file)?;
+    } else {
+        // Top-level file
+        let name = path.file_name().unwrap().to_string_lossy();
+        builder.insert(&*name, target_file.oid, target_file.mode)?;
     }
     Ok(())
 }
@@ -1397,12 +1556,61 @@ fn insert_nested_entry_for_deletion(
     parent_tree: &git2::Tree,
     file_path: &str,
 ) -> Result<()> {
+    if parent_tree.get_path(Path::new(file_path)).is_err() {
+        return Ok(());
+    }
+
     let parts: Vec<&str> = file_path.split('/').collect();
-    let new_subtree_oid = rebuild_subtree(repo, parent_tree, &parts, 0, None)?;
-    root_builder
-        .insert(parts[0], new_subtree_oid, 0o040000)
-        .map_err(|e| GgError::Other(format!("Failed to update root tree: {}", e)))?;
+    match rebuild_subtree_for_deletion(repo, parent_tree, &parts, 0)? {
+        Some(new_subtree_oid) => {
+            root_builder
+                .insert(parts[0], new_subtree_oid, 0o040000)
+                .map_err(|e| GgError::Other(format!("Failed to update root tree: {}", e)))?;
+        }
+        None => {
+            let _ = root_builder.remove(parts[0]);
+        }
+    }
     Ok(())
+}
+
+fn rebuild_subtree_for_deletion(
+    repo: &git2::Repository,
+    parent_tree: &git2::Tree,
+    parts: &[&str],
+    depth: usize,
+) -> Result<Option<git2::Oid>> {
+    let subpath = parts[..=depth].join("/");
+    let current_subtree = if depth == 0 {
+        parent_tree
+            .get_name(parts[0])
+            .and_then(|entry| repo.find_tree(entry.id()).ok())
+    } else {
+        parent_tree
+            .get_path(Path::new(&subpath))
+            .ok()
+            .and_then(|entry| repo.find_tree(entry.id()).ok())
+    };
+    let mut builder = repo.treebuilder(current_subtree.as_ref())?;
+
+    if depth == parts.len() - 2 {
+        let _ = builder.remove(parts[parts.len() - 1]);
+    } else {
+        match rebuild_subtree_for_deletion(repo, parent_tree, parts, depth + 1)? {
+            Some(child_oid) => {
+                builder.insert(parts[depth + 1], child_oid, 0o040000)?;
+            }
+            None => {
+                let _ = builder.remove(parts[depth + 1]);
+            }
+        }
+    }
+
+    if builder.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(builder.write()?))
+    }
 }
 
 /// Apply selected hunks to a file and update the tree
@@ -1456,8 +1664,8 @@ fn apply_hunks_to_content(parent_content: &str, hunks: &[&DiffHunk]) -> Result<S
     let mut sorted_hunks: Vec<&DiffHunk> = hunks.to_vec();
     sorted_hunks.sort_by_key(|h| h.old_start);
 
-    let parent_lines: Vec<&str> = parent_content.lines().collect();
-    let mut result_lines: Vec<String> = Vec::new();
+    let parent_lines: Vec<&str> = parent_content.split_inclusive('\n').collect();
+    let mut result = String::new();
     let mut parent_idx = 0usize; // 0-indexed position in parent
 
     for hunk in sorted_hunks {
@@ -1466,7 +1674,7 @@ fn apply_hunks_to_content(parent_content: &str, hunks: &[&DiffHunk]) -> Result<S
 
         // Copy lines from parent before this hunk
         while parent_idx < hunk_start && parent_idx < parent_lines.len() {
-            result_lines.push(parent_lines[parent_idx].to_string());
+            result.push_str(parent_lines[parent_idx]);
             parent_idx += 1;
         }
 
@@ -1474,8 +1682,7 @@ fn apply_hunks_to_content(parent_content: &str, hunks: &[&DiffHunk]) -> Result<S
         for line in &hunk.lines {
             match line.origin {
                 '+' => {
-                    // Add new line
-                    result_lines.push(line.content.trim_end_matches('\n').to_string());
+                    result.push_str(&line.content);
                 }
                 '-' => {
                     // Skip (delete) line from parent
@@ -1483,7 +1690,7 @@ fn apply_hunks_to_content(parent_content: &str, hunks: &[&DiffHunk]) -> Result<S
                 }
                 ' ' if parent_idx < parent_lines.len() => {
                     // Context - should match, advance parent
-                    result_lines.push(parent_lines[parent_idx].to_string());
+                    result.push_str(parent_lines[parent_idx]);
                     parent_idx += 1;
                 }
                 _ => {}
@@ -1493,15 +1700,8 @@ fn apply_hunks_to_content(parent_content: &str, hunks: &[&DiffHunk]) -> Result<S
 
     // Copy remaining lines from parent
     while parent_idx < parent_lines.len() {
-        result_lines.push(parent_lines[parent_idx].to_string());
+        result.push_str(parent_lines[parent_idx]);
         parent_idx += 1;
-    }
-
-    // Join with newlines, preserve trailing newline if original had one
-    // For new files (empty parent), add trailing newline if there's content
-    let mut result = result_lines.join("\n");
-    if !result_lines.is_empty() && (parent_content.is_empty() || parent_content.ends_with('\n')) {
-        result.push('\n');
     }
 
     Ok(result)

@@ -446,15 +446,41 @@ pub fn interrupted_rebase_operation(repo: &Repository) -> Result<Option<Operatio
     }
 
     let bytes = fs::read(&path)?;
-    let marker: InterruptedRebaseMarker = serde_json::from_slice(&bytes)?;
-    if let Some(expected) = &marker.rebase_state {
-        if current_rebase_state(repo).as_ref() != Some(expected) {
+    let marker: InterruptedRebaseMarker = match serde_json::from_slice(&bytes) {
+        Ok(marker) => marker,
+        Err(_) => {
             clear_interrupted_rebase_operation(repo)?;
             return Ok(None);
         }
+    };
+    let Some(expected) = &marker.rebase_state else {
+        clear_interrupted_rebase_operation(repo)?;
+        return Ok(None);
+    };
+    if current_rebase_state(repo).as_ref() != Some(expected) {
+        clear_interrupted_rebase_operation(repo)?;
+        return Ok(None);
     }
+
     let store = OperationStore::new(&crate::git::gg_dir(repo));
-    Ok(Some(store.load(&marker.operation_id)?))
+    let record = match store.load(&marker.operation_id) {
+        Ok(record) => record,
+        Err(_) => {
+            clear_interrupted_rebase_operation(repo)?;
+            return Ok(None);
+        }
+    };
+    if record.schema_version > SCHEMA_VERSION
+        || !matches!(
+            record.status,
+            OperationStatus::Pending | OperationStatus::Interrupted
+        )
+    {
+        clear_interrupted_rebase_operation(repo)?;
+        return Ok(None);
+    }
+
+    Ok(Some(record))
 }
 
 /// Remove the interrupted-rebase marker.

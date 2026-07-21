@@ -81,3 +81,23 @@ Field types for each entry in `unintegrated_commits`:
 - `subject`: `string` — first line of the commit message
 - `sits_on_position`: `number` — position of the stack entry that this commit sits directly on top of
 - `count`: `number` — total number of un-integrated commits at HEAD (useful when multiple commits were made before restacking)
+
+### Interrupted operation ID in JSON output
+
+While a GG mutation is paused on the current Git rebase, `gg ls --json`
+includes its opaque operation-log ID at the top level:
+
+```json
+{
+  "version": 1,
+  "operation_id": "op_...",
+  "stack": {
+    "name": "my-feature",
+    "entries": []
+  }
+}
+```
+
+Pass the value unchanged to `gg undo <operation_id> --json` after the operation
+has been completed or aborted. The field is omitted when no operation is paused
+and when a saved marker no longer matches the current Git rebase state.

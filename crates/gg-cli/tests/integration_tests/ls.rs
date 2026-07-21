@@ -114,6 +114,10 @@ fn test_gg_ls_json_current_stack() {
 
     let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
     assert_eq!(parsed["version"], 1);
+    assert!(
+        parsed.get("operation_id").is_none(),
+        "normal stack output must omit operation_id: {parsed:?}"
+    );
     assert_eq!(parsed["stack"]["name"], "json-stack");
     let base = parsed["stack"]["base"]
         .as_str()
@@ -130,6 +134,268 @@ fn test_gg_ls_json_current_stack() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["position"], 1);
     assert_eq!(entries[0]["title"], "Add file1");
+}
+
+#[test]
+fn test_gg_ls_json_reports_valid_interrupted_rebase_operation_id() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    setup_json_stack(&repo_path, "paused-json-stack");
+
+    let operation_id = latest_operation_id(&repo_path);
+    set_operation_status(&repo_path, &operation_id, "pending");
+    write_rebase_state(
+        &repo_path,
+        "refs/heads/testuser/paused-json-stack",
+        "aaaa",
+        "bbbb",
+    );
+    write_interrupted_rebase_marker(
+        &repo_path,
+        &operation_id,
+        "refs/heads/testuser/paused-json-stack",
+        "aaaa",
+        "bbbb",
+    );
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["ls", "--json"]);
+    assert!(success, "gg ls --json failed: {stderr}");
+
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(parsed["operation_id"], operation_id);
+}
+
+#[test]
+fn test_gg_ls_json_clears_legacy_interrupted_rebase_marker_without_state() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    setup_json_stack(&repo_path, "legacy-marker-json-stack");
+
+    let operation_id = latest_operation_id(&repo_path);
+    set_operation_status(&repo_path, &operation_id, "pending");
+    write_raw_interrupted_rebase_marker(
+        &repo_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "operation_id": operation_id,
+        }))
+        .expect("marker must serialize"),
+    );
+
+    assert_stale_marker_is_omitted_and_cleared(&repo_path);
+}
+
+#[test]
+fn test_gg_ls_json_clears_malformed_interrupted_rebase_marker() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    setup_json_stack(&repo_path, "malformed-marker-json-stack");
+    write_raw_interrupted_rebase_marker(&repo_path, b"{not json".to_vec());
+
+    assert_stale_marker_is_omitted_and_cleared(&repo_path);
+}
+
+#[test]
+fn test_gg_ls_json_clears_interrupted_rebase_marker_with_missing_record() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    setup_json_stack(&repo_path, "missing-record-json-stack");
+    write_rebase_state(
+        &repo_path,
+        "refs/heads/testuser/missing-record-json-stack",
+        "aaaa",
+        "bbbb",
+    );
+    write_interrupted_rebase_marker(
+        &repo_path,
+        "op_1000000000000_00000000000000000000000000000000",
+        "refs/heads/testuser/missing-record-json-stack",
+        "aaaa",
+        "bbbb",
+    );
+
+    assert_stale_marker_is_omitted_and_cleared(&repo_path);
+}
+
+#[test]
+fn test_gg_ls_json_clears_interrupted_rebase_marker_for_committed_record() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    setup_json_stack(&repo_path, "committed-record-json-stack");
+
+    let operation_id = latest_operation_id(&repo_path);
+    write_rebase_state(
+        &repo_path,
+        "refs/heads/testuser/committed-record-json-stack",
+        "aaaa",
+        "bbbb",
+    );
+    write_interrupted_rebase_marker(
+        &repo_path,
+        &operation_id,
+        "refs/heads/testuser/committed-record-json-stack",
+        "aaaa",
+        "bbbb",
+    );
+
+    assert_stale_marker_is_omitted_and_cleared(&repo_path);
+}
+
+#[test]
+fn test_gg_ls_json_clears_interrupted_rebase_marker_for_unsupported_record_schema() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    setup_json_stack(&repo_path, "future-record-json-stack");
+
+    let operation_id = latest_operation_id(&repo_path);
+    set_operation_status(&repo_path, &operation_id, "pending");
+    set_operation_schema(&repo_path, &operation_id, 999);
+    write_rebase_state(
+        &repo_path,
+        "refs/heads/testuser/future-record-json-stack",
+        "aaaa",
+        "bbbb",
+    );
+    write_interrupted_rebase_marker(
+        &repo_path,
+        &operation_id,
+        "refs/heads/testuser/future-record-json-stack",
+        "aaaa",
+        "bbbb",
+    );
+
+    assert_stale_marker_is_omitted_and_cleared(&repo_path);
+}
+
+#[test]
+fn test_gg_ls_json_omits_stale_interrupted_rebase_operation_id() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    setup_json_stack(&repo_path, "stale-json-stack");
+
+    let operation_id = latest_operation_id(&repo_path);
+    write_rebase_state(
+        &repo_path,
+        "refs/heads/testuser/stale-json-stack",
+        "aaaa",
+        "current",
+    );
+    write_interrupted_rebase_marker(
+        &repo_path,
+        &operation_id,
+        "refs/heads/testuser/stale-json-stack",
+        "aaaa",
+        "stale",
+    );
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["ls", "--json"]);
+    assert!(success, "gg ls --json failed: {stderr}");
+
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert!(
+        parsed.get("operation_id").is_none(),
+        "stale operation markers must be omitted: {parsed:?}"
+    );
+    assert!(
+        !repo_path
+            .join(".git/gg/interrupted-rebase-operation.json")
+            .exists(),
+        "validating a stale marker must clear it"
+    );
+}
+
+fn setup_json_stack(repo_path: &std::path::Path, stack_name: &str) {
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _stdout, stderr) = run_gg(repo_path, &["co", stack_name]);
+    assert!(success, "Failed to create stack: {stderr}");
+}
+
+fn latest_operation_id(repo_path: &std::path::Path) -> String {
+    fs::read_dir(repo_path.join(".git/gg/operations"))
+        .expect("checkout must create an operation record")
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| fs::read(entry.path()).ok())
+        .filter_map(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .filter_map(|record| record["id"].as_str().map(ToOwned::to_owned))
+        .max()
+        .expect("checkout operation id must exist")
+}
+
+fn set_operation_status(repo_path: &std::path::Path, operation_id: &str, status: &str) {
+    let path = repo_path
+        .join(".git/gg/operations")
+        .join(format!("{operation_id}.json"));
+    let mut record: Value =
+        serde_json::from_slice(&fs::read(&path).expect("operation record must be readable"))
+            .expect("operation record must be valid JSON");
+    record["status"] = Value::String(status.to_string());
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(&record).expect("operation record must serialize"),
+    )
+    .expect("Failed to update operation status");
+}
+
+fn set_operation_schema(repo_path: &std::path::Path, operation_id: &str, schema_version: u32) {
+    let path = repo_path
+        .join(".git/gg/operations")
+        .join(format!("{operation_id}.json"));
+    let mut record: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    record["schema_version"] = Value::from(schema_version);
+    fs::write(path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+}
+
+fn write_rebase_state(repo_path: &std::path::Path, head_name: &str, orig_head: &str, onto: &str) {
+    let rebase_dir = repo_path.join(".git/rebase-merge");
+    fs::create_dir_all(&rebase_dir).expect("Failed to create rebase state");
+    fs::write(rebase_dir.join("head-name"), head_name).expect("Failed to write head-name");
+    fs::write(rebase_dir.join("orig-head"), orig_head).expect("Failed to write orig-head");
+    fs::write(rebase_dir.join("onto"), onto).expect("Failed to write onto");
+}
+
+fn write_interrupted_rebase_marker(
+    repo_path: &std::path::Path,
+    operation_id: &str,
+    head_name: &str,
+    orig_head: &str,
+    onto: &str,
+) {
+    let marker = serde_json::json!({
+        "operation_id": operation_id,
+        "rebase_state": {
+            "head_name": head_name,
+            "orig_head": orig_head,
+            "onto": onto,
+        }
+    });
+    write_raw_interrupted_rebase_marker(
+        repo_path,
+        serde_json::to_vec_pretty(&marker).expect("marker must serialize"),
+    );
+}
+
+fn write_raw_interrupted_rebase_marker(repo_path: &std::path::Path, bytes: Vec<u8>) {
+    fs::write(
+        repo_path.join(".git/gg/interrupted-rebase-operation.json"),
+        bytes,
+    )
+    .expect("Failed to write interrupted rebase marker");
+}
+
+fn assert_stale_marker_is_omitted_and_cleared(repo_path: &std::path::Path) {
+    let (success, stdout, stderr) = run_gg(repo_path, &["ls", "--json"]);
+    assert!(success, "gg ls --json failed: {stderr}");
+
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert!(
+        parsed.get("operation_id").is_none(),
+        "stale operation markers must be omitted: {parsed:?}"
+    );
+    assert!(
+        !repo_path
+            .join(".git/gg/interrupted-rebase-operation.json")
+            .exists(),
+        "validating a stale marker must clear it"
+    );
 }
 
 #[test]

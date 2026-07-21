@@ -85,6 +85,8 @@ pub fn print_json_error(message: &str) {
 #[derive(Serialize)]
 pub struct SingleStackResponse {
     pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
     pub stack: StackJson,
 }
 

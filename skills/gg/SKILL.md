@@ -158,7 +158,9 @@ gg land -a -c --json
 ## Common operations
 
 - Navigate: `gg mv`, `gg first`, `gg last`, `gg prev`, `gg next`
-- Amend current commit: `gg sc` / `gg sc -a`
+- Amend current commit: `gg sc` / `gg sc -a`. Native clients that already
+  prepared the index should use `gg sc --staged-only` so repository
+  `defaults.unstaged_action` cannot stage or stash unrelated changes.
 - Auto-distribute staged hunks: `gg absorb -s`
 - Split a commit into two: `gg split` — opens a two-panel TUI for hunk selection (files on the left, colored diff on the right), followed by inline commit message inputs for both the new and remainder commits. Use `--no-tui` to fall back to sequential `git add -p` style prompts. The `-m` flag bypasses the TUI message input for the new commit. The `--no-edit` flag skips the remainder message input. Pass `FILES...` to auto-select all hunks from those files (e.g., `gg split -c 3 file1.rs file2.rs`). Native clients with their own hunk picker use the structured Describe/Apply protocol documented in `reference.md`.
 - Split a stack into two stacks: `gg unstack` — opens a picker by default. The selected entry and descendants become a new independent stack; lower entries remain in the original stack. Use `--target <position|gg-id|sha> --no-tui` for scripts, and `--name <stack>` to choose the new stack name. Use `--keep-current` when a native client must leave the invoking worktree on the lower stack without creating an upper worktree; it conflicts with `--worktree`.
@@ -208,7 +210,8 @@ operation record so it remains available to `gg undo`.
 
 **Refusal modes** (exit 1, no refs touched, JSON includes `refusal.reason`):
 
-- `remote` — target operation pushed/merged/closed/created a PR/MR.
+- `remote` — target operation pushed, deleted a remote branch, or
+  created/merged/closed a PR/MR.
   gg prints a provider-specific revert hint (`gh pr close <n>`,
   `glab mr close <n>`, `git push --delete …`). Agents must surface the
   hint to the user rather than attempt silent remote rollback.

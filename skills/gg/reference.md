@@ -157,6 +157,9 @@ Move around stack entries.
 Squash changes into current stack commit.
 
 - `-a, --all`
+- `--staged-only` — use only the prepared index and ignore
+  `defaults.unstaged_action`; never stages or stashes other changes. Conflicts
+  with `--all`.
 - `-f, --force` (alias: `--ignore-immutable`) — bypass the [immutability guard](#immutable-commits)
 
 #### `gg absorb [OPTIONS]`
@@ -285,7 +288,7 @@ completed operation is still undoable.
 
 | `refusal.reason` | Condition | Handling |
 |---|---|---|
-| `remote` | Op pushed/merged/closed/created a PR or MR | Use the printed provider hint (`gh pr close <n>`, `glab mr close <n>`, `git push --delete …`). |
+| `remote` | Op pushed, deleted a remote branch, or created/merged/closed a PR or MR | Use the printed recovery hint. Branch deletions include an exact restore push when the prior OID was captured. |
 | `interrupted` | Op was Ctrl-C'd, crashed, or aborted before completion | Fix state manually; stale Pending records are swept on the next lock-acquiring op. |
 | `stale` | Refs moved since the target op finalised | Run `gg undo --list` and pick a more recent record. Error names the ref, expected OID, actual OID. |
 | `unsupported_schema` | Record was written by a newer `gg` binary | Upgrade `gg` or delete the record. |
@@ -491,6 +494,7 @@ then run `gg continue`, or run `gg abort` to cancel it.
 ```json
 {
   "version": 1,
+  "operation_id": "op_...",
   "stack": {
     "name": "string",
     "base": "string",
@@ -527,6 +531,7 @@ then run `gg continue`, or run `gg abort` to cancel it.
 ```
 
 Field types:
+- `operation_id`: `string`, **omitted when no GG operation is paused on the current Git rebase or when its saved marker is stale**. Treat it as opaque and pass it unchanged to `gg undo <operation_id> --json` after the operation has been completed or aborted.
 - `current_position`: `number | null`
 - `behind_base`: `number | null`
 - `gg_id`: `string | null`

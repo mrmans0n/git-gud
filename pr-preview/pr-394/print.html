@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-022e3194.js";
+            window.path_to_searchindex_js = "searchindex-a954c1b5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-95fa4ef1.js"></script>
@@ -1571,8 +1571,9 @@ worktree, or creating an operation record:</p>
 </code></pre>
 <p>The response contains the exact <code>target</code>, an opaque <code>plan_token</code>, selectable
 textual <code>hunks</code>, <code>non_textual_files</code>, and default messages. Copy <code>target</code> and
-<code>plan_token</code> unchanged, choose a non-empty proper subset of the returned hunk
-IDs, and supply both non-empty messages:</p>
+<code>plan_token</code> unchanged, choose at least one returned hunk ID while leaving
+some textual, non-textual, or metadata change for the remainder, and supply
+both non-empty messages:</p>
 <pre><code class="language-bash">jq '{
   version,
   plan_token,
@@ -1584,10 +1585,12 @@ IDs, and supply both non-empty messages:</p>
 
 gg split --plan-json split-plan.json --json &gt; split-result.json
 </code></pre>
-<p>At least one textual hunk must remain for the remainder. Files listed in
-<code>non_textual_files</code> are not selectable in protocol v1 and always remain in the
-remainder commit. Treat hunk IDs, plan tokens, GG-IDs, and operation IDs as
-opaque values; do not parse, construct, or remap them.</p>
+<p>The remainder must contain at least one change. It can be an unselected textual
+hunk, a file listed in <code>non_textual_files</code>, or a regular-file mode change such
+as an executable-bit update. Non-textual files and metadata are not selectable
+in protocol v1 and always remain in the remainder commit. Treat hunk IDs, plan
+tokens, GG-IDs, and operation IDs as opaque values; do not parse, construct, or
+remap them.</p>
 <p>Apply re-resolves the target, checks its GG-ID/SHA/tree and the current ordered
 hunks, and rejects stale plans before moving refs or adding an operation-log
 record. After any stale-plan error, run Describe again and ask the user to
@@ -1609,8 +1612,8 @@ gg undo "$operation_id" --json
 </code></pre>
 <h2 id="edge-cases-1"><a class="header" href="#edge-cases-1">Edge Cases</a></h2>
 <ul>
-<li><strong>All textual hunks selected</strong> — Structured Apply refuses the plan because it
-requires a proper subset with at least one textual hunk left in the remainder.</li>
+<li><strong>All textual hunks selected</strong> — Structured Apply accepts the plan only when
+a non-textual file or regular-file mode change remains for the remainder.</li>
 <li><strong>No changes selected</strong> — Error in every mode.</li>
 <li><strong>Dirty working directory</strong> — Interactive Split and structured Apply error.
 Describe remains read-only and is allowed.</li>

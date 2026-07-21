@@ -70,7 +70,7 @@ not reuse one across concurrent requests.
 
 | Reason | Condition | What to do |
 |---|---|---|
-| `remote` | The target op pushed/merged/closed/created a PR or MR. | Use the printed provider hint (`gh pr close <n>`, `glab mr close <n>`, `git push --delete …`). Local state is unchanged. |
+| `remote` | The target op pushed, deleted a remote branch, or created/merged/closed a PR or MR. | Use the printed recovery hint. Deleted branches include an exact `git push origin <prior_oid>:refs/heads/<branch>` command when GG captured the prior OID. Local state is unchanged. |
 | `interrupted` | The op crashed, was Ctrl-C'd, or was aborted before completion and has `status: Interrupted`. | Fix the underlying state manually; the stale Pending record is swept into Interrupted on the next lock-acquiring op. |
 | `stale` | Refs have moved since the target op finalised. | Run `gg undo --list` and target a more recent record instead. The error names the ref, the expected OID, and the actual OID. |
 | `unsupported_schema` | The record was written by a newer `gg` with a schema version this binary does not understand. | Upgrade `gg` or delete the offending record. |
@@ -176,8 +176,8 @@ UI/agent actions; use `is_undo` + `undoes` to render redo markers.
 - It does **not** restore working-tree files or the index. If you amended
   a commit and want the old source back, use `git reflog` or
   `git stash`.
-- It does **not** touch remotes. Operations that pushed, merged, closed,
-  or created PRs/MRs are recorded (so you can see them in `--list`) but
+- It does **not** touch remotes. Operations that pushed, deleted a remote
+  branch, or created/merged/closed PRs/MRs are recorded (so you can see them in `--list`) but
   refused for local replay.
 - It does **not** guarantee atomicity of the replay. If the process
   dies mid-replay, a second `gg undo` will finish the job — the

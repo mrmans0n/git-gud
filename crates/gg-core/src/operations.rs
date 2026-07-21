@@ -30,7 +30,7 @@ use crate::stack::Stack;
 
 /// Durable schema version for operation records. Bumping this is a
 /// backwards-incompatible change and must be accompanied by a migration.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Ring buffer cap. Committed/Interrupted records beyond this count are
 /// pruned oldest-first. `Pending` records are never pruned — they may
@@ -112,6 +112,14 @@ pub enum RemoteEffect {
         remote: String,
         branch: String,
         force: bool,
+    },
+    /// A remote branch was deleted. `prior_oid` is captured from the live
+    /// server tip when available so the refusal hint can restore it.
+    BranchDeleted {
+        remote: String,
+        branch: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prior_oid: Option<String>,
     },
     /// A pull/merge request was created.
     PrCreated { number: u64, url: String },
@@ -896,6 +904,22 @@ fn build_remote_hints(record: &OperationRecord) -> Vec<String> {
                  where <prior_sha> is the pre-op SHA (see refs_before via `gg undo --json {id}`).",
                 id = record.id
             ),
+            RemoteEffect::BranchDeleted {
+                remote,
+                branch,
+                prior_oid: Some(prior_oid),
+            } => format!(
+                "This operation deleted `{branch}` from `{remote}`. Restore it with: \
+                 `git push {remote} {prior_oid}:refs/heads/{branch}`."
+            ),
+            RemoteEffect::BranchDeleted {
+                remote,
+                branch,
+                prior_oid: None,
+            } => format!(
+                "This operation deleted `{branch}` from `{remote}`. Restore it manually by \
+                 pushing the intended commit to `refs/heads/{branch}`."
+            ),
             RemoteEffect::PrCreated { number, url } => format!(
                 "This operation opened {url}. Close it manually: `gh pr close {number}` / `glab mr close {number}`."
             ),
@@ -946,7 +970,7 @@ pub(crate) mod tests {
     // -- schema --------------------------------------------------------------
 
     #[test]
-    fn operation_record_serde_round_trip_v1() {
+    fn operation_record_current_schema_round_trip() {
         let record = OperationRecord {
             id: "op_0000000001700_abcd".into(),
             schema_version: SCHEMA_VERSION,
@@ -971,6 +995,49 @@ pub(crate) mod tests {
         let back: OperationRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(record.id, back.id);
         assert_eq!(record.kind, OperationKind::Drop);
+    }
+
+    #[test]
+    fn operation_record_schema_v1_fixture_round_trips() {
+        let fixture = r#"{
+            "id": "op_0000000001700_abcd",
+            "schema_version": 1,
+            "kind": "sync",
+            "status": "committed",
+            "created_at_ms": 1700000000000,
+            "args": ["sync", "--json"],
+            "stack_name": "feat/login",
+            "refs_before": [],
+            "refs_after": [],
+            "remote_effects": [{
+                "kind": "pushed",
+                "remote": "origin",
+                "branch": "user/feat-login--c-a1b2c3d",
+                "force": false
+            }],
+            "touched_remote": true
+        }"#;
+
+        let record: OperationRecord = serde_json::from_str(fixture).unwrap();
+        assert_eq!(record.schema_version, 1);
+        assert_eq!(record.kind, OperationKind::Sync);
+        assert_eq!(record.remote_effects.len(), 1);
+        assert!(record.touched_remote);
+        assert!(record.undoes.is_none());
+        assert!(record.pending_plan.is_none());
+
+        let encoded = serde_json::to_string(&record).unwrap();
+        let round_tripped: OperationRecord = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(round_tripped.schema_version, 1);
+        assert_eq!(round_tripped.args, vec!["sync", "--json"]);
+        assert!(matches!(
+            round_tripped.remote_effects.as_slice(),
+            [RemoteEffect::Pushed {
+                remote,
+                branch,
+                force: false,
+            }] if remote == "origin" && branch == "user/feat-login--c-a1b2c3d"
+        ));
     }
 
     #[test]

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-6a3ba895.js";
+            window.path_to_searchindex_js = "../searchindex-022e3194.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-95fa4ef1.js"></script>
@@ -253,6 +253,10 @@ includes its opaque operation-log ID at the top level:</p>
   }
 }
 </code></pre>
+<p>If the paused rebase leaves <code>HEAD</code> detached and no current-stack navigation
+state is available, the command returns the all-stacks envelope instead. Its
+top level still includes the same <code>operation_id</code> alongside <code>current_stack</code> and
+<code>stacks</code>.</p>
 <p>Pass the value unchanged to <code>gg undo &lt;operation_id&gt; --json</code> after the operation
 has been completed or aborted. The field is omitted when no operation is paused
 and when a saved marker no longer matches the current Git rebase state.</p>

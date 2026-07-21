@@ -16,8 +16,41 @@ use console::style;
     long_about = None
 )]
 struct Cli {
+    /// Add a native-client token to an operation record, if this command creates one
+    #[arg(
+        long,
+        global = true,
+        value_name = "ID",
+        value_parser = parse_client_operation_id
+    )]
+    _client_operation_id: Option<String>,
+
     #[clap(subcommand)]
     command: Option<Commands>,
+}
+
+const MAX_CLIENT_OPERATION_ID_LEN: usize = 128;
+
+fn parse_client_operation_id(value: &str) -> Result<String, String> {
+    if value.is_empty() {
+        return Err("client operation id must not be empty".to_string());
+    }
+    if value.len() > MAX_CLIENT_OPERATION_ID_LEN {
+        return Err(format!(
+            "client operation id must be at most {MAX_CLIENT_OPERATION_ID_LEN} characters"
+        ));
+    }
+    if !value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+    {
+        return Err(
+            "client operation id may contain only ASCII letters, digits, '-', '_', '.', and ':'"
+                .to_string(),
+        );
+    }
+
+    Ok(value.to_string())
 }
 
 #[derive(Subcommand, Debug)]

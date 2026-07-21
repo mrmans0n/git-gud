@@ -70,16 +70,11 @@ fn run_undo(repo: &git2::Repository, config: &Config, options: &UndoCliOptions) 
     // Undo itself takes a lock and records itself (D5). Use AllUserBranches
     // scope so the undo record's refs_before captures whatever user-owned
     // state existed before the replay.
-    let args: Vec<String> = if let Some(id) = &options.operation_id {
-        vec!["undo".into(), id.clone()]
-    } else {
-        vec!["undo".into()]
-    };
     let (_lock, guard) = git::acquire_operation_lock_and_record(
         repo,
         config,
         OperationKind::Undo,
-        args,
+        std::env::args().skip(1).collect(),
         None,
         SnapshotScope::AllUserBranches,
     )?;

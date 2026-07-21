@@ -195,6 +195,13 @@ and `run --amend`) snapshots the refs it will touch before mutating and
 records the operation on success. The log keeps the last 100 records;
 interrupted/pending records are never pruned.
 
+Native clients should pass a fresh `--client-operation-id <ID>` on every
+mutation. This global flag accepts a 1–128 character safe ASCII token and is
+preserved as an exact flag/value pair in the operation record's raw `args`.
+Match that pair in `gg undo --list --json`, then use the record's own opaque
+`op_...` `id` for targeted undo. Never infer the record from timestamps or
+newest-first ordering, and never treat the client token as GG's operation ID.
+
 If a recorded operation pauses on a rebase conflict, resolve the conflict,
 stage the files, and run `gg continue`; completion finalizes the original
 operation record so it remains available to `gg undo`.

@@ -51,6 +51,15 @@ Example local config:
 
 ## Commands and flags
 
+### Global native-client correlation
+
+Every command accepts `--client-operation-id <ID>`. Native clients should pass
+a unique 1–128 character token made from ASCII letters, digits, `-`, `_`, `.`,
+or `:` on each mutation. GG preserves the exact flag/value pair in the
+operation record's raw `args`; find that pair in `gg undo --list --json` and
+use the record's own opaque `op_...` `id` for targeted undo. The client token
+does not replace or influence GG's operation ID.
+
 ### Stack lifecycle
 
 #### `gg co [OPTIONS] [STACK_NAME]`

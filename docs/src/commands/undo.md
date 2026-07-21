@@ -42,6 +42,28 @@ recorded as an operation, running it twice reverses the reversal.
 Entries created by `gg undo` appear in `--list` with a `↶` marker and
 an `undoes` field pointing at the original operation id.
 
+## Native-client correlation
+
+All `gg` commands accept the global `--client-operation-id <ID>` option. A
+native client can assign a unique token to a mutation and then identify the
+operation record created by that invocation without relying on timestamps or
+newest-record ordering:
+
+```bash
+gg drop 3 --yes --client-operation-id alas:018f84c0-3a14-7b45-a397-93c87266391d
+gg undo --list --json
+```
+
+The operation record's `args` array preserves the exact adjacent
+`"--client-operation-id", "alas:..."` pair. Match that pair, then pass the
+record's opaque `op_...` `id` to `gg undo <OPERATION_ID> --json`. The client
+token is correlation metadata only: it never replaces or influences GG's
+operation ID.
+
+Client operation IDs must be 1–128 characters of ASCII letters, digits, `-`,
+`_`, `.`, or `:`. Generate a unique token for every attempted mutation and do
+not reuse one across concurrent requests.
+
 ## Refusal modes
 
 `gg undo` refuses (exit 1, no refs touched) when:

@@ -19,6 +19,8 @@ gg split [OPTIONS] [FILES...]
   `--json` and cannot be combined with `--describe`, interactive selection, or
   file arguments.
 - `--json`: Emit machine-readable output for structured Describe or Apply.
+  Requires either `--describe` or `--plan-json`; ordinary interactive and
+  file-based Split do not have a structured response.
 - `-f, --force` (alias `--ignore-immutable`): Override the immutability guard
   for interactive and file-based Split. Structured Describe/Apply always uses
   the guard without an override. Splitting a merged or base-ancestor commit is refused by default. See

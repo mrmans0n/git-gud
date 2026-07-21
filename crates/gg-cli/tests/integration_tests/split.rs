@@ -1461,6 +1461,23 @@ fn test_split_help_no_interactive_flag() {
     );
 }
 
+#[test]
+fn test_split_json_requires_structured_mode() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["split", "--json"]);
+
+    assert!(!success, "bare split --json should be rejected");
+    assert!(
+        stdout.is_empty(),
+        "stdout should stay machine-readable: {stdout}"
+    );
+    assert!(
+        stderr.contains("--describe") && stderr.contains("--plan-json"),
+        "error should name the supported JSON modes: {stderr}"
+    );
+}
+
 /// Helper to run gg with stdin input
 fn run_gg_with_stdin(
     repo_path: &std::path::Path,

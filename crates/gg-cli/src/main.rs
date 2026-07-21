@@ -252,6 +252,7 @@ enum Commands {
         #[arg(
             long,
             requires = "json",
+            group = "structured_split",
             conflicts_with_all = ["plan_json", "message", "no_edit", "no_tui", "files"]
         )]
         describe: bool,
@@ -261,12 +262,13 @@ enum Commands {
             long,
             value_name = "PATH",
             requires = "json",
+            group = "structured_split",
             conflicts_with_all = ["describe", "message", "no_edit", "no_tui", "files"]
         )]
         plan_json: Option<std::path::PathBuf>,
 
-        /// Emit machine-readable JSON output
-        #[arg(long)]
+        /// Emit machine-readable output for --describe or --plan-json
+        #[arg(long, requires = "structured_split")]
         json: bool,
 
         /// Files to include in the new commit

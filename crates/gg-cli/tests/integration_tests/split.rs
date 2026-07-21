@@ -882,6 +882,99 @@ fn test_split_plan_allows_all_text_hunks_when_non_textual_changes_remain() {
 }
 
 #[test]
+#[cfg(unix)]
+fn test_split_plan_keeps_same_file_mode_change_in_remainder() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .unwrap();
+
+    fs::write(repo_path.join("script.sh"), "echo parent\n").unwrap();
+    fs::write(repo_path.join("other.txt"), "other parent\n").unwrap();
+    run_git(&repo_path, &["add", "script.sh", "other.txt"]);
+    run_git(&repo_path, &["commit", "--amend", "--no-edit"]);
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "mode-change-split"]);
+    assert!(success, "create stack failed: {stderr}");
+
+    fs::write(repo_path.join("script.sh"), "echo target\n").unwrap();
+    let mut permissions = fs::metadata(repo_path.join("script.sh"))
+        .unwrap()
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(repo_path.join("script.sh"), permissions).unwrap();
+    fs::write(repo_path.join("other.txt"), "other target\n").unwrap();
+    run_git(&repo_path, &["add", "script.sh", "other.txt"]);
+    run_git(
+        &repo_path,
+        &[
+            "commit",
+            "-m",
+            "Content and mode change\n\nGG-ID: c-mode123",
+        ],
+    );
+
+    let describe = describe_split(&repo_path, "1");
+    let selected = describe["hunks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|hunk| hunk["path"] == "script.sh")
+        .map(|hunk| hunk["id"].clone())
+        .collect();
+    let plan_path = write_split_plan(&repo_path, &describe, selected);
+
+    let (success, stdout, stderr) = apply_split_plan(&repo_path, &plan_path);
+    assert!(success, "apply failed: stdout={stdout} stderr={stderr}");
+    let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let first_sha = result["first"]["sha"].as_str().unwrap();
+    let remainder_sha = result["remainder"]["sha"].as_str().unwrap();
+    assert_eq!(
+        run_git_full(&repo_path, &["show", &format!("{first_sha}:script.sh")]).1,
+        "echo target\n"
+    );
+    assert_eq!(
+        run_git_full(&repo_path, &["show", &format!("{first_sha}:other.txt")]).1,
+        "other parent\n"
+    );
+    assert_eq!(
+        run_git_full(&repo_path, &["show", &format!("{remainder_sha}:other.txt")],).1,
+        "other target\n"
+    );
+    assert!(
+        run_git_full(&repo_path, &["ls-tree", first_sha, "script.sh"])
+            .1
+            .starts_with("100644 "),
+        "first commit must retain the parent file mode"
+    );
+    assert!(
+        run_git_full(&repo_path, &["ls-tree", remainder_sha, "script.sh"])
+            .1
+            .starts_with("100755 "),
+        "remainder must contain the target file mode"
+    );
+    assert!(
+        run_git_full(
+            &repo_path,
+            &[
+                "diff-tree",
+                "--summary",
+                first_sha,
+                remainder_sha,
+                "--",
+                "script.sh",
+            ],
+        )
+        .1
+        .contains("mode change 100644 => 100755 script.sh"),
+        "remainder must retain the executable-bit change"
+    );
+}
+
+#[test]
 fn test_split_plan_rejects_stale_target_without_mutation() {
     let (_temp_dir, repo_path) = create_two_hunk_split_commit();
     let describe = describe_split(&repo_path, "1");

@@ -1399,7 +1399,7 @@ fn build_tree_from_hunks<'a>(
     }
 
     // For each file, determine what to do:
-    // - All hunks selected: use target tree entry
+    // - All hunks selected: use target tree entry unless metadata must remain
     // - No hunks selected: use parent tree entry
     // - Partial: apply selected hunks to parent content
     let mut accumulated_tree = repo.find_tree(parent_tree.id())?;
@@ -1423,7 +1423,31 @@ fn build_tree_from_hunks<'a>(
                 let target_file = target_diff_files.get(file_path).ok_or_else(|| {
                     GgError::Other(format!("Missing diff identity for '{file_path}'"))
                 })?;
-                if let Some(target_file) = target_file {
+                let parent_mode = accumulated_tree
+                    .get_path(Path::new(file_path))
+                    .ok()
+                    .map(|entry| entry.filemode());
+                let has_mode_change = target_file.as_ref().is_some_and(|target_file| {
+                    matches!(target_file.mode, 0o100644 | 0o100755)
+                        && match parent_mode {
+                            Some(mode @ (0o100644 | 0o100755)) => mode != target_file.mode,
+                            None => target_file.mode == 0o100755,
+                            _ => false,
+                        }
+                });
+                if has_mode_change {
+                    let selected_hunks = file_hunk_list
+                        .iter()
+                        .map(|(_, hunk)| *hunk)
+                        .collect::<Vec<_>>();
+                    apply_hunks_to_tree(
+                        repo,
+                        &mut builder,
+                        &accumulated_tree,
+                        file_path,
+                        &selected_hunks,
+                    )?;
+                } else if let Some(target_file) = target_file {
                     update_tree_entry(
                         repo,
                         &mut builder,

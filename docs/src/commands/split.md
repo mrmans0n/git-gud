@@ -188,8 +188,9 @@ gg split --describe --commit c-abc1234 --json > split-description.json
 
 The response contains the exact `target`, an opaque `plan_token`, selectable
 textual `hunks`, `non_textual_files`, and default messages. Copy `target` and
-`plan_token` unchanged, choose a non-empty proper subset of the returned hunk
-IDs, and supply both non-empty messages:
+`plan_token` unchanged, choose at least one returned hunk ID while leaving
+some textual, non-textual, or metadata change for the remainder, and supply
+both non-empty messages:
 
 ```bash
 jq '{
@@ -204,10 +205,12 @@ jq '{
 gg split --plan-json split-plan.json --json > split-result.json
 ```
 
-At least one textual hunk must remain for the remainder. Files listed in
-`non_textual_files` are not selectable in protocol v1 and always remain in the
-remainder commit. Treat hunk IDs, plan tokens, GG-IDs, and operation IDs as
-opaque values; do not parse, construct, or remap them.
+The remainder must contain at least one change. It can be an unselected textual
+hunk, a file listed in `non_textual_files`, or a regular-file mode change such
+as an executable-bit update. Non-textual files and metadata are not selectable
+in protocol v1 and always remain in the remainder commit. Treat hunk IDs, plan
+tokens, GG-IDs, and operation IDs as opaque values; do not parse, construct, or
+remap them.
 
 Apply re-resolves the target, checks its GG-ID/SHA/tree and the current ordered
 hunks, and rejects stale plans before moving refs or adding an operation-log
@@ -238,8 +241,8 @@ gg undo "$operation_id" --json
 
 ## Edge Cases
 
-- **All textual hunks selected** — Structured Apply refuses the plan because it
-  requires a proper subset with at least one textual hunk left in the remainder.
+- **All textual hunks selected** — Structured Apply accepts the plan only when
+  a non-textual file or regular-file mode change remains for the remainder.
 - **No changes selected** — Error in every mode.
 - **Dirty working directory** — Interactive Split and structured Apply error.
   Describe remains read-only and is allowed.

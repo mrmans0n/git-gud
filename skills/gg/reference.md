@@ -433,8 +433,10 @@ Fields:
 - `target.gg_id` (`string | null`), `target.sha` (`string`), and `target.tree`
   (`string`): copy the complete target object unchanged from Describe.
 - `selected_hunk_ids` (`string[]`): unique IDs copied from `hunks[].id`. The
-  selection must contain at least one hunk and must be a proper subset of all
-  returned hunks so changes remain in both commits.
+  selection must contain at least one hunk and leave a change for the remainder.
+  The selection may include every returned textual hunk when a non-textual file
+  or regular-file mode change remains; otherwise at least one textual hunk must
+  remain unselected.
 - `first_message` (`string`): non-empty message for the new first commit;
   surrounding whitespace is trimmed.
 - `remainder_message` (`string`): non-empty message for the remainder commit;

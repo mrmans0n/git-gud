@@ -16,8 +16,41 @@ use console::style;
     long_about = None
 )]
 struct Cli {
+    /// Add a native-client token to an operation record, if this command creates one
+    #[arg(
+        long,
+        global = true,
+        value_name = "ID",
+        value_parser = parse_client_operation_id
+    )]
+    _client_operation_id: Option<String>,
+
     #[clap(subcommand)]
     command: Option<Commands>,
+}
+
+const MAX_CLIENT_OPERATION_ID_LEN: usize = 128;
+
+fn parse_client_operation_id(value: &str) -> Result<String, String> {
+    if value.is_empty() {
+        return Err("client operation id must not be empty".to_string());
+    }
+    if value.len() > MAX_CLIENT_OPERATION_ID_LEN {
+        return Err(format!(
+            "client operation id must be at most {MAX_CLIENT_OPERATION_ID_LEN} characters"
+        ));
+    }
+    if !value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+    {
+        return Err(
+            "client operation id may contain only ASCII letters, digits, '-', '_', '.', and ':'"
+                .to_string(),
+        );
+    }
+
+    Ok(value.to_string())
 }
 
 #[derive(Subcommand, Debug)]
@@ -147,6 +180,10 @@ enum Commands {
         #[arg(short, long)]
         all: bool,
 
+        /// Squash staged changes only, ignoring defaults.unstaged_action
+        #[arg(long, conflicts_with = "all")]
+        staged_only: bool,
+
         /// Override the immutability check and rewrite merged/base commits anyway
         #[arg(short = 'f', long = "force", alias = "ignore-immutable")]
         force: bool,
@@ -211,6 +248,29 @@ enum Commands {
         #[arg(short = 'f', long = "force", alias = "ignore-immutable")]
         force: bool,
 
+        /// Describe the target commit's split hunks as JSON
+        #[arg(
+            long,
+            requires = "json",
+            group = "structured_split",
+            conflicts_with_all = ["plan_json", "message", "no_edit", "no_tui", "files"]
+        )]
+        describe: bool,
+
+        /// Apply a previously described split plan from JSON
+        #[arg(
+            long,
+            value_name = "PATH",
+            requires = "json",
+            group = "structured_split",
+            conflicts_with_all = ["describe", "message", "no_edit", "no_tui", "files"]
+        )]
+        plan_json: Option<std::path::PathBuf>,
+
+        /// Emit machine-readable output for --describe or --plan-json
+        #[arg(long, requires = "structured_split")]
+        json: bool,
+
         /// Files to include in the new commit
         #[arg(value_name = "FILES")]
         files: Vec<String>,
@@ -245,6 +305,10 @@ enum Commands {
         /// Create or reuse a managed worktree for the new stack
         #[arg(long = "worktree", short = 'w', alias = "wt")]
         worktree: bool,
+
+        /// Leave this worktree on the lower stack without creating an upper worktree
+        #[arg(long, conflicts_with = "worktree")]
+        keep_current: bool,
     },
 
     /// Land (merge) approved PRs/MRs starting from the first commit
@@ -581,9 +645,15 @@ fn main() {
         Some(Commands::Last) => (gg_core::commands::nav::last(), false, false),
         Some(Commands::Prev) => (gg_core::commands::nav::prev(), false, false),
         Some(Commands::Next) => (gg_core::commands::nav::next(), false, false),
-        Some(Commands::Squash { all, force }) => {
-            (gg_core::commands::squash::run(all, force), false, false)
-        }
+        Some(Commands::Squash {
+            all,
+            staged_only,
+            force,
+        }) => (
+            gg_core::commands::squash::run(all, staged_only, force),
+            false,
+            false,
+        ),
         Some(Commands::Drop {
             targets,
             force,
@@ -618,6 +688,9 @@ fn main() {
             no_edit,
             no_tui,
             force,
+            describe,
+            plan_json,
+            json,
             files,
         }) => (
             gg_core::commands::split::run(gg_core::commands::split::SplitOptions {
@@ -627,8 +700,11 @@ fn main() {
                 no_edit,
                 no_tui,
                 force,
+                describe,
+                plan_json: plan_json.clone(),
+                json,
             }),
-            false,
+            describe || plan_json.is_some(),
             false,
         ),
         Some(Commands::Unstack {
@@ -638,6 +714,7 @@ fn main() {
             force,
             json,
             worktree,
+            keep_current,
         }) => (
             gg_core::commands::unstack::run(gg_core::commands::unstack::UnstackOptions {
                 target,
@@ -646,6 +723,7 @@ fn main() {
                 force,
                 json,
                 worktree,
+                keep_current,
             }),
             json,
             false,

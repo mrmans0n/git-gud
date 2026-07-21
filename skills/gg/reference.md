@@ -51,6 +51,15 @@ Example local config:
 
 ## Commands and flags
 
+### Global native-client correlation
+
+Every command accepts `--client-operation-id <ID>`. Native clients should pass
+a unique 1–128 character token made from ASCII letters, digits, `-`, `_`, `.`,
+or `:` on each mutation. GG preserves the exact flag/value pair in the
+operation record's raw `args`; find that pair in `gg undo --list --json` and
+use the record's own opaque `op_...` `id` for targeted undo. The client token
+does not replace or influence GG's operation ID.
+
 ### Stack lifecycle
 
 #### `gg co [OPTIONS] [STACK_NAME]`
@@ -148,6 +157,9 @@ Move around stack entries.
 Squash changes into current stack commit.
 
 - `-a, --all`
+- `--staged-only` — use only the prepared index and ignore
+  `defaults.unstaged_action`; never stages or stashes other changes. Conflicts
+  with `--all`.
 - `-f, --force` (alias: `--ignore-immutable`) — bypass the [immutability guard](#immutable-commits)
 
 #### `gg absorb [OPTIONS]`
@@ -184,8 +196,16 @@ Split a commit into two. Selected files/hunks become a new commit inserted befor
 - `-m, --message <MSG>` — message for the new commit
 - `--no-edit` — keep original message for remainder, don't prompt
 - `--no-tui` — disable TUI, use sequential prompt instead (legacy `git add -p` style)
-- `-f, --force` (alias: `--ignore-immutable`) — bypass the [immutability guard](#immutable-commits)
+- `--describe` — emit protocol v1 target and hunk JSON; requires `--json`
+- `--plan-json <PATH>` — apply a protocol v1 plan; requires `--json`
+- `--json` — machine-readable structured Describe/Apply output
+- `-f, --force` (alias: `--ignore-immutable`) — bypass the [immutability guard](#immutable-commits) for interactive or file-based Split; structured Describe/Apply does not honor it
 - `FILES...` — auto-select all hunks from these files (opens interactive hunk picker if omitted)
+
+`--describe` and `--plan-json` conflict with each other and with interactive
+selection/message flags and `FILES...`. Structured Describe and Apply always
+use the immutability guard without a force override; the v1 plan has no force
+field.
 
 #### `gg unstack [OPTIONS]`
 Split the current stack into two independent stacks. The selected entry and its descendants become a new stack; lower entries remain in the original stack. This is named `unstack` because `gg split` already splits commits.
@@ -193,6 +213,8 @@ Split the current stack into two independent stacks. The selected entry and its 
 - `-t, --target <TARGET>` — first entry for the new stack (position, SHA, or GG-ID)
 - `-n, --name <STACK_NAME>` — explicit new stack name (default: `<old-stack>-2`, incrementing)
 - `-w, --worktree` / `--wt` — create the new upper stack in a managed worktree; current directory stays on the lower stack
+- `--keep-current` — leave the invoking worktree on the lower stack without
+  creating an upper worktree; conflicts with `--worktree` / `--wt`
 - `--no-tui` — disable the interactive picker; requires `--target`
 - `-f, --force` (alias: `--ignore-immutable`) — bypass the [immutability guard](#immutable-commits)
 - `--json`
@@ -266,7 +288,7 @@ completed operation is still undoable.
 
 | `refusal.reason` | Condition | Handling |
 |---|---|---|
-| `remote` | Op pushed/merged/closed/created a PR or MR | Use the printed provider hint (`gh pr close <n>`, `glab mr close <n>`, `git push --delete …`). |
+| `remote` | Op pushed, deleted a remote branch, or created/merged/closed a PR or MR | Use the printed recovery hint. Branch deletions include an exact restore push when the prior OID was captured. |
 | `interrupted` | Op was Ctrl-C'd, crashed, or aborted before completion | Fix state manually; stale Pending records are swept on the next lock-acquiring op. |
 | `stale` | Refs moved since the target op finalised | Run `gg undo --list` and pick a more recent record. Error names the ref, expected OID, actual OID. |
 | `unsupported_schema` | Record was written by a newer `gg` binary | Upgrade `gg` or delete the record. |
@@ -334,11 +356,147 @@ All JSON payloads include `version` (`u32`, current value: `1`).
 }
 ```
 
+Structured Split writes this envelope to stdout and exits non-zero for parse,
+validation, stale-plan, immutability, and rewrite failures. Clients must use the
+exit status to distinguish it from a success response.
+
+### `gg split --describe --json`
+
+```json
+{
+  "version": 1,
+  "plan_token": "split-v1-a1b2c3d4e5f6",
+  "target": {
+    "gg_id": "c-abc1234",
+    "sha": "0123456789abcdef0123456789abcdef01234567",
+    "tree": "89abcdef0123456789abcdef0123456789abcdef"
+  },
+  "hunks": [
+    {
+      "id": "h-0123456789ab",
+      "path": "src/auth.rs",
+      "header": "@@ -10,3 +10,4 @@",
+      "patch": "@@ -10,3 +10,4 @@\n context\n+added\n"
+    }
+  ],
+  "non_textual_files": ["assets/icon.png"],
+  "first_message": "Split from: Add authentication",
+  "remainder_message": "Add authentication"
+}
+```
+
+Fields:
+
+- `version` (`number`): schema version; currently exactly `1`.
+- `plan_token` (`string`): opaque token binding the version, complete target
+  identity, and ordered hunk IDs. Copy it unchanged into Apply.
+- `target.gg_id` (`string | null`): target GG-ID when present.
+- `target.sha` (`string`): full target commit SHA at Describe time.
+- `target.tree` (`string`): full target tree SHA at Describe time.
+- `hunks` (`array`): selectable textual hunks in canonical order.
+- `hunks[].id` (`string`): opaque, stable ID for this described hunk. Copy it
+  unchanged; do not construct or parse it.
+- `hunks[].path` (`string`): repository-relative file path.
+- `hunks[].header` (`string`): unified-diff hunk header.
+- `hunks[].patch` (`string`): canonical hunk patch including its header.
+- `non_textual_files` (`string[]`): changed files without selectable textual
+  hunks. Protocol v1 always leaves them in the remainder commit.
+- `first_message` (`string`): suggested message for the new first commit.
+- `remainder_message` (`string`): original message with its GG-ID trailer
+  removed; the remainder keeps the original GG-ID during Apply.
+
+Describe is read-only: it does not require a clean worktree, move refs, acquire
+the operation lock, or add an operation-log record. Repeated Describe calls over
+unchanged state return the same `target`, `plan_token`, and ordered hunk IDs.
+
+### `gg split --plan-json <PATH> --json` input
+
+```json
+{
+  "version": 1,
+  "plan_token": "split-v1-a1b2c3d4e5f6",
+  "target": {
+    "gg_id": "c-abc1234",
+    "sha": "0123456789abcdef0123456789abcdef01234567",
+    "tree": "89abcdef0123456789abcdef0123456789abcdef"
+  },
+  "selected_hunk_ids": ["h-0123456789ab"],
+  "first_message": "Extract validation",
+  "remainder_message": "Add authentication"
+}
+```
+
+Fields:
+
+- `version` (`number`): must be exactly `1`.
+- `plan_token` (`string`): copy unchanged from the Describe response.
+- `target.gg_id` (`string | null`), `target.sha` (`string`), and `target.tree`
+  (`string`): copy the complete target object unchanged from Describe.
+- `selected_hunk_ids` (`string[]`): unique IDs copied from `hunks[].id`. The
+  selection must contain at least one hunk and leave a change for the remainder.
+  The selection may include every returned textual hunk when a non-textual file
+  or regular-file mode change remains; otherwise at least one textual hunk must
+  remain unselected.
+- `first_message` (`string`): non-empty message for the new first commit;
+  surrounding whitespace is trimmed.
+- `remainder_message` (`string`): non-empty message for the remainder commit;
+  surrounding whitespace is trimmed.
+
+There is no force field in protocol v1, and structured Apply does not honor a
+force override. It refuses immutable targets. It also rejects changed target
+identity or hunks as a `stale split plan`; clients must Describe again and have
+the user review a new selection rather than remapping old hunk IDs. Decode and
+validation refusals occur before refs move or an operation record is created.
+
+### `gg split --plan-json <PATH> --json` success
+
+```json
+{
+  "version": 1,
+  "operation_id": "op_0000001750000000_018f...",
+  "original_sha": "0123456789abcdef0123456789abcdef01234567",
+  "first": {
+    "sha": "1111111111111111111111111111111111111111",
+    "gg_id": "c-new1234"
+  },
+  "remainder": {
+    "sha": "2222222222222222222222222222222222222222",
+    "gg_id": "c-abc1234"
+  },
+  "rewritten_descendants": [
+    {
+      "sha": "3333333333333333333333333333333333333333",
+      "gg_id": "c-def5678"
+    }
+  ]
+}
+```
+
+Fields:
+
+- `version` (`number`): schema version; currently exactly `1`.
+- `operation_id` (`string`): opaque operation-log ID. Pass it unchanged to
+  `gg undo <operation_id> --json` for a targeted undo.
+- `original_sha` (`string`): full SHA of the commit that was split.
+- `first.sha` (`string`) and `first.gg_id` (`string | null`): identity of the
+  newly inserted first commit.
+- `remainder.sha` (`string`) and `remainder.gg_id` (`string | null`): identity
+  of the remainder, which retains the original GG-ID when one existed.
+- `rewritten_descendants` (`array`): ordered identities of descendants rebased
+  above the remainder; each has `sha` (`string`) and `gg_id`
+  (`string | null`). It is empty when no descendants were rewritten.
+
+Treat `plan_token`, hunk IDs, GG-IDs, and operation IDs as opaque strings.
+After mutation begins, a descendant rebase conflict returns the common JSON
+error envelope and leaves a paused operation. Resolve and stage the conflict,
+then run `gg continue`, or run `gg abort` to cancel it.
+
 ### `gg ls --json` (single stack)
 
 ```json
 {
   "version": 1,
+  "operation_id": "op_...",
   "stack": {
     "name": "string",
     "base": "string",
@@ -375,6 +533,7 @@ All JSON payloads include `version` (`u32`, current value: `1`).
 ```
 
 Field types:
+- `operation_id`: `string`, **omitted when no GG operation is paused on the current Git rebase or when its saved marker is stale**. Treat it as opaque and pass it unchanged to `gg undo <operation_id> --json` after the operation has been completed or aborted.
 - `current_position`: `number | null`
 - `behind_base`: `number | null`
 - `gg_id`: `string | null`
@@ -595,6 +754,7 @@ Field types for `entries`:
   "unstack": {
     "original_stack": "my-feature",
     "new_stack": "my-feature-2",
+    "current_stack": "my-feature",
     "split_position": 3,
     "remaining_entries": [
       { "position": 1, "sha": "abc1234", "title": "First commit", "gg_id": "c-abc1234" }
@@ -611,8 +771,19 @@ Field types for `entries`:
 ```
 
 Field types:
-- `worktree_path`: `string | null` — present only when `--worktree` was used
+- `current_stack`: `string` — stack left in the invoking worktree after success
+- `worktree_path`: `string` — omitted unless `--worktree` was used
 - `gg_id`: `string | null`
+
+Placement modes:
+
+| Mode | Invoking worktree | Additional upper worktree | `current_stack` | `worktree_path` |
+|------|-------------------|---------------------------|-----------------|-----------------|
+| default | upper stack | not created | `new_stack` | omitted |
+| `--worktree` / `--wt` | lower stack | created or reused | `original_stack` | string path |
+| `--keep-current` | lower stack | not created | `original_stack` | omitted |
+
+`--keep-current` and `--worktree` / `--wt` are mutually exclusive.
 
 ### `gg restack --json`
 

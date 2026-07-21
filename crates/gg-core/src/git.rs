@@ -981,10 +981,52 @@ fn parse_push_error(stderr: &str) -> (Option<String>, Option<String>) {
     (hook_error, git_error)
 }
 
-/// Delete a remote branch
-pub fn delete_remote_branch(branch_name: &str) -> Result<()> {
-    run_git_command(&["push", "origin", "--delete", branch_name])?;
-    Ok(())
+/// Delete a remote branch only if its server tip still matches the tip resolved
+/// immediately before deletion. Returns the exact deleted OID, or `None` when
+/// the branch does not exist on the server.
+pub fn delete_remote_branch(repo: &Repository, branch_name: &str) -> Result<Option<Oid>> {
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| GgError::Other("Cannot delete a remote branch from a bare repo".into()))?;
+    let branch_ref = format!("refs/heads/{branch_name}");
+    let lookup = Command::new("git")
+        .args(["-C"])
+        .arg(workdir)
+        .args(["ls-remote", "--heads", "origin", &branch_ref])
+        .output()?;
+    if !lookup.status.success() {
+        return Err(GgError::Other(format!(
+            "git ls-remote failed: {}",
+            String::from_utf8_lossy(&lookup.stderr).trim()
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&lookup.stdout);
+    let Some(oid_text) = stdout.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        let oid = fields.next()?;
+        let remote_ref = fields.next()?;
+        (remote_ref == branch_ref).then_some(oid)
+    }) else {
+        return Ok(None);
+    };
+    let oid = Oid::from_str(oid_text)?;
+
+    let lease = format!("--force-with-lease={branch_ref}:{oid}");
+    let delete_refspec = format!(":{branch_ref}");
+    let deletion = Command::new("git")
+        .args(["-C"])
+        .arg(workdir)
+        .args(["push", &lease, "origin", &delete_refspec])
+        .output()?;
+    if !deletion.status.success() {
+        return Err(GgError::Other(format!(
+            "Refusing to delete remote branch '{branch_name}' because its server tip changed: {}",
+            String::from_utf8_lossy(&deletion.stderr).trim()
+        )));
+    }
+
+    Ok(Some(oid))
 }
 
 /// Continue a rebase
@@ -2233,6 +2275,139 @@ mod tests {
                 no_verify
             );
         }
+    }
+
+    fn setup_remote_branch_for_delete() -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        Repository,
+        Oid,
+    ) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_path = temp_dir.path().join("repo");
+        let remote_path = temp_dir.path().join("remote.git");
+        std::fs::create_dir_all(&repo_path).unwrap();
+        std::fs::create_dir_all(&remote_path).unwrap();
+        run_git(&remote_path, &["init", "--bare", "--initial-branch=main"]);
+        run_git(&repo_path, &["init", "--initial-branch=main"]);
+        run_git(&repo_path, &["config", "user.email", "test@example.com"]);
+        run_git(&repo_path, &["config", "user.name", "Test User"]);
+        std::fs::write(repo_path.join("file.txt"), "one\n").unwrap();
+        run_git(&repo_path, &["add", "."]);
+        run_git(&repo_path, &["commit", "-m", "one"]);
+        run_git(
+            &repo_path,
+            &["remote", "add", "origin", remote_path.to_str().unwrap()],
+        );
+        run_git(&repo_path, &["push", "origin", "HEAD:refs/heads/feature"]);
+        let repo = Repository::open(&repo_path).unwrap();
+        let oid = repo.head().unwrap().target().unwrap();
+        (temp_dir, repo_path, remote_path, repo, oid)
+    }
+
+    #[test]
+    fn delete_remote_branch_resolves_tip_when_tracking_ref_is_absent() {
+        let (_temp_dir, repo_path, remote_path, repo, server_oid) =
+            setup_remote_branch_for_delete();
+        run_git(
+            &repo_path,
+            &["update-ref", "-d", "refs/remotes/origin/feature"],
+        );
+
+        let deleted = delete_remote_branch(&repo, "feature").unwrap();
+        assert_eq!(deleted, Some(server_oid));
+        let output = Command::new("git")
+            .args([
+                "--git-dir",
+                remote_path.to_str().unwrap(),
+                "show-ref",
+                "refs/heads/feature",
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+    }
+
+    #[test]
+    fn delete_remote_branch_uses_server_tip_when_tracking_ref_is_stale() {
+        let (_temp_dir, repo_path, remote_path, repo, stale_oid) = setup_remote_branch_for_delete();
+        std::fs::write(repo_path.join("file.txt"), "two\n").unwrap();
+        run_git(&repo_path, &["add", "."]);
+        run_git(&repo_path, &["commit", "-m", "two"]);
+        let server_oid = repo.head().unwrap().target().unwrap();
+        run_git(&repo_path, &["push", "origin", "HEAD:refs/heads/feature"]);
+        run_git(
+            &repo_path,
+            &[
+                "update-ref",
+                "refs/remotes/origin/feature",
+                &stale_oid.to_string(),
+            ],
+        );
+
+        let deleted = delete_remote_branch(&repo, "feature").unwrap();
+        assert_eq!(deleted, Some(server_oid));
+        let output = Command::new("git")
+            .args([
+                "--git-dir",
+                remote_path.to_str().unwrap(),
+                "show-ref",
+                "refs/heads/feature",
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+    }
+
+    #[test]
+    fn delete_remote_branch_refuses_when_server_tip_changes_after_lookup() {
+        let (_temp_dir, repo_path, remote_path, repo, original_oid) =
+            setup_remote_branch_for_delete();
+        std::fs::write(repo_path.join("file.txt"), "race winner\n").unwrap();
+        run_git(&repo_path, &["add", "."]);
+        run_git(&repo_path, &["commit", "-m", "race winner"]);
+        let changed_oid = repo.head().unwrap().target().unwrap();
+        run_git(
+            &repo_path,
+            &["push", "origin", "HEAD:refs/heads/race-source"],
+        );
+
+        let hook = repo_path.join(".git/hooks/pre-push");
+        std::fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\ngit --git-dir='{}' update-ref refs/heads/feature {}\n",
+                remote_path.display(),
+                changed_oid
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&hook).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&hook, permissions).unwrap();
+        }
+
+        let error = delete_remote_branch(&repo, "feature").unwrap_err();
+        assert!(error.to_string().contains("server tip changed"));
+        let output = Command::new("git")
+            .args([
+                "--git-dir",
+                remote_path.to_str().unwrap(),
+                "rev-parse",
+                "refs/heads/feature",
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            changed_oid.to_string()
+        );
+        assert_ne!(changed_oid, original_oid);
     }
 }
 

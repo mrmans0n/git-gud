@@ -8,7 +8,7 @@ use std::path::Path;
 use crate::config::Config;
 use crate::error::{GgError, Result};
 use crate::git;
-use crate::operations::{OperationKind, SnapshotScope};
+use crate::operations::{OperationKind, RemoteEffect, SnapshotScope};
 use crate::output::{print_json, CleanResponse, CleanResultJson, OUTPUT_VERSION};
 use crate::provider::{PrState, Provider};
 use crate::stack;
@@ -20,7 +20,7 @@ pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
     let config = Config::load_with_global(repo.commondir())?;
 
     // Acquire operation lock + record a Pending op for the undo log.
-    let (_lock, guard) = git::acquire_operation_lock_and_record(
+    let (_lock, mut guard) = git::acquire_operation_lock_and_record(
         &repo,
         &config,
         OperationKind::Clean,
@@ -29,20 +29,25 @@ pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
         SnapshotScope::AllUserBranches,
     )?;
 
-    run_for_stack_with_repo(&repo, stack_name, force)?;
+    let mut remote_effects = Vec::new();
+    run_for_stack_with_repo_options(&repo, stack_name, force, false, &mut |effect| {
+        guard.record_remote_effect(effect.clone());
+        remote_effects.push(effect);
+    })?;
+    let touched_remote = !remote_effects.is_empty();
 
     guard.finalize_with_scope(
         &repo,
         &config,
         SnapshotScope::AllUserBranches,
-        vec![],
-        false,
+        remote_effects,
+        touched_remote,
     )
 }
 
 /// Run clean for a stack with an already-open repository (no lock acquisition)
 pub fn run_for_stack_with_repo(repo: &Repository, stack_name: &str, force: bool) -> Result<()> {
-    run_for_stack_with_repo_options(repo, stack_name, force, false)
+    run_for_stack_with_repo_options(repo, stack_name, force, false, &mut |_| {})
 }
 
 /// Run clean after `gg land` has already verified that every PR/MR in the stack
@@ -56,8 +61,9 @@ pub(crate) fn run_for_stack_with_repo_after_verified_land(
     repo: &Repository,
     stack_name: &str,
     force: bool,
+    record_remote_effect: &mut dyn FnMut(RemoteEffect),
 ) -> Result<()> {
-    run_for_stack_with_repo_options(repo, stack_name, force, true)
+    run_for_stack_with_repo_options(repo, stack_name, force, true, record_remote_effect)
 }
 
 fn run_for_stack_with_repo_options(
@@ -65,6 +71,7 @@ fn run_for_stack_with_repo_options(
     stack_name: &str,
     force: bool,
     merge_verified_by_land: bool,
+    record_remote_effect: &mut dyn FnMut(RemoteEffect),
 ) -> Result<()> {
     let git_dir = repo.commondir();
     let mut config = Config::load_with_global(git_dir)?;
@@ -178,6 +185,7 @@ fn run_for_stack_with_repo_options(
         &username,
         /*delete_remote=*/ allow_remote_delete,
         /*silent=*/ false,
+        record_remote_effect,
     );
 
     // Remove from config
@@ -204,7 +212,7 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
     let mut config = Config::load_with_global(git_dir)?;
 
     // Acquire operation lock + record a Pending op for the undo log.
-    let (_lock, guard) = git::acquire_operation_lock_and_record(
+    let (_lock, mut guard) = git::acquire_operation_lock_and_record(
         &repo,
         &config,
         OperationKind::Clean,
@@ -232,6 +240,7 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
 
     let mut cleaned: Vec<String> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
+    let mut remote_effects = Vec::new();
 
     if stacks.is_empty() {
         if json {
@@ -262,8 +271,13 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
             // Be conservative: do NOT delete remote branches here because we can't
             // reliably verify merge status without the main stack branch.
             delete_entry_branches(
-                &repo, &config, stack_name, &username, /*delete_remote=*/ false,
+                &repo,
+                &config,
+                stack_name,
+                &username,
+                /*delete_remote=*/ false,
                 /*silent=*/ json,
+                &mut |_| {},
             );
             config.remove_stack(stack_name);
             cleaned.push(stack_name.clone());
@@ -382,6 +396,10 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
                 &username,
                 /*delete_remote=*/ allow_remote_delete,
                 /*silent=*/ json,
+                &mut |effect| {
+                    guard.record_remote_effect(effect.clone());
+                    remote_effects.push(effect);
+                },
             );
 
             // Remove from config
@@ -426,12 +444,13 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
         println!("{}", style("No stacks to clean.").dim());
     }
 
+    let touched_remote = !remote_effects.is_empty();
     guard.finalize_with_scope(
         &repo,
         &config,
         SnapshotScope::AllUserBranches,
-        vec![],
-        false,
+        remote_effects,
+        touched_remote,
     )?;
 
     Ok(())
@@ -901,6 +920,7 @@ fn delete_entry_branches(
     username: &str,
     delete_remote: bool,
     silent: bool,
+    record_remote_effect: &mut dyn FnMut(RemoteEffect),
 ) {
     // First, delete entry branches from config (if any)
     if let Some(stack_config) = config.get_stack(stack_name) {
@@ -934,7 +954,9 @@ fn delete_entry_branches(
             }
             // Delete remote entry branch
             if delete_remote {
-                let _ = git::delete_remote_branch(&entry_branch);
+                if let Some(effect) = delete_remote_branch(repo, &entry_branch) {
+                    record_remote_effect(effect);
+                }
             }
         }
     }
@@ -975,9 +997,22 @@ fn delete_entry_branches(
         }
         // Also try to delete from remote
         if delete_remote {
-            let _ = git::delete_remote_branch(&branch_name);
+            if let Some(effect) = delete_remote_branch(repo, &branch_name) {
+                record_remote_effect(effect);
+            }
         }
     }
+}
+
+fn delete_remote_branch(repo: &Repository, branch: &str) -> Option<RemoteEffect> {
+    git::delete_remote_branch(repo, branch)
+        .ok()
+        .flatten()
+        .map(|prior_oid| RemoteEffect::BranchDeleted {
+            remote: "origin".to_string(),
+            branch: branch.to_string(),
+            prior_oid: Some(prior_oid.to_string()),
+        })
 }
 
 #[cfg(test)]

@@ -785,6 +785,268 @@ exit 1
 }
 
 #[test]
+fn test_land_already_merged_auto_clean_records_branch_deletion_and_refuses_undo() {
+    let (_temp_dir, repo_path, remote_path) = create_test_repo_with_remote();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","base":"main","provider":"github"}}"#,
+    )
+    .unwrap();
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "land-already-merged-clean"]);
+    assert!(success, "checkout failed: {stderr}");
+    fs::write(repo_path.join("feature.txt"), "feature\n").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "feat: already merged\n\nGG-ID: c-b1c2d3e"],
+    );
+
+    let entry_branch = "testuser/land-already-merged-clean--c-b1c2d3e";
+    run_git(&repo_path, &["branch", entry_branch]);
+    let (success, _, stderr) = run_git_full(&repo_path, &["push", "-u", "origin", entry_branch]);
+    assert!(success, "entry push failed: {stderr}");
+    let (_, prior_oid) = run_git(&repo_path, &["rev-parse", entry_branch]);
+    let prior_oid = prior_oid.trim().to_string();
+
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{
+  "defaults": {
+    "branch_username": "testuser",
+    "base": "main",
+    "provider": "github"
+  },
+  "stacks": {
+    "land-already-merged-clean": {
+      "base": "main",
+      "mrs": { "c-b1c2d3e": 77 }
+    }
+  }
+}"#,
+    )
+    .unwrap();
+
+    let fake_bin = repo_path.join("fake-bin-land-already-merged");
+    fs::create_dir_all(&fake_bin).unwrap();
+    fs::write(
+        fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+if [ "$1" = "--version" ]; then
+  echo "gh version 2.0.0"
+  exit 0
+fi
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "view" ] && [ "$3" = "77" ]; then
+  echo '{"number":77,"title":"Already merged","state":"MERGED","url":"https://github.com/test/repo/pull/77","headRefName":"testuser/land-already-merged-clean--c-b1c2d3e","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
+  exit 0
+fi
+echo "unexpected gh invocation: $@" >&2
+exit 1
+"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        let mut permissions = fs::metadata(fake_bin.join("gh")).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(fake_bin.join("gh"), permissions).unwrap();
+    }
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut path = std::ffi::OsString::from(fake_bin.as_os_str());
+    path.push(":");
+    path.push(old_path);
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["land", "--all", "--clean", "--json"],
+        &[("PATH", path.as_os_str())],
+    );
+    assert!(success, "land failed: stdout={stdout} stderr={stderr}");
+    let land_result: Value = serde_json::from_str(&stdout).expect("land output must be JSON");
+    assert_eq!(land_result["land"]["cleaned"], true);
+
+    let remote_ref = format!("refs/heads/{entry_branch}");
+    let output = Command::new("git")
+        .args([
+            "--git-dir",
+            remote_path.to_str().unwrap(),
+            "show-ref",
+            &remote_ref,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "auto-clean must delete remote entry branch"
+    );
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["undo", "--list", "--json"]);
+    assert!(success, "undo list failed: {stderr}");
+    let listed: Value = serde_json::from_str(&stdout).unwrap();
+    let land_record = listed["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["kind"] == "land")
+        .expect("Land operation must be recorded");
+    assert_eq!(land_record["touched_remote"], true);
+    assert_eq!(land_record["is_undoable"], false);
+    let deletion = land_record["remote_effects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|effect| effect["kind"] == "branch_deleted")
+        .expect("Land must retain auto-clean branch deletion effect");
+    assert_eq!(deletion["branch"], entry_branch);
+    assert_eq!(deletion["prior_oid"], prior_oid);
+    let operation_id = land_record["id"].as_str().unwrap();
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["undo", operation_id, "--json"]);
+    assert!(!success, "undo must refuse Land remote effect: {stderr}");
+    let refused: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(refused["refusal"]["reason"], "remote");
+}
+
+#[test]
+fn test_clean_records_remote_branch_deletion_and_undo_refuses_with_recovery_hint() {
+    let (_temp_dir, repo_path, remote_path) = create_test_repo_with_remote();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","base":"main","provider":"github"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "clean-remote-effect"]);
+    assert!(success, "Failed to create stack: {stderr}");
+    fs::write(repo_path.join("feature.txt"), "feature\n").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "feat: remote effect\n\nGG-ID: c-a1b2c3d"],
+    );
+
+    let entry_branch = "testuser/clean-remote-effect--c-a1b2c3d";
+    run_git(&repo_path, &["branch", entry_branch]);
+    let (success, _, stderr) = run_git_full(&repo_path, &["push", "-u", "origin", entry_branch]);
+    assert!(success, "Failed to push entry branch: {stderr}");
+    let (success, prior_oid) = run_git(&repo_path, &["rev-parse", entry_branch]);
+    assert!(success);
+    let prior_oid = prior_oid.trim().to_string();
+
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{
+  "defaults": {
+    "branch_username": "testuser",
+    "base": "main",
+    "provider": "github"
+  },
+  "stacks": {
+    "clean-remote-effect": {
+      "base": "main",
+      "mrs": { "c-a1b2c3d": 42 }
+    }
+  }
+}"#,
+    )
+    .unwrap();
+
+    let fake_bin = repo_path.join("fake-bin-clean-effect");
+    fs::create_dir_all(&fake_bin).unwrap();
+    fs::write(
+        fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+if [ "$1" = "--version" ]; then
+  echo "gh version 2.0.0"
+  exit 0
+fi
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "view" ] && [ "$3" = "42" ]; then
+  echo '{"number":42,"title":"Remote effect","state":"MERGED","url":"https://github.com/test/repo/pull/42","headRefName":"testuser/clean-remote-effect--c-a1b2c3d","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
+  exit 0
+fi
+echo "unexpected gh invocation: $@" >&2
+exit 1
+"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        let mut permissions = fs::metadata(fake_bin.join("gh")).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(fake_bin.join("gh"), permissions).unwrap();
+    }
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut path = std::ffi::OsString::from(fake_bin.as_os_str());
+    path.push(":");
+    path.push(old_path);
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["clean", "--all", "--json"],
+        &[("PATH", path.as_os_str())],
+    );
+    assert!(success, "clean failed: stdout={stdout} stderr={stderr}");
+
+    let remote_ref = format!("refs/heads/{entry_branch}");
+    let output = Command::new("git")
+        .args([
+            "--git-dir",
+            remote_path.to_str().unwrap(),
+            "show-ref",
+            &remote_ref,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "remote entry branch must be deleted"
+    );
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["undo", "--list", "--json"]);
+    assert!(success, "undo list failed: {stderr}");
+    let listed: Value = serde_json::from_str(&stdout).expect("undo list must be JSON");
+    let clean_record = listed["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["kind"] == "clean")
+        .expect("clean operation must be listed");
+    assert_eq!(clean_record["touched_remote"], true);
+    assert_eq!(clean_record["is_undoable"], false);
+    assert_eq!(clean_record["remote_effects"][0]["kind"], "branch_deleted");
+    assert_eq!(clean_record["remote_effects"][0]["remote"], "origin");
+    assert_eq!(clean_record["remote_effects"][0]["branch"], entry_branch);
+    assert_eq!(clean_record["remote_effects"][0]["prior_oid"], prior_oid);
+    let operation_id = clean_record["id"].as_str().unwrap().to_string();
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["undo", &operation_id, "--json"]);
+    assert!(!success, "undo must refuse remote deletion: {stderr}");
+    let refused: Value = serde_json::from_str(&stdout).expect("undo refusal must be JSON");
+    assert_eq!(refused["status"], "refused");
+    assert_eq!(refused["refusal"]["reason"], "remote");
+    let hints = refused["refusal"]["hints"].as_array().unwrap();
+    let restore = format!("git push origin {prior_oid}:refs/heads/{entry_branch}");
+    assert!(
+        hints
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|hint| hint.contains(&restore)),
+        "recovery hint must preserve the deleted branch restore command: {hints:?}"
+    );
+}
+
+#[test]
 fn test_gg_clean_current_branch_with_main_in_linked_worktree() {
     // Regression: gg clean crashed when user is on the stack branch and
     // main is checked out in a linked worktree.

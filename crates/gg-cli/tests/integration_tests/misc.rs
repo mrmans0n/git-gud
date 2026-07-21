@@ -12,6 +12,106 @@ fn test_gg_help() {
     assert!(stdout.contains("co"));
     assert!(stdout.contains("sync"));
     assert!(stdout.contains("ls"));
+    assert!(
+        stdout.contains("--client-operation-id <ID>"),
+        "root help must advertise native-client operation correlation: {stdout}"
+    );
+}
+
+#[test]
+fn test_client_operation_id_help_is_truthful_for_non_recording_commands() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    for args in [
+        vec!["--help"],
+        vec!["ls", "--help"],
+        vec!["continue", "--help"],
+        vec!["abort", "--help"],
+    ] {
+        let (success, stdout, stderr) = run_gg(&repo_path, &args);
+        assert!(success, "help failed for {args:?}: {stderr}");
+        assert!(
+            stdout.contains("--client-operation-id <ID>"),
+            "global option missing from help for {args:?}: {stdout}"
+        );
+        assert!(
+            stdout.contains("if this command") && stdout.contains("creates one"),
+            "help must not promise an operation record for {args:?}: {stdout}"
+        );
+    }
+}
+
+#[test]
+fn test_client_operation_id_is_preserved_in_mutation_record() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let client_id = "alas:018f84c0-3a14-7b45-a397-93c87266391d";
+    let (success, _stdout, stderr) = run_gg(
+        &repo_path,
+        &[
+            "co",
+            "correlated-operation",
+            "--client-operation-id",
+            client_id,
+        ],
+    );
+    assert!(success, "checkout mutation should succeed: {stderr}");
+
+    let operations_dir = gg_dir.join("operations");
+    let record = fs::read_dir(&operations_dir)
+        .expect("mutation must create the operation directory")
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| fs::read(entry.path()).ok())
+        .filter_map(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .find(|record| {
+            record["args"]
+                .as_array()
+                .is_some_and(|args| args.iter().any(|arg| arg == client_id))
+        })
+        .expect("mutation record must preserve the client operation id in raw args");
+
+    assert_eq!(
+        record["args"],
+        serde_json::json!([
+            "co",
+            "correlated-operation",
+            "--client-operation-id",
+            client_id
+        ])
+    );
+    assert!(
+        record["id"].as_str().is_some_and(
+            |operation_id| operation_id.starts_with("op_") && operation_id != client_id
+        ),
+        "the client token must not override GG's operation id: {record:?}"
+    );
+}
+
+#[test]
+fn test_client_operation_id_rejects_unsafe_tokens() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    let oversized = "a".repeat(129);
+
+    for invalid in ["", "unsafe/value", "contains space", oversized.as_str()] {
+        let (success, stdout, stderr) =
+            run_gg(&repo_path, &["--client-operation-id", invalid, "ls"]);
+        assert!(
+            !success,
+            "unsafe client operation id must be rejected: {invalid:?}; stdout={stdout} stderr={stderr}"
+        );
+        assert!(
+            stderr.contains("client operation id"),
+            "validation error should identify the invalid field: {stderr}"
+        );
+    }
 }
 
 #[test]
@@ -31,16 +131,28 @@ fn test_completions() {
     let (success, stdout, _) = run_gg(&repo_path, &["completions", "bash"]);
     assert!(success);
     assert!(stdout.contains("_gg") || stdout.contains("complete"));
+    assert!(
+        stdout.contains("--client-operation-id"),
+        "bash completions must advertise the global native-client flag"
+    );
 
     // Test zsh completions
     let (success, stdout, _) = run_gg(&repo_path, &["completions", "zsh"]);
     assert!(success);
     assert!(stdout.contains("#compdef") || stdout.contains("_gg"));
+    assert!(
+        stdout.contains("--client-operation-id"),
+        "zsh completions must advertise the global native-client flag"
+    );
 
     // Test fish completions
     let (success, stdout, _) = run_gg(&repo_path, &["completions", "fish"]);
     assert!(success);
     assert!(stdout.contains("complete") || stdout.contains("gg"));
+    assert!(
+        stdout.contains("client-operation-id"),
+        "fish completions must advertise the global native-client flag"
+    );
 }
 
 #[test]

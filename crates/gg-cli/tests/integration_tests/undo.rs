@@ -219,6 +219,46 @@ fn test_undo_is_itself_recorded_and_double_undo_redoes() {
 }
 
 #[test]
+fn test_undo_operation_preserves_client_operation_id_in_raw_args() {
+    let (_temp_dir, repo_path) = setup_undo_test_repo("undo-client-correlation");
+
+    fs::write(repo_path.join("a.txt"), "v1").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit A"]);
+    fs::write(repo_path.join("b.txt"), "v1").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Commit B"]);
+    let (success, _, stderr) = run_gg(&repo_path, &["drop", "2", "--force"]);
+    assert!(success, "drop failed: {stderr}");
+
+    let client_id = "alas:018f84c0-3a14-7b45-a397-93c87266391d";
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &["undo", "--client-operation-id", client_id, "--json"],
+    );
+    assert!(
+        success,
+        "correlated undo failed: stdout={stdout} stderr={stderr}"
+    );
+
+    let (_, stdout, stderr) = run_gg(&repo_path, &["undo", "--list", "--json"]);
+    assert!(stderr.is_empty(), "undo list failed: {stderr}");
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    let undo_record = parsed["operations"]
+        .as_array()
+        .expect("operations must be array")
+        .iter()
+        .find(|record| record["kind"] == "undo")
+        .expect("undo mutation must create an operation record");
+
+    assert_eq!(
+        undo_record["args"],
+        serde_json::json!(["undo", "--client-operation-id", client_id, "--json"]),
+        "undo must preserve the same raw argv as every other recorded mutation"
+    );
+}
+
+#[test]
 fn test_undo_unknown_operation_id_errors() {
     let (_temp_dir, repo_path) = setup_undo_test_repo("undo-unknown");
 

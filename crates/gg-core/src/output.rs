@@ -85,6 +85,8 @@ pub fn print_json_error(message: &str) {
 #[derive(Serialize)]
 pub struct SingleStackResponse {
     pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
     pub stack: StackJson,
 }
 
@@ -128,6 +130,8 @@ pub struct StackEntryJson {
 #[derive(Serialize)]
 pub struct AllStacksResponse {
     pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
     pub current_stack: Option<String>,
     pub stacks: Vec<StackSummaryJson>,
 }
@@ -769,6 +773,7 @@ pub struct UnstackResponse {
 pub struct UnstackResultJson {
     pub original_stack: String,
     pub new_stack: String,
+    pub current_stack: String,
     pub split_position: usize,
     pub remaining_entries: Vec<UnstackEntryJson>,
     pub moved_entries: Vec<UnstackEntryJson>,

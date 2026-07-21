@@ -20,6 +20,7 @@ pub mod restack;
 pub mod run;
 pub mod setup;
 pub mod split;
+pub mod split_protocol;
 pub mod split_tui;
 pub mod squash;
 pub mod sync;

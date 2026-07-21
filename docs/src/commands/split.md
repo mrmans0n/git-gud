@@ -12,8 +12,18 @@ gg split [OPTIONS] [FILES...]
 - `-m, --message <MESSAGE>`: Commit message for the new (first) commit. Skips the editor prompt.
 - `--no-edit`: Keep the original message for the remainder commit without prompting.
 - `--no-tui`: Disable TUI, use sequential prompt instead (legacy `git add -p` style).
-- `-f, --force` (alias `--ignore-immutable`): Override the immutability guard.
-  Splitting a merged or base-ancestor commit is refused by default. See
+- `--describe`: Describe the target and its textual hunks as protocol v1 JSON.
+  Requires `--json` and cannot be combined with interactive selection or file
+  arguments.
+- `--plan-json <PATH>`: Apply a protocol v1 plan read from `PATH`. Requires
+  `--json` and cannot be combined with `--describe`, interactive selection, or
+  file arguments.
+- `--json`: Emit machine-readable output for structured Describe or Apply.
+  Requires either `--describe` or `--plan-json`; ordinary interactive and
+  file-based Split do not have a structured response.
+- `-f, --force` (alias `--ignore-immutable`): Override the immutability guard
+  for interactive and file-based Split. Structured Describe/Apply always uses
+  the guard without an override. Splitting a merged or base-ancestor commit is refused by default. See
   [Core concepts · Immutable commits](../core-concepts.md#immutable-commits).
 - `FILES...`: Files to include in the new commit. When provided, all hunks from those files are auto-selected (skips the interactive picker).
 
@@ -164,9 +174,77 @@ gg split -c c-abc1234 src/config.rs
 
 If a hunk contains multiple logical changes separated by unchanged lines, pressing `s` will break it into smaller hunks. You can then select each sub-hunk individually. If the hunk is already atomic (contiguous changes), you'll see "This hunk cannot be split further."
 
+## Structured Clients
+
+Native clients that provide their own hunk-selection UI can use a versioned,
+two-step protocol. Ordinary terminal use should keep the default TUI.
+
+First, describe the current target without changing refs, requiring a clean
+worktree, or creating an operation record:
+
+```bash
+gg split --describe --commit c-abc1234 --json > split-description.json
+```
+
+The response contains the exact `target`, an opaque `plan_token`, selectable
+textual `hunks`, `non_textual_files`, and default messages. Copy `target` and
+`plan_token` unchanged, choose at least one returned hunk ID while leaving
+some textual, non-textual, or metadata change for the remainder, and supply
+both non-empty messages:
+
+```bash
+jq '{
+  version,
+  plan_token,
+  target,
+  selected_hunk_ids: [.hunks[0].id],
+  first_message: "Extract validation",
+  remainder_message: "Finish authentication"
+}' split-description.json > split-plan.json
+
+gg split --plan-json split-plan.json --json > split-result.json
+```
+
+The remainder must contain at least one change. It can be an unselected textual
+hunk, a file listed in `non_textual_files`, or a regular-file mode change such
+as an executable-bit update. Non-textual files and metadata are not selectable
+in protocol v1 and always remain in the remainder commit. Treat hunk IDs, plan
+tokens, GG-IDs, and operation IDs as opaque values; do not parse, construct, or
+remap them.
+
+Apply re-resolves the target, checks its GG-ID/SHA/tree and the current ordered
+hunks, and rejects stale plans before moving refs or adding an operation-log
+record. After any stale-plan error, run Describe again and ask the user to
+review a new selection. Describe and Apply both refuse immutable targets, and
+structured Apply has no force field or force override.
+
+Structured failures are written to stdout as JSON:
+
+```json
+{
+  "version": 1,
+  "error": "stale split plan: target identity changed"
+}
+```
+
+Once rewriting starts, a descendant rebase conflict returns the same JSON
+error envelope but leaves the operation paused. Resolve and stage the conflict,
+then run `gg continue`, or run `gg abort` to cancel it.
+
+A successful Apply returns an `operation_id`. Use that exact ID to undo this
+split rather than assuming it is still the most recent operation:
+
+```bash
+operation_id=$(jq -r '.operation_id' split-result.json)
+gg undo "$operation_id" --json
+```
+
 ## Edge Cases
 
-- **All changes selected** — Warning: the original commit will be empty.
-- **No changes selected** — Error.
-- **Dirty working directory** — Error. Commit or stash changes first.
-- **Merge conflicts during rebase** — Split is aborted, original state restored.
+- **All textual hunks selected** — Structured Apply accepts the plan only when
+  a non-textual file or regular-file mode change remains for the remainder.
+- **No changes selected** — Error in every mode.
+- **Dirty working directory** — Interactive Split and structured Apply error.
+  Describe remains read-only and is allowed.
+- **Merge conflicts during rebase** — Resolve and stage the conflict, then run
+  `gg continue`; use `gg abort` to cancel the paused operation.

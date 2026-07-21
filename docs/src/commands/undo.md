@@ -42,13 +42,35 @@ recorded as an operation, running it twice reverses the reversal.
 Entries created by `gg undo` appear in `--list` with a `↶` marker and
 an `undoes` field pointing at the original operation id.
 
+## Native-client correlation
+
+All `gg` commands accept the global `--client-operation-id <ID>` option. A
+native client can assign a unique token to a mutation and then identify the
+operation record created by that invocation without relying on timestamps or
+newest-record ordering:
+
+```bash
+gg drop 3 --yes --client-operation-id alas:018f84c0-3a14-7b45-a397-93c87266391d
+gg undo --list --json
+```
+
+The operation record's `args` array preserves the exact adjacent
+`"--client-operation-id", "alas:..."` pair. Match that pair, then pass the
+record's opaque `op_...` `id` to `gg undo <OPERATION_ID> --json`. The client
+token is correlation metadata only: it never replaces or influences GG's
+operation ID.
+
+Client operation IDs must be 1–128 characters of ASCII letters, digits, `-`,
+`_`, `.`, or `:`. Generate a unique token for every attempted mutation and do
+not reuse one across concurrent requests.
+
 ## Refusal modes
 
 `gg undo` refuses (exit 1, no refs touched) when:
 
 | Reason | Condition | What to do |
 |---|---|---|
-| `remote` | The target op pushed/merged/closed/created a PR or MR. | Use the printed provider hint (`gh pr close <n>`, `glab mr close <n>`, `git push --delete …`). Local state is unchanged. |
+| `remote` | The target op pushed, deleted a remote branch, or created/merged/closed a PR or MR. | Use the printed recovery hint. Deleted branches include an exact `git push origin <prior_oid>:refs/heads/<branch>` command when GG captured the prior OID. Local state is unchanged. |
 | `interrupted` | The op crashed, was Ctrl-C'd, or was aborted before completion and has `status: Interrupted`. | Fix the underlying state manually; the stale Pending record is swept into Interrupted on the next lock-acquiring op. |
 | `stale` | Refs have moved since the target op finalised. | Run `gg undo --list` and target a more recent record instead. The error names the ref, the expected OID, and the actual OID. |
 | `unsupported_schema` | The record was written by a newer `gg` with a schema version this binary does not understand. | Upgrade `gg` or delete the offending record. |
@@ -154,8 +176,8 @@ UI/agent actions; use `is_undo` + `undoes` to render redo markers.
 - It does **not** restore working-tree files or the index. If you amended
   a commit and want the old source back, use `git reflog` or
   `git stash`.
-- It does **not** touch remotes. Operations that pushed, merged, closed,
-  or created PRs/MRs are recorded (so you can see them in `--list`) but
+- It does **not** touch remotes. Operations that pushed, deleted a remote
+  branch, or created/merged/closed PRs/MRs are recorded (so you can see them in `--list`) but
   refused for local replay.
 - It does **not** guarantee atomicity of the replay. If the process
   dies mid-replay, a second `gg undo` will finish the job — the

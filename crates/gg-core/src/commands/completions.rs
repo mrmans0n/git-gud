@@ -13,6 +13,10 @@ use crate::error::Result;
 #[derive(clap::Parser)]
 #[command(name = "gg")]
 struct Cli {
+    /// Add a native-client token to an operation record, if this command creates one
+    #[arg(long, global = true, value_name = "ID")]
+    _client_operation_id: Option<String>,
+
     #[clap(subcommand)]
     command: Option<Commands>,
 }
@@ -55,6 +59,8 @@ enum Commands {
     Squash {
         #[arg(short, long)]
         all: bool,
+        #[arg(long, conflicts_with = "all")]
+        staged_only: bool,
     },
     #[command(name = "reorder")]
     Reorder,

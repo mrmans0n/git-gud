@@ -5,6 +5,7 @@ use console::style;
 use crate::config::Config;
 use crate::error::Result;
 use crate::git;
+use crate::operations;
 use crate::output::{
     print_json, AllStacksResponse, RemoteStackJson, RemoteStacksResponse, SingleStackResponse,
     StackCommitJson, StackEntryJson, StackJson, StackSummaryJson, OUTPUT_VERSION,
@@ -133,6 +134,7 @@ fn list_all_stacks(repo: &git2::Repository, config: &Config, json: bool) -> Resu
 
         print_json(&AllStacksResponse {
             version: OUTPUT_VERSION,
+            operation_id: operations::interrupted_rebase_operation(repo)?.map(|record| record.id),
             current_stack,
             stacks: summaries,
         });
@@ -563,6 +565,7 @@ fn show_stack(stack: &Stack, json: bool) -> Result<()> {
 
         print_json(&SingleStackResponse {
             version: OUTPUT_VERSION,
+            operation_id: operations::interrupted_rebase_operation(&repo)?.map(|record| record.id),
             stack: StackJson {
                 name: stack.name.clone(),
                 base: stack.base.clone(),

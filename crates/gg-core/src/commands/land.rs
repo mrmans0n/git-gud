@@ -980,6 +980,11 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 &repo,
                 &stack.name,
                 true,
+                &mut |effect| {
+                    guard.record_remote_effect(effect.clone());
+                    remote_effects.push(effect);
+                    touched_remote = true;
+                },
             )
             .is_ok()
             {

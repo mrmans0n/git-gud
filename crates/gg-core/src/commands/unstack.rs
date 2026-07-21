@@ -36,6 +36,8 @@ pub struct UnstackOptions {
     pub json: bool,
     /// Create or reuse a managed worktree for the new stack.
     pub worktree: bool,
+    /// Leave this worktree on the lower stack without creating an upper worktree.
+    pub keep_current: bool,
 }
 
 /// Run the unstack command.
@@ -154,12 +156,13 @@ pub fn run(options: UnstackOptions) -> Result<()> {
     )?;
 
     // Migrate config (MR mappings, base override)
+    let preserve_original_worktree = options.worktree || options.keep_current;
     let migrated_review_mappings = migrate_config(
         &mut config,
         &original_stack,
         &new_stack_name,
         &moved_entries,
-        options.worktree,
+        preserve_original_worktree,
     );
 
     if let Some(path) = &precreated_worktree_path {
@@ -182,6 +185,16 @@ pub fn run(options: UnstackOptions) -> Result<()> {
         let upper_stack = Stack::load(&upper_repo, &config)?;
         git::normalize_stack_metadata(&upper_repo, &upper_stack)?;
         Some(path.to_string_lossy().to_string())
+    } else if options.keep_current {
+        let upper_result = (|| -> Result<()> {
+            git::checkout_branch(&repo, &new_branch)?;
+            let upper_stack = Stack::load(&repo, &config)?;
+            git::normalize_stack_metadata(&repo, &upper_stack)?;
+            Ok(())
+        })();
+        git::checkout_branch(&repo, &original_branch)?;
+        upper_result?;
+        None
     } else {
         // Normalize metadata on the new (upper) stack and leave HEAD there.
         git::checkout_branch(&repo, &new_branch)?;
@@ -200,6 +213,11 @@ pub fn run(options: UnstackOptions) -> Result<()> {
     )?;
 
     let sync_required = migrated_review_mappings > 0;
+    let current_stack = if preserve_original_worktree {
+        original_stack.clone()
+    } else {
+        new_stack_name.clone()
+    };
 
     if options.json {
         print_json(&UnstackResponse {
@@ -207,6 +225,7 @@ pub fn run(options: UnstackOptions) -> Result<()> {
             unstack: UnstackResultJson {
                 original_stack,
                 new_stack: new_stack_name,
+                current_stack,
                 split_position,
                 remaining_entries,
                 moved_entries,
@@ -520,7 +539,7 @@ fn migrate_config(
     original_stack: &str,
     new_stack: &str,
     moved_entries: &[UnstackEntryJson],
-    worktree_mode: bool,
+    preserve_original_worktree: bool,
 ) -> usize {
     let original_base = config
         .get_stack(original_stack)
@@ -544,11 +563,11 @@ fn migrate_config(
         }
     }
 
-    // In worktree mode, the current worktree stays with the old (lower) stack,
-    // so preserve the old worktree_path on it. The new stack gets its worktree
-    // assigned later by ensure_stack_worktree.
+    // When the current worktree stays with the old (lower) stack, preserve its
+    // worktree_path. A managed new-stack worktree is assigned later by
+    // ensure_stack_worktree.
     // In normal mode, HEAD moves to the new stack, so migrate the worktree_path.
-    if !worktree_mode {
+    if !preserve_original_worktree {
         if let Some(wt_path) = original_worktree_path {
             new_config.worktree_path = Some(wt_path);
             if let Some(old_stack) = config.stacks.get_mut(original_stack) {
@@ -603,6 +622,7 @@ mod tests {
         assert!(!opts.force);
         assert!(!opts.json);
         assert!(!opts.worktree);
+        assert!(!opts.keep_current);
     }
 
     fn temp_repo() -> (tempfile::TempDir, Repository) {

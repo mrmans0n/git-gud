@@ -59,6 +59,8 @@ enum Commands {
     Squash {
         #[arg(short, long)]
         all: bool,
+        #[arg(long, conflicts_with = "all")]
+        staged_only: bool,
     },
     #[command(name = "reorder")]
     Reorder,

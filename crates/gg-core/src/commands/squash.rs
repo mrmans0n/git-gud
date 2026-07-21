@@ -55,6 +55,13 @@ fn has_unstaged_changes() -> Result<bool> {
     Ok(!output.status.success())
 }
 
+fn has_staged_changes() -> Result<bool> {
+    let output = Command::new("git")
+        .args(["diff", "--cached", "--quiet"])
+        .output()?;
+    Ok(!output.status.success())
+}
+
 fn has_untracked_files() -> Result<bool> {
     let output = Command::new("git")
         .args(["ls-files", "--others", "--exclude-standard"])
@@ -73,7 +80,7 @@ fn has_untracked_files() -> Result<bool> {
 }
 
 /// Run the squash command
-pub fn run(all: bool, force: bool) -> Result<()> {
+pub fn run(all: bool, staged_only: bool, force: bool) -> Result<()> {
     let repo = git::open_repo()?;
     let config = Config::load_with_global(repo.commondir())?;
 
@@ -94,6 +101,10 @@ pub fn run(all: bool, force: bool) -> Result<()> {
     if statuses.is_empty() {
         println!("{}", style("No changes to squash.").dim());
         // No mutation — no record needed.
+        return Ok(());
+    }
+    if staged_only && !has_staged_changes()? {
+        println!("{}", style("No staged changes to squash.").dim());
         return Ok(());
     }
 
@@ -130,7 +141,7 @@ pub fn run(all: bool, force: bool) -> Result<()> {
 
     let mut auto_stashed = false;
 
-    if !all && (has_unstaged || has_untracked) && !needs_rebase {
+    if !all && !staged_only && (has_unstaged || has_untracked) && !needs_rebase {
         match config.get_unstaged_action() {
             UnstagedAction::Ask => {
                 println!(
@@ -217,6 +228,12 @@ pub fn run(all: bool, force: bool) -> Result<()> {
     // Staged changes are fine (they'll be committed), but unstaged changes
     // would be lost during the rebase
     if needs_rebase {
+        if staged_only && has_untracked {
+            return Err(GgError::Other(
+                "Untracked files detected. Move or remove them before a mid-stack --staged-only amend."
+                    .to_string(),
+            ));
+        }
         let has_unstaged = has_unstaged_changes()?;
 
         if has_unstaged {

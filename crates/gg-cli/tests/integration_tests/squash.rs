@@ -8,6 +8,236 @@ fn head_sha(repo_path: &std::path::Path) -> String {
     stdout.trim().to_string()
 }
 
+fn assert_staged_only_ignores_unstaged_action(unstaged_action: &str) {
+    let (_temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        format!(
+            r#"{{"defaults":{{"branch_username":"testuser","unstaged_action":"{unstaged_action}"}}}}"#
+        ),
+    )
+    .expect("Failed to write config");
+
+    run_gg(
+        &repo_path,
+        &["co", &format!("squash-staged-only-{unstaged_action}")],
+    );
+    fs::write(repo_path.join("staged.txt"), "original staged\n").unwrap();
+    fs::write(repo_path.join("unstaged.txt"), "original unstaged\n").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Initial files"]);
+
+    fs::write(repo_path.join("staged.txt"), "amended staged\n").unwrap();
+    run_git(&repo_path, &["add", "staged.txt"]);
+    fs::write(repo_path.join("unstaged.txt"), "working unstaged\n").unwrap();
+    fs::write(repo_path.join("untracked.txt"), "working untracked\n").unwrap();
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["sc", "--staged-only"]);
+    assert!(
+        success,
+        "--staged-only must ignore unstaged_action={unstaged_action}: stdout={stdout} stderr={stderr}"
+    );
+
+    let (success, committed_staged) = run_git(&repo_path, &["show", "HEAD:staged.txt"]);
+    assert!(success);
+    assert_eq!(committed_staged, "amended staged\n");
+    let (success, committed_unstaged) = run_git(&repo_path, &["show", "HEAD:unstaged.txt"]);
+    assert!(success);
+    assert_eq!(committed_unstaged, "original unstaged\n");
+    let (success, _) = run_git(&repo_path, &["cat-file", "-e", "HEAD:untracked.txt"]);
+    assert!(!success, "untracked content must not be amended");
+
+    let (success, status) = run_git(&repo_path, &["status", "--porcelain"]);
+    assert!(success);
+    assert!(status.contains(" M unstaged.txt"), "status={status}");
+    assert!(status.contains("?? untracked.txt"), "status={status}");
+    assert!(
+        !status
+            .lines()
+            .any(|line| line.get(3..) == Some("staged.txt")),
+        "staged change should be clean: {status}"
+    );
+
+    let (success, stash_list) = run_git(&repo_path, &["stash", "list"]);
+    assert!(success);
+    assert!(
+        stash_list.trim().is_empty(),
+        "--staged-only must not auto-stash: {stash_list}"
+    );
+}
+
+#[test]
+fn test_gg_squash_staged_only_ignores_add_default_at_stack_head() {
+    assert_staged_only_ignores_unstaged_action("add");
+}
+
+#[test]
+fn test_gg_squash_staged_only_ignores_stash_default_at_stack_head() {
+    assert_staged_only_ignores_unstaged_action("stash");
+}
+
+#[test]
+fn test_gg_squash_staged_only_fails_before_mid_stack_rebase_with_unstaged_changes() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","unstaged_action":"add"}}"#,
+    )
+    .expect("Failed to write config");
+
+    run_gg(&repo_path, &["co", "squash-staged-only-mid-stack"]);
+    fs::write(repo_path.join("first.txt"), "first\n").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "First"]);
+    fs::write(repo_path.join("second.txt"), "second\n").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Second"]);
+    let (success, _, stderr) = run_gg(&repo_path, &["mv", "1"]);
+    assert!(success, "move failed: {stderr}");
+
+    fs::write(repo_path.join("first.txt"), "unstaged first\n").unwrap();
+    fs::write(repo_path.join("staged.txt"), "staged\n").unwrap();
+    run_git(&repo_path, &["add", "staged.txt"]);
+    let head_before = head_sha(&repo_path);
+    let (_, status_before) = run_git(&repo_path, &["status", "--porcelain"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["sc", "--staged-only"]);
+    assert!(
+        !success,
+        "mid-stack staged-only must refuse unstaged changes: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("Unstaged changes detected"),
+        "stderr={stderr}"
+    );
+    assert_eq!(
+        head_sha(&repo_path),
+        head_before,
+        "HEAD must not be amended"
+    );
+    let (_, status_after) = run_git(&repo_path, &["status", "--porcelain"]);
+    assert_eq!(
+        status_after, status_before,
+        "index/worktree must be untouched"
+    );
+    let (_, stash_list) = run_git(&repo_path, &["stash", "list"]);
+    assert!(
+        stash_list.trim().is_empty(),
+        "must not auto-stash: {stash_list}"
+    );
+}
+
+#[test]
+fn test_gg_squash_staged_only_rejects_untracked_descendant_collision_before_amend() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","unstaged_action":"add"}}"#,
+    )
+    .unwrap();
+    run_gg(&repo_path, &["co", "squash-staged-only-untracked"]);
+
+    fs::write(repo_path.join("first.txt"), "first\n").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "First"]);
+    fs::write(repo_path.join("descendant.txt"), "descendant\n").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Second"]);
+    let (success, _, stderr) = run_gg(&repo_path, &["mv", "1"]);
+    assert!(success, "move failed: {stderr}");
+
+    fs::write(repo_path.join("prepared.txt"), "prepared\n").unwrap();
+    run_git(&repo_path, &["add", "prepared.txt"]);
+    fs::write(repo_path.join("descendant.txt"), "untracked collision\n").unwrap();
+    let head_before = head_sha(&repo_path);
+    let (_, status_before) = run_git(&repo_path, &["status", "--porcelain"]);
+    let operations_before = fs::read_dir(gg_dir.join("operations"))
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| fs::read(entry.path()).ok())
+        .filter_map(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .filter(|record| record["kind"] == "squash")
+        .count();
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["sc", "--staged-only"]);
+    assert!(
+        !success,
+        "untracked collision must be refused before amend: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("Untracked files detected"),
+        "stderr={stderr}"
+    );
+    assert_eq!(
+        head_sha(&repo_path),
+        head_before,
+        "HEAD must not be amended"
+    );
+    let (_, status_after) = run_git(&repo_path, &["status", "--porcelain"]);
+    assert_eq!(
+        status_after, status_before,
+        "index/worktree must be untouched"
+    );
+    let operations_after = fs::read_dir(gg_dir.join("operations"))
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| fs::read(entry.path()).ok())
+        .filter_map(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .filter(|record| record["kind"] == "squash")
+        .count();
+    assert_eq!(
+        operations_after, operations_before,
+        "preflight refusal must not create a Pending squash operation"
+    );
+}
+
+#[test]
+fn test_gg_squash_staged_only_help_and_all_conflict() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    let (success, stdout, stderr) = run_gg(&repo_path, &["sc", "--help"]);
+    assert!(success, "sc help failed: {stderr}");
+    assert!(stdout.contains("--staged-only"), "stdout={stdout}");
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["sc", "--all", "--staged-only"]);
+    assert!(
+        !success && stderr.contains("cannot be used with"),
+        "--all and --staged-only must conflict: stdout={stdout} stderr={stderr}"
+    );
+}
+
+#[test]
+fn test_gg_squash_staged_only_without_staged_changes_does_not_amend() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","unstaged_action":"add"}}"#,
+    )
+    .unwrap();
+    run_gg(&repo_path, &["co", "squash-staged-only-empty"]);
+    fs::write(repo_path.join("tracked.txt"), "original\n").unwrap();
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Tracked"]);
+    let head_before = head_sha(&repo_path);
+
+    fs::write(repo_path.join("tracked.txt"), "unstaged\n").unwrap();
+    let (success, stdout, stderr) = run_gg(&repo_path, &["sc", "--staged-only"]);
+    assert!(success, "staged-only no-op failed: {stderr}");
+    assert!(stdout.contains("No staged changes"), "stdout={stdout}");
+    assert_eq!(head_sha(&repo_path), head_before);
+    assert_eq!(
+        fs::read_to_string(repo_path.join("tracked.txt")).unwrap(),
+        "unstaged\n"
+    );
+}
+
 #[test]
 fn test_gg_squash_with_staged_changes() {
     let (_temp_dir, repo_path) = create_test_repo();

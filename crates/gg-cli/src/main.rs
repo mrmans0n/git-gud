@@ -180,6 +180,10 @@ enum Commands {
         #[arg(short, long)]
         all: bool,
 
+        /// Squash staged changes only, ignoring defaults.unstaged_action
+        #[arg(long, conflicts_with = "all")]
+        staged_only: bool,
+
         /// Override the immutability check and rewrite merged/base commits anyway
         #[arg(short = 'f', long = "force", alias = "ignore-immutable")]
         force: bool,
@@ -639,9 +643,15 @@ fn main() {
         Some(Commands::Last) => (gg_core::commands::nav::last(), false, false),
         Some(Commands::Prev) => (gg_core::commands::nav::prev(), false, false),
         Some(Commands::Next) => (gg_core::commands::nav::next(), false, false),
-        Some(Commands::Squash { all, force }) => {
-            (gg_core::commands::squash::run(all, force), false, false)
-        }
+        Some(Commands::Squash {
+            all,
+            staged_only,
+            force,
+        }) => (
+            gg_core::commands::squash::run(all, staged_only, force),
+            false,
+            false,
+        ),
         Some(Commands::Drop {
             targets,
             force,

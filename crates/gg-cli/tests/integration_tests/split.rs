@@ -48,6 +48,13 @@ fn create_two_hunk_split_commit() -> (tempfile::TempDir, std::path::PathBuf) {
     (temp_dir, repo_path)
 }
 
+fn create_text_only_two_hunk_split_commit() -> (tempfile::TempDir, std::path::PathBuf) {
+    let (temp_dir, repo_path) = create_two_hunk_split_commit();
+    assert!(run_git(&repo_path, &["rm", "binary.dat"]).0);
+    assert!(run_git(&repo_path, &["commit", "--amend", "--no-edit"]).0);
+    (temp_dir, repo_path)
+}
+
 fn create_byte_content_split_commit(
     stack_name: &str,
     file_name: &str,
@@ -842,6 +849,39 @@ fn test_split_plan_applies_selected_hunk_and_undo_restores_stack() {
 }
 
 #[test]
+fn test_split_plan_allows_all_text_hunks_when_non_textual_changes_remain() {
+    let (_temp_dir, repo_path) = create_two_hunk_split_commit();
+    let describe = describe_split(&repo_path, "1");
+    let selected = describe["hunks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hunk| hunk["id"].clone())
+        .collect();
+    let plan_path = write_split_plan(&repo_path, &describe, selected);
+
+    let (success, stdout, stderr) = apply_split_plan(&repo_path, &plan_path);
+    assert!(success, "apply failed: stdout={stdout} stderr={stderr}");
+    let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let first_sha = result["first"]["sha"].as_str().unwrap();
+    let remainder_sha = result["remainder"]["sha"].as_str().unwrap();
+    assert!(
+        !run_git(
+            &repo_path,
+            &["cat-file", "-e", &format!("{first_sha}:binary.dat")]
+        )
+        .0
+    );
+    assert!(
+        run_git(
+            &repo_path,
+            &["cat-file", "-e", &format!("{remainder_sha}:binary.dat")]
+        )
+        .0
+    );
+}
+
+#[test]
 fn test_split_plan_rejects_stale_target_without_mutation() {
     let (_temp_dir, repo_path) = create_two_hunk_split_commit();
     let describe = describe_split(&repo_path, "1");
@@ -967,7 +1007,11 @@ fn test_split_plan_rejects_invalid_inputs_before_mutation() {
     ];
 
     for (name, selected_template) in invalid_cases {
-        let (_temp_dir, repo_path) = create_two_hunk_split_commit();
+        let (_temp_dir, repo_path) = if name == "all selected hunks" {
+            create_text_only_two_hunk_split_commit()
+        } else {
+            create_two_hunk_split_commit()
+        };
         let describe = describe_split(&repo_path, "1");
         let first_id = describe["hunks"][0]["id"].clone();
         let second_id = describe["hunks"][1]["id"].clone();

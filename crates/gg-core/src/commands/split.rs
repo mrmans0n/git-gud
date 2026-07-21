@@ -363,7 +363,15 @@ pub fn apply_plan(_options: &SplitOptions, path: &Path) -> Result<SplitApplyResp
             "Split plan must select at least one hunk".into(),
         ));
     }
-    if selected_indices.len() == described_hunks.len() {
+    let changed_files = get_changed_files(&repo, &resolved.parent_commit, &resolved.target_commit)?;
+    let hunk_files = hunks
+        .iter()
+        .map(|hunk| hunk.file_path.as_str())
+        .collect::<HashSet<_>>();
+    let has_non_textual_changes = changed_files
+        .iter()
+        .any(|file| !hunk_files.contains(file.path.as_str()));
+    if selected_indices.len() == described_hunks.len() && !has_non_textual_changes {
         return Err(GgError::Other(
             "No changes would remain in the remainder commit".into(),
         ));
@@ -377,7 +385,6 @@ pub fn apply_plan(_options: &SplitOptions, path: &Path) -> Result<SplitApplyResp
         ));
     }
 
-    let changed_files = get_changed_files(&repo, &resolved.parent_commit, &resolved.target_commit)?;
     let selected_paths = selected_indices
         .iter()
         .map(|index| hunks[*index].file_path.as_str())

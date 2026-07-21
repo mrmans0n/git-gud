@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-90eaab6c.js";
+            window.path_to_searchindex_js = "../searchindex-6a3ba895.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-95fa4ef1.js"></script>
@@ -190,7 +190,9 @@ arguments.</li>
 <li><code>--plan-json &lt;PATH&gt;</code>: Apply a protocol v1 plan read from <code>PATH</code>. Requires
 <code>--json</code> and cannot be combined with <code>--describe</code>, interactive selection, or
 file arguments.</li>
-<li><code>--json</code>: Emit machine-readable output for structured Describe or Apply.</li>
+<li><code>--json</code>: Emit machine-readable output for structured Describe or Apply.
+Requires either <code>--describe</code> or <code>--plan-json</code>; ordinary interactive and
+file-based Split do not have a structured response.</li>
 <li><code>-f, --force</code> (alias <code>--ignore-immutable</code>): Override the immutability guard
 for interactive and file-based Split. Structured Describe/Apply always uses
 the guard without an override. Splitting a merged or base-ancestor commit is refused by default. See

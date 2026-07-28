@@ -14,7 +14,10 @@
   reasoning. The interface does not expose an evaluator model/version in the
   returned evidence. They were read-only and received neither the baseline
   report nor expected answers.
-- Raw evaluator output: `.superpowers/sdd/2026-07-28-gg-agent-skill-router/task-4-evaluator-outputs.md`.
+- Tracked evaluator provenance (fresh context identifiers, exact dispatch
+  templates and prompts, activation candidate descriptions, and concise exact
+  results): [forward evaluator evidence](2026-07-28-gg-agent-skill-router-forward-evidence.md).
+  The ignored SDD appendix is only a supplementary copy of full final messages.
 
 ## Results
 
@@ -32,7 +35,8 @@
 Auditable excerpts: scenario 3 said “run an ordinary rebase before publishing,
 then monitor `gg sync` as JSONL”; scenario 5 said “Surface the provider hint
 `gh pr close 52` and stop”; and scenario 7 said “Landing is pending, not
-complete.” The complete verbatim messages are retained at the raw-output path.
+complete.” The tracked evidence records each evaluator context and dispatched
+prompt; its concise results are the auditable basis for this table.
 
 ## Activation Samples
 

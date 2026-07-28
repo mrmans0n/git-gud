@@ -866,6 +866,22 @@ pub fn push_branch(
     hard_force: bool,
     no_verify: bool,
 ) -> Result<()> {
+    push_branch_with_confirmation(
+        branch_name,
+        force_with_lease,
+        hard_force,
+        no_verify,
+        confirm_force_push,
+    )
+}
+
+pub(crate) fn push_branch_with_confirmation(
+    branch_name: &str,
+    force_with_lease: bool,
+    hard_force: bool,
+    no_verify: bool,
+    confirm_force: impl FnOnce(&str) -> bool,
+) -> Result<()> {
     let args = build_push_args(branch_name, force_with_lease, hard_force, no_verify);
 
     let output = Command::new("git").args(&args).output()?;
@@ -896,33 +912,12 @@ pub fn push_branch(
             )));
         }
 
-        // In interactive mode, prompt user for confirmation
-        use dialoguer::Confirm;
-        eprintln!(
-            "\n{} Remote branch '{}' has been updated since your last fetch.",
-            console::style("Warning:").yellow().bold(),
-            branch_name
-        );
-        eprintln!("This could mean someone else has pushed changes to this branch.");
-        eprintln!();
-
-        let should_force = Confirm::new()
-            .with_prompt(format!(
-                "Do you want to force-push and overwrite remote changes on '{}'?",
-                branch_name
-            ))
-            .default(false)
-            .interact()
-            .unwrap_or(false);
-
-        if !should_force {
+        if !confirm_force(branch_name) {
             return Err(GgError::Other(
                 "Push cancelled. Run 'git fetch origin' to update your local state.".to_string(),
             ));
         }
 
-        // User confirmed, proceed with force push
-        eprintln!("{}", console::style("Force-pushing...").dim());
         let retry_args = build_push_args(branch_name, false, true, no_verify);
         return run_git_command(&retry_args).map(|_| ());
     }
@@ -935,6 +930,33 @@ pub fn push_branch(
         hook_error,
         git_error,
     })
+}
+
+pub(crate) fn confirm_force_push(branch_name: &str) -> bool {
+    use dialoguer::Confirm;
+
+    eprintln!(
+        "\n{} Remote branch '{}' has been updated since your last fetch.",
+        console::style("Warning:").yellow().bold(),
+        branch_name
+    );
+    eprintln!("This could mean someone else has pushed changes to this branch.");
+    eprintln!();
+
+    let should_force = Confirm::new()
+        .with_prompt(format!(
+            "Do you want to force-push and overwrite remote changes on '{}'?",
+            branch_name
+        ))
+        .default(false)
+        .interact()
+        .unwrap_or(false);
+
+    if should_force {
+        eprintln!("{}", console::style("Force-pushing...").dim());
+    }
+
+    should_force
 }
 
 /// Parse git push stderr to separate hook errors from git errors

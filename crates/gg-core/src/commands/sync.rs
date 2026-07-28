@@ -3,7 +3,8 @@
 use console::style;
 use dialoguer::Confirm;
 use git2::Repository;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use std::time::Duration;
 
 use crate::config::Config;
 use crate::error::{GgError, Result};
@@ -26,6 +27,22 @@ struct NavEntrySnapshot {
     pr_state: stack_nav::PrEntryState,
     /// Index into `json_entries` so we can attach the nav action result.
     json_index: usize,
+}
+
+fn sync_progress_bar(len: u64, draw_target: ProgressDrawTarget) -> ProgressBar {
+    let progress_bar = ProgressBar::with_draw_target(Some(len), draw_target);
+    progress_bar.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+            .unwrap()
+            .progress_chars("=>-"),
+    );
+    progress_bar.enable_steady_tick(Duration::from_millis(100));
+    progress_bar
+}
+
+fn suspend_sync_progress<R>(progress_bar: &ProgressBar, action: impl FnOnce() -> R) -> R {
+    progress_bar.suspend(action)
 }
 
 /// Format and display a push error with helpful context
@@ -445,14 +462,7 @@ pub fn run(
     let pb = if json || jsonl {
         ProgressBar::hidden()
     } else if atty::is(atty::Stream::Stderr) {
-        let pb = ProgressBar::new(entries_to_sync.len() as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-                .unwrap()
-                .progress_chars("=>-"),
-        );
-        pb
+        sync_progress_bar(entries_to_sync.len() as u64, ProgressDrawTarget::stderr())
     } else {
         ProgressBar::hidden()
     };
@@ -548,7 +558,13 @@ pub fn run(
             // Push the branch (always force-push with lease because rebases change commit SHAs)
             // This is safe because each entry branch is owned by this stack
             // If --force is passed, use hard force as an escape hatch
-            let push_result = git::push_branch(&entry_branch, true, force, no_verify);
+            let push_result = git::push_branch_with_confirmation(
+                &entry_branch,
+                true,
+                force,
+                no_verify,
+                |branch_name| suspend_sync_progress(&pb, || git::confirm_force_push(branch_name)),
+            );
             if let Err(e) = push_result {
                 pb.finish_and_clear();
                 if json || jsonl {
@@ -1552,12 +1568,109 @@ mod tests {
     use super::{
         build_pr_payload, clean_title, compute_target_branch, description_with_replacement_note,
         ensure_draft_prefix_for_gitlab, is_wip_or_draft_prefix, mismatched_pr_head_branch,
-        replacement_closing_comment,
+        replacement_closing_comment, suspend_sync_progress, sync_progress_bar,
     };
     use crate::git;
     use crate::output::{
         SyncEntryResultJson, SyncMetadataJson, SyncResponse, SyncResultJson, OUTPUT_VERSION,
     };
+    use indicatif::{ProgressDrawTarget, TermLike};
+    use std::io;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    #[derive(Debug)]
+    struct FlushCountingTerm {
+        flush_count: Arc<AtomicUsize>,
+    }
+
+    impl TermLike for FlushCountingTerm {
+        fn width(&self) -> u16 {
+            80
+        }
+
+        fn move_cursor_up(&self, _n: usize) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn move_cursor_down(&self, _n: usize) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn move_cursor_right(&self, _n: usize) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn move_cursor_left(&self, _n: usize) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn write_line(&self, _s: &str) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn write_str(&self, _s: &str) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn clear_line(&self) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn flush(&self) -> io::Result<()> {
+            self.flush_count.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn sync_progress_bar_keeps_rendering_without_progress_updates() {
+        let flush_count = Arc::new(AtomicUsize::new(0));
+        let draw_target = ProgressDrawTarget::term_like(Box::new(FlushCountingTerm {
+            flush_count: flush_count.clone(),
+        }));
+        let progress_bar = sync_progress_bar(1, draw_target);
+        progress_bar.set_message("Processing abc1234...");
+        let initial_flush_count = flush_count.load(Ordering::Relaxed);
+        let deadline = Instant::now() + Duration::from_secs(1);
+
+        while flush_count.load(Ordering::Relaxed) == initial_flush_count
+            && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let redrew_while_idle = flush_count.load(Ordering::Relaxed) > initial_flush_count;
+        progress_bar.finish_and_clear();
+        assert!(
+            redrew_while_idle,
+            "the spinner did not redraw while sync work was idle"
+        );
+    }
+
+    #[test]
+    fn sync_progress_bar_pauses_rendering_during_interactive_output() {
+        let flush_count = Arc::new(AtomicUsize::new(0));
+        let draw_target = ProgressDrawTarget::term_like(Box::new(FlushCountingTerm {
+            flush_count: flush_count.clone(),
+        }));
+        let progress_bar = sync_progress_bar(1, draw_target);
+        progress_bar.set_message("Processing abc1234...");
+
+        let flushes_while_suspended = suspend_sync_progress(&progress_bar, || {
+            let initial_flush_count = flush_count.load(Ordering::Relaxed);
+            thread::sleep(Duration::from_millis(250));
+            flush_count.load(Ordering::Relaxed) - initial_flush_count
+        });
+
+        progress_bar.finish_and_clear();
+        assert_eq!(
+            flushes_while_suspended, 0,
+            "the spinner redrew while interactive output owned the terminal"
+        );
+    }
 
     #[test]
     fn test_get_remote_branch_oid() {

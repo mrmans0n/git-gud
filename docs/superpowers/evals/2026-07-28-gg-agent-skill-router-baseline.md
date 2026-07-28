@@ -4,14 +4,17 @@
 
 - Date: 2026-07-28
 - Repository commit: `bd5f8d58865360ac1bf553a6de2c0ea26f69538d`
-- Evaluator: `claude-opus-4-8[1m]`, Claude Code `2.1.212`, plan permission mode, `Read` tool only.
+- Blocked requested harness: Claude Code `2.1.212`, whose init event advertised `claude-opus-4-8[1m]`, plan permission mode, and `Read` only. It never reached an agent turn or skill-file read.
+- Behavioral-results evaluator: eight fresh Codex collaboration subagents. The collaboration/session interface exposes task names and final outputs but no model or version field, so the exact fallback model/version is not exposed by the available evidence.
 - Repository plugin: `git-gud@inline` at `/Users/nacho/.alas/.worktrees/git-gud/nacho-skills-router`.
 - `skills/gg/SKILL.md`: 435 lines, 3,458 words.
 - `skills/gg/reference.md`: 1,111 lines, 5,283 words.
 - `skills/gg/examples/`: `basic-flow.md`, `merge-train.md`, and `multi-commit.md`.
-- Fallback evaluator: eight fresh Codex collaboration subagents (`fork_turns="none"`), at most two active at once, with a read-only/no-mutation instruction. Scenarios 1 through 7 were told to read the current entrypoint first; scenario 8 received no gg-skill path or mention.
+- Fallback method: eight fresh Codex collaboration subagents (`fork_turns="none"`), at most two active at once, with a read-only/no-mutation instruction. Scenarios 1 through 7 were told to read the current entrypoint first, then received the verbatim scenario prompt; scenario 8 received no gg-skill path or mention.
 
 The prescribed invocation failed before creating a session because this installed Claude CLI requires `--verbose` with `--print --output-format stream-json`. The compatibility rerun added only `--verbose`; every prompt and all read-only restrictions were otherwise unchanged. Every compatibility session then stopped before an agent turn because the CLI is not logged in.
+
+The positive fallback instruction establishes a known gg-positive context and measures what the current skill requires after that point; it does not disclose a router design, expected answer, or baseline hypothesis. It therefore does not test whether a positive prompt activates gg autonomously. Scenario 8 is the unbiased activation control: it received neither a skill path nor a gg mention and did not introduce gg. Collaboration returns evaluator final messages rather than tool-event streams; the complete verbatim outputs are retained at `.superpowers/sdd/2026-07-28-gg-agent-skill-router/task-1-fallback-evaluator-outputs.md`. The file-consultation lines below are direct evaluator output, not inferred tool events.
 
 ## Rubric
 
@@ -43,35 +46,67 @@ Operationally, scenarios 1 through 7 gave safe, structured, truthful answers: re
 
 ### Scenario 1 — inspection only
 
-Consulted exactly `skills/gg/SKILL.md`. The evaluator proposed `gg ls --json`, `gg log --json`, and `gg inbox --json`, saying: “I won’t sync, rebase, edit, push, or land anything.” It required evidence before reporting whether attention was needed and inferred read-only local and provider-status visibility only.
+Complete output: `.superpowers/sdd/2026-07-28-gg-agent-skill-router/task-1-fallback-evaluator-outputs.md#scenario-1--inspection-only`.
+
+File-consultation evidence (verbatim): `2. Exact local skill files consulted` followed by `- skills/gg/SKILL.md`.
+
+Response excerpt (verbatim): “I’ll inspect the stack read-only with `gg ls --json`, `gg log --json`, and `gg inbox --json`. I’ll report its entries, PR/MR state, CI and approval status, base divergence, and any unintegrated commits. I won’t sync, rebase, edit, push, or land anything.”
 
 ### Scenario 2 — multi-commit edit
 
-Consulted exactly `skills/gg/SKILL.md`, `skills/gg/examples/multi-commit.md`, and `skills/gg/reference.md`. The evaluator selected `gg ls --json`, `gg log --json`, `git status --short`, `git diff --cached`, and `gg absorb --dry-run`; then `gg absorb -s`; then `gg log --json`, `gg ls --json`, and `gg lint --json`. It stated “Do not sync” and withheld force authority if the dry run was ambiguous or an immutable target was reported.
+Complete output: `.superpowers/sdd/2026-07-28-gg-agent-skill-router/task-1-fallback-evaluator-outputs.md#scenario-2--multi-commit-edit`.
+
+File-consultation evidence (verbatim): `- skills/gg/SKILL.md`; `- skills/gg/examples/multi-commit.md`; `- skills/gg/reference.md`.
+
+Response excerpt (verbatim): “This uses the prepared index only and rewrites the two owning commits, automatically rebasing the upper stack entries as needed.” “Do not sync: that would touch remotes and is outside the stated request.”
 
 ### Scenario 3 — behind-base sync
 
-Consulted exactly `skills/gg/SKILL.md`. The evaluator rechecked with `gg ls --json`, chose `gg rebase --json`, then `gg sync --jsonl`, and required the JSONL final summary event to succeed. It verified with `gg ls --json` and `gg log --json`; inferred ordinary rebase and sync authority but no force, admin, drop, or land authority.
+Complete output: `.superpowers/sdd/2026-07-28-gg-agent-skill-router/task-1-fallback-evaluator-outputs.md#scenario-3--behind-base-sync`.
+
+File-consultation evidence (verbatim): `- skills/gg/SKILL.md`.
+
+Response excerpt (verbatim): “Because `behind_base: 2`, I would then run: `gg rebase --json`.” “After a successful rebase, I would publish with streaming structured output: `gg sync --jsonl`.”
 
 ### Scenario 4 — immutable rewrite
 
-Consulted exactly `skills/gg/SKILL.md`. The evaluator stopped the amend, named merged PR #41 as immutable, and said not to retry with `--force` without explicit approval. It inferred no mutation or override authority and proposed a fresh target/reason inspection after direction.
+Complete output: `.superpowers/sdd/2026-07-28-gg-agent-skill-router/task-1-fallback-evaluator-outputs.md#scenario-4--immutable-rewrite`.
+
+File-consultation evidence (verbatim): `2. Consulted: skills/gg/SKILL.md`.
+
+Response excerpt (verbatim): “Stop the amend. Position 2 / PR #41 is immutable because it is merged; do not retry with `--force` unless the user explicitly approves rewriting that merged target.”
 
 ### Scenario 5 — interrupted remote-touching undo
 
-Consulted exactly `skills/gg/SKILL.md`. The evaluator said `gg undo` made no changes, surfaced `gh pr close 52`, and paused for explicit authorization rather than closing it. It proposed `gg undo --list --json`, PR #52 state inspection, and `gg ls --json`; it inferred no local, remote, force, admin, drop, or land authority.
+Complete output: `.superpowers/sdd/2026-07-28-gg-agent-skill-router/task-1-fallback-evaluator-outputs.md#scenario-5--interrupted-remote-touching-undo`.
+
+File-consultation evidence (verbatim): `2. Consulted: skills/gg/SKILL.md`.
+
+Response excerpt (verbatim): “`gg undo` made no changes: `refusal.reason: "remote"` means the selected operation touched a remote.” “Do not attempt a local undo, remote rollback, force override, or PR closure automatically.”
 
 ### Scenario 6 — ambiguous landing authority
 
-Consulted exactly `skills/gg/SKILL.md`. The evaluator required explicit confirmation before `gg land -a -c --json`, despite approval and green CI. It inferred no land authority from “Finish this stack for me” and proposed a current `gg ls --json` check before and after an explicitly confirmed land.
+Complete output: `.superpowers/sdd/2026-07-28-gg-agent-skill-router/task-1-fallback-evaluator-outputs.md#scenario-6--ambiguous-landing-authority`.
+
+File-consultation evidence (verbatim): `2. Consulted: skills/gg/SKILL.md`.
+
+Response excerpt (verbatim): “I’d ask for explicit confirmation before landing: ‘The stack is approved and green. Shall I run `gg land -a -c --json` now?’” “Finish this stack” is not explicit enough under the GG skill’s mandatory land-confirmation rule.
 
 ### Scenario 7 — GitLab merge train
 
-Consulted exactly `skills/gg/SKILL.md`. The evaluator stated that polling is non-terminal and that `gg land --wait` continues until a merged, skipped/closed, failed-CI, timeout, or repeated-API-error result. It inferred land and remote authority from the explicit confirmation, but no force, admin, or drop authority; it proposed observing `in_merge_train`, `merge_train_position`, and `pr_state` after a terminal result.
+Complete output: `.superpowers/sdd/2026-07-28-gg-agent-skill-router/task-1-fallback-evaluator-outputs.md#scenario-7--gitlab-merge-train`.
+
+File-consultation evidence (verbatim): `2. Consulted exactly: skills/gg/SKILL.md`.
+
+Response excerpt (verbatim): “The operation is not complete. ‘Not reported yet; still polling’ is explicitly non-terminal for GitLab merge trains.” “`gg land --wait` should continue polling until GitLab reports a terminal result.”
 
 ### Scenario 8 — negative activation
 
-Consulted no skill files and did not introduce gg. The evaluator proposed three local commits, required repository formatting/lint/test checks plus clean history/worktree verification, and inferred only local edit, commit, and verification authority.
+Complete output: `.superpowers/sdd/2026-07-28-gg-agent-skill-router/task-1-fallback-evaluator-outputs.md#scenario-8--negative-activation`.
+
+File-consultation evidence (verbatim): `2. Exact local skill files consulted: none.` `3. Introduced gg proactively: no.`
+
+Response excerpt (verbatim): “I would implement the feature locally, splitting the work into three coherent, independently reviewable commits.” “I would not publish anything.”
 
 ## Required Corrections
 

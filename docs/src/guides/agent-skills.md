@@ -126,8 +126,6 @@ For the compact router and phase-specific operational guidance:
 ## File structure
 
 ```
-.claude-plugin/
-  plugin.json           # Plugin manifest
 skills/
   gg/
     SKILL.md

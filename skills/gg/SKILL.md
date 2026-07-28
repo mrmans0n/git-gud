@@ -1,6 +1,6 @@
 ---
 name: gg
-description: Use when a user asks to use git-gud (gg), stacked diffs, stacked PRs or MRs, or when operating in a repository already managed as a gg stack.
+description: Use when a user explicitly asks to use git-gud (gg), the exact terms stacked diffs, stacked PRs, or stacked MRs, or when operating in a repository already managed as a gg stack.
 ---
 
 # Operating gg

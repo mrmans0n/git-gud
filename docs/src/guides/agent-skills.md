@@ -10,11 +10,18 @@ The integration provides one unified skill:
 |-------|-------------|
 | `gg` | Use gg with GitHub PRs (`gh` CLI) or GitLab MRs (`glab` CLI, merge trains) |
 
+The `gg` skill is a compact, CLI-first intent router. It keeps the agent's
+authority and safety boundaries close at hand, then routes each goal to only
+the operational guidance needed for that phase.
+
 Each skill includes:
 
-- **SKILL.md** — concise instructions with agent operating rules
-- **reference.md** — command reference and JSON schemas
-- **examples/** — step-by-step workflow walkthroughs
+- **SKILL.md** — compact CLI-first intent router, agent rules, and safety boundaries
+- **references/** — phase-specific operational guidance loaded on demand
+
+CLI help (`gg <command> --help`) is the source of truth for installed flags.
+For exhaustive user documentation and command examples, use the [mdBook command
+pages](../commands/README.md).
 
 ## Installation
 
@@ -97,7 +104,9 @@ For machine-readable parsing, `gg` supports `--json` on key commands:
 - `gg clean --json`
 - `gg lint --json`
 
-Use these outputs in agents and automation for reliable state checks and decisions. For full response schemas, see each skill's `reference.md`.
+Use these outputs in agents and automation for reliable state checks and decisions.
+Use CLI help and the [mdBook command pages](../commands/README.md) for complete
+user-facing command documentation.
 
 ## Safety model (required behavior)
 
@@ -110,7 +119,7 @@ When using AI agents with `gg`, keep these rules:
 
 ## Skill references
 
-For full operational details, prompts, and examples:
+For the compact router and phase-specific operational guidance:
 
 - Unified skill: [`skills/gg/SKILL.md`](https://github.com/mrmans0n/git-gud/blob/main/skills/gg/SKILL.md)
 
@@ -121,10 +130,12 @@ For full operational details, prompts, and examples:
   plugin.json           # Plugin manifest
 skills/
   gg/
-    SKILL.md            # Unified GitHub + GitLab skill
-    reference.md        # Command reference + JSON schemas
-    examples/
-      basic-flow.md     # Provider-agnostic feature workflow
-      multi-commit.md   # Absorb, reorder, lint
-      merge-train.md    # GitLab merge train workflow
+    SKILL.md
+    references/
+      setup-and-inspection.md
+      editing-stacks.md
+      syncing-and-reviews.md
+      landing-and-cleanup.md
+      recovery.md
+      native-clients.md
 ```

@@ -35,9 +35,9 @@ fn gg_skill_is_a_compact_goal_router() {
     );
     assert!(
         skill.starts_with(
-            "---\nname: gg\ndescription: Use when a user asks to use git-gud (gg), \
-stacked diffs, stacked PRs or MRs, or when operating in a repository already \
-managed as a gg stack.\n---\n"
+            "---\nname: gg\ndescription: Use when a user explicitly asks to use git-gud (gg), \
+the exact terms stacked diffs, stacked PRs, or stacked MRs, or when operating \
+in a repository already managed as a gg stack.\n---\n"
         ),
         "frontmatter must preserve the approved activation boundary"
     );

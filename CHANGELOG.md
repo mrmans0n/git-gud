@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.11] - 2026-07-29
+
+### Fixed
+- `gg sync` keeps its progress spinner moving during sync work (#402).
+
+### Changed
+- Agent skill routing now selects `gg` workflows by user intent instead of requiring exact command names (#412).
+- Updated dependencies including `clap`, `clap_complete`, `schemars`, and `skim` (#396, #397, #398, #399, #400, #401).
+
 ## [0.9.10] - 2026-07-21
 
 ### Added
@@ -528,7 +537,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.9.10...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.9.11...HEAD
+[0.9.11]: https://github.com/mrmans0n/git-gud/compare/v0.9.10...v0.9.11
 [0.9.10]: https://github.com/mrmans0n/git-gud/compare/v0.9.9...v0.9.10
 [0.9.9]: https://github.com/mrmans0n/git-gud/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/mrmans0n/git-gud/compare/v0.9.7...v0.9.8

@@ -97,8 +97,13 @@ docs/
 skills/
 └── gg/                      # Unified agent skill (GitHub + GitLab)
     ├── SKILL.md             # Core instructions + agent rules
-    ├── reference.md         # Command reference + JSON schemas
-    └── examples/            # Workflow walkthroughs
+    └── references/          # Goal-routed operational workflows
+        ├── setup-and-inspection.md
+        ├── editing-stacks.md
+        ├── syncing-and-reviews.md
+        ├── landing-and-cleanup.md
+        ├── recovery.md
+        └── native-clients.md
 ```
 
 ## Key Concepts
@@ -202,7 +207,9 @@ This applies to all PRs, including those created by subagents.
 
 ## Documentation & Agent Skills
 
-**All user-facing changes MUST update documentation and skills:**
+**All user-facing changes MUST update the relevant documentation.** Update the
+agent skill only when the change affects agent decisions, safety boundaries, or
+multi-command workflows.
 
 ### Documentation (`docs/`)
 
@@ -218,14 +225,25 @@ The docs should read as a guide, not a parameter dump. Explain *what you can do*
 
 There is a single unified agent skill at `skills/gg/` that covers both GitHub and GitLab workflows. It is also published as a Claude Code plugin (manifest at `.claude-plugin/plugin.json`).
 
-When making changes that affect features, commands, flags, or JSON output:
+The unified `gg` skill is an operational router, not a duplicate command
+manual. Update it only when agent decisions, safety boundaries, or
+multi-command workflows change.
 
-- Update `skills/gg/SKILL.md` — core workflow instructions and agent operating rules
-- Update `skills/gg/reference.md` — command reference and JSON schemas
-- Update examples in `skills/gg/examples/` if the workflow changes
-- GitLab-specific features go in the dedicated "GitLab-specific" section of SKILL.md
+- New/renamed flags: update Clap help and mdBook; no skill change by default.
+- Agent-wide authority or routing changes: update `skills/gg/SKILL.md`.
+- Phase-specific workflow changes: update only the owning file in
+  `skills/gg/references/`.
+- JSON fields: update the skill only when an agent decision depends on them.
+- Native-client protocols: update `skills/gg/references/native-clients.md`.
+- Human tutorials and exhaustive command examples: update mdBook, not the
+  skill.
 
-The skill is provider-agnostic by default. GitLab-specific behavior (merge trains, `--auto-merge`, `glab` commands) is documented in dedicated sections rather than in a separate skill.
+Keep references one hop from `SKILL.md` and avoid duplicating complete flag
+catalogs or JSON schemas.
+
+The skill is provider-agnostic by default. GitLab-specific behavior (merge
+trains, `--auto-merge`, and `glab` commands) belongs in the owning syncing,
+landing, or native-client reference.
 
 ### README.md
 

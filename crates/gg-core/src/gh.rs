@@ -336,7 +336,7 @@ fn aggregate_status_checks(checks: &[GhStatusCheck]) -> Option<CiStatus> {
                 "FAILURE" | "FAILED" | "TIMED_OUT" | "ACTION_REQUIRED" | "ERROR"
                 | "STARTUP_FAILURE" => return Some(CiStatus::Failed),
                 "CANCELLED" | "CANCELED" => has_canceled = true,
-                "PENDING" | "QUEUED" | "IN_PROGRESS" => has_pending = true,
+                "EXPECTED" | "PENDING" | "QUEUED" | "IN_PROGRESS" => has_pending = true,
                 "SUCCESS" | "NEUTRAL" | "SKIPPED" => has_success = true,
                 _ => {}
             }
@@ -935,6 +935,7 @@ mod tests {
                 r#"[{"status":"IN_PROGRESS","conclusion":null}]"#,
                 CiStatus::Pending,
             ),
+            (r#"[{"state":"EXPECTED"}]"#, CiStatus::Pending),
             (
                 r#"[{"status":"COMPLETED","state":"ERROR"}]"#,
                 CiStatus::Failed,

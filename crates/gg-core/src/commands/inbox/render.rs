@@ -126,6 +126,10 @@ fn format_row_message(
     state: InboxRowState<'_>,
 ) -> String {
     let number_prefix = if provider_label == "MR" { "!" } else { "#" };
+    let title = sanitize_human_diagnostic(&candidate.title)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     let status = match state {
         InboxRowState::Refreshing => "refreshing".to_string(),
         InboxRowState::Bucket(bucket) => bucket_label(bucket).to_string(),
@@ -147,7 +151,7 @@ fn format_row_message(
         candidate.stack_name,
         candidate.position,
         candidate.short_sha,
-        candidate.title,
+        title,
         provider_label,
         number_prefix,
         candidate.pr_number,
@@ -340,6 +344,15 @@ mod tests {
 
         assert!(!message.chars().any(char::is_control));
         assert!(message.contains("refresh failed: failure: [31mred"));
+    }
+
+    #[test]
+    fn row_messages_neutralize_terminal_control_characters_in_titles() {
+        let candidate = candidate(0, "alpha", "aaaaaaa", "Apply \u{1b}[2Jupdate\r\nnow");
+        let message = format_row_message(&candidate, "PR", InboxRowState::Refreshing);
+
+        assert!(!message.chars().any(char::is_control));
+        assert!(message.contains("Apply [2Jupdate now"));
     }
 
     #[test]

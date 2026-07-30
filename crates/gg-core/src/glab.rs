@@ -433,6 +433,7 @@ fn parse_inbox_mr_details(bytes: &[u8]) -> Result<InboxMrDetails> {
             .as_deref()
         {
             Some("success") => CiStatus::Success,
+            Some("skipped") => CiStatus::Success,
             Some("failed") => CiStatus::Failed,
             Some("pending")
             | Some("created")
@@ -1901,6 +1902,7 @@ mod tests {
             (r#"{"status":"failed"}"#, Some(CiStatus::Failed)),
             (r#"{"status":"pending"}"#, Some(CiStatus::Pending)),
             (r#"{"status":"canceled"}"#, Some(CiStatus::Canceled)),
+            (r#"{"status":"skipped"}"#, Some(CiStatus::Success)),
             ("null", None),
             (r#"{"status":"created"}"#, Some(CiStatus::Pending)),
             (r#"{"status":"preparing"}"#, Some(CiStatus::Pending)),

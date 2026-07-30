@@ -333,7 +333,7 @@ fn aggregate_status_checks(checks: &[GhStatusCheck]) -> Option<CiStatus> {
             .flatten()
         {
             match value {
-                "FAILURE" | "FAILED" | "TIMED_OUT" | "ACTION_REQUIRED" | "ERROR"
+                "FAILURE" | "FAILED" | "TIMED_OUT" | "ACTION_REQUIRED" | "ERROR" | "STALE"
                 | "STARTUP_FAILURE" => return Some(CiStatus::Failed),
                 "CANCELLED" | "CANCELED" => has_canceled = true,
                 "EXPECTED" | "PENDING" | "QUEUED" | "IN_PROGRESS" => has_pending = true,
@@ -946,7 +946,7 @@ mod tests {
             ),
             (
                 r#"[{"status":"COMPLETED","conclusion":"STALE"}]"#,
-                CiStatus::Unknown,
+                CiStatus::Failed,
             ),
         ];
 

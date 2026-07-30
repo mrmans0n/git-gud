@@ -307,7 +307,7 @@ fn parse_inbox_snapshot(bytes: &[u8]) -> Result<InboxPrSnapshot> {
     Ok(InboxPrSnapshot {
         state,
         url: pr_json.url,
-        approved: pr_json.review_decision.as_deref() == Some("APPROVED"),
+        approved: matches!(pr_json.review_decision.as_deref(), Some("APPROVED") | None),
         changes_requested: pr_json.review_decision.as_deref() == Some("CHANGES_REQUESTED"),
         mergeable: pr_json.mergeable.as_deref() == Some("MERGEABLE"),
         ci_status: aggregate_status_checks(&pr_json.status_check_rollup),
@@ -901,6 +901,24 @@ mod tests {
         let snapshot = parse_inbox_snapshot(json).unwrap();
         assert!(snapshot.changes_requested);
         assert_eq!(snapshot.ci_status, None);
+    }
+
+    #[test]
+    fn inbox_snapshot_treats_null_review_decision_as_no_review_required() {
+        let json = br#"{
+            "number": 44,
+            "title": "No required reviews",
+            "state": "OPEN",
+            "url": "https://github.com/acme/app/pull/44",
+            "isDraft": false,
+            "mergeable": "MERGEABLE",
+            "reviewDecision": null,
+            "statusCheckRollup": []
+        }"#;
+
+        let snapshot = parse_inbox_snapshot(json).unwrap();
+        assert!(snapshot.approved);
+        assert!(!snapshot.changes_requested);
     }
 
     #[test]

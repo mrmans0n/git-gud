@@ -434,7 +434,12 @@ fn parse_inbox_mr_details(bytes: &[u8]) -> Result<InboxMrDetails> {
         {
             Some("success") => CiStatus::Success,
             Some("failed") => CiStatus::Failed,
-            Some("pending") => CiStatus::Pending,
+            Some("pending")
+            | Some("created")
+            | Some("preparing")
+            | Some("waiting_for_resource")
+            | Some("scheduled")
+            | Some("manual") => CiStatus::Pending,
             Some("running") => CiStatus::Running,
             Some("canceled") | Some("cancelled") => CiStatus::Canceled,
             _ => CiStatus::Unknown,
@@ -1897,10 +1902,14 @@ mod tests {
             (r#"{"status":"pending"}"#, Some(CiStatus::Pending)),
             (r#"{"status":"canceled"}"#, Some(CiStatus::Canceled)),
             ("null", None),
+            (r#"{"status":"created"}"#, Some(CiStatus::Pending)),
+            (r#"{"status":"preparing"}"#, Some(CiStatus::Pending)),
             (
                 r#"{"status":"waiting_for_resource"}"#,
-                Some(CiStatus::Unknown),
+                Some(CiStatus::Pending),
             ),
+            (r#"{"status":"scheduled"}"#, Some(CiStatus::Pending)),
+            (r#"{"status":"manual"}"#, Some(CiStatus::Pending)),
         ];
 
         for (pipeline, expected) in cases {

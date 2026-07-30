@@ -611,9 +611,17 @@ fn test_gg_inbox_jsonl_refresh_failure_emits_entry_error_and_summary() {
 
 #[test]
 fn test_gg_inbox_human_uses_gitlab_mr_label() {
-    let (_temp_dir, repo_path) = create_repo_with_inbox_item("gitlab", 42);
+    let (temp_dir, repo_path) = create_repo_with_inbox_item("gitlab", 42);
+    let (fake_bin, log_path) = write_fake_glab(&temp_dir, false);
 
-    let (success, stdout, stderr) = run_gg(&repo_path, &["inbox"]);
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["inbox"],
+        &[
+            ("PATH", fake_bin.as_os_str()),
+            ("GG_FAKE_LOG", log_path.as_os_str()),
+        ],
+    );
     assert!(success, "gg inbox failed: {}", stderr);
 
     assert!(

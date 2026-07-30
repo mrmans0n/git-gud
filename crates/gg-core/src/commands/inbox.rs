@@ -588,6 +588,19 @@ fn emit_streaming_summary(
     );
 }
 
+fn sanitize_human_diagnostic(message: &str) -> String {
+    message
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
 fn print_human_output(items: &[InboxItem], stack_errors: &[StackLoadError]) {
     if items.is_empty() {
         println!(
@@ -654,9 +667,15 @@ fn print_human_output(items: &[InboxItem], stack_errors: &[StackLoadError]) {
                 Some(CiStatus::Failed) => " ✗",
                 _ => "",
             };
+            let refresh_diagnostic = item
+                .refresh_error
+                .as_deref()
+                .map(sanitize_human_diagnostic)
+                .map(|error| format!(" — {error}"))
+                .unwrap_or_default();
 
             println!(
-                "  {} {}  {}  {}  {} {}{}{}",
+                "  {} {}  {}  {}  {} {}{}{}{}",
                 style(format!("{} #{}", item.stack_name, item.position)).dim(),
                 style(&item.short_sha).dim(),
                 item.title,
@@ -665,6 +684,7 @@ fn print_human_output(items: &[InboxItem], stack_errors: &[StackLoadError]) {
                 item.mr_number_prefix,
                 item.mr_number,
                 ci_icon,
+                refresh_diagnostic,
             );
         }
         println!();
@@ -921,6 +941,33 @@ mod tests {
     }
 
     #[test]
+    fn human_diagnostic_preserves_ordinary_text() {
+        assert_eq!(
+            sanitize_human_diagnostic("Failed to check approvals for MR !42"),
+            "Failed to check approvals for MR !42"
+        );
+    }
+
+    #[test]
+    fn human_diagnostic_neutralizes_embedded_newlines() {
+        let sanitized = sanitize_human_diagnostic("first line\r\nsecond line");
+
+        assert!(!sanitized.contains('\r'));
+        assert!(!sanitized.contains('\n'));
+        assert!(sanitized.contains("first line"));
+        assert!(sanitized.contains("second line"));
+    }
+
+    #[test]
+    fn human_diagnostic_does_not_emit_terminal_controls() {
+        let sanitized = sanitize_human_diagnostic("failure: \u{1b}[31mred\u{7}");
+
+        assert!(!sanitized.chars().any(char::is_control));
+        assert!(sanitized.contains("failure:"));
+        assert!(sanitized.contains("red"));
+    }
+
+    #[test]
     fn missing_completion_is_an_internal_error() {
         let error =
             items_from_completions(vec![Some(completion(candidate(0))), None], Provider::GitHub)
@@ -999,6 +1046,12 @@ mod tests {
             false,
             false,
         );
+        assert_eq!(bucket(&input), Some(ActionBucket::AwaitingReview));
+    }
+
+    #[test]
+    fn approved_without_ci_but_not_mergeable_is_not_ready() {
+        let input = make_input(PrState::Open, None, true, false, false, false);
         assert_eq!(bucket(&input), Some(ActionBucket::AwaitingReview));
     }
 

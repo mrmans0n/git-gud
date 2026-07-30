@@ -440,11 +440,14 @@ fn parse_inbox_mr_details(bytes: &[u8]) -> Result<InboxMrDetails> {
             _ => CiStatus::Unknown,
         }
     });
+    let mergeable = state == MrState::Open
+        && !draft
+        && matches!(mr_json.detailed_merge_status.as_deref(), Some("mergeable"));
 
     Ok(InboxMrDetails {
         state: state.clone(),
         web_url: mr_json.web_url,
-        mergeable: state == MrState::Open && !draft,
+        mergeable,
         changes_requested: false,
         ci_status,
     })
@@ -1845,6 +1848,45 @@ mod tests {
         let details = parse_inbox_mr_details(json).unwrap();
         assert_eq!(details.state, MrState::Open);
         assert_eq!(details.ci_status, Some(CiStatus::Running));
+    }
+
+    #[test]
+    fn inbox_snapshot_mergeability_requires_mergeable_detailed_status() {
+        let json = br#"{
+            "iid": 54,
+            "title": "Ready",
+            "state": "opened",
+            "web_url": "https://gitlab.com/acme/app/-/merge_requests/54",
+            "draft": false,
+            "detailed_merge_status": "mergeable"
+        }"#;
+
+        let details = parse_inbox_mr_details(json).unwrap();
+
+        assert!(details.mergeable);
+    }
+
+    #[test]
+    fn inbox_snapshot_mergeability_rejects_blocked_or_missing_detailed_status() {
+        for detailed_status in [r#","detailed_merge_status":"conflict""#, ""] {
+            let json = format!(
+                r#"{{
+                    "iid": 55,
+                    "title": "Blocked",
+                    "state": "opened",
+                    "web_url": "https://gitlab.com/acme/app/-/merge_requests/55",
+                    "draft": false
+                    {detailed_status}
+                }}"#
+            );
+
+            let details = parse_inbox_mr_details(json.as_bytes()).unwrap();
+
+            assert!(
+                !details.mergeable,
+                "status fragment {detailed_status:?} must not be mergeable"
+            );
+        }
     }
 
     #[test]

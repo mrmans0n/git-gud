@@ -11,11 +11,19 @@ use crate::error::GgError;
 use crate::error::Result;
 use crate::git;
 use crate::output::{
-    print_json, InboxBucketsJson, InboxEntryJson, InboxResponse, InboxStackErrorJson,
+    print_json, InboxBucketsJson, InboxCandidateJson, InboxEntryJson, InboxResponse,
+    InboxStackErrorJson, InboxStreamingEvent, InboxStreamingResponse, StreamingJson,
     OUTPUT_VERSION,
 };
 use crate::provider::{CiStatus, InboxSnapshot, PrState, Provider};
 use crate::stack;
+
+#[derive(Debug, Clone, Copy)]
+pub struct InboxOptions {
+    pub all: bool,
+    pub json: bool,
+    pub jsonl: bool,
+}
 
 /// Action bucket for triage classification.
 ///
@@ -214,6 +222,20 @@ impl InboxItem {
             behind_base: self.behind_base.is_some(),
         })
     }
+
+    fn to_json(&self) -> InboxEntryJson {
+        InboxEntryJson {
+            stack_name: self.stack_name.clone(),
+            position: self.position,
+            sha: self.short_sha.clone(),
+            title: self.title.clone(),
+            pr_number: self.mr_number,
+            pr_url: self.mr_url.clone(),
+            ci_status: self.ci_status.as_ref().map(ci_status_str),
+            behind_base: self.behind_base,
+            refresh_error: self.refresh_error.clone(),
+        }
+    }
 }
 
 fn items_from_completions(
@@ -246,6 +268,19 @@ pub(super) struct InboxCandidate {
     pub title: String,
     pub pr_number: u64,
     pub behind_base: Option<usize>,
+}
+
+impl InboxCandidate {
+    fn to_json(&self) -> InboxCandidateJson {
+        InboxCandidateJson {
+            stack_name: self.stack_name.clone(),
+            position: self.position,
+            sha: self.short_sha.clone(),
+            title: self.title.clone(),
+            pr_number: self.pr_number,
+            behind_base: self.behind_base,
+        }
+    }
 }
 
 pub(super) struct InboxDiscovery {
@@ -370,13 +405,35 @@ fn discover_candidates(repo: &git2::Repository, config: &Config) -> Result<Inbox
 }
 
 /// Run the inbox command.
-pub fn run(all: bool, json: bool) -> Result<()> {
+pub fn run(options: InboxOptions) -> Result<()> {
     let repo = git::open_repo()?;
     let config = Config::load_with_global(repo.commondir())?;
     let discovery = discover_candidates(&repo, &config)?;
+    let mut streaming = options.jsonl.then(StreamingJson::new);
+
+    if let Some(streaming) = streaming.as_mut() {
+        emit_streaming_event(
+            streaming,
+            InboxStreamingEvent::Start {
+                total_candidates: discovery.candidates.len(),
+                total_stack_errors: discovery.stack_errors.len(),
+            },
+        );
+        for stack_error in &discovery.stack_errors {
+            emit_streaming_event(
+                streaming,
+                InboxStreamingEvent::StackError {
+                    stack_name: stack_error.stack_name.clone(),
+                    error: stack_error.error.clone(),
+                },
+            );
+        }
+    }
 
     if discovery.candidates.is_empty() {
-        if json {
+        if let Some(streaming) = streaming.as_mut() {
+            emit_streaming_summary(streaming, &[], &discovery.stack_errors);
+        } else if options.json {
             print_json_output(&[], &discovery.stack_errors);
         } else {
             print_human_output(&[], &discovery.stack_errors);
@@ -387,7 +444,7 @@ pub fn run(all: bool, json: bool) -> Result<()> {
     let provider = Provider::detect(&repo)?;
     provider.check_installed()?;
 
-    if !json {
+    if !options.json && !options.jsonl {
         eprint!(
             "{}",
             style(format!("Refreshing {} status...", provider.pr_label())).dim()
@@ -396,6 +453,7 @@ pub fn run(all: bool, json: bool) -> Result<()> {
 
     let mut completions: Vec<Option<InboxCompletion>> =
         (0..discovery.candidates.len()).map(|_| None).collect();
+    let mut completed = 0;
     refresh_candidates(
         &discovery.candidates,
         |candidate| {
@@ -404,13 +462,26 @@ pub fn run(all: bool, json: bool) -> Result<()> {
                 .map_err(|error| error.to_string())
         },
         |completion| {
+            completed += 1;
+            if let Some(streaming) = streaming.as_mut() {
+                emit_streaming_event(
+                    streaming,
+                    streaming_event_for_completion(
+                        &completion,
+                        provider,
+                        completed,
+                        discovery.candidates.len(),
+                        options.all,
+                    ),
+                );
+            }
             let index = completion.candidate.discovery_index;
             completions[index] = Some(completion);
         },
     );
     let mut items = items_from_completions(completions, provider)?;
 
-    if !json {
+    if !options.json && !options.jsonl {
         eprintln!(" {}", style("done").green());
     }
 
@@ -418,17 +489,80 @@ pub fn run(all: bool, json: bool) -> Result<()> {
     items.retain(|item| item.bucket().is_some());
 
     // Filter out merged unless --all
-    if !all {
+    if !options.all {
         items.retain(|item| item.bucket() != Some(ActionBucket::Merged));
     }
 
-    if json {
+    if let Some(streaming) = streaming.as_mut() {
+        emit_streaming_summary(streaming, &items, &discovery.stack_errors);
+    } else if options.json {
         print_json_output(&items, &discovery.stack_errors);
     } else {
         print_human_output(&items, &discovery.stack_errors);
     }
 
     Ok(())
+}
+
+fn streaming_event_for_completion(
+    completion: &InboxCompletion,
+    provider: Provider,
+    completed: usize,
+    total_candidates: usize,
+    all: bool,
+) -> InboxStreamingEvent {
+    match &completion.result {
+        Ok(snapshot) => {
+            let item =
+                InboxItem::from_snapshot(completion.candidate.clone(), snapshot.clone(), provider);
+            let bucket = item.bucket();
+            let included = bucket.is_some() && (all || bucket != Some(ActionBucket::Merged));
+            InboxStreamingEvent::Entry {
+                completed,
+                total_candidates,
+                included,
+                bucket: if included {
+                    bucket.map(|bucket| action_bucket_str(bucket).to_string())
+                } else {
+                    None
+                },
+                remote_state: pr_state_str(&snapshot.state).to_string(),
+                entry: item.to_json(),
+            }
+        }
+        Err(error) => InboxStreamingEvent::EntryError {
+            completed,
+            total_candidates,
+            included: true,
+            bucket: action_bucket_str(ActionBucket::RefreshFailed).to_string(),
+            entry: completion.candidate.to_json(),
+            error: error.clone(),
+        },
+    }
+}
+
+fn emit_streaming_event(streaming: &mut StreamingJson, event: InboxStreamingEvent) {
+    streaming.emit(&InboxStreamingResponse {
+        version: OUTPUT_VERSION,
+        command: "inbox".to_string(),
+        event,
+    });
+}
+
+fn emit_streaming_summary(
+    streaming: &mut StreamingJson,
+    items: &[InboxItem],
+    stack_errors: &[StackLoadError],
+) {
+    let response = build_json_response(items, stack_errors);
+    emit_streaming_event(
+        streaming,
+        InboxStreamingEvent::Summary {
+            total_items: response.total_items,
+            buckets: response.buckets,
+            stack_errors: response.stack_errors,
+        },
+    );
 }
 
 fn print_human_output(items: &[InboxItem], stack_errors: &[StackLoadError]) {
@@ -539,6 +673,19 @@ fn bucket_label(b: ActionBucket) -> &'static str {
     }
 }
 
+fn action_bucket_str(bucket: ActionBucket) -> &'static str {
+    match bucket {
+        ActionBucket::RefreshFailed => "refresh_failed",
+        ActionBucket::ReadyToLand => "ready_to_land",
+        ActionBucket::ChangesRequested => "changes_requested",
+        ActionBucket::BlockedOnCi => "blocked_on_ci",
+        ActionBucket::AwaitingReview => "awaiting_review",
+        ActionBucket::BehindBase => "behind_base",
+        ActionBucket::Draft => "draft",
+        ActionBucket::Merged => "merged",
+    }
+}
+
 fn styled_bucket_label(b: ActionBucket) -> console::StyledObject<&'static str> {
     let label = bucket_label(b);
     match b {
@@ -553,6 +700,10 @@ fn styled_bucket_label(b: ActionBucket) -> console::StyledObject<&'static str> {
 }
 
 fn print_json_output(items: &[InboxItem], stack_errors: &[StackLoadError]) {
+    print_json(&build_json_response(items, stack_errors));
+}
+
+fn build_json_response(items: &[InboxItem], stack_errors: &[StackLoadError]) -> InboxResponse {
     let mut buckets = InboxBucketsJson {
         refresh_failed: vec![],
         ready_to_land: vec![],
@@ -565,17 +716,7 @@ fn print_json_output(items: &[InboxItem], stack_errors: &[StackLoadError]) {
     };
 
     for item in items {
-        let entry = InboxEntryJson {
-            stack_name: item.stack_name.clone(),
-            position: item.position,
-            sha: item.short_sha.clone(),
-            title: item.title.clone(),
-            pr_number: item.mr_number,
-            pr_url: item.mr_url.clone(),
-            ci_status: item.ci_status.as_ref().map(ci_status_str),
-            behind_base: item.behind_base,
-            refresh_error: item.refresh_error.clone(),
-        };
+        let entry = item.to_json();
 
         match item.bucket() {
             Some(ActionBucket::RefreshFailed) => buckets.refresh_failed.push(entry),
@@ -590,7 +731,7 @@ fn print_json_output(items: &[InboxItem], stack_errors: &[StackLoadError]) {
         }
     }
 
-    print_json(&InboxResponse {
+    InboxResponse {
         version: OUTPUT_VERSION,
         total_items: items.len(),
         buckets,
@@ -601,7 +742,7 @@ fn print_json_output(items: &[InboxItem], stack_errors: &[StackLoadError]) {
                 error: stack_error.error.clone(),
             })
             .collect(),
-    });
+    }
 }
 
 fn ci_status_str(ci: &CiStatus) -> String {
@@ -612,6 +753,15 @@ fn ci_status_str(ci: &CiStatus) -> String {
         CiStatus::Failed => "failed".to_string(),
         CiStatus::Canceled => "canceled".to_string(),
         CiStatus::Unknown => "unknown".to_string(),
+    }
+}
+
+fn pr_state_str(state: &PrState) -> &'static str {
+    match state {
+        PrState::Open => "open",
+        PrState::Merged => "merged",
+        PrState::Closed => "closed",
+        PrState::Draft => "draft",
     }
 }
 

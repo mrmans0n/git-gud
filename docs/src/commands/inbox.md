@@ -115,7 +115,8 @@ Example:
         "behind_base": 2
       }
     ]
-  }
+  },
+  "stack_errors": []
 }
 ```
 
@@ -126,8 +127,8 @@ Example:
 - `sha`: short SHA
 - `title`: commit title
 - `pr_number`: PR or MR number
-- `pr_url`: PR or MR URL
-- `ci_status`: `pending`, `running`, `success`, `failed`, `canceled`, `unknown`, or omitted
+- `pr_url`: PR or MR URL; empty for a `refresh_failed` entry when no URL was refreshed
+- `ci_status`: `pending`, `running`, `success`, `failed`, `canceled`, `unknown`, or `null`
 - `behind_base`: number of commits behind `origin/<base>`, or `null`
 - `refresh_error`: remote-refresh error text, present for entries in `refresh_failed`
 

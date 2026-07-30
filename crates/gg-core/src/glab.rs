@@ -36,6 +36,16 @@ pub struct MrInfo {
     pub detailed_merge_status: Option<String>,
 }
 
+/// The fields needed to display an MR in the review inbox.
+#[derive(Debug, Clone)]
+pub struct InboxMrDetails {
+    pub state: MrState,
+    pub web_url: String,
+    pub mergeable: bool,
+    pub changes_requested: bool,
+    pub ci_status: Option<CiStatus>,
+}
+
 /// JSON response from `glab mr view --json`
 #[derive(Debug, Deserialize)]
 struct GlabMrJson {
@@ -47,6 +57,12 @@ struct GlabMrJson {
     draft: Option<bool>,
     work_in_progress: Option<bool>,
     detailed_merge_status: Option<String>,
+    head_pipeline: Option<GlabPipelineJson>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GlabPipelineJson {
+    status: Option<String>,
 }
 
 /// Check if glab is installed
@@ -376,6 +392,64 @@ pub fn get_mr_info(mr_number: u64) -> Result<MrInfo> {
     view_mr(mr_number)
 }
 
+/// Get all inbox fields for an MR with one `glab mr view` request.
+///
+/// Approval is queried separately because GitLab exposes it from its approvals endpoint.
+pub fn get_inbox_snapshot(mr_number: u64) -> Result<(InboxMrDetails, bool)> {
+    let output = Command::new("glab")
+        .args(["mr", "view", &mr_number.to_string(), "--output", "json"])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::GlabError(format!(
+            "Failed to view MR !{}: {}",
+            mr_number, stderr
+        )));
+    }
+
+    let details = parse_inbox_mr_details(&output.stdout)?;
+    let approved = check_mr_approved_strict(mr_number)?;
+    Ok((details, approved))
+}
+
+fn parse_inbox_mr_details(bytes: &[u8]) -> Result<InboxMrDetails> {
+    let mr_json: GlabMrJson = serde_json::from_slice(bytes)
+        .map_err(|e| GgError::GlabError(format!("Failed to parse MR JSON: {}", e)))?;
+
+    let draft = mr_json.draft.unwrap_or(false) || mr_json.work_in_progress.unwrap_or(false);
+    let state = match mr_json.state.as_str() {
+        "merged" => MrState::Merged,
+        "closed" => MrState::Closed,
+        _ if draft => MrState::Draft,
+        _ => MrState::Open,
+    };
+
+    let ci_status = mr_json.head_pipeline.map(|pipeline| {
+        match pipeline
+            .status
+            .as_deref()
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("success") => CiStatus::Success,
+            Some("failed") => CiStatus::Failed,
+            Some("pending") => CiStatus::Pending,
+            Some("running") => CiStatus::Running,
+            Some("canceled") | Some("cancelled") => CiStatus::Canceled,
+            _ => CiStatus::Unknown,
+        }
+    });
+
+    Ok(InboxMrDetails {
+        state: state.clone(),
+        web_url: mr_json.web_url,
+        mergeable: state == MrState::Open && !draft,
+        changes_requested: false,
+        ci_status,
+    })
+}
+
 /// Update MR target branch
 pub fn update_mr_target(mr_number: u64, target_branch: &str) -> Result<()> {
     let output = Command::new("glab")
@@ -544,6 +618,14 @@ pub fn auto_merge_mr_when_pipeline_succeeds(
 
 /// Check approvals for an MR
 pub fn check_mr_approved(mr_number: u64) -> Result<bool> {
+    match check_mr_approved_strict(mr_number) {
+        Ok(approved) => Ok(approved),
+        Err(GgError::GlabError(_)) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn check_mr_approved_strict(mr_number: u64) -> Result<bool> {
     // Use glab api to check approvals
     // Note: We don't use --jq flag as it's not available in all glab versions
     let output = Command::new("glab")
@@ -554,21 +636,20 @@ pub fn check_mr_approved(mr_number: u64) -> Result<bool> {
         .output()?;
 
     if !output.status.success() {
-        // If the call fails, assume not approved
-        return Ok(false);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::GlabError(format!(
+            "Failed to check approvals for MR !{}: {}",
+            mr_number, stderr
+        )));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-
-    // Parse JSON and extract .approved field
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&stdout) {
-        return Ok(json
-            .get("approved")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false));
-    }
-
-    Ok(false)
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| GgError::GlabError(format!("Failed to parse MR approvals JSON: {}", e)))?;
+    Ok(json
+        .get("approved")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false))
 }
 
 /// Get CI status for an MR
@@ -1746,6 +1827,57 @@ mod tests {
             parsed.detailed_merge_status.as_deref(),
             Some("ci_still_running")
         );
+    }
+
+    #[test]
+    fn inbox_snapshot_parses_typed_pipeline_status() {
+        let json = br#"{
+            "iid": 52,
+            "title": "Add login",
+            "state": "opened",
+            "web_url": "https://gitlab.com/acme/app/-/merge_requests/52",
+            "source_branch": "nacho/auth/c-abc1234",
+            "draft": false,
+            "detailed_merge_status": "mergeable",
+            "head_pipeline": {"status": "running"}
+        }"#;
+
+        let details = parse_inbox_mr_details(json).unwrap();
+        assert_eq!(details.state, MrState::Open);
+        assert_eq!(details.ci_status, Some(CiStatus::Running));
+    }
+
+    #[test]
+    fn inbox_snapshot_maps_typed_pipeline_statuses() {
+        let cases = [
+            (r#"{"status":"success"}"#, Some(CiStatus::Success)),
+            (r#"{"status":"failed"}"#, Some(CiStatus::Failed)),
+            (r#"{"status":"pending"}"#, Some(CiStatus::Pending)),
+            (r#"{"status":"canceled"}"#, Some(CiStatus::Canceled)),
+            ("null", None),
+            (
+                r#"{"status":"waiting_for_resource"}"#,
+                Some(CiStatus::Unknown),
+            ),
+        ];
+
+        for (pipeline, expected) in cases {
+            let json = format!(
+                r#"{{
+                    "iid": 53,
+                    "title": "Pipeline",
+                    "state": "opened",
+                    "web_url": "https://gitlab.com/acme/app/-/merge_requests/53",
+                    "draft": false,
+                    "detailed_merge_status": "mergeable",
+                    "head_pipeline": {}
+                }}"#,
+                pipeline
+            );
+
+            let details = parse_inbox_mr_details(json.as_bytes()).unwrap();
+            assert_eq!(details.ci_status, expected);
+        }
     }
 
     #[test]

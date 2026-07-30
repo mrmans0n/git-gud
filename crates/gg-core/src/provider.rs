@@ -55,6 +55,17 @@ pub enum CiStatus {
     Unknown,
 }
 
+/// Provider-neutral fields needed to display a PR or MR in the review inbox.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboxSnapshot {
+    pub state: PrState,
+    pub url: String,
+    pub approved: bool,
+    pub changes_requested: bool,
+    pub mergeable: bool,
+    pub ci_status: Option<CiStatus>,
+}
+
 /// Unified PR/MR information
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -217,6 +228,17 @@ impl Provider {
                     changes_requested: info.changes_requested,
                     detailed_merge_status: info.detailed_merge_status,
                 })
+            }
+        }
+    }
+
+    /// Get all inbox fields with the provider's minimal set of remote requests.
+    pub fn get_inbox_snapshot(&self, number: u64) -> Result<InboxSnapshot> {
+        match self {
+            Provider::GitHub => Ok(convert_gh_inbox_snapshot(gh::get_inbox_snapshot(number)?)),
+            Provider::GitLab => {
+                let (details, approved) = glab::get_inbox_snapshot(number)?;
+                Ok(convert_glab_inbox_snapshot(details, approved))
             }
         }
     }
@@ -509,9 +531,74 @@ fn convert_glab_ci_status(status: GlabCiStatus) -> CiStatus {
     }
 }
 
+fn convert_gh_inbox_snapshot(snapshot: gh::InboxPrSnapshot) -> InboxSnapshot {
+    InboxSnapshot {
+        state: convert_gh_state(snapshot.state),
+        url: snapshot.url,
+        approved: snapshot.approved,
+        changes_requested: snapshot.changes_requested,
+        mergeable: snapshot.mergeable,
+        ci_status: snapshot.ci_status.map(convert_gh_ci_status),
+    }
+}
+
+fn convert_glab_inbox_snapshot(details: glab::InboxMrDetails, approved: bool) -> InboxSnapshot {
+    InboxSnapshot {
+        state: convert_glab_state(details.state),
+        url: details.web_url,
+        approved,
+        changes_requested: details.changes_requested,
+        mergeable: details.mergeable,
+        ci_status: details.ci_status.map(convert_glab_ci_status),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inbox_snapshot_preserves_github_inbox_fields() {
+        let snapshot = convert_gh_inbox_snapshot(gh::InboxPrSnapshot {
+            state: GhPrState::Open,
+            url: "https://github.com/acme/app/pull/42".to_string(),
+            approved: true,
+            changes_requested: false,
+            mergeable: true,
+            ci_status: Some(GhCiStatus::Success),
+        });
+
+        assert_eq!(snapshot.state, PrState::Open);
+        assert_eq!(snapshot.url, "https://github.com/acme/app/pull/42");
+        assert!(snapshot.approved);
+        assert!(!snapshot.changes_requested);
+        assert!(snapshot.mergeable);
+        assert_eq!(snapshot.ci_status, Some(CiStatus::Success));
+    }
+
+    #[test]
+    fn inbox_snapshot_preserves_gitlab_inbox_fields() {
+        let snapshot = convert_glab_inbox_snapshot(
+            glab::InboxMrDetails {
+                state: GlabMrState::Draft,
+                web_url: "https://gitlab.com/acme/app/-/merge_requests/52".to_string(),
+                mergeable: false,
+                changes_requested: false,
+                ci_status: None,
+            },
+            true,
+        );
+
+        assert_eq!(snapshot.state, PrState::Draft);
+        assert_eq!(
+            snapshot.url,
+            "https://gitlab.com/acme/app/-/merge_requests/52"
+        );
+        assert!(snapshot.approved);
+        assert!(!snapshot.changes_requested);
+        assert!(!snapshot.mergeable);
+        assert_eq!(snapshot.ci_status, None);
+    }
 
     #[test]
     fn test_provider_equality() {

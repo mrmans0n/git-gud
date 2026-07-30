@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.12] - 2026-07-30
+
+### Added
+- `gg inbox` can now stream progressive refresh updates while provider data is still loading (#415).
+
+### Changed
+- Updated `rmcp` to v3.0.1 (#413, #414).
+
 ## [0.9.11] - 2026-07-29
 
 ### Fixed
@@ -537,7 +545,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.9.11...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.9.12...HEAD
+[0.9.12]: https://github.com/mrmans0n/git-gud/compare/v0.9.11...v0.9.12
 [0.9.11]: https://github.com/mrmans0n/git-gud/compare/v0.9.10...v0.9.11
 [0.9.10]: https://github.com/mrmans0n/git-gud/compare/v0.9.9...v0.9.10
 [0.9.9]: https://github.com/mrmans0n/git-gud/compare/v0.9.8...v0.9.9

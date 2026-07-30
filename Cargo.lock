@@ -1168,7 +1168,7 @@ dependencies = [
 
 [[package]]
 name = "gg-cli"
-version = "0.9.12"
+version = "0.9.13-dev"
 dependencies = [
  "clap",
  "clap_complete",
@@ -1180,7 +1180,7 @@ dependencies = [
 
 [[package]]
 name = "gg-core"
-version = "0.9.12"
+version = "0.9.13-dev"
 dependencies = [
  "anyhow",
  "atty",
@@ -1211,7 +1211,7 @@ dependencies = [
 
 [[package]]
 name = "gg-mcp"
-version = "0.9.12"
+version = "0.9.13-dev"
 dependencies = [
  "gg-core",
  "git2 0.21.0",

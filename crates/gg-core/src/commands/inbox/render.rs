@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 
-use super::{bucket_label, ActionBucket, InboxCandidate};
+use super::{bucket_label, sanitize_human_diagnostic, ActionBucket, InboxCandidate};
 
 pub(super) enum InboxRowState<'a> {
     Refreshing,
@@ -134,7 +134,10 @@ fn format_row_message(
         InboxRowState::RefreshFailed(error) => {
             format!(
                 "refresh failed: {}",
-                error.split_whitespace().collect::<Vec<_>>().join(" ")
+                sanitize_human_diagnostic(error)
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
             )
         }
     };
@@ -324,6 +327,19 @@ mod tests {
                 expected_message
             );
         }
+    }
+
+    #[test]
+    fn refresh_failure_row_neutralizes_terminal_control_characters() {
+        let candidate = candidate(0, "alpha", "aaaaaaa", "First candidate");
+        let message = format_row_message(
+            &candidate,
+            "PR",
+            InboxRowState::RefreshFailed("failure: \u{1b}[31mred\u{7}"),
+        );
+
+        assert!(!message.chars().any(char::is_control));
+        assert!(message.contains("refresh failed: failure: [31mred"));
     }
 
     #[test]

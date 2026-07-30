@@ -1,8 +1,11 @@
 //! Inbox command — multi-stack actionable triage view.
 
+mod refresh;
+
 use console::style;
 use serde::Serialize;
 
+use self::refresh::{refresh_candidates, InboxCompletion};
 use crate::config::Config;
 use crate::error::GgError;
 use crate::error::Result;
@@ -213,6 +216,27 @@ impl InboxItem {
     }
 }
 
+fn items_from_completions(
+    completions: Vec<Option<InboxCompletion>>,
+    provider: Provider,
+) -> Result<Vec<InboxItem>> {
+    completions
+        .into_iter()
+        .enumerate()
+        .map(|(index, completion)| {
+            let completion = completion.ok_or_else(|| {
+                GgError::Other(format!(
+                    "Internal error: missing inbox refresh completion for discovery index {index}"
+                ))
+            })?;
+            Ok(match completion.result {
+                Ok(snapshot) => InboxItem::from_snapshot(completion.candidate, snapshot, provider),
+                Err(error) => InboxItem::from_refresh_error(completion.candidate, error, provider),
+            })
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct InboxCandidate {
     pub discovery_index: usize,
@@ -370,14 +394,21 @@ pub fn run(all: bool, json: bool) -> Result<()> {
         );
     }
 
-    let mut items = Vec::with_capacity(discovery.candidates.len());
-    for candidate in discovery.candidates {
-        let item = match provider.get_inbox_snapshot(candidate.pr_number) {
-            Ok(snapshot) => InboxItem::from_snapshot(candidate, snapshot, provider),
-            Err(error) => InboxItem::from_refresh_error(candidate, error.to_string(), provider),
-        };
-        items.push(item);
-    }
+    let mut completions: Vec<Option<InboxCompletion>> =
+        (0..discovery.candidates.len()).map(|_| None).collect();
+    refresh_candidates(
+        &discovery.candidates,
+        |candidate| {
+            provider
+                .get_inbox_snapshot(candidate.pr_number)
+                .map_err(|error| error.to_string())
+        },
+        |completion| {
+            let index = completion.candidate.discovery_index;
+            completions[index] = Some(completion);
+        },
+    );
+    let mut items = items_from_completions(completions, provider)?;
 
     if !json {
         eprintln!(" {}", style("done").green());
@@ -589,6 +620,32 @@ mod tests {
     use super::*;
     use crate::provider::{CiStatus, PrState};
 
+    fn candidate(discovery_index: usize) -> InboxCandidate {
+        InboxCandidate {
+            discovery_index,
+            stack_name: "stack".to_string(),
+            position: discovery_index + 1,
+            short_sha: format!("{discovery_index:07x}"),
+            title: format!("Candidate {discovery_index}"),
+            pr_number: discovery_index as u64 + 10,
+            behind_base: None,
+        }
+    }
+
+    fn completion(candidate: InboxCandidate) -> InboxCompletion {
+        InboxCompletion {
+            candidate,
+            result: Ok(InboxSnapshot {
+                state: PrState::Open,
+                url: "https://example.com/pull/1".to_string(),
+                approved: false,
+                changes_requested: false,
+                mergeable: true,
+                ci_status: None,
+            }),
+        }
+    }
+
     fn make_input(
         state: PrState,
         ci: Option<CiStatus>,
@@ -621,6 +678,33 @@ mod tests {
         };
 
         assert_eq!(bucket(&input), Some(ActionBucket::RefreshFailed));
+    }
+
+    #[test]
+    fn builds_items_in_discovery_order_after_out_of_order_completions() {
+        let mut completions: Vec<Option<InboxCompletion>> = (0..2).map(|_| None).collect();
+        for completion in [completion(candidate(1)), completion(candidate(0))] {
+            let index = completion.candidate.discovery_index;
+            completions[index] = Some(completion);
+        }
+
+        let items = items_from_completions(completions, Provider::GitHub).unwrap();
+
+        assert_eq!(
+            items.iter().map(|item| item.mr_number).collect::<Vec<_>>(),
+            vec![10, 11]
+        );
+    }
+
+    #[test]
+    fn missing_completion_is_an_internal_error() {
+        let error =
+            items_from_completions(vec![Some(completion(candidate(0))), None], Provider::GitHub)
+                .err()
+                .expect("missing completion should fail");
+
+        assert!(matches!(error, GgError::Other(_)));
+        assert!(error.to_string().contains("discovery index 1"));
     }
 
     #[test]

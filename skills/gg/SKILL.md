@@ -45,7 +45,7 @@ an error or interrupted state.
 ## Shared execution contract
 
 - Use `gg <command> --help` for installed flags.
-- Use JSON for decisions and JSONL for streaming sync.
+- Use JSON for final structured snapshots and JSONL when a supported long-running command must be monitored incrementally.
 - Prefer worktrees for newly created stacks.
 - Stage explicit reviewed files; never blindly stage all files.
 - Surface `ImmutableTargets` before requesting an override.

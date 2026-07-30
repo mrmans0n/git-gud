@@ -32,6 +32,17 @@ pub struct PrInfo {
     pub changes_requested: bool,
 }
 
+/// The fields needed to display a PR in the review inbox.
+#[derive(Debug, Clone)]
+pub struct InboxPrSnapshot {
+    pub state: PrState,
+    pub url: String,
+    pub approved: bool,
+    pub changes_requested: bool,
+    pub mergeable: bool,
+    pub ci_status: Option<CiStatus>,
+}
+
 /// JSON response from `gh pr view --json`
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,12 +59,22 @@ struct GhPrJson {
     #[serde(default)]
     reviews: Vec<GhReview>,
     review_decision: Option<String>,
+    #[serde(default)]
+    status_check_rollup: Vec<GhStatusCheck>,
 }
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 struct GhReview {
     state: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhStatusCheck {
+    conclusion: Option<String>,
+    status: Option<String>,
+    state: Option<String>,
 }
 
 /// Check if gh is installed
@@ -247,6 +268,100 @@ pub fn close_pr(pr_number: u64) -> Result<()> {
 /// Alias for view_pr for compatibility
 pub fn get_pr_info(pr_number: u64) -> Result<PrInfo> {
     view_pr(pr_number)
+}
+
+/// Get all inbox fields for a PR with one `gh pr view` request.
+pub fn get_inbox_snapshot(pr_number: u64) -> Result<InboxPrSnapshot> {
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr_number.to_string(),
+            "--json",
+            "number,title,state,url,headRefName,isDraft,mergeable,reviewDecision,statusCheckRollup",
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::Other(format!(
+            "Failed to view PR #{}: {}",
+            pr_number, stderr
+        )));
+    }
+
+    parse_inbox_snapshot(&output.stdout)
+}
+
+fn parse_inbox_snapshot(bytes: &[u8]) -> Result<InboxPrSnapshot> {
+    let pr_json: GhPrJson = serde_json::from_slice(bytes)
+        .map_err(|e| GgError::Other(format!("Failed to parse PR JSON: {}", e)))?;
+
+    let state = match pr_json.state.to_uppercase().as_str() {
+        "MERGED" => PrState::Merged,
+        "CLOSED" => PrState::Closed,
+        _ if pr_json.is_draft => PrState::Draft,
+        _ => PrState::Open,
+    };
+
+    Ok(InboxPrSnapshot {
+        state,
+        url: pr_json.url,
+        approved: matches!(pr_json.review_decision.as_deref(), Some("APPROVED") | None),
+        changes_requested: pr_json.review_decision.as_deref() == Some("CHANGES_REQUESTED"),
+        mergeable: pr_json.mergeable.as_deref() == Some("MERGEABLE"),
+        ci_status: aggregate_status_checks(&pr_json.status_check_rollup),
+    })
+}
+
+fn aggregate_status_checks(checks: &[GhStatusCheck]) -> Option<CiStatus> {
+    if checks.is_empty() {
+        return None;
+    }
+
+    let mut has_canceled = false;
+    let mut has_pending = false;
+    let mut has_success = false;
+
+    for check in checks {
+        let conclusion = check.conclusion.as_deref().map(str::to_uppercase);
+        let status = check.status.as_deref().map(str::to_uppercase);
+        let state = check.state.as_deref().map(str::to_uppercase);
+
+        for value in [conclusion.as_deref(), state.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            match value {
+                "FAILURE" | "FAILED" | "TIMED_OUT" | "ACTION_REQUIRED" | "ERROR" | "STALE"
+                | "STARTUP_FAILURE" => return Some(CiStatus::Failed),
+                "CANCELLED" | "CANCELED" => has_canceled = true,
+                "EXPECTED" | "PENDING" | "QUEUED" | "IN_PROGRESS" => has_pending = true,
+                "SUCCESS" | "NEUTRAL" | "SKIPPED" => has_success = true,
+                _ => {}
+            }
+        }
+
+        if status.as_deref().is_some_and(|value| value != "COMPLETED")
+            || (check.state.is_none()
+                && check
+                    .conclusion
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty()))
+        {
+            has_pending = true;
+        }
+    }
+
+    if has_canceled {
+        Some(CiStatus::Canceled)
+    } else if has_pending {
+        Some(CiStatus::Pending)
+    } else if has_success {
+        Some(CiStatus::Success)
+    } else {
+        Some(CiStatus::Unknown)
+    }
 }
 
 /// Convert an existing PR to draft (GitHub only)
@@ -743,6 +858,115 @@ mod tests {
         assert!(!parsed.is_draft); // defaults to false
         assert!(parsed.mergeable.is_none());
         assert!(parsed.reviews.is_empty()); // defaults to empty
+    }
+
+    #[test]
+    fn inbox_snapshot_parses_review_and_ci_from_one_response() {
+        let json = br#"{
+            "number": 42,
+            "title": "Add login",
+            "state": "OPEN",
+            "url": "https://github.com/acme/app/pull/42",
+            "headRefName": "nacho/auth/c-abc1234",
+            "isDraft": false,
+            "mergeable": "MERGEABLE",
+            "reviewDecision": "APPROVED",
+            "statusCheckRollup": [
+                {"status": "COMPLETED", "conclusion": "SUCCESS"}
+            ]
+        }"#;
+
+        let snapshot = parse_inbox_snapshot(json).unwrap();
+        assert_eq!(snapshot.state, PrState::Open);
+        assert!(snapshot.approved);
+        assert!(!snapshot.changes_requested);
+        assert!(snapshot.mergeable);
+        assert_eq!(snapshot.ci_status, Some(CiStatus::Success));
+    }
+
+    #[test]
+    fn inbox_snapshot_treats_empty_rollup_as_no_ci() {
+        let json = br#"{
+            "number": 43,
+            "title": "No checks",
+            "state": "OPEN",
+            "url": "https://github.com/acme/app/pull/43",
+            "isDraft": false,
+            "mergeable": "MERGEABLE",
+            "reviewDecision": "CHANGES_REQUESTED",
+            "statusCheckRollup": []
+        }"#;
+
+        let snapshot = parse_inbox_snapshot(json).unwrap();
+        assert!(snapshot.changes_requested);
+        assert_eq!(snapshot.ci_status, None);
+    }
+
+    #[test]
+    fn inbox_snapshot_treats_null_review_decision_as_no_review_required() {
+        let json = br#"{
+            "number": 44,
+            "title": "No required reviews",
+            "state": "OPEN",
+            "url": "https://github.com/acme/app/pull/44",
+            "isDraft": false,
+            "mergeable": "MERGEABLE",
+            "reviewDecision": null,
+            "statusCheckRollup": []
+        }"#;
+
+        let snapshot = parse_inbox_snapshot(json).unwrap();
+        assert!(snapshot.approved);
+        assert!(!snapshot.changes_requested);
+    }
+
+    #[test]
+    fn inbox_snapshot_aggregates_rollup_statuses_by_priority() {
+        let cases = [
+            (
+                r#"[{"status":"COMPLETED","conclusion":"SUCCESS"},{"status":"COMPLETED","conclusion":"FAILURE"}]"#,
+                CiStatus::Failed,
+            ),
+            (
+                r#"[{"status":"COMPLETED","conclusion":"SUCCESS"},{"status":"COMPLETED","conclusion":"CANCELLED"}]"#,
+                CiStatus::Canceled,
+            ),
+            (
+                r#"[{"status":"IN_PROGRESS","conclusion":null}]"#,
+                CiStatus::Pending,
+            ),
+            (r#"[{"state":"EXPECTED"}]"#, CiStatus::Pending),
+            (
+                r#"[{"status":"COMPLETED","state":"ERROR"}]"#,
+                CiStatus::Failed,
+            ),
+            (
+                r#"[{"status":"COMPLETED","conclusion":"STARTUP_FAILURE"}]"#,
+                CiStatus::Failed,
+            ),
+            (
+                r#"[{"status":"COMPLETED","conclusion":"STALE"}]"#,
+                CiStatus::Failed,
+            ),
+        ];
+
+        for (rollup, expected) in cases {
+            let json = format!(
+                r#"{{
+                    "number": 44,
+                    "title": "Checks",
+                    "state": "OPEN",
+                    "url": "https://github.com/acme/app/pull/44",
+                    "isDraft": false,
+                    "mergeable": "MERGEABLE",
+                    "statusCheckRollup": {}
+                }}"#,
+                rollup
+            );
+
+            let snapshot = parse_inbox_snapshot(json.as_bytes()).unwrap();
+            assert_eq!(snapshot.ci_status, Some(expected));
+        }
     }
 
     #[test]

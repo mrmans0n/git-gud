@@ -23,7 +23,10 @@
    explicit effective `defaults.provider` wins, otherwise gg detects GitHub or
    GitLab from the remote URL.
 5. Match the stack scope with `gg ls --json`, `gg log --json`, or
-   `gg inbox --json`.
+   `gg inbox --json`. Use `gg inbox --json` for one final cross-stack snapshot.
+   Use `gg inbox --jsonl` when the caller benefits from results as each PR or MR
+   refresh completes, and consume the final `summary` event before making a
+   complete-inbox claim.
 6. Before reporting behind-base state, fetch the configured base when it is
    remote-backed and compare the stack tip with the fetched remote base:
    `git merge-base --is-ancestor origin/<base> <stack-tip>`. Do not rely on

@@ -75,6 +75,15 @@ pub struct ErrorJson<'a> {
     pub error: &'a str,
 }
 
+#[derive(Serialize)]
+pub struct StreamingErrorResponse<'a> {
+    pub version: u32,
+    pub command: &'a str,
+    pub status: &'static str,
+    pub event: &'static str,
+    pub message: String,
+}
+
 pub fn print_json_error(message: &str) {
     print_json(&ErrorJson {
         version: OUTPUT_VERSION,
@@ -387,6 +396,61 @@ pub struct LandedEntryJson {
 // Inbox responses
 // ---------------------------------------------------------------------------
 
+pub struct InboxStreamingResponse {
+    pub version: u32,
+    pub command: String,
+    pub event: InboxStreamingEvent,
+}
+
+impl Serialize for InboxStreamingResponse {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut value = serde_json::to_value(&self.event).map_err(serde::ser::Error::custom)?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| serde::ser::Error::custom("streaming event serialized non-object"))?;
+        object.insert("version".to_string(), serde_json::json!(self.version));
+        object.insert("command".to_string(), serde_json::json!(self.command));
+        value.serialize(serializer)
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case", tag = "event")]
+pub enum InboxStreamingEvent {
+    Start {
+        total_candidates: usize,
+        total_stack_errors: usize,
+    },
+    StackError {
+        stack_name: String,
+        error: String,
+    },
+    Entry {
+        completed: usize,
+        total_candidates: usize,
+        included: bool,
+        bucket: Option<String>,
+        remote_state: String,
+        entry: InboxEntryJson,
+    },
+    EntryError {
+        completed: usize,
+        total_candidates: usize,
+        included: bool,
+        bucket: String,
+        entry: InboxCandidateJson,
+        error: String,
+    },
+    Summary {
+        total_items: usize,
+        buckets: InboxBucketsJson,
+        stack_errors: Vec<InboxStackErrorJson>,
+    },
+}
+
 #[derive(Serialize)]
 pub struct InboxResponse {
     pub version: u32,
@@ -395,8 +459,9 @@ pub struct InboxResponse {
     pub stack_errors: Vec<InboxStackErrorJson>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct InboxBucketsJson {
+    pub refresh_failed: Vec<InboxEntryJson>,
     pub ready_to_land: Vec<InboxEntryJson>,
     pub changes_requested: Vec<InboxEntryJson>,
     pub blocked_on_ci: Vec<InboxEntryJson>,
@@ -407,7 +472,7 @@ pub struct InboxBucketsJson {
     pub merged: Vec<InboxEntryJson>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct InboxEntryJson {
     pub stack_name: String,
     pub position: usize,
@@ -416,6 +481,18 @@ pub struct InboxEntryJson {
     pub pr_number: u64,
     pub pr_url: String,
     pub ci_status: Option<String>,
+    pub behind_base: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_error: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct InboxCandidateJson {
+    pub stack_name: String,
+    pub position: usize,
+    pub sha: String,
+    pub title: String,
+    pub pr_number: u64,
     pub behind_base: Option<usize>,
 }
 
@@ -525,8 +602,19 @@ mod tests {
     fn inbox_response_serializes() {
         let response = InboxResponse {
             version: OUTPUT_VERSION,
-            total_items: 1,
+            total_items: 2,
             buckets: InboxBucketsJson {
+                refresh_failed: vec![InboxEntryJson {
+                    stack_name: "auth".to_string(),
+                    position: 2,
+                    sha: "def5678".to_string(),
+                    title: "Refresh failed".to_string(),
+                    pr_number: 42,
+                    pr_url: String::new(),
+                    ci_status: None,
+                    behind_base: None,
+                    refresh_error: Some("failed to refresh PR #42".to_string()),
+                }],
                 ready_to_land: vec![InboxEntryJson {
                     stack_name: "auth".to_string(),
                     position: 1,
@@ -536,6 +624,7 @@ mod tests {
                     pr_url: "https://github.com/org/repo/pull/42".to_string(),
                     ci_status: Some("success".to_string()),
                     behind_base: None,
+                    refresh_error: None,
                 }],
                 changes_requested: vec![],
                 blocked_on_ci: vec![],
@@ -549,10 +638,163 @@ mod tests {
 
         let value = serde_json::to_value(&response).expect("should serialize");
         assert_eq!(value["version"], OUTPUT_VERSION);
-        assert_eq!(value["total_items"], 1);
+        assert_eq!(value["total_items"], 2);
+        assert_eq!(
+            value["buckets"]["refresh_failed"][0]["refresh_error"],
+            "failed to refresh PR #42"
+        );
         assert_eq!(value["buckets"]["ready_to_land"][0]["pr_number"], 42);
+        assert!(value["buckets"]["ready_to_land"][0]
+            .get("refresh_error")
+            .is_none());
         // merged bucket should be omitted when empty
         assert!(value["buckets"].get("merged").is_none());
+    }
+
+    fn inbox_streaming_entry() -> InboxEntryJson {
+        InboxEntryJson {
+            stack_name: "auth".to_string(),
+            position: 1,
+            sha: "abc1234".to_string(),
+            title: "Add login".to_string(),
+            pr_number: 42,
+            pr_url: "https://github.com/org/repo/pull/42".to_string(),
+            ci_status: Some("success".to_string()),
+            behind_base: None,
+            refresh_error: None,
+        }
+    }
+
+    #[test]
+    fn inbox_streaming_start_serializes_flat_envelope() {
+        let response = InboxStreamingResponse {
+            version: OUTPUT_VERSION,
+            command: "inbox".to_string(),
+            event: InboxStreamingEvent::Start {
+                total_candidates: 2,
+                total_stack_errors: 1,
+            },
+        };
+
+        let json = serde_json::to_value(&response).expect("should serialize");
+
+        assert_eq!(json["version"], 1);
+        assert_eq!(json["command"], "inbox");
+        assert_eq!(json["event"], "start");
+        assert_eq!(json["total_candidates"], 2);
+        assert_eq!(json["total_stack_errors"], 1);
+    }
+
+    #[test]
+    fn inbox_streaming_included_entry_serializes_bucket() {
+        let response = InboxStreamingResponse {
+            version: OUTPUT_VERSION,
+            command: "inbox".to_string(),
+            event: InboxStreamingEvent::Entry {
+                completed: 1,
+                total_candidates: 2,
+                included: true,
+                bucket: Some("ready_to_land".to_string()),
+                remote_state: "open".to_string(),
+                entry: inbox_streaming_entry(),
+            },
+        };
+
+        let json = serde_json::to_value(&response).expect("should serialize");
+
+        assert_eq!(json["version"], 1);
+        assert_eq!(json["command"], "inbox");
+        assert_eq!(json["event"], "entry");
+        assert_eq!(json["included"], true);
+        assert_eq!(json["bucket"], "ready_to_land");
+        assert_eq!(json["remote_state"], "open");
+        assert_eq!(json["entry"]["pr_number"], 42);
+    }
+
+    #[test]
+    fn inbox_streaming_excluded_merged_entry_serializes_null_bucket() {
+        let response = InboxStreamingResponse {
+            version: OUTPUT_VERSION,
+            command: "inbox".to_string(),
+            event: InboxStreamingEvent::Entry {
+                completed: 2,
+                total_candidates: 2,
+                included: false,
+                bucket: None,
+                remote_state: "merged".to_string(),
+                entry: inbox_streaming_entry(),
+            },
+        };
+
+        let json = serde_json::to_value(&response).expect("should serialize");
+
+        assert_eq!(json["event"], "entry");
+        assert_eq!(json["included"], false);
+        assert!(json["bucket"].is_null());
+        assert_eq!(json["remote_state"], "merged");
+    }
+
+    #[test]
+    fn inbox_streaming_entry_error_serializes_refresh_failed_bucket() {
+        let response = InboxStreamingResponse {
+            version: OUTPUT_VERSION,
+            command: "inbox".to_string(),
+            event: InboxStreamingEvent::EntryError {
+                completed: 1,
+                total_candidates: 1,
+                included: true,
+                bucket: "refresh_failed".to_string(),
+                entry: InboxCandidateJson {
+                    stack_name: "auth".to_string(),
+                    position: 1,
+                    sha: "abc1234".to_string(),
+                    title: "Add login".to_string(),
+                    pr_number: 42,
+                    behind_base: None,
+                },
+                error: "provider unavailable".to_string(),
+            },
+        };
+
+        let json = serde_json::to_value(&response).expect("should serialize");
+
+        assert_eq!(json["event"], "entry_error");
+        assert_eq!(json["included"], true);
+        assert_eq!(json["bucket"], "refresh_failed");
+        assert_eq!(json["entry"]["sha"], "abc1234");
+        assert_eq!(json["error"], "provider unavailable");
+    }
+
+    #[test]
+    fn inbox_streaming_summary_serializes_atomic_payload() {
+        let response = InboxStreamingResponse {
+            version: OUTPUT_VERSION,
+            command: "inbox".to_string(),
+            event: InboxStreamingEvent::Summary {
+                total_items: 1,
+                buckets: InboxBucketsJson {
+                    refresh_failed: vec![],
+                    ready_to_land: vec![inbox_streaming_entry()],
+                    changes_requested: vec![],
+                    blocked_on_ci: vec![],
+                    awaiting_review: vec![],
+                    behind_base: vec![],
+                    draft: vec![],
+                    merged: vec![],
+                },
+                stack_errors: vec![InboxStackErrorJson {
+                    stack_name: "stale".to_string(),
+                    error: "missing base".to_string(),
+                }],
+            },
+        };
+
+        let json = serde_json::to_value(&response).expect("should serialize");
+
+        assert_eq!(json["event"], "summary");
+        assert_eq!(json["total_items"], 1);
+        assert_eq!(json["buckets"]["ready_to_land"][0]["pr_number"], 42);
+        assert_eq!(json["stack_errors"][0]["stack_name"], "stale");
     }
 
     #[test]

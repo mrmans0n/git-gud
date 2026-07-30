@@ -1,20 +1,31 @@
 //! Inbox command — multi-stack actionable triage view.
 
-use std::collections::HashMap;
+mod refresh;
+mod render;
 
 use console::style;
 use serde::Serialize;
 
+use self::refresh::{refresh_candidates, InboxCompletion};
+use self::render::{InboxRowState, LiveInboxRenderer};
 use crate::config::Config;
 use crate::error::GgError;
 use crate::error::Result;
 use crate::git;
 use crate::output::{
-    print_json, InboxBucketsJson, InboxEntryJson, InboxResponse, InboxStackErrorJson,
+    print_json, InboxBucketsJson, InboxCandidateJson, InboxEntryJson, InboxResponse,
+    InboxStackErrorJson, InboxStreamingEvent, InboxStreamingResponse, StreamingJson,
     OUTPUT_VERSION,
 };
-use crate::provider::{CiStatus, PrState, Provider};
+use crate::provider::{CiStatus, InboxSnapshot, PrState, Provider};
 use crate::stack;
+
+#[derive(Debug, Clone, Copy)]
+pub struct InboxOptions {
+    pub all: bool,
+    pub json: bool,
+    pub jsonl: bool,
+}
 
 /// Action bucket for triage classification.
 ///
@@ -23,6 +34,7 @@ use crate::stack;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionBucket {
+    RefreshFailed,
     ReadyToLand,
     ChangesRequested,
     BlockedOnCi,
@@ -34,6 +46,7 @@ pub enum ActionBucket {
 
 /// Input fields for bucketing. Decoupled from StackEntry so the function is pure and testable.
 pub struct BucketInput {
+    pub refresh_failed: bool,
     pub mr_state: PrState,
     pub ci_status: Option<CiStatus>,
     pub approved: bool,
@@ -45,15 +58,20 @@ pub struct BucketInput {
 /// Classify a PR/MR into an action bucket.
 ///
 /// Priority order (first match wins):
-/// 1. Merged → Merged
-/// 2. Closed → None (skip)
-/// 3. Draft → Draft
-/// 4. Changes requested → ChangesRequested
-/// 5. Approved + CI green + mergeable → ReadyToLand
-/// 6. CI failed/running/pending → BlockedOnCi
-/// 7. Behind base → BehindBase
-/// 8. Fallthrough → AwaitingReview
+/// 1. Refresh failure → RefreshFailed
+/// 2. Merged → Merged
+/// 3. Closed → None (skip)
+/// 4. Draft → Draft
+/// 5. Changes requested → ChangesRequested
+/// 6. Approved + CI green + mergeable → ReadyToLand
+/// 7. CI failed/running/pending → BlockedOnCi
+/// 8. Behind base → BehindBase
+/// 9. Fallthrough → AwaitingReview
 pub fn bucket(input: &BucketInput) -> Option<ActionBucket> {
+    if input.refresh_failed {
+        return Some(ActionBucket::RefreshFailed);
+    }
+
     match input.mr_state {
         PrState::Merged => return Some(ActionBucket::Merged),
         PrState::Closed => return None,
@@ -126,7 +144,7 @@ fn load_stack_entries(
         .collect()
 }
 
-struct StackLoadError {
+pub(super) struct StackLoadError {
     stack_name: String,
     error: String,
 }
@@ -141,12 +159,137 @@ struct InboxItem {
     mr_url: String,
     mr_label: &'static str,
     mr_number_prefix: &'static str,
-    bucket: ActionBucket,
     ci_status: Option<CiStatus>,
+    approved: bool,
+    changes_requested: bool,
+    mergeable: bool,
     behind_base: Option<usize>,
+    remote_state: Option<PrState>,
+    refresh_error: Option<String>,
 }
 
-/// Run the inbox command.
+impl InboxItem {
+    fn from_snapshot(
+        candidate: InboxCandidate,
+        snapshot: InboxSnapshot,
+        provider: Provider,
+    ) -> Self {
+        Self {
+            stack_name: candidate.stack_name,
+            position: candidate.position,
+            short_sha: candidate.short_sha,
+            title: candidate.title,
+            mr_number: candidate.pr_number,
+            mr_url: snapshot.url,
+            mr_label: provider.pr_label(),
+            mr_number_prefix: provider.pr_number_prefix(),
+            ci_status: snapshot.ci_status,
+            approved: snapshot.approved,
+            changes_requested: snapshot.changes_requested,
+            mergeable: snapshot.mergeable,
+            behind_base: candidate.behind_base,
+            remote_state: Some(snapshot.state),
+            refresh_error: None,
+        }
+    }
+
+    fn from_refresh_error(candidate: InboxCandidate, error: String, provider: Provider) -> Self {
+        Self {
+            stack_name: candidate.stack_name,
+            position: candidate.position,
+            short_sha: candidate.short_sha,
+            title: candidate.title,
+            mr_number: candidate.pr_number,
+            mr_url: String::new(),
+            mr_label: provider.pr_label(),
+            mr_number_prefix: provider.pr_number_prefix(),
+            ci_status: None,
+            approved: false,
+            changes_requested: false,
+            mergeable: false,
+            behind_base: candidate.behind_base,
+            remote_state: None,
+            refresh_error: Some(error),
+        }
+    }
+
+    fn bucket(&self) -> Option<ActionBucket> {
+        bucket(&BucketInput {
+            refresh_failed: self.refresh_error.is_some(),
+            mr_state: self.remote_state.clone().unwrap_or(PrState::Open),
+            ci_status: self.ci_status.clone(),
+            approved: self.approved,
+            changes_requested: self.changes_requested,
+            mergeable: self.mergeable,
+            behind_base: self.behind_base.is_some(),
+        })
+    }
+
+    fn to_json(&self) -> InboxEntryJson {
+        InboxEntryJson {
+            stack_name: self.stack_name.clone(),
+            position: self.position,
+            sha: self.short_sha.clone(),
+            title: self.title.clone(),
+            pr_number: self.mr_number,
+            pr_url: self.mr_url.clone(),
+            ci_status: self.ci_status.as_ref().map(ci_status_str),
+            behind_base: self.behind_base,
+            refresh_error: self.refresh_error.clone(),
+        }
+    }
+}
+
+fn items_from_completions(
+    completions: Vec<Option<InboxCompletion>>,
+    provider: Provider,
+) -> Result<Vec<InboxItem>> {
+    completions
+        .into_iter()
+        .enumerate()
+        .map(|(index, completion)| {
+            let completion = completion.ok_or_else(|| {
+                GgError::Other(format!(
+                    "Internal error: missing inbox refresh completion for discovery index {index}"
+                ))
+            })?;
+            Ok(match completion.result {
+                Ok(snapshot) => InboxItem::from_snapshot(completion.candidate, snapshot, provider),
+                Err(error) => InboxItem::from_refresh_error(completion.candidate, error, provider),
+            })
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct InboxCandidate {
+    pub discovery_index: usize,
+    pub stack_name: String,
+    pub position: usize,
+    pub short_sha: String,
+    pub title: String,
+    pub pr_number: u64,
+    pub behind_base: Option<usize>,
+}
+
+impl InboxCandidate {
+    fn to_json(&self) -> InboxCandidateJson {
+        InboxCandidateJson {
+            stack_name: self.stack_name.clone(),
+            position: self.position,
+            sha: self.short_sha.clone(),
+            title: self.title.clone(),
+            pr_number: self.pr_number,
+            behind_base: self.behind_base,
+        }
+    }
+}
+
+pub(super) struct InboxDiscovery {
+    pub candidates: Vec<InboxCandidate>,
+    pub stack_errors: Vec<StackLoadError>,
+}
+
 fn infer_stack_usernames(repo: &git2::Repository, config: &Config) -> Result<Vec<String>> {
     let mut usernames = Vec::new();
 
@@ -169,54 +312,19 @@ fn infer_stack_usernames(repo: &git2::Repository, config: &Config) -> Result<Vec
         }
     }
 
-    if usernames.is_empty() {
-        if let Ok(provider) = Provider::detect(repo) {
-            if let Ok(username) = provider.whoami() {
-                usernames.push(username);
-            }
-        }
-    }
-
     Ok(usernames)
 }
 
-pub fn run(all: bool, json: bool) -> Result<()> {
-    let repo = git::open_repo()?;
-    let config = Config::load_with_global(repo.commondir())?;
-
-    let usernames = infer_stack_usernames(&repo, &config)?;
-    if usernames.is_empty() {
-        if json {
-            print_json_output(&[], &[]);
-        } else {
-            println!(
-                "{}",
-                style("Inbox is empty — nothing needs attention.").dim()
-            );
-        }
-        return Ok(());
-    }
-
+fn discover_candidates(repo: &git2::Repository, config: &Config) -> Result<InboxDiscovery> {
+    let usernames = infer_stack_usernames(repo, config)?;
     let valid_usernames: Vec<String> = usernames
         .into_iter()
         .filter(|username| git::validate_branch_username(username).is_ok())
         .collect();
 
-    if valid_usernames.is_empty() {
-        if json {
-            print_json_output(&[], &[]);
-        } else {
-            println!(
-                "{}",
-                style("Inbox is empty — nothing needs attention.").dim()
-            );
-        }
-        return Ok(());
-    }
-
     let mut stack_branches: Vec<(String, String)> = Vec::new();
     for username in &valid_usernames {
-        for stack_name in stack::list_all_stacks(&repo, &config, username)? {
+        for stack_name in stack::list_all_stacks(repo, config, username)? {
             let full_branch = git::format_stack_branch(username, &stack_name);
             if repo
                 .find_branch(&full_branch, git2::BranchType::Local)
@@ -233,36 +341,11 @@ pub fn run(all: bool, json: bool) -> Result<()> {
         }
     }
 
-    if stack_branches.is_empty() {
-        if json {
-            print_json_output(&[], &[]);
-        } else {
-            println!(
-                "{}",
-                style("Inbox is empty — nothing needs attention.").dim()
-            );
-        }
-        return Ok(());
-    }
-
-    let detected_provider = Provider::detect(&repo).ok();
-    let mr_label = detected_provider
-        .as_ref()
-        .map(Provider::pr_label)
-        .unwrap_or("PR/MR");
-
-    if !json {
-        eprint!(
-            "{}",
-            style(format!("Refreshing {mr_label} status...")).dim()
-        );
-    }
-
-    let mut items: Vec<InboxItem> = Vec::new();
     let mut stack_errors: Vec<StackLoadError> = Vec::new();
+    let mut candidates = Vec::new();
 
     for (stack_name, full_branch) in &stack_branches {
-        let base = match resolve_base_branch(&repo, &config, stack_name) {
+        let base = match resolve_base_branch(repo, config, stack_name) {
             Ok(base) => base,
             Err(err) => {
                 stack_errors.push(StackLoadError {
@@ -272,7 +355,7 @@ pub fn run(all: bool, json: bool) -> Result<()> {
                 continue;
             }
         };
-        let mut entries = match load_stack_entries(&repo, &base, full_branch) {
+        let mut entries = match load_stack_entries(repo, &base, full_branch) {
             Ok(entries) => entries,
             Err(err) => {
                 stack_errors.push(StackLoadError {
@@ -293,99 +376,229 @@ pub fn run(all: bool, json: bool) -> Result<()> {
             }
         }
 
-        let provider = if entries.iter().any(|entry| entry.mr_number.is_some()) {
-            detected_provider
-        } else {
-            None
-        };
-
-        // Refresh PR/MR info from provider and cache URLs (T9 optimization)
-        let mut mr_urls: HashMap<u64, String> = HashMap::new();
-        for entry in &mut entries {
-            if let (Some(pr_num), Some(provider)) = (entry.mr_number, provider) {
-                if let Ok(info) = provider.get_pr_info(pr_num) {
-                    entry.mr_state = Some(info.state);
-                    entry.approved = info.approved;
-                    entry.changes_requested = info.changes_requested;
-                    entry.mergeable = info.mergeable;
-                    mr_urls.insert(pr_num, info.url);
-                }
-                if let Ok(ci) = provider.get_pr_ci_status(pr_num) {
-                    entry.ci_status = Some(ci);
-                }
-                if let Ok(approved) = provider.check_pr_approved(pr_num) {
-                    if approved || !entry.approved {
-                        entry.approved = approved;
-                    }
-                }
-            }
-        }
-
         // Compute behind-base from the actual stack tip, not the local base branch.
         // This avoids false positives when local `<base>` is stale but the stack
         // itself has already been rebased onto `origin/<base>`.
         let behind =
-            git::count_branch_behind_upstream(&repo, full_branch, &format!("origin/{}", base))
+            git::count_branch_behind_upstream(repo, full_branch, &format!("origin/{}", base))
                 .ok()
                 .filter(|&b| b > 0);
 
-        // Bucket each entry with a PR/MR
+        // Collect each entry with a mapped PR/MR for a later remote refresh.
         for entry in &entries {
             if let Some(mr_num) = entry.mr_number {
-                let mr_url = mr_urls.get(&mr_num).cloned().unwrap_or_default();
-
-                // If provider refresh failed (mr_state is None), default to
-                // PrState::Open so entries remain visible in the inbox rather
-                // than silently disappearing during transient failures.
-                let mr_state = entry.mr_state.clone().unwrap_or(PrState::Open);
-
-                let input = BucketInput {
-                    mr_state,
-                    ci_status: entry.ci_status.clone(),
-                    approved: entry.approved,
-                    changes_requested: entry.changes_requested,
-                    mergeable: entry.mergeable,
-                    behind_base: behind.is_some(),
-                };
-
-                if let Some(b) = bucket(&input) {
-                    items.push(InboxItem {
-                        stack_name: stack_name.clone(),
-                        position: entry.position,
-                        short_sha: entry.short_sha.clone(),
-                        title: entry.title.clone(),
-                        mr_number: mr_num,
-                        mr_url,
-                        mr_label: provider.as_ref().map(Provider::pr_label).unwrap_or("PR/MR"),
-                        mr_number_prefix: provider
-                            .as_ref()
-                            .map(Provider::pr_number_prefix)
-                            .unwrap_or("#"),
-                        bucket: b,
-                        ci_status: entry.ci_status.clone(),
-                        behind_base: behind,
-                    });
-                }
+                candidates.push(InboxCandidate {
+                    discovery_index: candidates.len(),
+                    stack_name: stack_name.clone(),
+                    position: entry.position,
+                    short_sha: entry.short_sha.clone(),
+                    title: entry.title.clone(),
+                    pr_number: mr_num,
+                    behind_base: behind,
+                });
             }
         }
     }
 
-    if !json {
-        eprintln!(" {}", style("done").green());
+    Ok(InboxDiscovery {
+        candidates,
+        stack_errors,
+    })
+}
+
+/// Run the inbox command.
+pub fn run(options: InboxOptions) -> Result<()> {
+    let repo = git::open_repo()?;
+    let config = Config::load_with_global(repo.commondir())?;
+    let discovery = discover_candidates(&repo, &config)?;
+    let mut streaming = options.jsonl.then(StreamingJson::new);
+
+    if let Some(streaming) = streaming.as_mut() {
+        emit_streaming_event(
+            streaming,
+            InboxStreamingEvent::Start {
+                total_candidates: discovery.candidates.len(),
+                total_stack_errors: discovery.stack_errors.len(),
+            },
+        );
+        for stack_error in &discovery.stack_errors {
+            emit_streaming_event(
+                streaming,
+                InboxStreamingEvent::StackError {
+                    stack_name: stack_error.stack_name.clone(),
+                    error: stack_error.error.clone(),
+                },
+            );
+        }
     }
+
+    if discovery.candidates.is_empty() {
+        if let Some(streaming) = streaming.as_mut() {
+            emit_streaming_summary(streaming, &[], &discovery.stack_errors);
+        } else if options.json {
+            print_json_output(&[], &discovery.stack_errors);
+        } else {
+            print_human_output(&[], &discovery.stack_errors);
+        }
+        return Ok(());
+    }
+
+    let provider = Provider::detect(&repo)?;
+    let mut renderer = if !options.json && !options.jsonl {
+        LiveInboxRenderer::stderr_if_interactive(&discovery.candidates, provider.pr_label())
+    } else {
+        None
+    };
+    provider.check_installed()?;
+
+    let mut completions: Vec<Option<InboxCompletion>> =
+        (0..discovery.candidates.len()).map(|_| None).collect();
+    let mut completed = 0;
+    refresh_candidates(
+        &discovery.candidates,
+        |candidate| {
+            provider
+                .get_inbox_snapshot(candidate.pr_number)
+                .map_err(|error| error.to_string())
+        },
+        |completion| {
+            completed += 1;
+            if let Some(streaming) = streaming.as_mut() {
+                emit_streaming_event(
+                    streaming,
+                    streaming_event_for_completion(
+                        &completion,
+                        provider,
+                        completed,
+                        discovery.candidates.len(),
+                        options.all,
+                    ),
+                );
+            }
+            if let Some(renderer) = renderer.as_mut() {
+                let state = live_row_state_for_completion(&completion, provider, options.all);
+                renderer.update(completion.candidate.discovery_index, state);
+            }
+            let index = completion.candidate.discovery_index;
+            completions[index] = Some(completion);
+        },
+    );
+
+    if let Some(renderer) = renderer.as_mut() {
+        renderer.finish_and_clear();
+    }
+    let mut items = items_from_completions(completions, provider)?;
+
+    // Closed entries are intentionally omitted from the inbox.
+    items.retain(|item| item.bucket().is_some());
 
     // Filter out merged unless --all
-    if !all {
-        items.retain(|item| item.bucket != ActionBucket::Merged);
+    if !options.all {
+        items.retain(|item| item.bucket() != Some(ActionBucket::Merged));
     }
 
-    if json {
-        print_json_output(&items, &stack_errors);
+    if let Some(streaming) = streaming.as_mut() {
+        emit_streaming_summary(streaming, &items, &discovery.stack_errors);
+    } else if options.json {
+        print_json_output(&items, &discovery.stack_errors);
     } else {
-        print_human_output(&items, &stack_errors);
+        print_human_output(&items, &discovery.stack_errors);
     }
 
     Ok(())
+}
+
+fn live_row_state_for_completion<'a>(
+    completion: &'a InboxCompletion,
+    provider: Provider,
+    all: bool,
+) -> InboxRowState<'a> {
+    match &completion.result {
+        Ok(snapshot) => {
+            let item =
+                InboxItem::from_snapshot(completion.candidate.clone(), snapshot.clone(), provider);
+            match item.bucket() {
+                Some(ActionBucket::Merged) if !all => InboxRowState::MergedHidden,
+                Some(bucket) => InboxRowState::Bucket(bucket),
+                None => InboxRowState::ClosedHidden,
+            }
+        }
+        Err(error) => InboxRowState::RefreshFailed(error),
+    }
+}
+
+fn streaming_event_for_completion(
+    completion: &InboxCompletion,
+    provider: Provider,
+    completed: usize,
+    total_candidates: usize,
+    all: bool,
+) -> InboxStreamingEvent {
+    match &completion.result {
+        Ok(snapshot) => {
+            let item =
+                InboxItem::from_snapshot(completion.candidate.clone(), snapshot.clone(), provider);
+            let bucket = item.bucket();
+            let included = bucket.is_some() && (all || bucket != Some(ActionBucket::Merged));
+            InboxStreamingEvent::Entry {
+                completed,
+                total_candidates,
+                included,
+                bucket: if included {
+                    bucket.map(|bucket| action_bucket_str(bucket).to_string())
+                } else {
+                    None
+                },
+                remote_state: pr_state_str(&snapshot.state).to_string(),
+                entry: item.to_json(),
+            }
+        }
+        Err(error) => InboxStreamingEvent::EntryError {
+            completed,
+            total_candidates,
+            included: true,
+            bucket: action_bucket_str(ActionBucket::RefreshFailed).to_string(),
+            entry: completion.candidate.to_json(),
+            error: error.clone(),
+        },
+    }
+}
+
+fn emit_streaming_event(streaming: &mut StreamingJson, event: InboxStreamingEvent) {
+    streaming.emit(&InboxStreamingResponse {
+        version: OUTPUT_VERSION,
+        command: "inbox".to_string(),
+        event,
+    });
+}
+
+fn emit_streaming_summary(
+    streaming: &mut StreamingJson,
+    items: &[InboxItem],
+    stack_errors: &[StackLoadError],
+) {
+    let response = build_json_response(items, stack_errors);
+    emit_streaming_event(
+        streaming,
+        InboxStreamingEvent::Summary {
+            total_items: response.total_items,
+            buckets: response.buckets,
+            stack_errors: response.stack_errors,
+        },
+    );
+}
+
+fn sanitize_human_diagnostic(message: &str) -> String {
+    message
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
 }
 
 fn print_human_output(items: &[InboxItem], stack_errors: &[StackLoadError]) {
@@ -427,6 +640,7 @@ fn print_human_output(items: &[InboxItem], stack_errors: &[StackLoadError]) {
     );
 
     let bucket_order = [
+        ActionBucket::RefreshFailed,
         ActionBucket::ReadyToLand,
         ActionBucket::ChangesRequested,
         ActionBucket::BlockedOnCi,
@@ -437,7 +651,10 @@ fn print_human_output(items: &[InboxItem], stack_errors: &[StackLoadError]) {
     ];
 
     for b in &bucket_order {
-        let group: Vec<&InboxItem> = items.iter().filter(|i| &i.bucket == b).collect();
+        let group: Vec<&InboxItem> = items
+            .iter()
+            .filter(|item| item.bucket() == Some(*b))
+            .collect();
         if group.is_empty() {
             continue;
         }
@@ -450,9 +667,15 @@ fn print_human_output(items: &[InboxItem], stack_errors: &[StackLoadError]) {
                 Some(CiStatus::Failed) => " ✗",
                 _ => "",
             };
+            let refresh_diagnostic = item
+                .refresh_error
+                .as_deref()
+                .map(sanitize_human_diagnostic)
+                .map(|error| format!(" — {error}"))
+                .unwrap_or_default();
 
             println!(
-                "  {} {}  {}  {}  {} {}{}{}",
+                "  {} {}  {}  {}  {} {}{}{}{}",
                 style(format!("{} #{}", item.stack_name, item.position)).dim(),
                 style(&item.short_sha).dim(),
                 item.title,
@@ -461,6 +684,7 @@ fn print_human_output(items: &[InboxItem], stack_errors: &[StackLoadError]) {
                 item.mr_number_prefix,
                 item.mr_number,
                 ci_icon,
+                refresh_diagnostic,
             );
         }
         println!();
@@ -481,6 +705,7 @@ fn print_human_output(items: &[InboxItem], stack_errors: &[StackLoadError]) {
 
 fn bucket_label(b: ActionBucket) -> &'static str {
     match b {
+        ActionBucket::RefreshFailed => "Refresh failed",
         ActionBucket::ReadyToLand => "Ready to land",
         ActionBucket::ChangesRequested => "Changes requested",
         ActionBucket::BlockedOnCi => "Blocked on CI",
@@ -491,9 +716,23 @@ fn bucket_label(b: ActionBucket) -> &'static str {
     }
 }
 
+fn action_bucket_str(bucket: ActionBucket) -> &'static str {
+    match bucket {
+        ActionBucket::RefreshFailed => "refresh_failed",
+        ActionBucket::ReadyToLand => "ready_to_land",
+        ActionBucket::ChangesRequested => "changes_requested",
+        ActionBucket::BlockedOnCi => "blocked_on_ci",
+        ActionBucket::AwaitingReview => "awaiting_review",
+        ActionBucket::BehindBase => "behind_base",
+        ActionBucket::Draft => "draft",
+        ActionBucket::Merged => "merged",
+    }
+}
+
 fn styled_bucket_label(b: ActionBucket) -> console::StyledObject<&'static str> {
     let label = bucket_label(b);
     match b {
+        ActionBucket::RefreshFailed => style(label).red().bold(),
         ActionBucket::ReadyToLand => style(label).green().bold(),
         ActionBucket::ChangesRequested => style(label).red().bold(),
         ActionBucket::BlockedOnCi => style(label).yellow().bold(),
@@ -504,7 +743,12 @@ fn styled_bucket_label(b: ActionBucket) -> console::StyledObject<&'static str> {
 }
 
 fn print_json_output(items: &[InboxItem], stack_errors: &[StackLoadError]) {
+    print_json(&build_json_response(items, stack_errors));
+}
+
+fn build_json_response(items: &[InboxItem], stack_errors: &[StackLoadError]) -> InboxResponse {
     let mut buckets = InboxBucketsJson {
+        refresh_failed: vec![],
         ready_to_land: vec![],
         changes_requested: vec![],
         blocked_on_ci: vec![],
@@ -515,29 +759,22 @@ fn print_json_output(items: &[InboxItem], stack_errors: &[StackLoadError]) {
     };
 
     for item in items {
-        let entry = InboxEntryJson {
-            stack_name: item.stack_name.clone(),
-            position: item.position,
-            sha: item.short_sha.clone(),
-            title: item.title.clone(),
-            pr_number: item.mr_number,
-            pr_url: item.mr_url.clone(),
-            ci_status: item.ci_status.as_ref().map(ci_status_str),
-            behind_base: item.behind_base,
-        };
+        let entry = item.to_json();
 
-        match item.bucket {
-            ActionBucket::ReadyToLand => buckets.ready_to_land.push(entry),
-            ActionBucket::ChangesRequested => buckets.changes_requested.push(entry),
-            ActionBucket::BlockedOnCi => buckets.blocked_on_ci.push(entry),
-            ActionBucket::AwaitingReview => buckets.awaiting_review.push(entry),
-            ActionBucket::BehindBase => buckets.behind_base.push(entry),
-            ActionBucket::Draft => buckets.draft.push(entry),
-            ActionBucket::Merged => buckets.merged.push(entry),
+        match item.bucket() {
+            Some(ActionBucket::RefreshFailed) => buckets.refresh_failed.push(entry),
+            Some(ActionBucket::ReadyToLand) => buckets.ready_to_land.push(entry),
+            Some(ActionBucket::ChangesRequested) => buckets.changes_requested.push(entry),
+            Some(ActionBucket::BlockedOnCi) => buckets.blocked_on_ci.push(entry),
+            Some(ActionBucket::AwaitingReview) => buckets.awaiting_review.push(entry),
+            Some(ActionBucket::BehindBase) => buckets.behind_base.push(entry),
+            Some(ActionBucket::Draft) => buckets.draft.push(entry),
+            Some(ActionBucket::Merged) => buckets.merged.push(entry),
+            None => continue,
         }
     }
 
-    print_json(&InboxResponse {
+    InboxResponse {
         version: OUTPUT_VERSION,
         total_items: items.len(),
         buckets,
@@ -548,7 +785,7 @@ fn print_json_output(items: &[InboxItem], stack_errors: &[StackLoadError]) {
                 error: stack_error.error.clone(),
             })
             .collect(),
-    });
+    }
 }
 
 fn ci_status_str(ci: &CiStatus) -> String {
@@ -562,10 +799,46 @@ fn ci_status_str(ci: &CiStatus) -> String {
     }
 }
 
+fn pr_state_str(state: &PrState) -> &'static str {
+    match state {
+        PrState::Open => "open",
+        PrState::Merged => "merged",
+        PrState::Closed => "closed",
+        PrState::Draft => "draft",
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::render::InboxRowState;
     use super::*;
     use crate::provider::{CiStatus, PrState};
+
+    fn candidate(discovery_index: usize) -> InboxCandidate {
+        InboxCandidate {
+            discovery_index,
+            stack_name: "stack".to_string(),
+            position: discovery_index + 1,
+            short_sha: format!("{discovery_index:07x}"),
+            title: format!("Candidate {discovery_index}"),
+            pr_number: discovery_index as u64 + 10,
+            behind_base: None,
+        }
+    }
+
+    fn completion(candidate: InboxCandidate) -> InboxCompletion {
+        InboxCompletion {
+            candidate,
+            result: Ok(InboxSnapshot {
+                state: PrState::Open,
+                url: "https://example.com/pull/1".to_string(),
+                approved: false,
+                changes_requested: false,
+                mergeable: true,
+                ci_status: None,
+            }),
+        }
+    }
 
     fn make_input(
         state: PrState,
@@ -576,6 +849,7 @@ mod tests {
         behind_base: bool,
     ) -> BucketInput {
         BucketInput {
+            refresh_failed: false,
             mr_state: state,
             ci_status: ci,
             approved,
@@ -583,6 +857,125 @@ mod tests {
             mergeable,
             behind_base,
         }
+    }
+
+    #[test]
+    fn refresh_failure_has_highest_priority() {
+        let input = BucketInput {
+            refresh_failed: true,
+            mr_state: PrState::Merged,
+            ci_status: Some(CiStatus::Success),
+            approved: true,
+            changes_requested: true,
+            mergeable: true,
+            behind_base: true,
+        };
+
+        assert_eq!(bucket(&input), Some(ActionBucket::RefreshFailed));
+    }
+
+    #[test]
+    fn builds_items_in_discovery_order_after_out_of_order_completions() {
+        let mut completions: Vec<Option<InboxCompletion>> = (0..2).map(|_| None).collect();
+        for completion in [completion(candidate(1)), completion(candidate(0))] {
+            let index = completion.candidate.discovery_index;
+            completions[index] = Some(completion);
+        }
+
+        let items = items_from_completions(completions, Provider::GitHub).unwrap();
+
+        assert_eq!(
+            items.iter().map(|item| item.mr_number).collect::<Vec<_>>(),
+            vec![10, 11]
+        );
+    }
+
+    #[test]
+    fn included_completion_uses_its_final_bucket_for_the_live_row() {
+        let mut completion = completion(candidate(0));
+        let Ok(snapshot) = &mut completion.result else {
+            unreachable!();
+        };
+        snapshot.approved = true;
+
+        assert!(matches!(
+            live_row_state_for_completion(&completion, Provider::GitHub, false),
+            InboxRowState::Bucket(ActionBucket::ReadyToLand)
+        ));
+    }
+
+    #[test]
+    fn excluded_completion_stays_visible_as_a_hidden_live_row() {
+        let mut merged = completion(candidate(0));
+        let Ok(snapshot) = &mut merged.result else {
+            unreachable!();
+        };
+        snapshot.state = PrState::Merged;
+        let mut closed = completion(candidate(1));
+        let Ok(snapshot) = &mut closed.result else {
+            unreachable!();
+        };
+        snapshot.state = PrState::Closed;
+
+        assert!(matches!(
+            live_row_state_for_completion(&merged, Provider::GitHub, false),
+            InboxRowState::MergedHidden
+        ));
+        assert!(matches!(
+            live_row_state_for_completion(&closed, Provider::GitHub, false),
+            InboxRowState::ClosedHidden
+        ));
+    }
+
+    #[test]
+    fn refresh_error_is_exposed_on_the_live_row() {
+        let completion = InboxCompletion {
+            candidate: candidate(0),
+            result: Err("provider timed out".to_string()),
+        };
+
+        assert!(matches!(
+            live_row_state_for_completion(&completion, Provider::GitHub, false),
+            InboxRowState::RefreshFailed("provider timed out")
+        ));
+    }
+
+    #[test]
+    fn human_diagnostic_preserves_ordinary_text() {
+        assert_eq!(
+            sanitize_human_diagnostic("Failed to check approvals for MR !42"),
+            "Failed to check approvals for MR !42"
+        );
+    }
+
+    #[test]
+    fn human_diagnostic_neutralizes_embedded_newlines() {
+        let sanitized = sanitize_human_diagnostic("first line\r\nsecond line");
+
+        assert!(!sanitized.contains('\r'));
+        assert!(!sanitized.contains('\n'));
+        assert!(sanitized.contains("first line"));
+        assert!(sanitized.contains("second line"));
+    }
+
+    #[test]
+    fn human_diagnostic_does_not_emit_terminal_controls() {
+        let sanitized = sanitize_human_diagnostic("failure: \u{1b}[31mred\u{7}");
+
+        assert!(!sanitized.chars().any(char::is_control));
+        assert!(sanitized.contains("failure:"));
+        assert!(sanitized.contains("red"));
+    }
+
+    #[test]
+    fn missing_completion_is_an_internal_error() {
+        let error =
+            items_from_completions(vec![Some(completion(candidate(0))), None], Provider::GitHub)
+                .err()
+                .expect("missing completion should fail");
+
+        assert!(matches!(error, GgError::Other(_)));
+        assert!(error.to_string().contains("discovery index 1"));
     }
 
     #[test]
@@ -653,6 +1046,12 @@ mod tests {
             false,
             false,
         );
+        assert_eq!(bucket(&input), Some(ActionBucket::AwaitingReview));
+    }
+
+    #[test]
+    fn approved_without_ci_but_not_mergeable_is_not_ready() {
+        let input = make_input(PrState::Open, None, true, false, false, false);
         assert_eq!(bucket(&input), Some(ActionBucket::AwaitingReview));
     }
 
@@ -794,6 +1193,7 @@ mod tests {
 
     #[test]
     fn action_bucket_display_order() {
+        assert!(ActionBucket::RefreshFailed < ActionBucket::ReadyToLand);
         assert!(ActionBucket::ReadyToLand < ActionBucket::ChangesRequested);
         assert!(ActionBucket::ChangesRequested < ActionBucket::BlockedOnCi);
         assert!(ActionBucket::BlockedOnCi < ActionBucket::AwaitingReview);

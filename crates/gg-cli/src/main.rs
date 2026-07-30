@@ -522,6 +522,10 @@ enum Commands {
         /// Output structured JSON
         #[arg(long)]
         json: bool,
+
+        /// Output streaming NDJSON (one event per line; flushed after each)
+        #[arg(long = "jsonl", conflicts_with = "json")]
+        jsonl: bool,
     },
 
     /// Repair stack ancestry after manual history changes (amend, cherry-pick, rebase)
@@ -562,6 +566,7 @@ enum Commands {
 
 fn main() {
     let cli = Cli::parse();
+    let mut streaming_command: Option<&'static str> = None;
 
     let (result, json_mode, jsonl) = match cli.command {
         // No command = show stacks (like `gg ls`)
@@ -606,6 +611,10 @@ fn main() {
             until,
             no_verify,
         }) => {
+            if jsonl {
+                streaming_command = Some("sync");
+            }
+
             // Determine run_lint based on flags and config
             let run_lint = if lint {
                 // --lint explicitly passed
@@ -868,8 +877,19 @@ fn main() {
             false,
             false,
         ),
-        Some(Commands::Inbox { all, json }) => {
-            (gg_core::commands::inbox::run(all, json), json, false)
+        Some(Commands::Inbox { all, json, jsonl }) => {
+            if jsonl {
+                streaming_command = Some("inbox");
+            }
+            (
+                gg_core::commands::inbox::run(gg_core::commands::inbox::InboxOptions {
+                    all,
+                    json,
+                    jsonl,
+                }),
+                json || jsonl,
+                jsonl,
+            )
         }
         Some(Commands::Restack {
             dry_run,
@@ -910,13 +930,15 @@ fn main() {
         }
         if json_mode {
             if jsonl {
+                let command =
+                    streaming_command.expect("streaming command must be tracked in JSONL mode");
                 gg_core::output::StreamingJson::emit_and_exit(
-                    &gg_core::output::SyncStreamingResponse {
+                    &gg_core::output::StreamingErrorResponse {
                         version: gg_core::output::OUTPUT_VERSION,
-                        command: "sync".to_string(),
-                        event: gg_core::output::SyncStreamingEvent::Error {
-                            message: e.to_string(),
-                        },
+                        command,
+                        status: "error",
+                        event: "error",
+                        message: e.to_string(),
                     },
                     1,
                 );

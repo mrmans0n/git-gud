@@ -1,11 +1,13 @@
 //! Inbox command — multi-stack actionable triage view.
 
 mod refresh;
+mod render;
 
 use console::style;
 use serde::Serialize;
 
 use self::refresh::{refresh_candidates, InboxCompletion};
+use self::render::{InboxRowState, LiveInboxRenderer};
 use crate::config::Config;
 use crate::error::GgError;
 use crate::error::Result;
@@ -442,14 +444,12 @@ pub fn run(options: InboxOptions) -> Result<()> {
     }
 
     let provider = Provider::detect(&repo)?;
+    let mut renderer = if !options.json && !options.jsonl {
+        LiveInboxRenderer::stderr_if_interactive(&discovery.candidates, provider.pr_label())
+    } else {
+        None
+    };
     provider.check_installed()?;
-
-    if !options.json && !options.jsonl {
-        eprint!(
-            "{}",
-            style(format!("Refreshing {} status...", provider.pr_label())).dim()
-        );
-    }
 
     let mut completions: Vec<Option<InboxCompletion>> =
         (0..discovery.candidates.len()).map(|_| None).collect();
@@ -475,15 +475,19 @@ pub fn run(options: InboxOptions) -> Result<()> {
                     ),
                 );
             }
+            if let Some(renderer) = renderer.as_mut() {
+                let state = live_row_state_for_completion(&completion, provider, options.all);
+                renderer.update(completion.candidate.discovery_index, state);
+            }
             let index = completion.candidate.discovery_index;
             completions[index] = Some(completion);
         },
     );
-    let mut items = items_from_completions(completions, provider)?;
 
-    if !options.json && !options.jsonl {
-        eprintln!(" {}", style("done").green());
+    if let Some(renderer) = renderer.as_mut() {
+        renderer.finish_and_clear();
     }
+    let mut items = items_from_completions(completions, provider)?;
 
     // Closed entries are intentionally omitted from the inbox.
     items.retain(|item| item.bucket().is_some());
@@ -502,6 +506,25 @@ pub fn run(options: InboxOptions) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn live_row_state_for_completion<'a>(
+    completion: &'a InboxCompletion,
+    provider: Provider,
+    all: bool,
+) -> InboxRowState<'a> {
+    match &completion.result {
+        Ok(snapshot) => {
+            let item =
+                InboxItem::from_snapshot(completion.candidate.clone(), snapshot.clone(), provider);
+            match item.bucket() {
+                Some(ActionBucket::Merged) if !all => InboxRowState::MergedHidden,
+                Some(bucket) => InboxRowState::Bucket(bucket),
+                None => InboxRowState::ClosedHidden,
+            }
+        }
+        Err(error) => InboxRowState::RefreshFailed(error),
+    }
 }
 
 fn streaming_event_for_completion(
@@ -767,6 +790,7 @@ fn pr_state_str(state: &PrState) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use super::render::InboxRowState;
     use super::*;
     use crate::provider::{CiStatus, PrState};
 
@@ -844,6 +868,56 @@ mod tests {
             items.iter().map(|item| item.mr_number).collect::<Vec<_>>(),
             vec![10, 11]
         );
+    }
+
+    #[test]
+    fn included_completion_uses_its_final_bucket_for_the_live_row() {
+        let mut completion = completion(candidate(0));
+        let Ok(snapshot) = &mut completion.result else {
+            unreachable!();
+        };
+        snapshot.approved = true;
+
+        assert!(matches!(
+            live_row_state_for_completion(&completion, Provider::GitHub, false),
+            InboxRowState::Bucket(ActionBucket::ReadyToLand)
+        ));
+    }
+
+    #[test]
+    fn excluded_completion_stays_visible_as_a_hidden_live_row() {
+        let mut merged = completion(candidate(0));
+        let Ok(snapshot) = &mut merged.result else {
+            unreachable!();
+        };
+        snapshot.state = PrState::Merged;
+        let mut closed = completion(candidate(1));
+        let Ok(snapshot) = &mut closed.result else {
+            unreachable!();
+        };
+        snapshot.state = PrState::Closed;
+
+        assert!(matches!(
+            live_row_state_for_completion(&merged, Provider::GitHub, false),
+            InboxRowState::MergedHidden
+        ));
+        assert!(matches!(
+            live_row_state_for_completion(&closed, Provider::GitHub, false),
+            InboxRowState::ClosedHidden
+        ));
+    }
+
+    #[test]
+    fn refresh_error_is_exposed_on_the_live_row() {
+        let completion = InboxCompletion {
+            candidate: candidate(0),
+            result: Err("provider timed out".to_string()),
+        };
+
+        assert!(matches!(
+            live_row_state_for_completion(&completion, Provider::GitHub, false),
+            InboxRowState::RefreshFailed("provider timed out")
+        ));
     }
 
     #[test]

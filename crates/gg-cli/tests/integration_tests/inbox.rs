@@ -486,8 +486,8 @@ fn test_gg_inbox_human_uses_gitlab_mr_label() {
     assert!(success, "gg inbox failed: {}", stderr);
 
     assert!(
-        stderr.contains("Refreshing MR status"),
-        "stderr should use MR wording for GitLab, got: {stderr}"
+        !stderr.contains("Refreshing MR status"),
+        "redirected stderr should not contain static refresh progress, got: {stderr}"
     );
     assert!(
         stdout.contains("MR !42"),
@@ -507,8 +507,8 @@ fn test_gg_inbox_human_uses_github_pr_label() {
     assert!(success, "gg inbox failed: {}", stderr);
 
     assert!(
-        stderr.contains("Refreshing PR status"),
-        "stderr should use PR wording for GitHub, got: {stderr}"
+        !stderr.contains("Refreshing PR status"),
+        "redirected stderr should not contain static refresh progress, got: {stderr}"
     );
     assert!(
         stdout.contains("PR #43"),

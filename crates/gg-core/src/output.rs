@@ -395,8 +395,9 @@ pub struct InboxResponse {
     pub stack_errors: Vec<InboxStackErrorJson>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct InboxBucketsJson {
+    pub refresh_failed: Vec<InboxEntryJson>,
     pub ready_to_land: Vec<InboxEntryJson>,
     pub changes_requested: Vec<InboxEntryJson>,
     pub blocked_on_ci: Vec<InboxEntryJson>,
@@ -407,7 +408,7 @@ pub struct InboxBucketsJson {
     pub merged: Vec<InboxEntryJson>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct InboxEntryJson {
     pub stack_name: String,
     pub position: usize,
@@ -417,6 +418,8 @@ pub struct InboxEntryJson {
     pub pr_url: String,
     pub ci_status: Option<String>,
     pub behind_base: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -525,8 +528,19 @@ mod tests {
     fn inbox_response_serializes() {
         let response = InboxResponse {
             version: OUTPUT_VERSION,
-            total_items: 1,
+            total_items: 2,
             buckets: InboxBucketsJson {
+                refresh_failed: vec![InboxEntryJson {
+                    stack_name: "auth".to_string(),
+                    position: 2,
+                    sha: "def5678".to_string(),
+                    title: "Refresh failed".to_string(),
+                    pr_number: 42,
+                    pr_url: String::new(),
+                    ci_status: None,
+                    behind_base: None,
+                    refresh_error: Some("failed to refresh PR #42".to_string()),
+                }],
                 ready_to_land: vec![InboxEntryJson {
                     stack_name: "auth".to_string(),
                     position: 1,
@@ -536,6 +550,7 @@ mod tests {
                     pr_url: "https://github.com/org/repo/pull/42".to_string(),
                     ci_status: Some("success".to_string()),
                     behind_base: None,
+                    refresh_error: None,
                 }],
                 changes_requested: vec![],
                 blocked_on_ci: vec![],
@@ -549,8 +564,15 @@ mod tests {
 
         let value = serde_json::to_value(&response).expect("should serialize");
         assert_eq!(value["version"], OUTPUT_VERSION);
-        assert_eq!(value["total_items"], 1);
+        assert_eq!(value["total_items"], 2);
+        assert_eq!(
+            value["buckets"]["refresh_failed"][0]["refresh_error"],
+            "failed to refresh PR #42"
+        );
         assert_eq!(value["buckets"]["ready_to_land"][0]["pr_number"], 42);
+        assert!(value["buckets"]["ready_to_land"][0]
+            .get("refresh_error")
+            .is_none());
         // merged bucket should be omitted when empty
         assert!(value["buckets"].get("merged").is_none());
     }

@@ -1,4 +1,4 @@
-use crate::helpers::{create_test_repo, run_gg, run_git};
+use crate::helpers::{create_test_repo, run_gg, run_gg_with_env, run_git};
 
 use serde_json::Value;
 use std::fs;
@@ -33,6 +33,7 @@ fn test_gg_inbox_json_no_stacks() {
         .as_object()
         .expect("buckets must be an object");
     for key in [
+        "refresh_failed",
         "ready_to_land",
         "changes_requested",
         "blocked_on_ci",
@@ -202,6 +203,102 @@ fn create_repo_with_inbox_item(provider: &str, mr_number: u64) -> (TempDir, Path
     .expect("Failed to write config");
 
     (temp_dir, repo_path)
+}
+
+fn write_fake_gh(temp_dir: &TempDir, fails_pr_view: bool) -> (PathBuf, PathBuf) {
+    let fake_bin = temp_dir.path().join("fake-bin");
+    fs::create_dir_all(&fake_bin).expect("create fake gh directory");
+    let log_path = temp_dir.path().join("gh-requests.log");
+    let pr_view_response = if fails_pr_view {
+        "echo 'simulated provider failure' >&2\n  exit 1"
+    } else {
+        r#"printf '%s\n' '{"number":42,"title":"Inbox item","state":"OPEN","url":"https://github.com/acme/app/pull/42","headRefName":"testuser/inbox-copy/c-abc1234","isDraft":false,"mergeable":"MERGEABLE","reviewDecision":"APPROVED","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}]}'
+  exit 0"#
+    };
+    fs::write(
+        fake_bin.join("gh"),
+        format!(
+            r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "gh version test"
+  exit 0
+fi
+printf '%s\n' "$*" >> "$GG_FAKE_LOG"
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  {pr_view_response}
+fi
+exit 1
+"#
+        ),
+    )
+    .expect("write fake gh");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(fake_bin.join("gh"), fs::Permissions::from_mode(0o755))
+            .expect("make fake gh executable");
+    }
+
+    (fake_bin, log_path)
+}
+
+#[test]
+fn test_gg_inbox_uses_one_snapshot_request_per_github_candidate() {
+    let (temp_dir, repo_path) = create_repo_with_inbox_item("github", 42);
+    let (fake_bin, log_path) = write_fake_gh(&temp_dir, false);
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["inbox", "--json"],
+        &[
+            ("PATH", fake_bin.as_os_str()),
+            ("GG_FAKE_LOG", log_path.as_os_str()),
+        ],
+    );
+    assert!(success, "gg inbox --json failed: {stderr}");
+
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(
+        parsed["buckets"]["ready_to_land"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        fs::read_to_string(log_path)
+            .expect("read fake gh log")
+            .lines()
+            .filter(|line| line.starts_with("pr view "))
+            .count(),
+        1,
+        "one candidate should issue exactly one snapshot request"
+    );
+}
+
+#[test]
+fn test_gg_inbox_reports_snapshot_refresh_failures_without_failing() {
+    let (temp_dir, repo_path) = create_repo_with_inbox_item("github", 42);
+    let (fake_bin, log_path) = write_fake_gh(&temp_dir, true);
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["inbox", "--json"],
+        &[
+            ("PATH", fake_bin.as_os_str()),
+            ("GG_FAKE_LOG", log_path.as_os_str()),
+        ],
+    );
+    assert!(success, "refresh failures should not fail inbox: {stderr}");
+
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    let refresh_failed = parsed["buckets"]["refresh_failed"]
+        .as_array()
+        .expect("refresh_failed must be an array");
+    assert_eq!(refresh_failed.len(), 1);
+    assert!(refresh_failed[0].get("refresh_error").is_some());
+    assert!(parsed["buckets"]["awaiting_review"]
+        .as_array()
+        .expect("awaiting_review must be an array")
+        .is_empty());
 }
 
 #[test]

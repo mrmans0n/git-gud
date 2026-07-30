@@ -13,13 +13,23 @@ pub(super) struct InboxCompletion {
     pub result: std::result::Result<InboxSnapshot, String>,
 }
 
-pub(super) fn refresh_candidates<F, C>(
+pub(super) fn refresh_candidates<F, C>(candidates: &[InboxCandidate], refresh: F, on_completion: C)
+where
+    F: Fn(&InboxCandidate) -> std::result::Result<InboxSnapshot, String> + Sync,
+    C: FnMut(InboxCompletion),
+{
+    refresh_candidates_with_worker_count_observer(candidates, refresh, on_completion, |_| {});
+}
+
+fn refresh_candidates_with_worker_count_observer<F, C, O>(
     candidates: &[InboxCandidate],
     refresh: F,
     mut on_completion: C,
+    on_workers_spawned: O,
 ) where
     F: Fn(&InboxCandidate) -> std::result::Result<InboxSnapshot, String> + Sync,
     C: FnMut(InboxCompletion),
+    O: FnOnce(usize),
 {
     let worker_count = candidates.len().min(MAX_INBOX_REFRESH_WORKERS);
     if worker_count == 0 {
@@ -46,6 +56,7 @@ pub(super) fn refresh_candidates<F, C>(
             });
         }
 
+        on_workers_spawned(worker_count);
         drop(sender);
         for completion in receiver {
             on_completion(completion);
@@ -59,7 +70,7 @@ mod tests {
     use std::sync::{Barrier, Condvar, Mutex};
     use std::thread;
 
-    use super::refresh_candidates;
+    use super::{refresh_candidates, refresh_candidates_with_worker_count_observer};
     use crate::commands::inbox::InboxCandidate;
     use crate::provider::{InboxSnapshot, PrState};
 
@@ -90,25 +101,48 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct FirstWave {
+        expected: Option<usize>,
+        entered: usize,
+        released: bool,
+    }
+
     #[test]
     fn refreshes_at_most_four_candidates_at_once() {
         let active = AtomicUsize::new(0);
         let maximum = AtomicUsize::new(0);
-        let first_wave = Barrier::new(4);
+        let first_wave = (Mutex::new(FirstWave::default()), Condvar::new());
         let candidates = candidates(8);
 
-        refresh_candidates(
+        refresh_candidates_with_worker_count_observer(
             &candidates,
-            |candidate| {
+            |_| {
                 let now = active.fetch_add(1, Ordering::SeqCst) + 1;
                 maximum.fetch_max(now, Ordering::SeqCst);
-                if candidate.discovery_index < 4 {
-                    first_wave.wait();
+
+                let (lock, ready) = &first_wave;
+                let mut wave = lock.lock().unwrap();
+                wave.entered += 1;
+                if wave.expected == Some(wave.entered) {
+                    wave.released = true;
+                    ready.notify_all();
                 }
+                drop(ready.wait_while(wave, |wave| !wave.released).unwrap());
+
                 active.fetch_sub(1, Ordering::SeqCst);
                 Ok(snapshot())
             },
             |_| {},
+            |worker_count| {
+                let (lock, ready) = &first_wave;
+                let mut wave = lock.lock().unwrap();
+                wave.expected = Some(worker_count);
+                if wave.entered == worker_count {
+                    wave.released = true;
+                }
+                ready.notify_all();
+            },
         );
 
         assert_eq!(maximum.load(Ordering::SeqCst), 4);

@@ -16,6 +16,7 @@ use crate::error::{GgError, Result};
 
 /// Default configuration values
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Defaults {
     /// Git hosting provider ("github" or "gitlab")
     /// Used for self-hosted instances where URL detection fails
@@ -24,6 +25,10 @@ pub struct Defaults {
     /// GitLab-specific defaults
     #[serde(default)]
     pub gitlab: GitLabDefaults,
+
+    /// GitHub-specific defaults
+    #[serde(default)]
+    pub github: GithubDefaults,
 
     /// Base branch name (default: auto-detect main/master/trunk)
     pub base: Option<String>,
@@ -115,6 +120,7 @@ impl Default for Defaults {
         Self {
             provider: None,
             gitlab: GitLabDefaults::default(),
+            github: GithubDefaults::default(),
             base: None,
             branch_username: None,
             lint: Vec::new(),
@@ -141,6 +147,23 @@ pub struct GitLabDefaults {
     /// ("merge when pipeline succeeds") instead of attempting an immediate merge.
     #[serde(default)]
     pub auto_merge_on_land: bool,
+}
+
+/// GitHub Stacked PR integration behavior during sync.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum GithubStacksIntegration {
+    Off,
+    #[default]
+    Auto,
+    Force,
+}
+
+/// GitHub-specific default settings.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct GithubDefaults {
+    #[serde(default)]
+    pub stacks_integration: GithubStacksIntegration,
 }
 
 /// Per-stack configuration
@@ -346,6 +369,11 @@ impl Config {
     /// Get whether GitLab auto-merge-on-land is enabled by default (default: false)
     pub fn get_gitlab_auto_merge_on_land(&self) -> bool {
         self.defaults.gitlab.auto_merge_on_land
+    }
+
+    /// Get the GitHub Stacked PR integration behavior (default: auto).
+    pub fn get_github_stacks_integration(&self) -> GithubStacksIntegration {
+        self.defaults.github.stacks_integration
     }
 
     /// Get whether to auto-lint before sync (default: false)
@@ -681,6 +709,54 @@ mod tests {
         assert!(
             contents.contains("gitlab"),
             "gitlab defaults should always be serialized"
+        );
+    }
+
+    #[test]
+    fn test_github_stacks_integration_defaults_to_auto() {
+        let config: Config = serde_json::from_str(r#"{"defaults":{}}"#).unwrap();
+        assert_eq!(
+            config.get_github_stacks_integration(),
+            GithubStacksIntegration::Auto
+        );
+    }
+
+    #[test]
+    fn test_github_stacks_integration_round_trips_all_modes() {
+        for mode in [
+            GithubStacksIntegration::Off,
+            GithubStacksIntegration::Auto,
+            GithubStacksIntegration::Force,
+        ] {
+            let mut config = Config::default();
+            config.defaults.github.stacks_integration = mode;
+            let json = serde_json::to_string(&config).unwrap();
+            let parsed: Config = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed.get_github_stacks_integration(), mode);
+        }
+    }
+
+    #[test]
+    fn test_github_stacks_integration_uses_lowercase_json() {
+        let config: Config =
+            serde_json::from_str(r#"{"defaults":{"github":{"stacks_integration":"force"}}}"#)
+                .unwrap();
+        assert_eq!(
+            config.get_github_stacks_integration(),
+            GithubStacksIntegration::Force
+        );
+    }
+
+    #[test]
+    fn test_local_config_overrides_global_github_stacks_mode() {
+        let mut effective = Config::default();
+        effective.defaults.github.stacks_integration = GithubStacksIntegration::Force;
+        let mut local = Config::default();
+        local.defaults.github.stacks_integration = GithubStacksIntegration::Off;
+        effective.merge_local(local);
+        assert_eq!(
+            effective.get_github_stacks_integration(),
+            GithubStacksIntegration::Off
         );
     }
 

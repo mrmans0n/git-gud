@@ -10,7 +10,8 @@ use crate::config::{Config, GithubStacksIntegration};
 use crate::error::{GgError, Result};
 use crate::git::{self, get_commit_description, strip_gg_id_from_message};
 use crate::github_stacks::{
-    reconcile_with_gh, GithubStackAction, GithubStackReason, GithubStackSyncResult,
+    reconcile_with_gh, GithubStackAction, GithubStackReason, GithubStackReconcileOutcome,
+    GithubStackSyncResult,
 };
 use crate::managed_body;
 use crate::operations::{OperationKind, RemoteEffect, SnapshotScope};
@@ -55,6 +56,18 @@ fn github_stack_preflight_skip(
         reason,
         active_pr_numbers.to_vec(),
     ))
+}
+
+fn consume_github_stack_outcome(
+    outcome: GithubStackReconcileOutcome,
+    touched_remote: &mut bool,
+    mark_touched_remote: impl FnOnce(),
+) -> GithubStackSyncResult {
+    if outcome.mutation_attempted {
+        *touched_remote = true;
+        mark_touched_remote();
+    }
+    outcome.result
 }
 
 fn sync_progress_bar(len: u64, draw_target: ProgressDrawTarget) -> ProgressBar {
@@ -1204,11 +1217,9 @@ pub fn run(
                 result
             } else {
                 let outcome = reconcile_with_gh(mode, &stack.base, &active_pr_numbers);
-                if outcome.mutation_attempted {
-                    touched_remote = true;
+                consume_github_stack_outcome(outcome, &mut touched_remote, || {
                     guard.mark_touched_remote();
-                }
-                outcome.result
+                })
             };
 
             let warning_message = result.is_warning().then(|| {
@@ -1721,14 +1732,16 @@ fn create_entry_branch(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_pr_payload, clean_title, compute_target_branch, description_with_replacement_note,
-        ensure_draft_prefix_for_gitlab, github_stack_preflight_skip, is_wip_or_draft_prefix,
-        mismatched_pr_head_branch, replacement_closing_comment, suspend_sync_progress,
-        sync_progress_bar,
+        build_pr_payload, clean_title, compute_target_branch, consume_github_stack_outcome,
+        description_with_replacement_note, ensure_draft_prefix_for_gitlab,
+        github_stack_preflight_skip, is_wip_or_draft_prefix, mismatched_pr_head_branch,
+        replacement_closing_comment, suspend_sync_progress, sync_progress_bar,
     };
     use crate::config::GithubStacksIntegration;
     use crate::git;
-    use crate::github_stacks::{GithubStackReason, GithubStackSyncResult};
+    use crate::github_stacks::{
+        GithubStackAction, GithubStackReason, GithubStackReconcileOutcome, GithubStackSyncResult,
+    };
     use crate::output::{
         SyncEntryResultJson, SyncMetadataJson, SyncResponse, SyncResultJson, OUTPUT_VERSION,
     };
@@ -2243,6 +2256,51 @@ mod tests {
         let result =
             github_stack_preflight_skip(GithubStacksIntegration::Auto, None, &[41], false).unwrap();
         assert_eq!(result.reason, Some(GithubStackReason::InsufficientPrs));
+    }
+
+    #[test]
+    fn github_stack_mutation_attempt_marks_remote_touched() {
+        let outcome = GithubStackReconcileOutcome {
+            result: GithubStackSyncResult {
+                mode: GithubStacksIntegration::Auto,
+                action: GithubStackAction::Warning,
+                reason: Some(GithubStackReason::BackendFailed),
+                stack_number: None,
+                pr_numbers: vec![41, 42],
+                message: Some("link failed".to_string()),
+            },
+            mutation_attempted: true,
+        };
+        let mut touched_remote = false;
+        let mut guard_marked = false;
+
+        let result =
+            consume_github_stack_outcome(outcome, &mut touched_remote, || guard_marked = true);
+
+        assert!(touched_remote);
+        assert!(guard_marked);
+        assert_eq!(result.reason, Some(GithubStackReason::BackendFailed));
+    }
+
+    #[test]
+    fn github_stack_non_mutating_outcome_does_not_mark_remote_touched() {
+        let outcome = GithubStackReconcileOutcome {
+            result: GithubStackSyncResult::skipped(
+                GithubStacksIntegration::Auto,
+                GithubStackReason::MissingExtension,
+                vec![41, 42],
+            ),
+            mutation_attempted: false,
+        };
+        let mut touched_remote = false;
+        let mut guard_marked = false;
+
+        let result =
+            consume_github_stack_outcome(outcome, &mut touched_remote, || guard_marked = true);
+
+        assert!(!touched_remote);
+        assert!(!guard_marked);
+        assert_eq!(result.reason, Some(GithubStackReason::MissingExtension));
     }
 
     // --- Tests for compute_target_branch (walk-back algorithm) ---

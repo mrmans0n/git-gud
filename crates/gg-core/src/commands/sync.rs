@@ -10,8 +10,7 @@ use crate::config::{Config, GithubStacksIntegration};
 use crate::error::{GgError, Result};
 use crate::git::{self, get_commit_description, strip_gg_id_from_message};
 use crate::github_stacks::{
-    reconcile_with_gh, GithubStackAction, GithubStackReason, GithubStackReconcileOutcome,
-    GithubStackSyncResult,
+    reconcile_with_gh_before_mutation, GithubStackAction, GithubStackReason, GithubStackSyncResult,
 };
 use crate::managed_body;
 use crate::operations::{OperationKind, RemoteEffect, SnapshotScope};
@@ -56,18 +55,6 @@ fn github_stack_preflight_skip(
         reason,
         active_pr_numbers.to_vec(),
     ))
-}
-
-fn consume_github_stack_outcome(
-    outcome: GithubStackReconcileOutcome,
-    touched_remote: &mut bool,
-    mark_touched_remote: impl FnOnce(),
-) -> GithubStackSyncResult {
-    if outcome.mutation_attempted {
-        *touched_remote = true;
-        mark_touched_remote();
-    }
-    outcome.result
 }
 
 fn sync_progress_bar(len: u64, draw_target: ProgressDrawTarget) -> ProgressBar {
@@ -521,6 +508,7 @@ pub fn run(
     // Track which entries are closed/merged so downstream entries can skip them
     // when computing their target branch (walk-back algorithm for stacked MRs).
     let mut entry_is_closed: Vec<bool> = Vec::with_capacity(entries_to_sync.len());
+    let mut entry_has_unresolved_pr_state: Vec<bool> = Vec::with_capacity(entries_to_sync.len());
 
     if let Some(s) = streamer.as_mut() {
         s.emit(&SyncStreamingResponse {
@@ -569,6 +557,7 @@ pub fn run(
         let mut pr_state_cached: Option<crate::stack_nav::PrEntryState> = None;
         let mut effective_draft = entry_draft;
         let mut is_entry_closed = false;
+        let mut pr_state_unresolved = false;
 
         let (title, description) = build_pr_payload(
             &title,
@@ -643,6 +632,7 @@ pub fn run(
                     });
                     nav_snapshots.push(None);
                     entry_is_closed.push(false);
+                    entry_has_unresolved_pr_state.push(true);
                     continue;
                 }
 
@@ -686,7 +676,13 @@ pub fn run(
             Some(pr_num) => {
                 pr_number = Some(pr_num);
                 // Check if PR is still open before updating
-                let pr_info = provider.get_pr_info(pr_num).ok();
+                let pr_info = match provider.get_pr_info(pr_num) {
+                    Ok(info) => Some(info),
+                    Err(_) => {
+                        pr_state_unresolved = true;
+                        None
+                    }
+                };
                 pr_url = pr_info.as_ref().map(|info| info.url.clone());
                 // Cache the state so the nav reconcile pass can reuse it without
                 // a second network round-trip.
@@ -1181,6 +1177,7 @@ pub fn run(
         };
         nav_snapshots.push(nav_snapshot);
         entry_is_closed.push(is_entry_closed);
+        entry_has_unresolved_pr_state.push(pr_state_unresolved);
 
         pb.inc(1);
     }
@@ -1203,7 +1200,10 @@ pub fn run(
     let has_unresolved_active_pr = nav_snapshots
         .iter()
         .zip(&entry_is_closed)
-        .any(|(snapshot, is_closed)| !*is_closed && snapshot.is_none());
+        .zip(&entry_has_unresolved_pr_state)
+        .any(|((snapshot, is_closed), unresolved)| {
+            !*is_closed && (snapshot.is_none() || *unresolved)
+        });
 
     let github_stack_result = match provider {
         Provider::GitHub => {
@@ -1216,10 +1216,20 @@ pub fn run(
             ) {
                 result
             } else {
-                let outcome = reconcile_with_gh(mode, &stack.base, &active_pr_numbers);
-                consume_github_stack_outcome(outcome, &mut touched_remote, || {
+                let outcome = reconcile_with_gh_before_mutation(
+                    mode,
+                    &stack.base,
+                    &active_pr_numbers,
+                    || {
+                        touched_remote = true;
+                        guard.mark_touched_remote();
+                    },
+                );
+                if outcome.mutation_attempted {
+                    touched_remote = true;
                     guard.mark_touched_remote();
-                })
+                }
+                outcome.result
             };
 
             let warning_message = result.is_warning().then(|| {
@@ -1732,16 +1742,14 @@ fn create_entry_branch(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_pr_payload, clean_title, compute_target_branch, consume_github_stack_outcome,
-        description_with_replacement_note, ensure_draft_prefix_for_gitlab,
-        github_stack_preflight_skip, is_wip_or_draft_prefix, mismatched_pr_head_branch,
-        replacement_closing_comment, suspend_sync_progress, sync_progress_bar,
+        build_pr_payload, clean_title, compute_target_branch, description_with_replacement_note,
+        ensure_draft_prefix_for_gitlab, github_stack_preflight_skip, is_wip_or_draft_prefix,
+        mismatched_pr_head_branch, replacement_closing_comment, suspend_sync_progress,
+        sync_progress_bar,
     };
     use crate::config::GithubStacksIntegration;
     use crate::git;
-    use crate::github_stacks::{
-        GithubStackAction, GithubStackReason, GithubStackReconcileOutcome, GithubStackSyncResult,
-    };
+    use crate::github_stacks::{GithubStackReason, GithubStackSyncResult};
     use crate::output::{
         SyncEntryResultJson, SyncMetadataJson, SyncResponse, SyncResultJson, OUTPUT_VERSION,
     };
@@ -2256,51 +2264,6 @@ mod tests {
         let result =
             github_stack_preflight_skip(GithubStacksIntegration::Auto, None, &[41], false).unwrap();
         assert_eq!(result.reason, Some(GithubStackReason::InsufficientPrs));
-    }
-
-    #[test]
-    fn github_stack_mutation_attempt_marks_remote_touched() {
-        let outcome = GithubStackReconcileOutcome {
-            result: GithubStackSyncResult {
-                mode: GithubStacksIntegration::Auto,
-                action: GithubStackAction::Warning,
-                reason: Some(GithubStackReason::BackendFailed),
-                stack_number: None,
-                pr_numbers: vec![41, 42],
-                message: Some("link failed".to_string()),
-            },
-            mutation_attempted: true,
-        };
-        let mut touched_remote = false;
-        let mut guard_marked = false;
-
-        let result =
-            consume_github_stack_outcome(outcome, &mut touched_remote, || guard_marked = true);
-
-        assert!(touched_remote);
-        assert!(guard_marked);
-        assert_eq!(result.reason, Some(GithubStackReason::BackendFailed));
-    }
-
-    #[test]
-    fn github_stack_non_mutating_outcome_does_not_mark_remote_touched() {
-        let outcome = GithubStackReconcileOutcome {
-            result: GithubStackSyncResult::skipped(
-                GithubStacksIntegration::Auto,
-                GithubStackReason::MissingExtension,
-                vec![41, 42],
-            ),
-            mutation_attempted: false,
-        };
-        let mut touched_remote = false;
-        let mut guard_marked = false;
-
-        let result =
-            consume_github_stack_outcome(outcome, &mut touched_remote, || guard_marked = true);
-
-        assert!(!touched_remote);
-        assert!(!guard_marked);
-        assert_eq!(result.reason, Some(GithubStackReason::MissingExtension));
     }
 
     // --- Tests for compute_target_branch (walk-back algorithm) ---

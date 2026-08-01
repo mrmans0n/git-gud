@@ -456,8 +456,12 @@ impl Config {
             let local: Config = serde_json::from_str(&contents)?;
             drop(lock);
 
-            // Local overrides global
-            config.merge_local(local);
+            // Local overrides global. Preserve new nested defaults when an
+            // older repo-local config does not contain the nested object yet.
+            config.merge_local_with_github_presence(
+                local,
+                local_config_has_github_defaults(&contents),
+            );
         }
 
         Ok(config)
@@ -466,7 +470,14 @@ impl Config {
     /// Merge a local config on top of self (global).
     /// Local stacks always replace. Local defaults override global defaults.
     /// worktree_base_path from local overrides global if set.
+    #[cfg(test)]
     fn merge_local(&mut self, local: Config) {
+        self.merge_local_with_github_presence(local, true);
+    }
+
+    fn merge_local_with_github_presence(&mut self, local: Config, local_has_github: bool) {
+        let inherited_github = self.defaults.github.clone();
+
         // Stacks are always local
         self.stacks = local.stacks;
 
@@ -475,9 +486,11 @@ impl Config {
             self.worktree_base_path = local.worktree_base_path;
         }
 
-        // Defaults: local wins entirely (since we serialize all fields,
-        // the local JSON will have explicit values for every field)
+        // Defaults: local wins entirely for established serialized configs.
         self.defaults = local.defaults;
+        if !local_has_github {
+            self.defaults.github = inherited_github;
+        }
     }
 
     /// Render the target worktree path for a stack.
@@ -505,6 +518,18 @@ impl Config {
             repo_root.join(path)
         }
     }
+}
+
+fn local_config_has_github_defaults(contents: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(contents)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("defaults")
+                .and_then(|defaults| defaults.get("github"))
+                .map(|_| ())
+        })
+        .is_some()
 }
 
 #[cfg(test)]
@@ -754,6 +779,35 @@ mod tests {
         let mut local = Config::default();
         local.defaults.github.stacks_integration = GithubStacksIntegration::Off;
         effective.merge_local(local);
+        assert_eq!(
+            effective.get_github_stacks_integration(),
+            GithubStacksIntegration::Off
+        );
+    }
+
+    #[test]
+    fn test_old_local_config_preserves_global_github_stacks_mode() {
+        let mut effective = Config::default();
+        effective.defaults.github.stacks_integration = GithubStacksIntegration::Off;
+        let local: Config = serde_json::from_str(
+            r#"{"defaults":{"branch_username":"testuser","provider":"github"}}"#,
+        )
+        .unwrap();
+        effective.merge_local_with_github_presence(local, false);
+        assert_eq!(
+            effective.get_github_stacks_integration(),
+            GithubStacksIntegration::Off
+        );
+    }
+
+    #[test]
+    fn test_explicit_local_github_stacks_mode_still_overrides_global() {
+        let mut effective = Config::default();
+        effective.defaults.github.stacks_integration = GithubStacksIntegration::Force;
+        let local: Config =
+            serde_json::from_str(r#"{"defaults":{"github":{"stacks_integration":"off"}}}"#)
+                .unwrap();
+        effective.merge_local_with_github_presence(local, true);
         assert_eq!(
             effective.get_github_stacks_integration(),
             GithubStacksIntegration::Off

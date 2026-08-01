@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::os::unix::fs::PermissionsExt;
 
 struct GithubStackFixture {
+    _temp_dir: tempfile::TempDir,
     repo_path: PathBuf,
     fake_log: PathBuf,
     path_env: OsString,
@@ -48,8 +49,7 @@ impl GithubStackFixture {
 }
 
 fn setup_fixture(mode: &str) -> GithubStackFixture {
-    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
-    std::mem::forget(_temp_dir);
+    let (temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
 
     let gg_dir = repo_path.join(".git/gg");
     fs::create_dir_all(&gg_dir).expect("failed to create gg dir");
@@ -128,6 +128,7 @@ fn setup_fixture(mode: &str) -> GithubStackFixture {
     path_env.push(old_path);
 
     GithubStackFixture {
+        _temp_dir: temp_dir,
         repo_path,
         fake_log,
         path_env,
@@ -151,6 +152,10 @@ if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
 fi
 
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  if [ "$3" = "42" ] && [ -n "${GG_FAKE_PR_VIEW_42_FAIL:-}" ]; then
+    echo "failed to view PR #42" >&2
+    exit 1
+  fi
   case "$3" in
     41)
       echo '{"number":41,"title":"Entry one","state":"OPEN","url":"https://github.com/test/repo/pull/41","headRefName":"testuser/native-stack--c-1111111","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
@@ -350,6 +355,20 @@ fn sync_off_reports_disabled_without_stack_command() {
     let value: Value = serde_json::from_str(&stdout).expect("sync should emit JSON");
     assert_eq!(value["sync"]["github_stack"]["reason"], "disabled");
     assert!(!fixture.log().contains("stack --version"));
+}
+
+#[test]
+fn sync_unresolved_pr_state_skips_without_stack_command() {
+    let fixture = setup_fixture("auto");
+    let (success, stdout, stderr) =
+        run_sync_json(&fixture, &[("GG_FAKE_PR_VIEW_42_FAIL", OsStr::new("1"))]);
+    assert!(success, "sync failed\nstdout:{stdout}\nstderr:{stderr}");
+    let value: Value = serde_json::from_str(&stdout).expect("sync should emit JSON");
+    assert_eq!(value["sync"]["github_stack"]["action"], "skipped");
+    assert_eq!(value["sync"]["github_stack"]["reason"], "unresolved_prs");
+    let log = fixture.log();
+    assert!(!log.contains("stack --version"));
+    assert!(!log.contains("/stacks"));
 }
 
 #[test]

@@ -4,6 +4,8 @@ use std::io::{self, Write};
 
 use serde::{Serialize, Serializer};
 
+use crate::github_stacks::{GithubStackAction, GithubStackSyncResult};
+
 pub const OUTPUT_VERSION: u32 = 1;
 const STREAMING_ABORT_EXIT_CODE: i32 = 1;
 
@@ -195,6 +197,11 @@ impl Serialize for SyncStreamingResponse {
     {
         let status = match &self.event {
             SyncStreamingEvent::Error { .. } | SyncStreamingEvent::PushError { .. } => "error",
+            SyncStreamingEvent::GithubStack { result }
+                if result.action == GithubStackAction::Warning =>
+            {
+                "warning"
+            }
             _ => "ok",
         };
         let mut value = serde_json::to_value(&self.event).map_err(serde::ser::Error::custom)?;
@@ -258,6 +265,10 @@ pub enum SyncStreamingEvent {
         action: String,
         error: Option<String>,
     },
+    GithubStack {
+        #[serde(flatten)]
+        result: GithubStackSyncResult,
+    },
     Error {
         message: String,
     },
@@ -266,6 +277,7 @@ pub enum SyncStreamingEvent {
         base: String,
         rebased_before_sync: bool,
         warnings: Vec<String>,
+        github_stack: Option<GithubStackSyncResult>,
         metadata: SyncMetadataJson,
         entries: Vec<SyncEntryResultJson>,
     },
@@ -277,6 +289,7 @@ pub struct SyncResultJson {
     pub base: String,
     pub rebased_before_sync: bool,
     pub warnings: Vec<String>,
+    pub github_stack: Option<GithubStackSyncResult>,
     pub metadata: SyncMetadataJson,
     pub entries: Vec<SyncEntryResultJson>,
 }
@@ -505,6 +518,8 @@ pub struct InboxStackErrorJson {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::GithubStacksIntegration;
+    use crate::github_stacks::{GithubStackAction, GithubStackReason, GithubStackSyncResult};
     use std::io::{self, Write};
 
     struct BrokenPipeWriter;
@@ -904,6 +919,47 @@ mod tests {
         assert_eq!(v["total_entries"], 3);
     }
 
+    fn created_github_stack_result() -> GithubStackSyncResult {
+        GithubStackSyncResult {
+            mode: GithubStacksIntegration::Auto,
+            action: GithubStackAction::Created,
+            reason: None,
+            stack_number: Some(7),
+            pr_numbers: vec![41, 42],
+            message: None,
+        }
+    }
+
+    #[test]
+    fn sync_streaming_github_stack_event_is_flat_and_ok() {
+        let response = SyncStreamingResponse {
+            version: OUTPUT_VERSION,
+            command: "sync".to_string(),
+            event: SyncStreamingEvent::GithubStack {
+                result: created_github_stack_result(),
+            },
+        };
+        let value = serde_json::to_value(response).unwrap();
+        assert_eq!(value["event"], "github_stack");
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["action"], "created");
+        assert_eq!(value["stack_number"], 7);
+    }
+
+    #[test]
+    fn sync_streaming_github_stack_warning_has_warning_status() {
+        let mut result = created_github_stack_result();
+        result.action = GithubStackAction::Warning;
+        result.reason = Some(GithubStackReason::Diverged);
+        let response = SyncStreamingResponse {
+            version: OUTPUT_VERSION,
+            command: "sync".to_string(),
+            event: SyncStreamingEvent::GithubStack { result },
+        };
+        let value = serde_json::to_value(response).unwrap();
+        assert_eq!(value["status"], "warning");
+    }
+
     #[test]
     fn sync_streaming_summary_includes_entries() {
         let response = SyncStreamingResponse {
@@ -914,6 +970,7 @@ mod tests {
                 base: "main".to_string(),
                 rebased_before_sync: false,
                 warnings: vec!["w".to_string()],
+                github_stack: Some(created_github_stack_result()),
                 metadata: SyncMetadataJson {
                     gg_ids_added: 1,
                     gg_parents_updated: 2,
@@ -927,6 +984,7 @@ mod tests {
         assert_eq!(v["status"], "ok");
         assert_eq!(v["metadata"]["gg_ids_added"], 1);
         assert_eq!(v["warnings"][0], "w");
+        assert_eq!(v["github_stack"]["stack_number"], 7);
     }
 
     #[test]

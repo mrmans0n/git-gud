@@ -46,6 +46,31 @@ gh auth login
 glab auth login
 ```
 
+## GitHub Stacked PRs (public preview)
+
+On supported GitHub repositories, a full `gg sync` can also reconcile the
+native GitHub Stacked PRs map and UI. This is a GitHub public preview; git-gud
+continues to own its local stack metadata and ordinary GitHub sync works
+without the optional extension.
+
+Install GitHub's official extension when you want this integration:
+
+```sh
+gh extension install github/gh-stack
+```
+
+Configure `defaults.github.stacks_integration` in `.git/gg/config.json` or
+your global config:
+
+| Value | Behavior |
+|---|---|
+| `off` | Never inspect or update GitHub Stacked PRs. |
+| `auto` | Best-effort integration when the extension and repository support are available. |
+| `force` | Uses the same safe integration as `auto`, but makes missing capabilities visible as warnings. |
+
+The default is `auto`. `force` does not bypass extension-version, repository,
+or create/append-only safety checks.
+
 ## Quick Start
 
 ```bash

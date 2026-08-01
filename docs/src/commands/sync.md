@@ -75,6 +75,85 @@ gg sync --no-verify
 
 When computing the target branch for each PR/MR, `gg sync` walks backwards through predecessor entries and skips any that are already merged or closed. If all predecessors have been merged, the target falls back to `stack.base`. This ensures downstream MRs are correctly retargeted after an upstream MR is merged — whether merged via `gg land` or directly in the provider UI.
 
+## GitHub Stacked PRs (public preview)
+
+For a full GitHub `gg sync` (without `--until`), git-gud collects the current
+stack's active open and draft PR numbers in bottom-to-top order. When there are
+at least two resolved PRs and `defaults.github.stacks_integration` is not
+`off`, it can reconcile GitHub's native Stacked PRs map through the optional
+official `gh stack` extension. This does not replace or change git-gud's local
+stack metadata, and GitLab sync never uses this integration.
+
+Install the extension yourself if you want the native UI:
+
+```sh
+gh extension install github/gh-stack
+```
+
+git-gud never installs or upgrades it automatically. The minimum supported
+extension version is `0.1.0`.
+
+### Eligibility and safe outcomes
+
+The integration is skipped when it is disabled, the sync is partial, fewer than
+two active PRs are available, or an active PR cannot be resolved. Full syncs
+create GitHub Stacked PRs when none of the active PRs is already associated,
+and append only new top PRs when the native active sequence is an exact ordered
+prefix of git-gud's sequence. Appending by stack number preserves a merged
+prefix; git-gud does not relink merged PRs or retarget a PR onto a merged
+branch.
+
+If the native and local sequences diverge, git-gud performs no mutation and
+returns a warning. Inspect the GitHub Stacked PRs map, explicitly unstack or
+repair it with GitHub's tools, then rerun `gg sync`. Version one never removes,
+reorders, unlinks, or recreates GitHub Stacked PRs.
+
+`auto` silently records a skipped result when the extension is missing or
+outdated, or the repository does not support the public preview. `force` uses
+the same create/append-only safety checks but surfaces those capability states
+as warnings. Divergence, malformed responses, authentication or network errors,
+and a failed `gh stack link` are warnings in both modes. Every native-integration
+failure is non-fatal to an otherwise successful `gg sync`.
+
+### JSON and JSONL output
+
+Atomic `gg sync --json` includes a `sync.github_stack` object for GitHub syncs
+(and `null` when the provider is not GitHub or provider detection did not
+complete). It always contains `mode`, `action`, `reason`, `stack_number`,
+`pr_numbers`, and `message`:
+
+```json
+{
+  "version": 1,
+  "sync": {
+    "stack": "feature",
+    "base": "main",
+    "github_stack": {
+      "mode": "auto",
+      "action": "created",
+      "reason": null,
+      "stack_number": 7,
+      "pr_numbers": [41, 42],
+      "message": null
+    }
+  }
+}
+```
+
+`action` is one of `created`, `appended`, `unchanged`, `skipped`, or `warning`.
+Stable reasons include `disabled`, `partial_sync`, `insufficient_prs`,
+`unresolved_prs`, `missing_extension`, `outdated_extension`,
+`unsupported_repository`, `diverged`, and `backend_failed`.
+
+`gg sync --jsonl` emits a line-delimited `github_stack` event immediately after
+reconciliation and repeats the same result in the deterministic final `summary`
+event. Its `status` is `ok` for created, appended, unchanged, and skipped
+results, and `warning` for warning results. For example, a divergence event is:
+
+```ndjson
+{"version":1,"command":"sync","status":"warning","event":"github_stack","mode":"auto","action":"warning","reason":"diverged","stack_number":null,"pr_numbers":[41,42],"message":"Local pull requests do not match the native stack active sequence"}
+```
+
 ## PR/MR Body Ownership
 
 When `gg sync` creates a new PR/MR, the generated description is wrapped in invisible HTML comment markers:
@@ -143,6 +222,7 @@ Event kinds:
 | `pr_updated` | `position`, `pr_number`, `action` | Existing PR/MR updated (`updated`/`recreated`) |
 | `pr_skipped_closed` | `position`, `pr_number` | Existing PR/MR is merged/closed and skipped |
 | `nav_comment` | `position`, `pr_number`, `action`, `error` | Managed nav comment reconciled (`created`/`updated`/`unchanged`/`deleted`/`error`/`skip`) |
+| `github_stack` | `mode`, `action`, `reason`, `stack_number`, `pr_numbers`, `message` | GitHub Stacked PRs reconciliation completed; `status` is `ok` or `warning` |
 | `error` | `message` | Fatal error before completion |
 | `summary` | same shape as `--json` `sync` object | Sync finished (success or partial failure) |
 

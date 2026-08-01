@@ -71,6 +71,16 @@ Full mode organizes all settings into logical groups:
 |-------|------|---------|-------------|
 | `worktree_base_path` | string | empty | Template for stack worktrees ({repo}, {stack}) |
 
+### GitHub (only shown if provider is GitHub)
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `github.stacks_integration` | select (`off`, `auto`, `force`) | auto | GitHub Stacked PRs public-preview integration. `auto` is best effort with the optional `gh stack` extension; `force` reports unavailable capabilities as warnings; `off` disables it. |
+
+The GitHub Stacked PRs selector appears only when GitHub is selected as the
+effective provider. GitLab setup does not prompt for it and preserves any
+existing GitHub setting.
+
 ### GitLab (only shown if provider is GitLab)
 
 | Field | Type | Default | Description |

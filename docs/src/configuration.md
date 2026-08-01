@@ -42,6 +42,9 @@ For global config, manually create `~/.config/gg/config.json` with your preferre
     "sync_update_descriptions": true,
     "sync_update_title": false,
     "worktree_base_path": "/tmp/gg-worktrees",
+    "github": {
+      "stacks_integration": "auto"
+    },
     "gitlab": {
       "auto_merge_on_land": false
     }
@@ -70,6 +73,7 @@ For global config, manually create `~/.config/gg/config.json` with your preferre
 | `sync_update_title` | `boolean` | Update PR/MR titles on re-sync | `false` |
 | `stack_nav_comments` | `boolean` | Post a managed navigation comment on each open PR/MR in a multi-entry stack, listing all entries with a 👉 marker on the current one. When set back to `false`, the next `gg sync` removes any previously-posted managed comments. Skipped for single-entry stacks and when `--until` limits a sync. | `false` |
 | `worktree_base_path` | `string` | Base directory for managed worktrees | Parent of repo |
+| `github.stacks_integration` | `off` \| `auto` \| `force` | GitHub Stacked PRs public-preview integration. `off` never inspects or updates it; `auto` attempts it when the optional `gh stack` extension and repository support are available; `force` uses the same safe behavior but reports unavailable capabilities as warnings. Ordinary GitHub sync works without the extension. | `auto` |
 | `gitlab.auto_merge_on_land` | `boolean` | Default GitLab auto-merge behavior for `gg land` | `false` |
 
 ## Global Config

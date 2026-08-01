@@ -28,6 +28,15 @@ Before using git-gud, make sure you have:
 - [GitHub CLI (`gh`)](https://cli.github.com/) for GitHub repositories
 - [GitLab CLI (`glab`)](https://gitlab.com/gitlab-org/cli) for GitLab repositories
 
+`gh` is required for GitHub PR creation and ordinary `gg sync`. The optional
+[`github/gh-stack`](https://github.com/github/gh-stack) extension adds the
+native GitHub Stacked PRs map and UI; it is not required for PR creation or
+ordinary sync.
+
+```sh
+gh extension install github/gh-stack
+```
+
 ## Authentication
 
 Authenticate with your provider CLI first:

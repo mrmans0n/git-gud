@@ -39,6 +39,7 @@ ctrlc = "3"
 atty = "0.2"
 fs2 = "0.4"
 dirs = "6"
+semver = "1"
 
 # TUI (for split and reorder)
 ratatui = "0.30"

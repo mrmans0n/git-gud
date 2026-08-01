@@ -986,6 +986,12 @@ pub fn run(
                             guard.mark_touched_remote();
                         }
                         Err(e) => {
+                            // Native GitHub stack reconciliation must reflect
+                            // the ordinary PR base chain. If the provider
+                            // rejects that base update, skip the later native
+                            // stack mutation rather than linking a topology
+                            // `gg sync` did not actually establish.
+                            pr_state_unresolved = true;
                             if !json && !jsonl {
                                 pb.println(format!(
                                     "{} Could not update {} {}{}: {}",

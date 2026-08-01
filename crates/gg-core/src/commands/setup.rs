@@ -1,10 +1,14 @@
 //! `gg setup` - Interactive config generator
 
+use std::fs;
+
 use console::style;
 use dialoguer::theme::ColorfulTheme;
 use dialoguer::{Confirm, Input, Select};
 
-use crate::config::{Config, Defaults, GithubStacksIntegration, UnstagedAction};
+use crate::config::{
+    local_config_has_github_defaults, Config, Defaults, GithubStacksIntegration, UnstagedAction,
+};
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::provider::Provider;
@@ -28,6 +32,14 @@ pub fn run(all: bool) -> Result<()> {
 
     // Load global config to use as effective defaults
     let global = Config::load_global()?.unwrap_or_default();
+    if config_path.exists() {
+        let contents = fs::read_to_string(&config_path)?;
+        preserve_inherited_github_defaults_for_legacy_local(
+            &mut config,
+            &global,
+            local_config_has_github_defaults(&contents),
+        );
+    }
 
     if config_path.exists() {
         let proceed = Confirm::with_theme(&theme)
@@ -223,6 +235,16 @@ fn prompt_defaults_full(
 
 fn should_prompt_github_stacks(provider: Option<&str>) -> bool {
     provider == Some("github")
+}
+
+fn preserve_inherited_github_defaults_for_legacy_local(
+    config: &mut Config,
+    global: &Config,
+    local_has_github_defaults: bool,
+) {
+    if !local_has_github_defaults {
+        config.defaults.github = global.defaults.github.clone();
+    }
 }
 
 fn github_stacks_mode_index(mode: GithubStacksIntegration) -> usize {
@@ -597,6 +619,36 @@ mod tests {
         assert_eq!(
             defaults.github.stacks_integration,
             GithubStacksIntegration::Force
+        );
+    }
+
+    #[test]
+    fn legacy_local_setup_preserves_inherited_github_stacks_mode() {
+        let mut config = Config::default();
+        config.defaults.github.stacks_integration = GithubStacksIntegration::Auto;
+        let mut global = Config::default();
+        global.defaults.github.stacks_integration = GithubStacksIntegration::Force;
+
+        preserve_inherited_github_defaults_for_legacy_local(&mut config, &global, false);
+
+        assert_eq!(
+            config.defaults.github.stacks_integration,
+            GithubStacksIntegration::Force
+        );
+    }
+
+    #[test]
+    fn setup_keeps_explicit_local_github_stacks_mode() {
+        let mut config = Config::default();
+        config.defaults.github.stacks_integration = GithubStacksIntegration::Off;
+        let mut global = Config::default();
+        global.defaults.github.stacks_integration = GithubStacksIntegration::Force;
+
+        preserve_inherited_github_defaults_for_legacy_local(&mut config, &global, true);
+
+        assert_eq!(
+            config.defaults.github.stacks_integration,
+            GithubStacksIntegration::Off
         );
     }
 }

@@ -520,7 +520,7 @@ impl Config {
     }
 }
 
-fn local_config_has_github_defaults(contents: &str) -> bool {
+pub(crate) fn local_config_has_github_defaults(contents: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(contents)
         .ok()
         .and_then(|value| {

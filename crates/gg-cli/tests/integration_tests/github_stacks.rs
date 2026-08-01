@@ -169,6 +169,10 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
 fi
 
 if [ "$1" = "pr" ] && [ "$2" = "edit" ]; then
+  if [ -n "${GG_FAKE_PR_EDIT_FAIL:-}" ]; then
+    echo "failed to update PR base" >&2
+    exit 1
+  fi
   exit 0
 fi
 
@@ -367,6 +371,21 @@ fn sync_unresolved_pr_state_skips_without_stack_command() {
     assert_eq!(value["sync"]["github_stack"]["action"], "skipped");
     assert_eq!(value["sync"]["github_stack"]["reason"], "unresolved_prs");
     let log = fixture.log();
+    assert!(!log.contains("stack --version"));
+    assert!(!log.contains("/stacks"));
+}
+
+#[test]
+fn sync_base_update_failure_skips_without_stack_command() {
+    let fixture = setup_fixture("auto");
+    let (success, stdout, stderr) =
+        run_sync_json(&fixture, &[("GG_FAKE_PR_EDIT_FAIL", OsStr::new("1"))]);
+    assert!(success, "sync failed\nstdout:{stdout}\nstderr:{stderr}");
+    let value: Value = serde_json::from_str(&stdout).expect("sync should emit JSON");
+    assert_eq!(value["sync"]["github_stack"]["action"], "skipped");
+    assert_eq!(value["sync"]["github_stack"]["reason"], "unresolved_prs");
+    let log = fixture.log();
+    assert!(log.contains("pr edit 41 --base main"));
     assert!(!log.contains("stack --version"));
     assert!(!log.contains("/stacks"));
 }

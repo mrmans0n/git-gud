@@ -227,6 +227,14 @@ fn reconcile_with_runner<R: GhCommandRunner>(
     base: &str,
     pr_numbers: &[u64],
 ) -> GithubStackReconcileOutcome {
+    if pr_numbers.is_empty() {
+        return outcome(GithubStackSyncResult::skipped(
+            mode,
+            GithubStackReason::InsufficientPrs,
+            Vec::new(),
+        ));
+    }
+
     if mode == GithubStacksIntegration::Off {
         return outcome(GithubStackSyncResult::skipped(
             mode,
@@ -282,8 +290,8 @@ fn reconcile_with_runner<R: GhCommandRunner>(
                 Ok(()) => {
                     let confirmation = discover_stacks(runner, &pr_numbers[..1]);
                     let (stack_number, message) = match confirmation {
-                        Ok(stacks) => (
-                            stacks
+                        Ok(stacks) => {
+                            let stack_number = stacks
                                 .iter()
                                 .find(|stack| {
                                     stack
@@ -291,9 +299,12 @@ fn reconcile_with_runner<R: GhCommandRunner>(
                                         .iter()
                                         .any(|entry| entry.number == pr_numbers[0])
                                 })
-                                .map(|stack| stack.number),
-                            None,
-                        ),
+                                .map(|stack| stack.number);
+                            let message = stack_number
+                                .is_none()
+                                .then(|| "Created native stack could not be confirmed".to_string());
+                            (stack_number, message)
+                        }
                         Err(error) => (None, Some(error.message())),
                     };
                     GithubStackReconcileOutcome {
@@ -807,6 +818,38 @@ mod tests {
     }
 
     #[test]
+    fn force_warns_when_gh_stack_extension_is_missing() {
+        let runner = FakeRunner::new([response(
+            &["stack", "--version"],
+            false,
+            "",
+            "unknown command \"stack\"",
+        )]);
+        let outcome =
+            reconcile_with_runner(&runner, GithubStacksIntegration::Force, "main", &[41, 42]);
+        assert_eq!(outcome.result.action, GithubStackAction::Warning);
+        assert_eq!(
+            outcome.result.reason,
+            Some(GithubStackReason::MissingExtension)
+        );
+        assert!(!outcome.mutation_attempted);
+        runner.assert_exhausted();
+    }
+
+    #[test]
+    fn empty_pr_numbers_skip_without_running_gh() {
+        let runner = FakeRunner::new([]);
+        let outcome = reconcile_with_runner(&runner, GithubStacksIntegration::Auto, "main", &[]);
+        assert_eq!(outcome.result.action, GithubStackAction::Skipped);
+        assert_eq!(
+            outcome.result.reason,
+            Some(GithubStackReason::InsufficientPrs)
+        );
+        assert!(!outcome.mutation_attempted);
+        runner.assert_exhausted();
+    }
+
+    #[test]
     fn parses_merged_prefix_and_open_entry() {
         let stacks = parse_stack_list(STACK_7).unwrap();
         assert_eq!(stacks[0].entries[0].state, RemotePullRequestState::Merged);
@@ -1048,5 +1091,39 @@ mod tests {
         assert_eq!(outcome.result.stack_number, None);
         assert!(outcome.mutation_attempted);
         assert_eq!(outcome.result.message.as_deref(), Some("read failed"));
+    }
+
+    #[test]
+    fn create_confirmation_without_stack_records_diagnostic() {
+        let runner = FakeRunner::new([
+            response(
+                &["stack", "--version"],
+                true,
+                "gh stack version 0.1.0\n",
+                "",
+            ),
+            response(
+                &["api", "repos/{owner}/{repo}/stacks?pull_request=41"],
+                true,
+                "[]",
+                "",
+            ),
+            response(&["stack", "link", "--base", "main", "41"], true, "", ""),
+            response(
+                &["api", "repos/{owner}/{repo}/stacks?pull_request=41"],
+                true,
+                "[]",
+                "",
+            ),
+        ]);
+        let outcome = reconcile_with_runner(&runner, GithubStacksIntegration::Auto, "main", &[41]);
+        assert_eq!(outcome.result.action, GithubStackAction::Created);
+        assert_eq!(outcome.result.stack_number, None);
+        assert!(outcome.mutation_attempted);
+        assert_eq!(
+            outcome.result.message.as_deref(),
+            Some("Created native stack could not be confirmed")
+        );
+        runner.assert_exhausted();
     }
 }

@@ -9,6 +9,7 @@ mod checkout;
 mod clean;
 mod continue_flow;
 mod drop;
+mod github_stacks;
 mod inbox;
 mod land;
 mod lint;

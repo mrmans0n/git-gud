@@ -1,10 +1,14 @@
 //! `gg setup` - Interactive config generator
 
+use std::fs;
+
 use console::style;
 use dialoguer::theme::ColorfulTheme;
 use dialoguer::{Confirm, Input, Select};
 
-use crate::config::{Config, Defaults, UnstagedAction};
+use crate::config::{
+    local_config_has_github_defaults, Config, Defaults, GithubStacksIntegration, UnstagedAction,
+};
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::provider::Provider;
@@ -28,6 +32,14 @@ pub fn run(all: bool) -> Result<()> {
 
     // Load global config to use as effective defaults
     let global = Config::load_global()?.unwrap_or_default();
+    if config_path.exists() {
+        let contents = fs::read_to_string(&config_path)?;
+        preserve_inherited_github_defaults_for_legacy_local(
+            &mut config,
+            &global,
+            local_config_has_github_defaults(&contents),
+        );
+    }
 
     if config_path.exists() {
         let proceed = Confirm::with_theme(&theme)
@@ -172,6 +184,19 @@ fn prompt_defaults_full(
         .interact()
         .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?;
 
+    // ── GitHub ── (only if provider is GitHub)
+    if should_prompt_github_stacks(defaults.provider.as_deref()) {
+        print_group_header("GitHub");
+        let choices = ["Auto (recommended)", "Off", "Force (warn when unavailable)"];
+        let selected = Select::with_theme(theme)
+            .with_prompt("Link synced PRs into GitHub's native Stacked PRs UI?")
+            .items(choices)
+            .default(github_stacks_mode_index(existing.github.stacks_integration))
+            .interact()
+            .map_err(|e| GgError::Other(format!("Prompt failed: {}", e)))?;
+        defaults.github.stacks_integration = github_stacks_mode_from_index(selected);
+    }
+
     // ── Land ──
     print_group_header("Land");
     defaults.land_auto_clean = Confirm::with_theme(theme)
@@ -206,6 +231,36 @@ fn prompt_defaults_full(
     }
 
     Ok(defaults)
+}
+
+fn should_prompt_github_stacks(provider: Option<&str>) -> bool {
+    provider == Some("github")
+}
+
+fn preserve_inherited_github_defaults_for_legacy_local(
+    config: &mut Config,
+    global: &Config,
+    local_has_github_defaults: bool,
+) {
+    if !local_has_github_defaults {
+        config.defaults.github = global.defaults.github.clone();
+    }
+}
+
+fn github_stacks_mode_index(mode: GithubStacksIntegration) -> usize {
+    match mode {
+        GithubStacksIntegration::Auto => 0,
+        GithubStacksIntegration::Off => 1,
+        GithubStacksIntegration::Force => 2,
+    }
+}
+
+fn github_stacks_mode_from_index(index: usize) -> GithubStacksIntegration {
+    match index {
+        1 => GithubStacksIntegration::Off,
+        2 => GithubStacksIntegration::Force,
+        _ => GithubStacksIntegration::Auto,
+    }
 }
 
 fn prompt_sync_auto_lint(existing: bool, theme: &ColorfulTheme) -> Result<bool> {
@@ -527,4 +582,73 @@ fn detect_lint_suggestions(repo: &git2::Repository) -> Vec<String> {
     }
 
     suggestions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn github_stacks_prompt_is_github_only() {
+        assert!(should_prompt_github_stacks(Some("github")));
+        assert!(!should_prompt_github_stacks(Some("gitlab")));
+        assert!(!should_prompt_github_stacks(None));
+    }
+
+    #[test]
+    fn github_stacks_mode_indices_round_trip() {
+        for mode in [
+            GithubStacksIntegration::Auto,
+            GithubStacksIntegration::Off,
+            GithubStacksIntegration::Force,
+        ] {
+            assert_eq!(
+                github_stacks_mode_from_index(github_stacks_mode_index(mode)),
+                mode
+            );
+        }
+    }
+
+    #[test]
+    fn gitlab_setup_preserves_existing_github_stacks_mode() {
+        let mut defaults = Defaults::default();
+        defaults.github.stacks_integration = GithubStacksIntegration::Force;
+        if should_prompt_github_stacks(Some("gitlab")) {
+            defaults.github.stacks_integration = GithubStacksIntegration::Off;
+        }
+        assert_eq!(
+            defaults.github.stacks_integration,
+            GithubStacksIntegration::Force
+        );
+    }
+
+    #[test]
+    fn legacy_local_setup_preserves_inherited_github_stacks_mode() {
+        let mut config = Config::default();
+        config.defaults.github.stacks_integration = GithubStacksIntegration::Auto;
+        let mut global = Config::default();
+        global.defaults.github.stacks_integration = GithubStacksIntegration::Force;
+
+        preserve_inherited_github_defaults_for_legacy_local(&mut config, &global, false);
+
+        assert_eq!(
+            config.defaults.github.stacks_integration,
+            GithubStacksIntegration::Force
+        );
+    }
+
+    #[test]
+    fn setup_keeps_explicit_local_github_stacks_mode() {
+        let mut config = Config::default();
+        config.defaults.github.stacks_integration = GithubStacksIntegration::Off;
+        let mut global = Config::default();
+        global.defaults.github.stacks_integration = GithubStacksIntegration::Force;
+
+        preserve_inherited_github_defaults_for_legacy_local(&mut config, &global, true);
+
+        assert_eq!(
+            config.defaults.github.stacks_integration,
+            GithubStacksIntegration::Off
+        );
+    }
 }

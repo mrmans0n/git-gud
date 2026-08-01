@@ -16,6 +16,7 @@ use crate::error::{GgError, Result};
 
 /// Default configuration values
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Defaults {
     /// Git hosting provider ("github" or "gitlab")
     /// Used for self-hosted instances where URL detection fails
@@ -24,6 +25,10 @@ pub struct Defaults {
     /// GitLab-specific defaults
     #[serde(default)]
     pub gitlab: GitLabDefaults,
+
+    /// GitHub-specific defaults
+    #[serde(default)]
+    pub github: GithubDefaults,
 
     /// Base branch name (default: auto-detect main/master/trunk)
     pub base: Option<String>,
@@ -115,6 +120,7 @@ impl Default for Defaults {
         Self {
             provider: None,
             gitlab: GitLabDefaults::default(),
+            github: GithubDefaults::default(),
             base: None,
             branch_username: None,
             lint: Vec::new(),
@@ -141,6 +147,23 @@ pub struct GitLabDefaults {
     /// ("merge when pipeline succeeds") instead of attempting an immediate merge.
     #[serde(default)]
     pub auto_merge_on_land: bool,
+}
+
+/// GitHub Stacked PR integration behavior during sync.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum GithubStacksIntegration {
+    Off,
+    #[default]
+    Auto,
+    Force,
+}
+
+/// GitHub-specific default settings.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct GithubDefaults {
+    #[serde(default)]
+    pub stacks_integration: GithubStacksIntegration,
 }
 
 /// Per-stack configuration
@@ -348,6 +371,11 @@ impl Config {
         self.defaults.gitlab.auto_merge_on_land
     }
 
+    /// Get the GitHub Stacked PR integration behavior (default: auto).
+    pub fn get_github_stacks_integration(&self) -> GithubStacksIntegration {
+        self.defaults.github.stacks_integration
+    }
+
     /// Get whether to auto-lint before sync (default: false)
     pub fn get_sync_auto_lint(&self) -> bool {
         self.defaults.sync_auto_lint
@@ -428,8 +456,12 @@ impl Config {
             let local: Config = serde_json::from_str(&contents)?;
             drop(lock);
 
-            // Local overrides global
-            config.merge_local(local);
+            // Local overrides global. Preserve new nested defaults when an
+            // older repo-local config does not contain the nested object yet.
+            config.merge_local_with_github_presence(
+                local,
+                local_config_has_github_defaults(&contents),
+            );
         }
 
         Ok(config)
@@ -438,7 +470,14 @@ impl Config {
     /// Merge a local config on top of self (global).
     /// Local stacks always replace. Local defaults override global defaults.
     /// worktree_base_path from local overrides global if set.
+    #[cfg(test)]
     fn merge_local(&mut self, local: Config) {
+        self.merge_local_with_github_presence(local, true);
+    }
+
+    fn merge_local_with_github_presence(&mut self, local: Config, local_has_github: bool) {
+        let inherited_github = self.defaults.github.clone();
+
         // Stacks are always local
         self.stacks = local.stacks;
 
@@ -447,9 +486,11 @@ impl Config {
             self.worktree_base_path = local.worktree_base_path;
         }
 
-        // Defaults: local wins entirely (since we serialize all fields,
-        // the local JSON will have explicit values for every field)
+        // Defaults: local wins entirely for established serialized configs.
         self.defaults = local.defaults;
+        if !local_has_github {
+            self.defaults.github = inherited_github;
+        }
     }
 
     /// Render the target worktree path for a stack.
@@ -477,6 +518,18 @@ impl Config {
             repo_root.join(path)
         }
     }
+}
+
+pub(crate) fn local_config_has_github_defaults(contents: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(contents)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("defaults")
+                .and_then(|defaults| defaults.get("github"))
+                .map(|_| ())
+        })
+        .is_some()
 }
 
 #[cfg(test)]
@@ -681,6 +734,83 @@ mod tests {
         assert!(
             contents.contains("gitlab"),
             "gitlab defaults should always be serialized"
+        );
+    }
+
+    #[test]
+    fn test_github_stacks_integration_defaults_to_auto() {
+        let config: Config = serde_json::from_str(r#"{"defaults":{}}"#).unwrap();
+        assert_eq!(
+            config.get_github_stacks_integration(),
+            GithubStacksIntegration::Auto
+        );
+    }
+
+    #[test]
+    fn test_github_stacks_integration_round_trips_all_modes() {
+        for mode in [
+            GithubStacksIntegration::Off,
+            GithubStacksIntegration::Auto,
+            GithubStacksIntegration::Force,
+        ] {
+            let mut config = Config::default();
+            config.defaults.github.stacks_integration = mode;
+            let json = serde_json::to_string(&config).unwrap();
+            let parsed: Config = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed.get_github_stacks_integration(), mode);
+        }
+    }
+
+    #[test]
+    fn test_github_stacks_integration_uses_lowercase_json() {
+        let config: Config =
+            serde_json::from_str(r#"{"defaults":{"github":{"stacks_integration":"force"}}}"#)
+                .unwrap();
+        assert_eq!(
+            config.get_github_stacks_integration(),
+            GithubStacksIntegration::Force
+        );
+    }
+
+    #[test]
+    fn test_local_config_overrides_global_github_stacks_mode() {
+        let mut effective = Config::default();
+        effective.defaults.github.stacks_integration = GithubStacksIntegration::Force;
+        let mut local = Config::default();
+        local.defaults.github.stacks_integration = GithubStacksIntegration::Off;
+        effective.merge_local(local);
+        assert_eq!(
+            effective.get_github_stacks_integration(),
+            GithubStacksIntegration::Off
+        );
+    }
+
+    #[test]
+    fn test_old_local_config_preserves_global_github_stacks_mode() {
+        let mut effective = Config::default();
+        effective.defaults.github.stacks_integration = GithubStacksIntegration::Off;
+        let local: Config = serde_json::from_str(
+            r#"{"defaults":{"branch_username":"testuser","provider":"github"}}"#,
+        )
+        .unwrap();
+        effective.merge_local_with_github_presence(local, false);
+        assert_eq!(
+            effective.get_github_stacks_integration(),
+            GithubStacksIntegration::Off
+        );
+    }
+
+    #[test]
+    fn test_explicit_local_github_stacks_mode_still_overrides_global() {
+        let mut effective = Config::default();
+        effective.defaults.github.stacks_integration = GithubStacksIntegration::Force;
+        let local: Config =
+            serde_json::from_str(r#"{"defaults":{"github":{"stacks_integration":"off"}}}"#)
+                .unwrap();
+        effective.merge_local_with_github_presence(local, true);
+        assert_eq!(
+            effective.get_github_stacks_integration(),
+            GithubStacksIntegration::Off
         );
     }
 

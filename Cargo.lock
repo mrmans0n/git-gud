@@ -1197,6 +1197,7 @@ dependencies = [
  "indicatif",
  "ratatui",
  "regex",
+ "semver",
  "serde",
  "serde_json",
  "skim",

@@ -31,9 +31,9 @@
 3. Prefer `gg sync --jsonl` for monitored agent execution. Use `gg sync --json`
    when only the final aggregate is needed.
 4. Consume the final summary event for publication results only: stack, base,
-   pre-sync rebase status, warnings, metadata normalization, and each entry's
-   source branch, push result, draft flag, PR or MR number, URL, error, and
-   action.
+   pre-sync rebase status, warnings, metadata normalization, GitHub native stack
+   reconciliation, and each entry's source branch, push result, draft flag, PR
+   or MR number, URL, error, and action.
 5. Use the exact publication action `"up_to_date"` when no publication change
    is needed.
    Other observed actions include `"created"`, `"updated"`, `"recreated"`,
@@ -47,9 +47,19 @@
    decisions. If the exact target branch is decision-critical, inspect it
    through the provider rather than inferring it from the sync summary.
 7. Surface branch-prefix warnings and `"recreated"` source-branch remaps.
-8. Treat managed PR body blocks and stack-navigation comments as gg-owned; do
+8. For GitHub syncs, read the optional `github_stack` result from the JSON
+   summary or the flat `github_stack` JSONL event. Report `"created"`,
+   `"appended"`, and `"unchanged"` as native GitHub Stacks outcomes alongside
+   normal PR publication. Treat `"warning"` as actionable: report the
+   `reason`, `message` when present, and the affected `pr_numbers`. Treat
+   `"skipped"` as non-fatal and report the skip reason when it affects user
+   expectations (`"disabled"`, `"partial_sync"`, `"unresolved_prs"`,
+   `"insufficient_prs"`, `"missing_extension"`, `"unsupported_repository"`, or
+   `"outdated_extension"`). Do not infer review, CI, or mergeability from this
+   result.
+9. Treat managed PR body blocks and stack-navigation comments as gg-owned; do
    not edit them manually.
-9. Keep GitHub and GitLab terminology provider-correct while accepting `pr_*`
+10. Keep GitHub and GitLab terminology provider-correct while accepting `pr_*`
    JSON fields for both.
 
 ## Stop conditions
@@ -68,5 +78,6 @@ fresh stack-tip versus `origin/<base>` merge-base check.
 ## Report
 
 Report created, updated, `up_to_date`, recreated, skipped-closed, or failed PRs
-or MRs; URLs; refreshed review and CI state; refreshed behind-base state;
+or MRs; URLs; GitHub native stack created/appended/unchanged/skipped/warning
+state when present; refreshed review and CI state; refreshed behind-base state;
 warnings; and every remaining non-terminal gate.

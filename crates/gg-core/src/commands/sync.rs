@@ -6,9 +6,12 @@ use git2::Repository;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::time::Duration;
 
-use crate::config::Config;
+use crate::config::{Config, GithubStacksIntegration};
 use crate::error::{GgError, Result};
 use crate::git::{self, get_commit_description, strip_gg_id_from_message};
+use crate::github_stacks::{
+    reconcile_with_gh_before_mutation, GithubStackAction, GithubStackReason, GithubStackSyncResult,
+};
 use crate::managed_body;
 use crate::operations::{OperationKind, RemoteEffect, SnapshotScope};
 use crate::output::{
@@ -27,6 +30,31 @@ struct NavEntrySnapshot {
     pr_state: stack_nav::PrEntryState,
     /// Index into `json_entries` so we can attach the nav action result.
     json_index: usize,
+}
+
+fn github_stack_preflight_skip(
+    mode: GithubStacksIntegration,
+    until: Option<&str>,
+    active_pr_numbers: &[u64],
+    has_unresolved_active_pr: bool,
+) -> Option<GithubStackSyncResult> {
+    let reason = if mode == GithubStacksIntegration::Off {
+        GithubStackReason::Disabled
+    } else if until.is_some() {
+        GithubStackReason::PartialSync
+    } else if has_unresolved_active_pr {
+        GithubStackReason::UnresolvedPrs
+    } else if active_pr_numbers.len() < 2 {
+        GithubStackReason::InsufficientPrs
+    } else {
+        return None;
+    };
+
+    Some(GithubStackSyncResult::skipped(
+        mode,
+        reason,
+        active_pr_numbers.to_vec(),
+    ))
 }
 
 fn sync_progress_bar(len: u64, draw_target: ProgressDrawTarget) -> ProgressBar {
@@ -264,7 +292,7 @@ pub fn run(
 
     // Load stack early to validate --until
     let initial_stack = Stack::load(&repo, &config)?;
-    let warnings: Vec<String> = initial_stack
+    let mut warnings: Vec<String> = initial_stack
         .prefix_mismatch(&config)
         .map(|mismatch| mismatch.warning_message())
         .into_iter()
@@ -283,6 +311,7 @@ pub fn run(
                     base: initial_stack.base.clone(),
                     rebased_before_sync: false,
                     warnings: warnings.clone(),
+                    github_stack: None,
                     metadata: SyncMetadataJson::default(),
                     entries: vec![],
                 },
@@ -300,6 +329,7 @@ pub fn run(
                     base: initial_stack.base,
                     rebased_before_sync: false,
                     warnings,
+                    github_stack: None,
                     metadata: SyncMetadataJson::default(),
                     entries: vec![],
                 },
@@ -398,6 +428,7 @@ pub fn run(
                     base: stack.base.clone(),
                     rebased_before_sync,
                     warnings: warnings.clone(),
+                    github_stack: None,
                     metadata: SyncMetadataJson::default(),
                     entries: vec![],
                 },
@@ -414,6 +445,7 @@ pub fn run(
                     base: stack.base,
                     rebased_before_sync,
                     warnings: warnings.clone(),
+                    github_stack: None,
                     metadata: SyncMetadataJson::default(),
                     entries: vec![],
                 },
@@ -476,6 +508,7 @@ pub fn run(
     // Track which entries are closed/merged so downstream entries can skip them
     // when computing their target branch (walk-back algorithm for stacked MRs).
     let mut entry_is_closed: Vec<bool> = Vec::with_capacity(entries_to_sync.len());
+    let mut entry_has_unresolved_pr_state: Vec<bool> = Vec::with_capacity(entries_to_sync.len());
 
     if let Some(s) = streamer.as_mut() {
         s.emit(&SyncStreamingResponse {
@@ -524,6 +557,7 @@ pub fn run(
         let mut pr_state_cached: Option<crate::stack_nav::PrEntryState> = None;
         let mut effective_draft = entry_draft;
         let mut is_entry_closed = false;
+        let mut pr_state_unresolved = false;
 
         let (title, description) = build_pr_payload(
             &title,
@@ -598,6 +632,7 @@ pub fn run(
                     });
                     nav_snapshots.push(None);
                     entry_is_closed.push(false);
+                    entry_has_unresolved_pr_state.push(true);
                     continue;
                 }
 
@@ -641,7 +676,13 @@ pub fn run(
             Some(pr_num) => {
                 pr_number = Some(pr_num);
                 // Check if PR is still open before updating
-                let pr_info = provider.get_pr_info(pr_num).ok();
+                let pr_info = match provider.get_pr_info(pr_num) {
+                    Ok(info) => Some(info),
+                    Err(_) => {
+                        pr_state_unresolved = true;
+                        None
+                    }
+                };
                 pr_url = pr_info.as_ref().map(|info| info.url.clone());
                 // Cache the state so the nav reconcile pass can reuse it without
                 // a second network round-trip.
@@ -826,6 +867,12 @@ pub fn run(
                             }
                         }
                         Err(e) => {
+                            // The old PR still exists, but its head branch no
+                            // longer represents this local entry. If creating
+                            // the replacement fails, skip native GitHub stack
+                            // reconciliation instead of linking the stale PR
+                            // into the native stack.
+                            pr_state_unresolved = true;
                             action = "error".to_string();
                             entry_error = Some(e.to_string());
                             if !json && !jsonl {
@@ -945,6 +992,12 @@ pub fn run(
                             guard.mark_touched_remote();
                         }
                         Err(e) => {
+                            // Native GitHub stack reconciliation must reflect
+                            // the ordinary PR base chain. If the provider
+                            // rejects that base update, skip the later native
+                            // stack mutation rather than linking a topology
+                            // `gg sync` did not actually establish.
+                            pr_state_unresolved = true;
                             if !json && !jsonl {
                                 pb.println(format!(
                                     "{} Could not update {} {}{}: {}",
@@ -1136,6 +1189,7 @@ pub fn run(
         };
         nav_snapshots.push(nav_snapshot);
         entry_is_closed.push(is_entry_closed);
+        entry_has_unresolved_pr_state.push(pr_state_unresolved);
 
         pb.inc(1);
     }
@@ -1143,6 +1197,138 @@ pub fn run(
     if !json && !jsonl {
         pb.finish_with_message("Done!");
     }
+
+    let active_pr_numbers: Vec<u64> = nav_snapshots
+        .iter()
+        .zip(&entry_is_closed)
+        .filter_map(|(snapshot, is_closed)| {
+            if *is_closed {
+                None
+            } else {
+                snapshot.as_ref().map(|value| value.pr_number)
+            }
+        })
+        .collect();
+    let has_unresolved_active_pr = nav_snapshots
+        .iter()
+        .zip(&entry_is_closed)
+        .zip(&entry_has_unresolved_pr_state)
+        .any(|((snapshot, is_closed), unresolved)| {
+            !*is_closed && (snapshot.is_none() || *unresolved)
+        });
+
+    let github_stack_result = match provider {
+        Provider::GitHub => {
+            let mode = config.get_github_stacks_integration();
+            let result = if let Some(result) = github_stack_preflight_skip(
+                mode,
+                until.as_deref(),
+                &active_pr_numbers,
+                has_unresolved_active_pr,
+            ) {
+                result
+            } else {
+                let outcome = reconcile_with_gh_before_mutation(
+                    mode,
+                    &stack.base,
+                    &active_pr_numbers,
+                    || {
+                        touched_remote = true;
+                        guard.mark_touched_remote();
+                    },
+                );
+                if outcome.mutation_attempted {
+                    touched_remote = true;
+                    guard.mark_touched_remote();
+                }
+                outcome.result
+            };
+
+            let warning_message = result.is_warning().then(|| {
+                result.message.clone().unwrap_or_else(|| {
+                    let reason = match result.reason {
+                        Some(GithubStackReason::Disabled) => "integration disabled",
+                        Some(GithubStackReason::PartialSync) => "partial sync",
+                        Some(GithubStackReason::InsufficientPrs) => {
+                            "insufficient active pull requests"
+                        }
+                        Some(GithubStackReason::UnresolvedPrs) => "unresolved active pull requests",
+                        Some(GithubStackReason::MissingExtension) => "missing gh stack extension",
+                        Some(GithubStackReason::OutdatedExtension) => "outdated gh stack extension",
+                        Some(GithubStackReason::UnsupportedRepository) => {
+                            "repository does not support GitHub Stacked PRs"
+                        }
+                        Some(GithubStackReason::Diverged) => "native stack diverged",
+                        Some(GithubStackReason::BackendFailed) => "gh stack backend failed",
+                        None => "unknown reason",
+                    };
+                    format!("GitHub Stacked PR reconciliation warning: {reason}")
+                })
+            });
+            if let Some(message) = &warning_message {
+                warnings.push(message.clone());
+            }
+
+            if !json && !jsonl {
+                match result.action {
+                    GithubStackAction::Created => match result.stack_number {
+                        Some(number) => println!(
+                            "{} Created GitHub stack #{}",
+                            style("OK").green().bold(),
+                            number
+                        ),
+                        None => println!("{} Created GitHub stack", style("OK").green().bold()),
+                    },
+                    GithubStackAction::Appended => match result.stack_number {
+                        Some(number) => println!(
+                            "{} Updated GitHub stack #{}",
+                            style("OK").green().bold(),
+                            number
+                        ),
+                        None => println!("{} Updated GitHub stack", style("OK").green().bold()),
+                    },
+                    GithubStackAction::Unchanged => match result.stack_number {
+                        Some(number) => println!(
+                            "{}",
+                            style(format!("GitHub stack #{} is already up to date", number)).dim()
+                        ),
+                        None => println!("{}", style("GitHub stack is already up to date").dim()),
+                    },
+                    GithubStackAction::Warning => println!(
+                        "{} {}",
+                        style("Warning:").yellow(),
+                        warning_message
+                            .as_deref()
+                            .expect("warning actions have a warning message")
+                    ),
+                    GithubStackAction::Skipped => {
+                        if result.reason == Some(GithubStackReason::UnresolvedPrs) {
+                            println!(
+                                "{}",
+                                style(
+                                    "GitHub stack reconciliation skipped because some active pull requests could not be resolved"
+                                )
+                                .dim()
+                            );
+                        }
+                    }
+                }
+            }
+
+            if let Some(s) = streamer.as_mut() {
+                s.emit(&SyncStreamingResponse {
+                    version: OUTPUT_VERSION,
+                    command: "sync".to_string(),
+                    event: SyncStreamingEvent::GithubStack {
+                        result: result.clone(),
+                    },
+                });
+            }
+
+            Some(result)
+        }
+        Provider::GitLab => None,
+    };
 
     // --- Nav-comment reconcile pass ---
     //
@@ -1355,6 +1541,7 @@ pub fn run(
                 base: stack.base.clone(),
                 rebased_before_sync,
                 warnings: warnings.clone(),
+                github_stack: github_stack_result.clone(),
                 metadata: SyncMetadataJson {
                     gg_ids_added: metadata_counts.gg_ids_added,
                     gg_parents_updated: metadata_counts.gg_parents_updated,
@@ -1373,6 +1560,7 @@ pub fn run(
                     base: stack.base,
                     rebased_before_sync,
                     warnings: warnings.clone(),
+                    github_stack: github_stack_result,
                     metadata: SyncMetadataJson {
                         gg_ids_added: metadata_counts.gg_ids_added,
                         gg_parents_updated: metadata_counts.gg_parents_updated,
@@ -1567,10 +1755,13 @@ fn create_entry_branch(
 mod tests {
     use super::{
         build_pr_payload, clean_title, compute_target_branch, description_with_replacement_note,
-        ensure_draft_prefix_for_gitlab, is_wip_or_draft_prefix, mismatched_pr_head_branch,
-        replacement_closing_comment, suspend_sync_progress, sync_progress_bar,
+        ensure_draft_prefix_for_gitlab, github_stack_preflight_skip, is_wip_or_draft_prefix,
+        mismatched_pr_head_branch, replacement_closing_comment, suspend_sync_progress,
+        sync_progress_bar,
     };
+    use crate::config::GithubStacksIntegration;
     use crate::git;
+    use crate::github_stacks::{GithubStackReason, GithubStackSyncResult};
     use crate::output::{
         SyncEntryResultJson, SyncMetadataJson, SyncResponse, SyncResultJson, OUTPUT_VERSION,
     };
@@ -2007,6 +2198,11 @@ mod tests {
 
     #[test]
     fn test_sync_json_response_structure() {
+        let github_stack = GithubStackSyncResult::skipped(
+            GithubStacksIntegration::Auto,
+            GithubStackReason::InsufficientPrs,
+            vec![42],
+        );
         let response = SyncResponse {
             version: OUTPUT_VERSION,
             sync: SyncResultJson {
@@ -2014,6 +2210,7 @@ mod tests {
                 base: "main".to_string(),
                 rebased_before_sync: false,
                 warnings: vec![],
+                github_stack: Some(github_stack),
                 metadata: SyncMetadataJson::default(),
                 entries: vec![SyncEntryResultJson {
                     position: 1,
@@ -2040,6 +2237,7 @@ mod tests {
         assert_eq!(parsed["sync"]["base"], "main");
         assert_eq!(parsed["sync"]["rebased_before_sync"], false);
         assert!(parsed["sync"]["warnings"].is_array());
+        assert_eq!(parsed["sync"]["github_stack"]["reason"], "insufficient_prs");
         assert!(parsed["sync"]["entries"].is_array());
 
         let entry = &parsed["sync"]["entries"][0];
@@ -2048,6 +2246,36 @@ mod tests {
         assert_eq!(entry["pr_number"], 42);
         assert_eq!(entry["pushed"], true);
         assert!(entry["error"].is_null());
+    }
+
+    #[test]
+    fn github_stack_preflight_off_is_disabled() {
+        let result =
+            github_stack_preflight_skip(GithubStacksIntegration::Off, None, &[41, 42], false)
+                .unwrap();
+        assert_eq!(result.reason, Some(GithubStackReason::Disabled));
+    }
+
+    #[test]
+    fn github_stack_preflight_partial_sync_skips_before_backend() {
+        let result =
+            github_stack_preflight_skip(GithubStacksIntegration::Auto, Some("2"), &[41, 42], false)
+                .unwrap();
+        assert_eq!(result.reason, Some(GithubStackReason::PartialSync));
+    }
+
+    #[test]
+    fn github_stack_preflight_unresolved_prs_skip_before_insufficient_prs() {
+        let result =
+            github_stack_preflight_skip(GithubStacksIntegration::Auto, None, &[41], true).unwrap();
+        assert_eq!(result.reason, Some(GithubStackReason::UnresolvedPrs));
+    }
+
+    #[test]
+    fn github_stack_preflight_fewer_than_two_active_prs_is_insufficient() {
+        let result =
+            github_stack_preflight_skip(GithubStacksIntegration::Auto, None, &[41], false).unwrap();
+        assert_eq!(result.reason, Some(GithubStackReason::InsufficientPrs));
     }
 
     // --- Tests for compute_target_branch (walk-back algorithm) ---

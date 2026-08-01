@@ -867,6 +867,12 @@ pub fn run(
                             }
                         }
                         Err(e) => {
+                            // The old PR still exists, but its head branch no
+                            // longer represents this local entry. If creating
+                            // the replacement fails, skip native GitHub stack
+                            // reconciliation instead of linking the stale PR
+                            // into the native stack.
+                            pr_state_unresolved = true;
                             action = "error".to_string();
                             entry_error = Some(e.to_string());
                             if !json && !jsonl {

@@ -162,10 +162,23 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
       exit 0
       ;;
     42)
+      if [ -n "${GG_FAKE_PR_VIEW_42_OLD_HEAD:-}" ]; then
+        echo '{"number":42,"title":"Entry two","state":"OPEN","url":"https://github.com/test/repo/pull/42","headRefName":"testuser/old-stack--c-2222222","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
+        exit 0
+      fi
       echo '{"number":42,"title":"Entry two","state":"OPEN","url":"https://github.com/test/repo/pull/42","headRefName":"testuser/native-stack--c-2222222","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
       exit 0
       ;;
   esac
+fi
+
+if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
+  if [ -n "${GG_FAKE_PR_CREATE_FAIL:-}" ]; then
+    echo "failed to create replacement PR" >&2
+    exit 1
+  fi
+  echo "https://github.com/test/repo/pull/99"
+  exit 0
 fi
 
 if [ "$1" = "pr" ] && [ "$2" = "edit" ]; then
@@ -386,6 +399,26 @@ fn sync_base_update_failure_skips_without_stack_command() {
     assert_eq!(value["sync"]["github_stack"]["reason"], "unresolved_prs");
     let log = fixture.log();
     assert!(log.contains("pr edit 41 --base main"));
+    assert!(!log.contains("stack --version"));
+    assert!(!log.contains("/stacks"));
+}
+
+#[test]
+fn sync_replacement_create_failure_skips_without_stack_command() {
+    let fixture = setup_fixture("auto");
+    let (success, stdout, stderr) = run_sync_json(
+        &fixture,
+        &[
+            ("GG_FAKE_PR_VIEW_42_OLD_HEAD", OsStr::new("1")),
+            ("GG_FAKE_PR_CREATE_FAIL", OsStr::new("1")),
+        ],
+    );
+    assert!(success, "sync failed\nstdout:{stdout}\nstderr:{stderr}");
+    let value: Value = serde_json::from_str(&stdout).expect("sync should emit JSON");
+    assert_eq!(value["sync"]["github_stack"]["action"], "skipped");
+    assert_eq!(value["sync"]["github_stack"]["reason"], "unresolved_prs");
+    let log = fixture.log();
+    assert!(log.contains("pr create --head testuser/native-stack--c-2222222"));
     assert!(!log.contains("stack --version"));
     assert!(!log.contains("/stacks"));
 }

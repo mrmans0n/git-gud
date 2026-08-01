@@ -54,7 +54,7 @@
    `reason`, `message` when present, and the affected `pr_numbers`. Treat
    `"skipped"` as non-fatal and report the skip reason when it affects user
    expectations (`"disabled"`, `"partial_sync"`, `"unresolved_prs"`,
-   `"insufficient_prs"`, `"missing_extension"`, `"unsupported_repo"`, or
+   `"insufficient_prs"`, `"missing_extension"`, `"unsupported_repository"`, or
    `"outdated_extension"`). Do not infer review, CI, or mergeability from this
    result.
 9. Treat managed PR body blocks and stack-navigation comments as gg-owned; do

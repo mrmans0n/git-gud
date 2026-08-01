@@ -26,6 +26,14 @@ impl GithubStackFixture {
         fs::read_to_string(&self.fake_log).unwrap_or_default()
     }
 
+    fn link_lines(&self) -> Vec<String> {
+        self.log()
+            .lines()
+            .filter(|line| line.starts_with("stack link"))
+            .map(ToString::to_string)
+            .collect()
+    }
+
     fn set_stack_response(&self, name: &str, json: &str) -> PathBuf {
         let path = self.repo_path.join(name);
         fs::write(&path, json).expect("failed to write fake stack response");
@@ -270,7 +278,7 @@ fn sync_json_creates_native_stack_with_exact_pr_order() {
     assert_eq!(stack["action"], "created");
     assert_eq!(stack["stack_number"], 7);
     assert_eq!(stack["pr_numbers"], serde_json::json!([41, 42]));
-    assert!(fixture.log().contains("stack link --base main 41 42"));
+    assert_eq!(fixture.link_lines(), vec!["stack link --base main 41 42"]);
 }
 
 #[test]
@@ -314,7 +322,7 @@ fn sync_jsonl_appends_after_merged_prefix_and_repeats_result_in_summary() {
         events[summary_index]["github_stack"]["pr_numbers"],
         events[github_event_index]["pr_numbers"]
     );
-    assert!(fixture.log().contains("stack link 7 42"));
+    assert_eq!(fixture.link_lines(), vec!["stack link 7 42"]);
 }
 
 #[test]
@@ -397,6 +405,22 @@ fn sync_link_failure_warns_without_corrupting_json() {
     assert_eq!(value["sync"]["github_stack"]["action"], "warning");
     assert_eq!(value["sync"]["github_stack"]["reason"], "backend_failed");
     assert_eq!(value["sync"]["github_stack"]["message"], "link failed");
+
+    let (success, undo_stdout, undo_stderr) =
+        run_gg(&fixture.repo_path, &["undo", "--list", "--json"]);
+    assert!(
+        success,
+        "undo list failed\nstdout:{undo_stdout}\nstderr:{undo_stderr}"
+    );
+    let listed: Value = serde_json::from_str(&undo_stdout).expect("undo list should emit JSON");
+    let sync_record = listed["operations"]
+        .as_array()
+        .expect("operations should be an array")
+        .iter()
+        .find(|record| record["kind"] == "sync")
+        .expect("sync operation should be recorded");
+    assert_eq!(sync_record["touched_remote"], true);
+    assert_eq!(sync_record["is_undoable"], false);
 }
 
 #[test]
@@ -452,4 +476,73 @@ exit 1
     assert!(success, "sync failed\nstdout:{stdout}\nstderr:{stderr}");
     let value: Value = serde_json::from_str(&stdout).expect("sync should emit JSON");
     assert!(value["sync"]["github_stack"].is_null());
+}
+
+#[test]
+fn sync_gitlab_jsonl_omits_github_stack_field_and_event() {
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","provider":"gitlab","base":"main","sync_behind_threshold":0}}"#,
+    )
+    .expect("failed to write config");
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "gitlab-jsonl-stack"]);
+    assert!(success, "failed to create stack: {stderr}");
+    fs::write(repo_path.join("one.txt"), "one\n").expect("failed to write one");
+    run_git(&repo_path, &["add", "one.txt"]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Entry one\n\nGG-ID: c-1111111"],
+    );
+
+    let fake_bin = repo_path.join("fake-bin");
+    fs::create_dir_all(&fake_bin).expect("failed to create fake-bin");
+    fs::write(
+        fake_bin.join("glab"),
+        r#"#!/bin/sh
+set -eu
+if [ "$1" = "--version" ]; then echo "glab version 1.0.0"; exit 0; fi
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then exit 0; fi
+if [ "$1" = "mr" ] && [ "$2" = "create" ]; then echo "https://gitlab.com/test/repo/-/merge_requests/51"; exit 0; fi
+echo "unexpected glab invocation: $@" >&2
+exit 1
+"#,
+    )
+    .expect("failed to write fake glab");
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(fake_bin.join("glab"))
+            .expect("failed to stat fake glab")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(fake_bin.join("glab"), perms).expect("failed to chmod fake glab");
+    }
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut new_path = OsString::from(fake_bin.as_os_str());
+    new_path.push(":");
+    new_path.push(old_path);
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["sync", "--jsonl", "--no-rebase-check"],
+        &[("PATH", new_path.as_os_str())],
+    );
+    assert!(success, "sync failed\nstdout:{stdout}\nstderr:{stderr}");
+    let events: Vec<Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("every JSONL line should parse"))
+        .collect();
+    assert!(
+        !events.iter().any(|event| event["event"] == "github_stack"),
+        "GitLab JSONL must not emit github_stack events"
+    );
+    let summary = events
+        .iter()
+        .find(|event| event["event"] == "summary")
+        .expect("summary should be emitted");
+    assert!(
+        summary.get("github_stack").is_none(),
+        "GitLab JSONL summary must omit github_stack"
+    );
 }

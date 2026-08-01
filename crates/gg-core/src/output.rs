@@ -277,6 +277,7 @@ pub enum SyncStreamingEvent {
         base: String,
         rebased_before_sync: bool,
         warnings: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         github_stack: Option<GithubStackSyncResult>,
         metadata: SyncMetadataJson,
         entries: Vec<SyncEntryResultJson>,

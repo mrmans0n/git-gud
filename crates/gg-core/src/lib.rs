@@ -9,6 +9,7 @@ pub mod context;
 pub mod error;
 pub mod gh;
 pub mod git;
+pub mod github_stacks;
 pub mod glab;
 pub mod immutability;
 pub mod managed_body;

@@ -43,6 +43,7 @@ crates/
 │       ├── error.rs          # Error types using thiserror
 │       ├── git.rs            # Git operations via git2-rs
 │       ├── gh.rs             # GitHub CLI (gh) integration
+│       ├── github_stacks.rs  # GitHub-specific stack operations
 │       ├── glab.rs           # GitLab CLI (glab) integration
 │       ├── immutability.rs   # Immutable state tracking
 │       ├── managed_body.rs   # Managed PR/MR body content
@@ -85,7 +86,8 @@ crates/
 │   ├── src/
 │   │   └── main.rs           # clap parsing + command dispatch
 │   └── tests/
-│       └── integration_tests/    # Integration tests with temp repos
+│       ├── integration_tests/    # Integration tests with temp repos
+│       └── skill_contract.rs     # Skill contract tests
 └── gg-mcp/                   # MCP server binary (stub, in development)
     ├── Cargo.toml
     └── src/

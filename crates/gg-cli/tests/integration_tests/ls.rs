@@ -4,6 +4,7 @@ use crate::helpers::{
 };
 
 use serde_json::Value;
+use std::ffi::OsStr;
 use std::fs;
 
 #[test]
@@ -171,6 +172,26 @@ fn test_gg_ls_no_refresh_conflicts_with_remote() {
     assert!(
         stderr.contains("cannot be used with") && stderr.contains("--no-refresh"),
         "{stderr}"
+    );
+}
+
+#[test]
+fn test_gg_ls_no_refresh_requires_configured_username_for_all_stacks() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["ls", "--all", "--json", "--no-refresh"],
+        &[("PATH", OsStr::new(""))],
+    );
+
+    assert!(!success);
+    assert!(
+        stdout.contains("--no-refresh requires defaults.branch_username"),
+        "{stdout}"
+    );
+    assert!(
+        stderr.is_empty(),
+        "structured error should use stdout: {stderr}"
     );
 }
 

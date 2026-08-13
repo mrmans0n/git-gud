@@ -3,7 +3,7 @@
 use console::style;
 
 use crate::config::Config;
-use crate::error::Result;
+use crate::error::{GgError, Result};
 use crate::git;
 use crate::operations;
 use crate::output::{
@@ -29,7 +29,7 @@ pub fn run(all: bool, refresh: bool, remote: bool, json: bool, no_refresh: bool)
 
     match current_stack {
         None => {
-            list_all_stacks(&repo, &config, json)?;
+            list_all_stacks(&repo, &config, json, no_refresh)?;
         }
         Some(mut stack) if !all => {
             if !json {
@@ -61,7 +61,7 @@ pub fn run(all: bool, refresh: bool, remote: bool, json: bool, no_refresh: bool)
             show_stack(&stack, json)?;
         }
         Some(_) => {
-            list_all_stacks(&repo, &config, json)?;
+            list_all_stacks(&repo, &config, json, no_refresh)?;
         }
     }
 
@@ -69,7 +69,17 @@ pub fn run(all: bool, refresh: bool, remote: bool, json: bool, no_refresh: bool)
 }
 
 /// List all available stacks with their commits in a tree view
-fn list_all_stacks(repo: &git2::Repository, config: &Config, json: bool) -> Result<()> {
+fn list_all_stacks(
+    repo: &git2::Repository,
+    config: &Config,
+    json: bool,
+    no_refresh: bool,
+) -> Result<()> {
+    if no_refresh && config.defaults.branch_username.is_none() {
+        return Err(GgError::Other(
+            "--no-refresh requires defaults.branch_username when listing all stacks".to_string(),
+        ));
+    }
     let username = config
         .defaults
         .branch_username

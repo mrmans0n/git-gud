@@ -4,6 +4,7 @@ use crate::helpers::{
 };
 
 use serde_json::Value;
+use std::ffi::OsStr;
 use std::fs;
 
 #[test]
@@ -134,6 +135,64 @@ fn test_gg_ls_json_current_stack() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["position"], 1);
     assert_eq!(entries[0]["title"], "Add file1");
+}
+
+#[test]
+fn test_gg_ls_json_no_refresh_preserves_stack_output() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    setup_json_stack(&repo_path, "local-json-stack");
+    fs::write(repo_path.join("local.txt"), "local").expect("Failed to write file");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "Add local file"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["ls", "--json", "--no-refresh"]);
+    assert!(success, "gg ls --json --no-refresh failed: {stderr}");
+
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(parsed["version"], 1);
+    assert_eq!(parsed["stack"]["name"], "local-json-stack");
+    assert_eq!(parsed["stack"]["total_commits"], 1);
+}
+
+#[test]
+fn test_gg_ls_no_refresh_conflicts_with_refresh() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    let (success, _, stderr) = run_gg(&repo_path, &["ls", "--json", "--refresh", "--no-refresh"]);
+
+    assert!(!success);
+    assert!(stderr.contains("cannot be used with"), "{stderr}");
+}
+
+#[test]
+fn test_gg_ls_no_refresh_conflicts_with_remote() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    let (success, _, stderr) = run_gg(&repo_path, &["ls", "--remote", "--no-refresh"]);
+
+    assert!(!success);
+    assert!(
+        stderr.contains("cannot be used with") && stderr.contains("--no-refresh"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn test_gg_ls_no_refresh_requires_configured_username_for_all_stacks() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["ls", "--all", "--json", "--no-refresh"],
+        &[("PATH", OsStr::new(""))],
+    );
+
+    assert!(!success);
+    assert!(
+        stdout.contains("--no-refresh requires defaults.branch_username"),
+        "{stdout}"
+    );
+    assert!(
+        stderr.is_empty(),
+        "structured error should use stdout: {stderr}"
+    );
 }
 
 #[test]

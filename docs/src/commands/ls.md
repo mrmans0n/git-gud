@@ -18,6 +18,7 @@ gg ls [OPTIONS]
 
 - `-a, --all`: Show all local stacks
 - `-r, --refresh`: Refresh PR/MR status from remote
+- `--no-refresh`: Skip the provider API and return local stack data immediately. Conflicts with `--refresh` and `--remote`; listing all stacks also requires `defaults.branch_username` to be configured. Intended for local-only JSON consumers.
 - `--remote`: List remote stacks not checked out locally. Stacks whose PRs/MRs are all merged are shown in a separate "Landed" section at the bottom with a `✓` marker
 - `--json`: Print structured JSON output (for scripts and automation). Automatically performs a best-effort refresh of PR/MR state from the provider API, so `pr_state` and `ci_status` fields are populated without needing `--refresh`.
 
@@ -40,6 +41,9 @@ gg ls --refresh
 gg ls --json
 gg ls --all --json
 gg ls --remote --json
+
+# Local-only JSON without waiting for the provider API
+gg ls --json --no-refresh
 ```
 
 ## Un-integrated commits at HEAD

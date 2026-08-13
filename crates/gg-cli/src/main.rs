@@ -81,6 +81,10 @@ enum Commands {
         #[arg(short, long)]
         refresh: bool,
 
+        /// Skip refreshing PR/MR status from remote
+        #[arg(long, conflicts_with_all = ["refresh", "remote"])]
+        no_refresh: bool,
+
         /// List remote stacks (branches on origin not yet checked out locally)
         #[arg(long)]
         remote: bool,
@@ -571,7 +575,7 @@ fn main() {
     let (result, json_mode, jsonl) = match cli.command {
         // No command = show stacks (like `gg ls`)
         None => (
-            gg_core::commands::ls::run(false, false, false, false),
+            gg_core::commands::ls::run(false, false, false, false, false),
             false,
             false,
         ),
@@ -588,10 +592,11 @@ fn main() {
         Some(Commands::List {
             all,
             refresh,
+            no_refresh,
             remote,
             json,
         }) => (
-            gg_core::commands::ls::run(all, refresh, remote, json),
+            gg_core::commands::ls::run(all, refresh, remote, json, no_refresh),
             json,
             false,
         ),

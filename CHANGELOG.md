@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-08-13
+
+### Added
+- `gg ls` can now include local-only stack snapshots for branches that do not have provider metadata yet (#428).
+
+### Fixed
+- `gg land --wait` now releases the operation lock while waiting, so other `gg` commands are not blocked during long merge waits (#427).
+
+### Changed
+- Updated dependencies including `rmcp`, `clap`, `clap_complete`, `skim`, and `thiserror` (#420, #421, #422, #423, #424, #425, #426).
+
 ## [0.10.0] - 2026-08-01
 
 ### Added
@@ -553,7 +564,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/mrmans0n/git-gud/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/mrmans0n/git-gud/compare/v0.9.12...v0.10.0
 [0.9.12]: https://github.com/mrmans0n/git-gud/compare/v0.9.11...v0.9.12
 [0.9.11]: https://github.com/mrmans0n/git-gud/compare/v0.9.10...v0.9.11

@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-f2f8e710.js";
+            window.path_to_searchindex_js = "searchindex-943082d1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-95fa4ef1.js"></script>
@@ -774,7 +774,7 @@ and <code>gg ls --remote</code> do not show this warning.</p>
 <ul>
 <li><code>-a, --all</code>: Show all local stacks</li>
 <li><code>-r, --refresh</code>: Refresh PR/MR status from remote</li>
-<li><code>--no-refresh</code>: Skip the provider API and return local stack data immediately. Conflicts with <code>--refresh</code> and <code>--remote</code>; intended for local-only JSON consumers.</li>
+<li><code>--no-refresh</code>: Skip the provider API and return local stack data immediately. Conflicts with <code>--refresh</code> and <code>--remote</code>; listing all stacks also requires <code>defaults.branch_username</code> to be configured. Intended for local-only JSON consumers.</li>
 <li><code>--remote</code>: List remote stacks not checked out locally. Stacks whose PRs/MRs are all merged are shown in a separate “Landed” section at the bottom with a <code>✓</code> marker</li>
 <li><code>--json</code>: Print structured JSON output (for scripts and automation). Automatically performs a best-effort refresh of PR/MR state from the provider API, so <code>pr_state</code> and <code>ci_status</code> fields are populated without needing <code>--refresh</code>.</li>
 </ul>

@@ -35,6 +35,11 @@
   there are no required checks or pipelines; stale or unavailable CI still
   blocks.
   Draft, behind-base, mergeability, and conflict gates always apply.
+- `gg land --wait` releases the clone-wide operation lock while polling. Other
+  worktrees may run `gg` commands on unrelated stacks, so do not treat a waiting
+  land process as a repository reservation. Do not mutate its target stack;
+  the command will stop before the next merge if local commits, GG-IDs, or
+  PR/MR mappings changed while it waited.
 - Treat a general request such as "finish this stack" as insufficient landing
   confirmation. Ask immediately before running `gg land`.
 - Immediately before landing, inspect the effective provider and `land_admin`

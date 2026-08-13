@@ -34,6 +34,10 @@ gg co user-auth -w
 - Keep your main checkout untouched
 - Work on multiple stacks side by side
 - Avoid stashing/switching overhead
+- Run `gg` on another stack while `gg land --wait` polls in a different worktree
+
+Waiting does not reserve the stack being landed. If that stack changes before
+the next merge, `gg land --wait` stops and must be rerun.
 
 ## Default path behavior
 

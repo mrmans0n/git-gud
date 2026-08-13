@@ -14,7 +14,7 @@ use crate::provider::{CiStatus, PrState, Provider};
 use crate::stack::{self, Stack};
 
 /// Run the list command
-pub fn run(all: bool, refresh: bool, remote: bool, json: bool) -> Result<()> {
+pub fn run(all: bool, refresh: bool, remote: bool, json: bool, no_refresh: bool) -> Result<()> {
     let repo = git::open_repo()?;
     let git_dir = repo.commondir();
     let config = Config::load_with_global(git_dir)?;
@@ -43,7 +43,7 @@ pub fn run(all: bool, refresh: bool, remote: bool, json: bool) -> Result<()> {
                 }
             }
 
-            if should_refresh_mr_info(refresh, json) {
+            if should_refresh_mr_info(refresh, json, no_refresh) {
                 if refresh {
                     let provider = Provider::detect(&repo)?;
                     if !json {
@@ -757,8 +757,8 @@ fn ci_status_to_json(status: &CiStatus) -> String {
     }
 }
 
-fn should_refresh_mr_info(refresh: bool, json: bool) -> bool {
-    refresh || json
+fn should_refresh_mr_info(refresh: bool, json: bool, no_refresh: bool) -> bool {
+    refresh || (json && !no_refresh)
 }
 
 #[cfg(test)]
@@ -767,17 +767,22 @@ mod tests {
 
     #[test]
     fn json_output_auto_refreshes_mr_info() {
-        assert!(should_refresh_mr_info(false, true));
+        assert!(should_refresh_mr_info(false, true, false));
     }
 
     #[test]
     fn explicit_refresh_still_refreshes() {
-        assert!(should_refresh_mr_info(true, false));
+        assert!(should_refresh_mr_info(true, false, false));
+    }
+
+    #[test]
+    fn json_no_refresh_skips_mr_info() {
+        assert!(!should_refresh_mr_info(false, true, true));
     }
 
     #[test]
     fn no_refresh_for_human_output_without_flag() {
-        assert!(!should_refresh_mr_info(false, false));
+        assert!(!should_refresh_mr_info(false, false, false));
     }
 
     // ==========================================================================

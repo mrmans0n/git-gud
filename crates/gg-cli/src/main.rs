@@ -82,7 +82,7 @@ enum Commands {
         refresh: bool,
 
         /// Skip refreshing PR/MR status from remote
-        #[arg(long, conflicts_with = "refresh")]
+        #[arg(long, conflicts_with_all = ["refresh", "remote"])]
         no_refresh: bool,
 
         /// List remote stacks (branches on origin not yet checked out locally)

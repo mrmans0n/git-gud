@@ -163,6 +163,18 @@ fn test_gg_ls_no_refresh_conflicts_with_refresh() {
 }
 
 #[test]
+fn test_gg_ls_no_refresh_conflicts_with_remote() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    let (success, _, stderr) = run_gg(&repo_path, &["ls", "--remote", "--no-refresh"]);
+
+    assert!(!success);
+    assert!(
+        stderr.contains("cannot be used with") && stderr.contains("--no-refresh"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn test_gg_ls_json_reports_valid_interrupted_rebase_operation_id() {
     let (_temp_dir, repo_path) = create_test_repo();
     setup_json_stack(&repo_path, "paused-json-stack");

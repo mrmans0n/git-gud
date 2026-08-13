@@ -909,6 +909,13 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             break 'landing_loop;
                         }
                         guard = Some(begin_land_segment(&repo, &config, &args)?);
+                        // The MR merged while its train was being polled. Keep the
+                        // follow-up cleanup segment out of `gg undo`.
+                        touched_remote = true;
+                        guard
+                            .as_mut()
+                            .expect("land segment guard")
+                            .mark_touched_remote();
                         landed_count += 1;
                         cleanup_after_merge(
                             &mut config,

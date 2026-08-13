@@ -85,6 +85,17 @@ Error: MR !7621 CI failed
 
 This helps diagnose CI issues without having to open the GitLab UI. Failed job names and stages are fetched from the MR's head pipeline.
 
+## Concurrent commands while waiting
+
+`gg land --wait` releases the repository-wide `gg` lock while it polls CI,
+approvals, or merge-train state. You can run commands such as `gg sync` for a
+different stack in another worktree during that time. Landing reacquires the
+lock before every merge, rebase, push, cleanup, or config update.
+
+Do not change the stack being landed while it waits. If its commits, GG-IDs, or
+PR/MR mappings change, landing stops before the next merge and asks you to rerun
+the command with the latest stack state.
+
 ## JSON Output
 
 Example JSON response:

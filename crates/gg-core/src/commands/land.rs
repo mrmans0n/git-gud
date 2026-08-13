@@ -78,6 +78,10 @@ fn interruptible_sleep(
     Ok(())
 }
 
+fn wait_timed_out(start_time: Instant, timeout: Duration) -> bool {
+    start_time.elapsed() > timeout
+}
+
 /// Polling interval (10 seconds)
 const POLL_INTERVAL_SECS: u64 = 10;
 
@@ -381,6 +385,80 @@ pub struct LandOptions {
     pub admin: bool,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct LandStackFingerprint {
+    name: String,
+    base: String,
+    entries: Vec<(git2::Oid, Option<String>, Option<u64>)>,
+}
+
+impl From<&Stack> for LandStackFingerprint {
+    fn from(stack: &Stack) -> Self {
+        Self {
+            name: stack.name.clone(),
+            base: stack.base.clone(),
+            entries: stack
+                .entries
+                .iter()
+                .map(|entry| (entry.oid, entry.gg_id.clone(), entry.mr_number))
+                .collect(),
+        }
+    }
+}
+
+fn stack_changed_while_waiting(expected: &LandStackFingerprint, stack: &Stack) -> Option<String> {
+    (expected != &LandStackFingerprint::from(stack)).then(|| {
+        "Stack changed while gg land was waiting; rerun gg land to use the latest stack state."
+            .to_string()
+    })
+}
+
+fn pr_is_still_ready(
+    provider: &Provider,
+    pr_num: u64,
+    skip_approval: bool,
+    merge_trains_enabled: bool,
+) -> bool {
+    if !matches!(provider.get_pr_ci_status(pr_num), Ok(CiStatus::Success)) {
+        return false;
+    }
+    (skip_approval && !merge_trains_enabled) || provider.check_pr_approved(pr_num).unwrap_or(false)
+}
+
+fn begin_land_segment(
+    repo: &git2::Repository,
+    config: &Config,
+    args: &[String],
+) -> Result<crate::operations::OperationGuard> {
+    git::begin_recorded_op(
+        repo,
+        config,
+        OperationKind::Land,
+        args.to_vec(),
+        None,
+        SnapshotScope::AllUserBranches,
+    )
+}
+
+fn finish_land_segment(
+    repo: &git2::Repository,
+    config: &Config,
+    guard: &mut Option<crate::operations::OperationGuard>,
+    remote_effects: &mut Vec<RemoteEffect>,
+    touched_remote: &mut bool,
+) -> Result<()> {
+    let Some(guard) = guard.take() else {
+        return Ok(());
+    };
+    guard.finalize_with_scope(
+        repo,
+        config,
+        SnapshotScope::AllUserBranches,
+        std::mem::take(remote_effects),
+        std::mem::take(touched_remote),
+    )
+}
+
 /// Run the land command
 pub fn run(opts: LandOptions) -> Result<()> {
     let LandOptions {
@@ -394,19 +472,15 @@ pub fn run(opts: LandOptions) -> Result<()> {
         admin,
     } = opts;
     let repo = git::open_repo()?;
-
     let git_dir = repo.commondir();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut lock = Some(git::acquire_operation_lock(&repo, "land")?);
     let mut config = Config::load_with_global(git_dir)?;
-
-    // Acquire operation lock + record a Pending op for the undo log.
-    let (_lock, mut guard) = git::acquire_operation_lock_and_record(
-        &repo,
-        &config,
-        OperationKind::Land,
-        std::env::args().skip(1).collect(),
-        None,
-        SnapshotScope::AllUserBranches,
-    )?;
+    let mut guard = if wait {
+        None
+    } else {
+        Some(begin_land_segment(&repo, &config, &args)?)
+    };
 
     // Remote effects collected during landing. A successful merge adds a
     // `PrMerged`; auto-merge scheduling sets `touched_remote` without a
@@ -451,12 +525,12 @@ pub fn run(opts: LandOptions) -> Result<()> {
         } else {
             println!("{}", style("Stack is empty. Nothing to land.").dim());
         }
-        guard.finalize_with_scope(
+        finish_land_segment(
             &repo,
             &config,
-            SnapshotScope::AllUserBranches,
-            vec![],
-            false,
+            &mut guard,
+            &mut remote_effects,
+            &mut touched_remote,
         )?;
         return Ok(());
     }
@@ -583,7 +657,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
             None => break 'landing_loop,
         };
 
-        let entry = &entries_to_land[entry_idx];
+        let entry = entries_to_land[entry_idx].clone();
         if let Some(ref flag) = interrupted {
             if flag.load(Ordering::SeqCst) {
                 land_error = Some("Interrupted by user".to_string());
@@ -592,7 +666,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
         }
 
         let gg_id = match &entry.gg_id {
-            Some(id) => id,
+            Some(id) => id.clone(),
             None => {
                 land_error = Some(format!(
                     "Commit {} is missing GG-ID. Run `gg sync` first.",
@@ -685,27 +759,64 @@ pub fn run(opts: LandOptions) -> Result<()> {
             }
             PrState::Open => {
                 if wait {
-                    let timeout_minutes = config.get_land_wait_timeout_minutes();
-                    if let Err(e) = wait_for_pr_ready(
-                        &provider,
-                        pr_num,
-                        land_all || (admin && provider == Provider::GitHub),
-                        timeout_minutes,
-                        interrupted.as_ref(),
-                        &stack.base,
-                        json,
-                    ) {
-                        landed_entries.push(LandedEntryJson {
-                            position: entry.position,
-                            sha: entry.short_sha.clone(),
-                            title: entry.title.clone(),
-                            gg_id: gg_id.clone(),
-                            pr_number: pr_num,
-                            action: "error".to_string(),
-                            error: Some(e.to_string()),
-                        });
-                        land_error = Some(e.to_string());
-                        break 'landing_loop;
+                    let skip_approval = land_all || (admin && provider == Provider::GitHub);
+                    let wait_started = Instant::now();
+                    loop {
+                        let expected_stack = LandStackFingerprint::from(&stack);
+                        finish_land_segment(
+                            &repo,
+                            &config,
+                            &mut guard,
+                            &mut remote_effects,
+                            &mut touched_remote,
+                        )?;
+                        config.save(git_dir)?;
+                        drop(lock.take());
+                        let timeout_minutes = config.get_land_wait_timeout_minutes();
+                        let wait_result = wait_for_pr_ready(
+                            &provider,
+                            pr_num,
+                            skip_approval,
+                            wait_started,
+                            timeout_minutes,
+                            interrupted.as_ref(),
+                            &stack.base,
+                            json,
+                        );
+                        lock = Some(git::acquire_operation_lock(&repo, "land")?);
+                        config = Config::load_with_global(git_dir)?;
+                        stack = Stack::load(&repo, &config)?;
+                        if let Err(e) = wait_result {
+                            landed_entries.push(LandedEntryJson {
+                                position: entry.position,
+                                sha: entry.short_sha.clone(),
+                                title: entry.title.clone(),
+                                gg_id: gg_id.clone(),
+                                pr_number: pr_num,
+                                action: "error".to_string(),
+                                error: Some(e.to_string()),
+                            });
+                            land_error = Some(e.to_string());
+                            break 'landing_loop;
+                        }
+                        if let Some(error) = stack_changed_while_waiting(&expected_stack, &stack) {
+                            landed_entries.push(LandedEntryJson {
+                                position: entry.position,
+                                sha: entry.short_sha.clone(),
+                                title: entry.title.clone(),
+                                gg_id: gg_id.clone(),
+                                pr_number: pr_num,
+                                action: "error".to_string(),
+                                error: Some(error.clone()),
+                            });
+                            land_error = Some(error);
+                            break 'landing_loop;
+                        }
+                        if pr_is_still_ready(&provider, pr_num, skip_approval, merge_trains_enabled)
+                        {
+                            guard = Some(begin_land_segment(&repo, &config, &args)?);
+                            break;
+                        }
                     }
                 } else if !land_all && (!admin || provider != Provider::GitHub) {
                     let approved = provider.check_pr_approved(pr_num)?;
@@ -749,7 +860,10 @@ pub fn run(opts: LandOptions) -> Result<()> {
                     // the flag immediately so a mid-sequence failure still
                     // leaves a record the sweep will promote correctly.
                     touched_remote = true;
-                    guard.mark_touched_remote();
+                    guard
+                        .as_mut()
+                        .expect("land segment guard")
+                        .mark_touched_remote();
                     let action = match result {
                         AutoMergeResult::Queued => "queued",
                         AutoMergeResult::AlreadyQueued => "already_queued",
@@ -764,24 +878,50 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         error: None,
                     });
                     if wait {
+                        let expected_stack = LandStackFingerprint::from(&stack);
+                        finish_land_segment(
+                            &repo,
+                            &config,
+                            &mut guard,
+                            &mut remote_effects,
+                            &mut touched_remote,
+                        )?;
+                        config.save(git_dir)?;
+                        drop(lock.take());
                         let timeout_minutes = config.get_land_wait_timeout_minutes();
-                        if let Err(e) = wait_for_merge_train_completion(
+                        let wait_result = wait_for_merge_train_completion(
                             &provider,
                             pr_num,
                             timeout_minutes,
                             interrupted.as_ref(),
                             &stack.base,
                             json,
-                        ) {
+                        );
+                        lock = Some(git::acquire_operation_lock(&repo, "land")?);
+                        config = Config::load_with_global(git_dir)?;
+                        stack = Stack::load(&repo, &config)?;
+                        if let Err(e) = wait_result {
                             land_error = Some(e.to_string());
                             break 'landing_loop;
                         }
+                        if let Some(error) = stack_changed_while_waiting(&expected_stack, &stack) {
+                            land_error = Some(error);
+                            break 'landing_loop;
+                        }
+                        guard = Some(begin_land_segment(&repo, &config, &args)?);
+                        // The MR merged while its train was being polled. Keep the
+                        // follow-up cleanup segment out of `gg undo`.
+                        touched_remote = true;
+                        guard
+                            .as_mut()
+                            .expect("land segment guard")
+                            .mark_touched_remote();
                         landed_count += 1;
                         cleanup_after_merge(
                             &mut config,
                             &stack,
                             &provider,
-                            gg_id,
+                            &gg_id,
                             pr_num,
                             land_multiple,
                             json,
@@ -835,7 +975,10 @@ pub fn run(opts: LandOptions) -> Result<()> {
                     // remote so `gg undo` refuses with a provider hint. Persist
                     // immediately for mid-sequence failure tolerance.
                     touched_remote = true;
-                    guard.mark_touched_remote();
+                    guard
+                        .as_mut()
+                        .expect("land segment guard")
+                        .mark_touched_remote();
                     landed_entries.push(LandedEntryJson {
                         position: entry.position,
                         sha: entry.short_sha.clone(),
@@ -887,7 +1030,10 @@ pub fn run(opts: LandOptions) -> Result<()> {
                     };
                     remote_effects.push(effect.clone());
                     touched_remote = true;
-                    guard.record_remote_effect(effect);
+                    guard
+                        .as_mut()
+                        .expect("land segment guard")
+                        .record_remote_effect(effect);
 
                     landed_entries.push(LandedEntryJson {
                         position: entry.position,
@@ -903,7 +1049,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         &mut config,
                         &stack,
                         &provider,
-                        gg_id,
+                        &gg_id,
                         pr_num,
                         land_multiple,
                         json,
@@ -946,7 +1092,33 @@ pub fn run(opts: LandOptions) -> Result<()> {
         if !land_multiple {
             break 'landing_loop;
         }
-        std::thread::sleep(Duration::from_secs(2));
+        if wait {
+            let expected_stack = LandStackFingerprint::from(&stack);
+            finish_land_segment(
+                &repo,
+                &config,
+                &mut guard,
+                &mut remote_effects,
+                &mut touched_remote,
+            )?;
+            config.save(git_dir)?;
+            drop(lock.take());
+            let sleep_result =
+                interruptible_sleep(Duration::from_secs(2), interrupted.as_ref(), None);
+            lock = Some(git::acquire_operation_lock(&repo, "land")?);
+            config = Config::load_with_global(git_dir)?;
+            stack = Stack::load(&repo, &config)?;
+            if let Err(error) = sleep_result {
+                land_error = Some(error.to_string());
+                break 'landing_loop;
+            }
+            if let Some(error) = stack_changed_while_waiting(&expected_stack, &stack) {
+                land_error = Some(error);
+                break 'landing_loop;
+            }
+        } else {
+            std::thread::sleep(Duration::from_secs(2));
+        }
     }
 
     config.save(git_dir)?;
@@ -971,6 +1143,9 @@ pub fn run(opts: LandOptions) -> Result<()> {
         };
 
         if should_clean && !has_unsynced_commits_before_merge {
+            if guard.is_none() {
+                guard = Some(begin_land_segment(&repo, &config, &args)?);
+            }
             // After landing, the stack contains merged commits by definition.
             // Bypass the immutability guard since the rebase here is a
             // sanctioned cleanup step, not a user-driven history rewrite.
@@ -981,7 +1156,10 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 &stack.name,
                 true,
                 &mut |effect| {
-                    guard.record_remote_effect(effect.clone());
+                    guard
+                        .as_mut()
+                        .expect("land segment guard")
+                        .record_remote_effect(effect.clone());
                     remote_effects.push(effect);
                     touched_remote = true;
                 },
@@ -1049,13 +1227,14 @@ pub fn run(opts: LandOptions) -> Result<()> {
     // on remote and can't be undone locally). Dropping the guard without
     // finalize would leave the record Pending and eventually get swept to
     // Interrupted — less accurate for `gg undo --list`.
-    guard.finalize_with_scope(
+    finish_land_segment(
         &repo,
         &config,
-        SnapshotScope::AllUserBranches,
-        remote_effects,
-        touched_remote,
+        &mut guard,
+        &mut remote_effects,
+        &mut touched_remote,
     )?;
+    drop(lock);
 
     // In JSON mode, the error is already included in the LandResponse payload.
     // Returning Err would cause gg-cli to emit a second JSON error object,
@@ -1071,16 +1250,17 @@ pub fn run(opts: LandOptions) -> Result<()> {
 
 /// Wait for a PR/MR to be ready to merge (CI passes, approvals met)
 /// Also monitors merge train status if merge trains are enabled
+#[allow(clippy::too_many_arguments)]
 fn wait_for_pr_ready(
     provider: &Provider,
     pr_num: u64,
     skip_approval: bool,
+    start_time: Instant,
     timeout_minutes: u64,
     interrupted: Option<&Arc<AtomicBool>>,
     target_branch: &str,
     json: bool,
 ) -> Result<()> {
-    let start_time = Instant::now();
     let timeout = Duration::from_secs(timeout_minutes * 60);
     let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
     let mut consecutive_errors: u32 = 0;
@@ -1108,7 +1288,7 @@ fn wait_for_pr_ready(
 
     loop {
         // Check timeout
-        if start_time.elapsed() > timeout {
+        if wait_timed_out(start_time, timeout) {
             if let Some(ref spinner) = current_spinner {
                 spinner.finish_and_clear();
             }
@@ -1667,6 +1847,12 @@ mod tests {
     }
 
     #[test]
+    fn test_wait_timeout_uses_original_start_time() {
+        let started = Instant::now() - Duration::from_secs(61);
+        assert!(wait_timed_out(started, Duration::from_secs(60)));
+    }
+
+    #[test]
     fn test_config_remove_mr_for_entry_removes_single_entry() {
         // Create a config with multiple MR mappings
         let mut config = Config {
@@ -1919,6 +2105,7 @@ mod tests {
             &Provider,
             u64,
             bool,
+            Instant,
             u64,
             Option<&Arc<AtomicBool>>,
             &str,

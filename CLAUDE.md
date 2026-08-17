@@ -60,7 +60,8 @@ crates/
 │           ├── clean.rs      # Remove merged stacks
 │           ├── completions.rs # Shell completions
 │           ├── drop_cmd.rs   # Drop commits from stack
-│           ├── inbox.rs      # Review inbox for pending PRs/MRs
+│           ├── inbox.rs      # Review inbox command orchestration
+│           ├── inbox/        # Review inbox refresh/render helpers
 │           ├── init.rs       # Initialize gg in a repository
 │           ├── land.rs       # Merge approved PRs/MRs
 │           ├── lint.rs       # Run lint commands per commit
@@ -75,6 +76,7 @@ crates/
 │           ├── run.rs        # Run commands per commit
 │           ├── setup.rs      # Config setup wizard
 │           ├── split.rs      # Split commits
+│           ├── split_protocol.rs # Split protocol/state shared by split UIs
 │           ├── split_tui.rs  # TUI for split
 │           ├── squash.rs     # Squash changes into current commit
 │           ├── sync.rs       # Push branches and create/update PRs/MRs
@@ -86,7 +88,7 @@ crates/
 │   ├── src/
 │   │   └── main.rs           # clap parsing + command dispatch
 │   └── tests/
-│       ├── integration_tests/    # Integration tests with temp repos
+│       ├── integration_tests/    # Integration tests with temp repos, split by command
 │       └── skill_contract.rs     # Skill contract tests
 └── gg-mcp/                   # MCP server binary (stub, in development)
     ├── Cargo.toml

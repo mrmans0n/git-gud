@@ -251,9 +251,7 @@ impl SplitTuiState {
         match self.active_panel {
             Panel::Files => {
                 // Select all hunks globally
-                for s in &mut self.selected {
-                    *s = true;
-                }
+                self.selected.fill(true);
             }
             Panel::Diff => {
                 // Select all hunks for current file
@@ -271,9 +269,7 @@ impl SplitTuiState {
         match self.active_panel {
             Panel::Files => {
                 // Deselect all hunks globally
-                for s in &mut self.selected {
-                    *s = false;
-                }
+                self.selected.fill(false);
             }
             Panel::Diff => {
                 // Deselect all hunks for current file

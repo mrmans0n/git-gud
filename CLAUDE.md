@@ -129,7 +129,7 @@ skills/
 ## Testing Patterns
 
 ### Integration Tests
-Tests use temporary git repositories created with the `tempfile` crate. See `tests/integration_tests.rs` for examples.
+Tests use temporary git repositories created with the `tempfile` crate. See `tests/integration_tests/` for examples.
 
 Key test helpers:
 - `create_test_repo()` - Creates isolated temp repo with git config

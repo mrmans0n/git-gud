@@ -68,14 +68,32 @@ impl Drop for OperationLock {
 ///
 /// Returns a lock handle that will automatically release when dropped.
 pub fn acquire_operation_lock(repo: &Repository, operation: &str) -> Result<OperationLock> {
-    acquire_operation_lock_with_timeout(repo, operation, INDEX_LOCK_TIMEOUT_SECS)
+    acquire_operation_lock_with_timeout_and_silent(repo, operation, INDEX_LOCK_TIMEOUT_SECS, false)
+}
+
+pub fn acquire_operation_lock_silent(
+    repo: &Repository,
+    operation: &str,
+    silent: bool,
+) -> Result<OperationLock> {
+    acquire_operation_lock_with_timeout_and_silent(repo, operation, INDEX_LOCK_TIMEOUT_SECS, silent)
 }
 
 /// Internal version with configurable timeout (for testing)
+#[cfg(test)]
 pub(crate) fn acquire_operation_lock_with_timeout(
     repo: &Repository,
     operation: &str,
     timeout_secs: u64,
+) -> Result<OperationLock> {
+    acquire_operation_lock_with_timeout_and_silent(repo, operation, timeout_secs, false)
+}
+
+pub(crate) fn acquire_operation_lock_with_timeout_and_silent(
+    repo: &Repository,
+    operation: &str,
+    timeout_secs: u64,
+    silent: bool,
 ) -> Result<OperationLock> {
     // --- Step 1: Check for index.lock (detect if git is running) ---
     // Use repo.path() for per-worktree index.lock
@@ -87,7 +105,7 @@ pub(crate) fn acquire_operation_lock_with_timeout(
     // Wait for any existing index.lock to be released
     let mut warned = false;
     while index_lock_path.exists() {
-        if !warned {
+        if !silent && !warned {
             eprintln!(
                 "{} Waiting for git operation to complete (index.lock exists)...",
                 console::style("Note:").cyan().bold()

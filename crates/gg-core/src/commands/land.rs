@@ -564,7 +564,9 @@ pub fn run(opts: LandOptions) -> Result<()> {
     let repo = git::open_repo()?;
     let git_dir = repo.commondir();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let mut lock = Some(git::acquire_operation_lock(&repo, "land")?);
+    let mut lock = Some(git::acquire_operation_lock_silent(
+        &repo, "land", structured,
+    )?);
     let mut config = Config::load_with_global(git_dir)?;
     let mut guard = if wait {
         None
@@ -927,7 +929,9 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             streamer.as_mut(),
                             &mut readiness_poll,
                         );
-                        lock = Some(git::acquire_operation_lock(&repo, "land")?);
+                        lock = Some(git::acquire_operation_lock_silent(
+                            &repo, "land", structured,
+                        )?);
                         config = Config::load_with_global(git_dir)?;
                         stack = Stack::load(&repo, &config)?;
                         if let Err(e) = wait_result {
@@ -1055,7 +1059,9 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             structured,
                             streamer.as_mut(),
                         );
-                        lock = Some(git::acquire_operation_lock(&repo, "land")?);
+                        lock = Some(git::acquire_operation_lock_silent(
+                            &repo, "land", structured,
+                        )?);
                         config = Config::load_with_global(git_dir)?;
                         stack = Stack::load(&repo, &config)?;
                         if let Err(e) = wait_result {
@@ -1298,7 +1304,9 @@ pub fn run(opts: LandOptions) -> Result<()> {
             drop(lock.take());
             let sleep_result =
                 interruptible_sleep(Duration::from_secs(2), interrupted.as_ref(), None);
-            lock = Some(git::acquire_operation_lock(&repo, "land")?);
+            lock = Some(git::acquire_operation_lock_silent(
+                &repo, "land", structured,
+            )?);
             config = Config::load_with_global(git_dir)?;
             stack = Stack::load(&repo, &config)?;
             if let Err(error) = sleep_result {

@@ -447,6 +447,31 @@ fn test_land_jsonl_admin_emits_no_human_warning() {
 
 #[cfg(unix)]
 #[test]
+fn test_land_jsonl_index_lock_wait_emits_no_human_warning() {
+    let fixture = WaitingLandFixture::new();
+    fixture.release_ci();
+    let index_lock = fixture.repo_path.join(".git/index.lock");
+    fs::write(&index_lock, "locked\n").expect("create index lock");
+
+    let land = fixture.start_land_with_args(&["land", "--jsonl", "--admin", "--no-clean"]);
+    std::thread::sleep(Duration::from_millis(250));
+    fs::remove_file(&index_lock).expect("release index lock");
+
+    let output = land.wait_with_output().expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(output.status.success(), "land failed: {stderr}");
+    assert!(stderr.trim().is_empty(), "unexpected stderr: {stderr}");
+    assert!(
+        stdout
+            .lines()
+            .all(|line| serde_json::from_str::<Value>(line).is_ok()),
+        "every JSONL line must parse: {stdout}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn test_land_jsonl_default_scope_reports_one_total_entry() {
     let fixture = WaitingLandFixture::new();
     fixture.add_second_entry();

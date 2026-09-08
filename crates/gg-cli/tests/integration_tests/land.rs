@@ -71,6 +71,49 @@ exit 1
 }
 
 #[cfg(unix)]
+fn write_fake_land_glab(path: &Path) {
+    fs::write(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+if [ "$1" = "--version" ]; then
+  echo "glab version 1.0.0"
+  exit 0
+fi
+
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  exit 0
+fi
+
+if [ "$1" = "api" ] && [ "$2" = "projects/:id" ]; then
+  echo '{"merge_trains_enabled":false}'
+  exit 0
+fi
+
+if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
+  if [ -f "$GG_FAKE_MERGED" ]; then state=merged; else state=opened; fi
+  printf '{"iid":41,"title":"Land entry","state":"%s","web_url":"https://gitlab.example/test/repo/-/merge_requests/41","source_branch":"testuser/land-wait/c-1111111","draft":false,"work_in_progress":false,"detailed_merge_status":"mergeable","head_pipeline":{"status":"success"}}\n' "$state"
+  exit 0
+fi
+
+if [ "$1" = "mr" ] && [ "$2" = "merge" ]; then
+  touch "$GG_FAKE_MERGED"
+  touch "$GG_FAKE_MERGED.glab"
+  exit 0
+fi
+
+echo "unexpected glab invocation: $*" >&2
+exit 1
+"#,
+    )
+    .expect("write fake glab");
+    let mut permissions = fs::metadata(path).expect("stat fake glab").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).expect("make fake glab executable");
+}
+
+#[cfg(unix)]
 struct WaitingLandFixture {
     _temp_dir: tempfile::TempDir,
     repo_path: std::path::PathBuf,
@@ -183,6 +226,20 @@ impl WaitingLandFixture {
     fn release_ci(&self) {
         fs::write(&self.ready, "ready\n").expect("release fake CI");
     }
+
+    fn use_gitlab_provider(&self) {
+        let config_path = self.repo_path.join(".git/gg/config.json");
+        let mut config: Value =
+            serde_json::from_slice(&fs::read(&config_path).expect("read config"))
+                .expect("parse config");
+        config["defaults"]["provider"] = Value::String("gitlab".to_string());
+        fs::write(
+            &config_path,
+            serde_json::to_vec_pretty(&config).expect("serialize config"),
+        )
+        .expect("write config");
+        write_fake_land_glab(&self.repo_path.join("fake-bin-land-wait").join("glab"));
+    }
 }
 
 #[cfg(unix)]
@@ -280,6 +337,32 @@ fn test_land_jsonl_admin_emits_no_human_warning() {
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
     let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
     assert!(output.status.success(), "land failed: {stderr}");
+    assert!(stderr.trim().is_empty(), "unexpected stderr: {stderr}");
+    assert!(
+        stdout
+            .lines()
+            .all(|line| serde_json::from_str::<Value>(line).is_ok()),
+        "every JSONL line must parse: {stdout}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_jsonl_admin_emits_no_human_warning() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+
+    let output = fixture
+        .start_land_with_args(&["land", "--all", "--jsonl", "--admin", "--no-clean"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(output.status.success(), "land failed: {stderr}");
+    assert!(
+        fixture.merged.with_extension("glab").exists(),
+        "fake GitLab MR should be merged"
+    );
     assert!(stderr.trim().is_empty(), "unexpected stderr: {stderr}");
     assert!(
         stdout

@@ -1182,7 +1182,8 @@ pub fn run(opts: LandOptions) -> Result<()> {
             if admin && !structured {
                 eprintln!("⚠ Merging with admin override — bypassing approval requirements");
             }
-            match provider.merge_pr(pr_num, squash, false, admin) {
+            let merge_admin = admin && !(structured && provider == Provider::GitLab);
+            match provider.merge_pr(pr_num, squash, false, merge_admin) {
                 Ok(()) => {
                     // Record the merge as a remote effect. Fetch the URL if we
                     // can; fall back to empty string if the info call fails.

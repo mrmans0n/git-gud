@@ -30,7 +30,7 @@ pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
     )?;
 
     let mut remote_effects = Vec::new();
-    run_for_stack_with_repo_options(&repo, stack_name, force, false, &mut |effect| {
+    run_for_stack_with_repo_options(&repo, stack_name, force, false, false, &mut |effect| {
         guard.record_remote_effect(effect.clone());
         remote_effects.push(effect);
     })?;
@@ -47,7 +47,7 @@ pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
 
 /// Run clean for a stack with an already-open repository (no lock acquisition)
 pub fn run_for_stack_with_repo(repo: &Repository, stack_name: &str, force: bool) -> Result<()> {
-    run_for_stack_with_repo_options(repo, stack_name, force, false, &mut |_| {})
+    run_for_stack_with_repo_options(repo, stack_name, force, false, false, &mut |_| {})
 }
 
 /// Run clean after `gg land` has already verified that every PR/MR in the stack
@@ -61,9 +61,10 @@ pub(crate) fn run_for_stack_with_repo_after_verified_land(
     repo: &Repository,
     stack_name: &str,
     force: bool,
+    silent: bool,
     record_remote_effect: &mut dyn FnMut(RemoteEffect),
 ) -> Result<()> {
-    run_for_stack_with_repo_options(repo, stack_name, force, true, record_remote_effect)
+    run_for_stack_with_repo_options(repo, stack_name, force, true, silent, record_remote_effect)
 }
 
 fn run_for_stack_with_repo_options(
@@ -71,6 +72,7 @@ fn run_for_stack_with_repo_options(
     stack_name: &str,
     force: bool,
     merge_verified_by_land: bool,
+    silent: bool,
     record_remote_effect: &mut dyn FnMut(RemoteEffect),
 ) -> Result<()> {
     let git_dir = repo.commondir();
@@ -102,7 +104,7 @@ fn run_for_stack_with_repo_options(
         )));
     }
 
-    let _ = maybe_remove_configured_worktree(repo, &mut config, stack_name, false)?;
+    let _ = maybe_remove_configured_worktree(repo, &mut config, stack_name, silent)?;
 
     // Delete local branch
     if let Ok(mut branch) = repo.find_branch(&branch_name, BranchType::Local) {
@@ -123,11 +125,13 @@ fn run_for_stack_with_repo_options(
             if let Err(e) = git::checkout_branch(repo, &base) {
                 let msg = e.to_string();
                 if msg.contains("current HEAD of a linked") {
-                    println!(
-                        "{} '{}' is checked out in another worktree; detaching HEAD before branch deletion.",
-                        style("Note:").cyan(),
-                        base
-                    );
+                    if !silent {
+                        println!(
+                            "{} '{}' is checked out in another worktree; detaching HEAD before branch deletion.",
+                            style("Note:").cyan(),
+                            base
+                        );
+                    }
                     if let Ok(head) = repo.head() {
                         if let Some(oid) = head.target() {
                             repo.set_head_detached(oid)?;
@@ -144,32 +148,36 @@ fn run_for_stack_with_repo_options(
             // Try to prune if stale
             if !git::try_prune_worktree(repo, &wt_name) {
                 // Worktree still exists - warn and try to remove it
-                println!(
-                    "{} Branch '{}' is checked out in worktree '{}'. Removing worktree.",
-                    style("Note:").cyan(),
-                    branch_name,
-                    wt_name
-                );
+                if !silent {
+                    println!(
+                        "{} Branch '{}' is checked out in worktree '{}'. Removing worktree.",
+                        style("Note:").cyan(),
+                        branch_name,
+                        wt_name
+                    );
+                }
                 let _ = git::remove_worktree(&wt_name);
             }
         }
 
         // Try to delete the branch, handle errors gracefully
         if let Err(e) = branch.delete() {
-            println!(
-                "{} Could not delete local branch '{}': {}",
-                style("Warning:").yellow(),
-                branch_name,
-                e
-            );
-            println!(
-                "  You may need to manually remove the worktree first: git worktree remove <path>"
-            );
+            if !silent {
+                println!(
+                    "{} Could not delete local branch '{}': {}",
+                    style("Warning:").yellow(),
+                    branch_name,
+                    e
+                );
+                println!(
+                    "  You may need to manually remove the worktree first: git worktree remove <path>"
+                );
+            }
         }
     }
 
     let allow_remote_delete = should_delete_remote_branches(merge_status, merge_verified_by_land);
-    if !allow_remote_delete {
+    if !allow_remote_delete && !silent {
         println!(
             "{} Skipping remote branch deletion for '{}' because merge verification is unavailable.",
             style("Warning:").yellow(),
@@ -184,7 +192,7 @@ fn run_for_stack_with_repo_options(
         stack_name,
         &username,
         /*delete_remote=*/ allow_remote_delete,
-        /*silent=*/ false,
+        /*silent=*/ silent,
         record_remote_effect,
     );
 

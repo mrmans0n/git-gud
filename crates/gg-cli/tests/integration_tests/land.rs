@@ -269,6 +269,68 @@ fn test_land_jsonl_streams_wait_entry_and_summary() {
 
 #[cfg(unix)]
 #[test]
+fn test_land_jsonl_admin_emits_no_human_warning() {
+    let fixture = WaitingLandFixture::new();
+    fixture.release_ci();
+
+    let output = fixture
+        .start_land_with_args(&["land", "--jsonl", "--admin", "--no-clean"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(output.status.success(), "land failed: {stderr}");
+    assert!(stderr.trim().is_empty(), "unexpected stderr: {stderr}");
+    assert!(
+        stdout
+            .lines()
+            .all(|line| serde_json::from_str::<Value>(line).is_ok()),
+        "every JSONL line must parse: {stdout}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_jsonl_clean_does_not_prompt_for_a_configured_worktree() {
+    let fixture = WaitingLandFixture::new();
+    fixture.release_ci();
+    let config_path = fixture.repo_path.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).expect("read config"))
+        .expect("parse config");
+    config["stacks"]["land-wait"]["worktree_path"] = Value::String(
+        fixture
+            .repo_path
+            .join("configured-worktree")
+            .display()
+            .to_string(),
+    );
+    fs::write(
+        &config_path,
+        serde_json::to_vec_pretty(&config).expect("serialize config"),
+    )
+    .expect("write config");
+
+    let output = fixture
+        .start_land_with_args(&["land", "--jsonl", "--clean"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(
+        output.status.success(),
+        "land failed: stdout={stdout} stderr={stderr}"
+    );
+    assert!(stderr.trim().is_empty(), "unexpected stderr: {stderr}");
+    assert!(
+        stdout
+            .lines()
+            .all(|line| serde_json::from_str::<Value>(line).is_ok()),
+        "every JSONL line must parse: {stdout}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn test_land_wait_releases_operation_lock_for_sync_in_another_worktree() {
     let fixture = WaitingLandFixture::new();
     let land = fixture.start_land();

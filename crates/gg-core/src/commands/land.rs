@@ -1150,7 +1150,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
             }
             break 'landing_loop;
         } else {
-            if admin {
+            if admin && !structured {
                 eprintln!("⚠ Merging with admin override — bypassing approval requirements");
             }
             match provider.merge_pr(pr_num, squash, false, admin) {
@@ -1308,6 +1308,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 &repo,
                 &stack.name,
                 true,
+                structured,
                 &mut |effect| {
                     guard
                         .as_mut()

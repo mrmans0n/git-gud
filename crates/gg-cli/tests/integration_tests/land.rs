@@ -699,6 +699,28 @@ fn test_land_gitlab_jsonl_admin_emits_no_human_warning() {
 
 #[cfg(unix)]
 #[test]
+fn test_land_gitlab_auto_merge_jsonl_reports_single_entry_total() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.add_second_entry();
+
+    let output = fixture
+        .start_land_with_args(&["land", "--all", "--jsonl", "--auto-merge", "--no-clean"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(output.status.success(), "land failed: {stderr}");
+    assert!(stderr.trim().is_empty(), "unexpected stderr: {stderr}");
+
+    let start: Value =
+        serde_json::from_str(stdout.lines().next().expect("start event")).expect("parse start");
+    assert_eq!(start["event"], "start");
+    assert_eq!(start["total_entries"], 1);
+}
+
+#[cfg(unix)]
+#[test]
 fn test_land_jsonl_clean_silences_provider_lookup_debug() {
     let fixture = WaitingLandFixture::new();
     fs::write(&fixture.merged, "already merged\n").expect("mark fake PR merged");

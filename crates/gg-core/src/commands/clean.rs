@@ -214,7 +214,7 @@ fn run_for_stack_with_repo_options(
         /*delete_remote=*/ allow_remote_delete,
         /*silent=*/ silent,
         record_remote_effect,
-    );
+    )?;
 
     // Remove from config
     config.remove_stack(stack_name);
@@ -306,7 +306,7 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
                 /*delete_remote=*/ false,
                 /*silent=*/ json,
                 &mut |_| {},
-            );
+            )?;
             config.remove_stack(stack_name);
             cleaned.push(stack_name.clone());
             continue;
@@ -434,7 +434,7 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
                     guard.record_remote_effect(effect.clone());
                     remote_effects.push(effect);
                 },
-            );
+            )?;
 
             // Remove from config
             config.remove_stack(stack_name);
@@ -958,7 +958,7 @@ fn delete_entry_branches(
     delete_remote: bool,
     silent: bool,
     record_remote_effect: &mut dyn FnMut(RemoteEffect),
-) {
+) -> Result<()> {
     // First, delete entry branches from config (if any)
     if let Some(stack_config) = config.get_stack(stack_name) {
         for entry_id in stack_config.mrs.keys() {
@@ -991,7 +991,7 @@ fn delete_entry_branches(
             }
             // Delete remote entry branch
             if delete_remote {
-                if let Some(effect) = delete_remote_branch(repo, &entry_branch) {
+                if let Some(effect) = delete_remote_branch(repo, &entry_branch)? {
                     record_remote_effect(effect);
                 }
             }
@@ -1034,22 +1034,22 @@ fn delete_entry_branches(
         }
         // Also try to delete from remote
         if delete_remote {
-            if let Some(effect) = delete_remote_branch(repo, &branch_name) {
+            if let Some(effect) = delete_remote_branch(repo, &branch_name)? {
                 record_remote_effect(effect);
             }
         }
     }
+    Ok(())
 }
 
-fn delete_remote_branch(repo: &Repository, branch: &str) -> Option<RemoteEffect> {
-    git::delete_remote_branch(repo, branch)
-        .ok()
-        .flatten()
-        .map(|prior_oid| RemoteEffect::BranchDeleted {
+fn delete_remote_branch(repo: &Repository, branch: &str) -> Result<Option<RemoteEffect>> {
+    git::delete_remote_branch(repo, branch).map(|prior_oid| {
+        prior_oid.map(|prior_oid| RemoteEffect::BranchDeleted {
             remote: "origin".to_string(),
             branch: branch.to_string(),
             prior_oid: Some(prior_oid.to_string()),
         })
+    })
 }
 
 #[cfg(test)]
@@ -1095,6 +1095,19 @@ mod tests {
             },
             true,
         ));
+    }
+
+    #[test]
+    fn delete_remote_branch_reports_git_errors() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let repo = Repository::init(temp.path()).expect("init repo");
+
+        let error = delete_remote_branch(&repo, "u/cleanup--c-1111111").unwrap_err();
+
+        assert!(
+            error.to_string().contains("git ls-remote failed"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

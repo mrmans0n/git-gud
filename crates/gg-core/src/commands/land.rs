@@ -551,9 +551,9 @@ fn finish_land_segment(
     )
 }
 
-fn default_land_total_entries(stack: &Stack) -> usize {
+fn single_land_total_entries(entries: &[StackEntry]) -> usize {
     let mut total = 0;
-    for entry in &stack.entries {
+    for entry in entries {
         if entry.mr_number.is_none() {
             continue;
         }
@@ -564,6 +564,10 @@ fn default_land_total_entries(stack: &Stack) -> usize {
         }
     }
     total
+}
+
+fn default_land_total_entries(stack: &Stack) -> usize {
+    single_land_total_entries(&stack.entries)
 }
 
 fn mapped_land_total_entries(entries: &[StackEntry]) -> usize {
@@ -685,8 +689,14 @@ pub fn run(opts: LandOptions) -> Result<()> {
     };
     let land_multiple = land_all || land_until.is_some();
     let total_entries = match land_until {
+        Some(end_pos) if auto_merge_on_land && !merge_trains_enabled => {
+            single_land_total_entries(&stack.entries[..end_pos.min(stack.entries.len())])
+        }
         Some(end_pos) => {
             mapped_land_total_entries(&stack.entries[..end_pos.min(stack.entries.len())])
+        }
+        None if land_all && auto_merge_on_land && !merge_trains_enabled => {
+            default_land_total_entries(&stack)
         }
         None if land_all => mapped_land_total_entries(&stack.entries),
         None => default_land_total_entries(&stack),
@@ -2379,6 +2389,7 @@ mod tests {
         ];
 
         assert_eq!(mapped_land_total_entries(&entries), 1);
+        assert_eq!(single_land_total_entries(&entries), 1);
     }
 
     #[test]

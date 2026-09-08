@@ -19,7 +19,7 @@ use crate::output::{
     LandedEntryJson, StreamingJson, OUTPUT_VERSION,
 };
 use crate::provider::{CiStatus, PrState, Provider};
-use crate::stack::{resolve_target, Stack};
+use crate::stack::{resolve_target, Stack, StackEntry};
 
 /// Format elapsed duration as human-readable string (e.g., "2m15s", "45s")
 fn format_duration(elapsed: Duration) -> String {
@@ -566,6 +566,13 @@ fn default_land_total_entries(stack: &Stack) -> usize {
     total
 }
 
+fn mapped_land_total_entries(entries: &[StackEntry]) -> usize {
+    entries
+        .iter()
+        .filter(|entry| entry.mr_number.is_some())
+        .count()
+}
+
 /// Run the land command
 pub fn run(opts: LandOptions) -> Result<()> {
     let LandOptions {
@@ -678,8 +685,10 @@ pub fn run(opts: LandOptions) -> Result<()> {
     };
     let land_multiple = land_all || land_until.is_some();
     let total_entries = match land_until {
-        Some(end_pos) => end_pos.min(stack.entries.len()),
-        None if land_all => stack.entries.len(),
+        Some(end_pos) => {
+            mapped_land_total_entries(&stack.entries[..end_pos.min(stack.entries.len())])
+        }
+        None if land_all => mapped_land_total_entries(&stack.entries),
         None => default_land_total_entries(&stack),
     };
     let summary_total_entries = if land_multiple {
@@ -2328,6 +2337,48 @@ mod tests {
         };
 
         assert_eq!(default_land_total_entries(&stack), 2);
+    }
+
+    #[test]
+    fn mapped_land_total_entries_skips_unmapped_entries() {
+        use crate::stack::StackEntry;
+
+        let entries = vec![
+            StackEntry {
+                oid: git2::Oid::ZERO_SHA1,
+                short_sha: "sha1".to_string(),
+                title: "Entry 1".to_string(),
+                gg_id: Some("c-1111111".to_string()),
+                gg_parent: None,
+                mr_number: None,
+                mr_state: None,
+                approved: false,
+                changes_requested: false,
+                mergeable: false,
+                ci_status: None,
+                position: 1,
+                in_merge_train: false,
+                merge_train_position: None,
+            },
+            StackEntry {
+                oid: git2::Oid::ZERO_SHA1,
+                short_sha: "sha2".to_string(),
+                title: "Entry 2".to_string(),
+                gg_id: Some("c-2222222".to_string()),
+                gg_parent: None,
+                mr_number: Some(2),
+                mr_state: Some(PrState::Open),
+                approved: false,
+                changes_requested: false,
+                mergeable: false,
+                ci_status: None,
+                position: 2,
+                in_merge_train: false,
+                merge_train_position: None,
+            },
+        ];
+
+        assert_eq!(mapped_land_total_entries(&entries), 1);
     }
 
     #[test]

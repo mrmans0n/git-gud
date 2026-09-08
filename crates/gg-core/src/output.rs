@@ -399,6 +399,7 @@ impl Serialize for LandStreamingResponse {
             LandStreamingEvent::Wait { error: Some(_), .. } => "warning",
             LandStreamingEvent::Entry { entry } if entry.error.is_some() => "error",
             LandStreamingEvent::Summary { result } if result.error.is_some() => "error",
+            LandStreamingEvent::Summary { result } if !result.warnings.is_empty() => "warning",
             _ => "ok",
         };
         let mut value = serde_json::to_value(&self.event).map_err(serde::ser::Error::custom)?;
@@ -679,6 +680,29 @@ mod tests {
         assert_eq!(json["event"], "summary");
         assert_eq!(json["stack"], "feat-stack");
         assert_eq!(json["landed"][0]["action"], "merged");
+    }
+
+    #[test]
+    fn land_summary_with_warnings_has_warning_status() {
+        let response = LandStreamingResponse {
+            version: OUTPUT_VERSION,
+            command: "land".to_string(),
+            event: LandStreamingEvent::Summary {
+                result: LandResultJson {
+                    stack: "feat-stack".to_string(),
+                    base: "main".to_string(),
+                    landed: vec![],
+                    remaining: 0,
+                    cleaned: false,
+                    warnings: vec!["cleanup skipped".to_string()],
+                    error: None,
+                },
+            },
+        };
+
+        let json = serde_json::to_value(&response).expect("should serialize");
+
+        assert_eq!(json["status"], "warning");
     }
 
     #[test]

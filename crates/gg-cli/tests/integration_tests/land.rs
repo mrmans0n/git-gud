@@ -644,6 +644,35 @@ fn test_land_jsonl_reports_downstream_push_failure_warning() {
 
 #[cfg(unix)]
 #[test]
+fn test_land_jsonl_reports_provider_scan_failure() {
+    let fixture = WaitingLandFixture::new();
+    fixture.add_second_entry();
+    fixture.fail_cleanup_provider_after_first_view();
+    fs::write(&fixture.merged, "already merged\n").expect("mark first PR merged");
+
+    let output = fixture
+        .start_land_with_args(&["land", "--all", "--jsonl", "--no-clean"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(output.status.success(), "land failed: {stderr}");
+    assert!(stderr.trim().is_empty(), "unexpected stderr: {stderr}");
+
+    let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
+        .expect("parse summary event");
+    assert_eq!(summary["event"], "summary");
+    assert_eq!(summary["status"], "error");
+    assert!(
+        summary["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("Failed to fetch PR #")),
+        "summary should include provider scan failure: {summary}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn test_land_gitlab_jsonl_admin_emits_no_human_warning() {
     let fixture = WaitingLandFixture::new();
     fixture.use_gitlab_provider();

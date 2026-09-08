@@ -679,6 +679,11 @@ pub fn run(opts: LandOptions) -> Result<()> {
         None if land_all => stack.entries.len(),
         None => default_land_total_entries(&stack),
     };
+    let summary_total_entries = if land_multiple {
+        total_entries
+    } else {
+        stack.entries.len()
+    };
     emit_land_event(
         streamer.as_mut(),
         LandStreamingEvent::Start {
@@ -1406,7 +1411,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
 
     let mut jsonl_summary = None;
     if structured {
-        let remaining = total_entries.saturating_sub(
+        let remaining = summary_total_entries.saturating_sub(
             landed_entries
                 .iter()
                 .filter(|e| matches!(e.action.as_str(), "merged" | "already_merged"))

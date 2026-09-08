@@ -707,12 +707,12 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 mapped_land_total_entries(&stack.entries[..end_pos.min(stack.entries.len())])
             }
             None if land_all => mapped_land_total_entries(&stack.entries),
-            None => stack.entries.len(),
+            None => mapped_land_total_entries(&stack.entries),
         }
     } else if land_multiple {
         total_entries
     } else {
-        stack.entries.len()
+        mapped_land_total_entries(&stack.entries)
     };
     emit_land_event(
         streamer.as_mut(),
@@ -765,79 +765,78 @@ pub fn run(opts: LandOptions) -> Result<()> {
         let mut next_entry_idx = None;
         for (idx, entry) in entries_to_land.iter().enumerate() {
             if let Some(num) = entry.mr_number {
-                match provider.get_pr_info(num) {
-                    Ok(info) => {
-                        if info.state == PrState::Open || info.state == PrState::Draft {
-                            next_entry_idx = Some(idx);
-                            break;
-                        } else if info.state == PrState::Merged {
-                            if let Some(gg_id) = &entry.gg_id {
-                                if seen_already_merged.insert(gg_id.clone()) {
-                                    if !structured {
-                                        println!(
-                                            "{} {} {}{} ({}) — already merged",
-                                            style("→").cyan(),
-                                            provider.pr_label(),
-                                            provider.pr_number_prefix(),
-                                            num,
-                                            entry.title
-                                        );
-                                    }
-                                    record_landed_entry(
-                                        &mut landed_entries,
-                                        &mut streamer,
-                                        LandedEntryJson {
-                                            position: entry.position,
-                                            sha: entry.short_sha.clone(),
-                                            title: entry.title.clone(),
-                                            gg_id: gg_id.clone(),
-                                            pr_number: num,
-                                            action: "already_merged".to_string(),
-                                            error: None,
-                                        },
-                                    );
-                                    landed_count += 1;
-                                }
-                            }
-                            continue;
-                        } else if info.state == PrState::Closed {
-                            if let Some(gg_id) = &entry.gg_id {
-                                if seen_closed.insert(gg_id.clone()) {
-                                    if !structured {
-                                        println!(
-                                            "{} {} {}{} ({}) — closed, skipping",
-                                            style("⚠").yellow(),
-                                            provider.pr_label(),
-                                            provider.pr_number_prefix(),
-                                            num,
-                                            entry.title
-                                        );
-                                    }
-                                    record_landed_entry(
-                                        &mut landed_entries,
-                                        &mut streamer,
-                                        LandedEntryJson {
-                                            position: entry.position,
-                                            sha: entry.short_sha.clone(),
-                                            title: entry.title.clone(),
-                                            gg_id: gg_id.clone(),
-                                            pr_number: num,
-                                            action: "skipped_closed".to_string(),
-                                            error: None,
-                                        },
-                                    );
-                                }
-                            }
-                            continue;
-                        }
+                match entry.mr_state {
+                    Some(PrState::Open | PrState::Draft) => {
+                        next_entry_idx = Some(idx);
+                        break;
                     }
-                    Err(e) => {
+                    Some(PrState::Merged) => {
+                        if let Some(gg_id) = &entry.gg_id {
+                            if seen_already_merged.insert(gg_id.clone()) {
+                                if !structured {
+                                    println!(
+                                        "{} {} {}{} ({}) — already merged",
+                                        style("→").cyan(),
+                                        provider.pr_label(),
+                                        provider.pr_number_prefix(),
+                                        num,
+                                        entry.title
+                                    );
+                                }
+                                record_landed_entry(
+                                    &mut landed_entries,
+                                    &mut streamer,
+                                    LandedEntryJson {
+                                        position: entry.position,
+                                        sha: entry.short_sha.clone(),
+                                        title: entry.title.clone(),
+                                        gg_id: gg_id.clone(),
+                                        pr_number: num,
+                                        action: "already_merged".to_string(),
+                                        error: None,
+                                    },
+                                );
+                                landed_count += 1;
+                            }
+                        }
+                        continue;
+                    }
+                    Some(PrState::Closed) => {
+                        if let Some(gg_id) = &entry.gg_id {
+                            if seen_closed.insert(gg_id.clone()) {
+                                if !structured {
+                                    println!(
+                                        "{} {} {}{} ({}) — closed, skipping",
+                                        style("⚠").yellow(),
+                                        provider.pr_label(),
+                                        provider.pr_number_prefix(),
+                                        num,
+                                        entry.title
+                                    );
+                                }
+                                record_landed_entry(
+                                    &mut landed_entries,
+                                    &mut streamer,
+                                    LandedEntryJson {
+                                        position: entry.position,
+                                        sha: entry.short_sha.clone(),
+                                        title: entry.title.clone(),
+                                        gg_id: gg_id.clone(),
+                                        pr_number: num,
+                                        action: "skipped_closed".to_string(),
+                                        error: None,
+                                    },
+                                );
+                            }
+                        }
+                        continue;
+                    }
+                    None => {
                         land_error = Some(format!(
-                            "Failed to fetch {} {}{}: {}",
+                            "Failed to fetch {} {}{}",
                             provider.pr_label(),
                             provider.pr_number_prefix(),
-                            num,
-                            e
+                            num
                         ));
                         break 'landing_loop;
                     }

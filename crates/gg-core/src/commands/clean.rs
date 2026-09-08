@@ -269,6 +269,7 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
     let mut cleaned: Vec<String> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
     let mut remote_effects = Vec::new();
+    let mut cleanup_error: Option<String> = None;
 
     if stacks.is_empty() {
         if json {
@@ -298,7 +299,7 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
             // Branch doesn't exist: clean LOCAL orphan entry branches and config.
             // Be conservative: do NOT delete remote branches here because we can't
             // reliably verify merge status without the main stack branch.
-            delete_entry_branches(
+            if let Err(error) = delete_entry_branches(
                 &repo,
                 &config,
                 stack_name,
@@ -306,7 +307,11 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
                 /*delete_remote=*/ false,
                 /*silent=*/ json,
                 &mut |_| {},
-            )?;
+            ) {
+                cleanup_error.get_or_insert_with(|| error.to_string());
+                skipped.push(format!("{stack_name} ({error})"));
+                continue;
+            }
             config.remove_stack(stack_name);
             cleaned.push(stack_name.clone());
             continue;
@@ -423,7 +428,7 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
             }
 
             // Delete entry branches (local and remote when verified)
-            delete_entry_branches(
+            if let Err(error) = delete_entry_branches(
                 &repo,
                 &config,
                 stack_name,
@@ -434,7 +439,19 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
                     guard.record_remote_effect(effect.clone());
                     remote_effects.push(effect);
                 },
-            )?;
+            ) {
+                if !json {
+                    println!(
+                        "{} Could not delete entry branches for '{}': {}",
+                        style("Warning:").yellow(),
+                        stack_name,
+                        error
+                    );
+                }
+                cleanup_error.get_or_insert_with(|| error.to_string());
+                skipped.push(format!("{stack_name} ({error})"));
+                continue;
+            }
 
             // Remove from config
             config.remove_stack(stack_name);
@@ -487,7 +504,11 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
         touched_remote,
     )?;
 
-    Ok(())
+    if let Some(error) = cleanup_error {
+        Err(GgError::Other(error))
+    } else {
+        Ok(())
+    }
 }
 
 fn maybe_remove_configured_worktree(

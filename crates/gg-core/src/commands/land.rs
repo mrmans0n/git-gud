@@ -701,7 +701,15 @@ pub fn run(opts: LandOptions) -> Result<()> {
         None if land_all => mapped_land_total_entries(&stack.entries),
         None => default_land_total_entries(&stack),
     };
-    let summary_total_entries = if land_multiple {
+    let summary_total_entries = if auto_merge_on_land && !merge_trains_enabled {
+        match land_until {
+            Some(end_pos) => {
+                mapped_land_total_entries(&stack.entries[..end_pos.min(stack.entries.len())])
+            }
+            None if land_all => mapped_land_total_entries(&stack.entries),
+            None => stack.entries.len(),
+        }
+    } else if land_multiple {
         total_entries
     } else {
         stack.entries.len()

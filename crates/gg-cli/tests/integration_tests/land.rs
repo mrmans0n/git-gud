@@ -717,6 +717,11 @@ fn test_land_gitlab_auto_merge_jsonl_reports_single_entry_total() {
         serde_json::from_str(stdout.lines().next().expect("start event")).expect("parse start");
     assert_eq!(start["event"], "start");
     assert_eq!(start["total_entries"], 1);
+
+    let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
+        .expect("parse summary event");
+    assert_eq!(summary["event"], "summary");
+    assert_eq!(summary["remaining"], 2);
 }
 
 #[cfg(unix)]

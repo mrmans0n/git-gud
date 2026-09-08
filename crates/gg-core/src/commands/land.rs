@@ -125,6 +125,29 @@ fn record_landed_entry(
     landed_entries.push(entry);
 }
 
+fn mark_landed_entry_merged(
+    landed_entries: &mut [LandedEntryJson],
+    streamer: Option<&mut StreamingJson>,
+    position: usize,
+    pr_number: u64,
+) {
+    let Some(entry) = landed_entries.iter_mut().rev().find(|entry| {
+        entry.position == position
+            && entry.pr_number == pr_number
+            && matches!(entry.action.as_str(), "queued" | "already_queued")
+    }) else {
+        return;
+    };
+
+    entry.action = "merged".to_string();
+    emit_land_event(
+        streamer,
+        LandStreamingEvent::Entry {
+            entry: entry.clone(),
+        },
+    );
+}
+
 fn ci_status_name(status: &CiStatus) -> String {
     match status {
         CiStatus::Pending => "pending",
@@ -1038,6 +1061,12 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             .expect("land segment guard")
                             .mark_touched_remote();
                         landed_count += 1;
+                        mark_landed_entry_merged(
+                            &mut landed_entries,
+                            streamer.as_mut(),
+                            entry.position,
+                            pr_num,
+                        );
                         cleanup_after_merge(
                             &mut config,
                             &stack,
@@ -1304,7 +1333,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 structured,
                 true,
             );
-            if crate::commands::clean::run_for_stack_with_repo_after_verified_land(
+            match crate::commands::clean::run_for_stack_with_repo_after_verified_land(
                 &repo,
                 &stack.name,
                 true,
@@ -1317,10 +1346,12 @@ pub fn run(opts: LandOptions) -> Result<()> {
                     remote_effects.push(effect);
                     touched_remote = true;
                 },
-            )
-            .is_ok()
-            {
-                cleaned = true;
+            ) {
+                Ok(true) => cleaned = true,
+                Ok(false) => warnings.push(
+                    "Cleanup skipped because the configured worktree was retained".to_string(),
+                ),
+                Err(error) => warnings.push(format!("Cleanup skipped: {error}")),
             }
         }
     }
@@ -2583,6 +2614,23 @@ mod tests {
                 result
             );
         }
+    }
+
+    #[test]
+    fn merge_train_completion_replaces_queued_entry_with_merged() {
+        let mut entries = vec![LandedEntryJson {
+            position: 1,
+            sha: "abc1234".to_string(),
+            title: "queued entry".to_string(),
+            gg_id: "c-1234567".to_string(),
+            pr_number: 42,
+            action: "queued".to_string(),
+            error: None,
+        }];
+
+        mark_landed_entry_merged(&mut entries, None, 1, 42);
+
+        assert_eq!(entries[0].action, "merged");
     }
 
     // ==========================================================================

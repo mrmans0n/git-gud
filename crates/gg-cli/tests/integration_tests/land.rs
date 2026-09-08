@@ -327,6 +327,19 @@ fn test_land_jsonl_clean_does_not_prompt_for_a_configured_worktree() {
             .all(|line| serde_json::from_str::<Value>(line).is_ok()),
         "every JSONL line must parse: {stdout}"
     );
+    let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
+        .expect("parse summary event");
+    assert_eq!(summary["cleaned"], false);
+    assert!(
+        summary["warnings"]
+            .as_array()
+            .expect("warnings must be an array")
+            .iter()
+            .any(|warning| warning
+                .as_str()
+                .is_some_and(|warning| warning.contains("worktree"))),
+        "summary should explain why cleanup was skipped: {summary}"
+    );
 }
 
 #[cfg(unix)]

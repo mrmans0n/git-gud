@@ -63,8 +63,15 @@ pub(crate) fn run_for_stack_with_repo_after_verified_land(
     force: bool,
     silent: bool,
     record_remote_effect: &mut dyn FnMut(RemoteEffect),
-) -> Result<()> {
-    run_for_stack_with_repo_options(repo, stack_name, force, true, silent, record_remote_effect)
+) -> Result<bool> {
+    let git_dir = repo.commondir();
+    let mut config = Config::load_with_global(git_dir)?;
+    if !maybe_remove_configured_worktree(repo, &mut config, stack_name, silent)? {
+        return Ok(false);
+    }
+    config.save(git_dir)?;
+    run_for_stack_with_repo_options(repo, stack_name, force, true, silent, record_remote_effect)?;
+    Ok(true)
 }
 
 fn run_for_stack_with_repo_options(

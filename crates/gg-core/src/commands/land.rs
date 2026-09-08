@@ -883,6 +883,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
         let pr_info = provider.get_pr_info(pr_num)?;
         match pr_info.state {
             PrState::Merged => {
+                stack.entries[entry_idx].mr_state = Some(PrState::Merged);
                 if seen_already_merged.insert(gg_id.clone()) {
                     if !structured {
                         println!(
@@ -912,6 +913,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 continue 'landing_loop;
             }
             PrState::Closed => {
+                stack.entries[entry_idx].mr_state = Some(PrState::Closed);
                 if seen_closed.insert(gg_id.clone()) {
                     if !structured {
                         println!(

@@ -28,6 +28,7 @@ if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
 fi
 
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  num="${3:-41}"
   calls=0
   if [ -f "$GG_FAKE_PR_VIEW_CALLS" ]; then calls=$(cat "$GG_FAKE_PR_VIEW_CALLS"); fi
   calls=$((calls + 1))
@@ -58,7 +59,13 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
       ;;
   esac
 
-  if [ -f "$GG_FAKE_MERGED" ]; then state=MERGED; else state=OPEN; fi
+  if [ "$num" = "42" ]; then
+    if [ -f "$GG_FAKE_MERGED" ]; then state=MERGED; else state=OPEN; fi
+    printf '{"number":42,"title":"Second entry","state":"%s","url":"https://github.com/test/repo/pull/42","headRefName":"testuser/land-wait--c-2222222","isDraft":false,"mergeable":"MERGEABLE","reviews":[],"reviewDecision":"APPROVED"}\n' "$state"
+    exit 0
+  fi
+
+  if [ -f "$GG_FAKE_MERGED" ] || { [ -f "$GG_FAKE_FIRST_TERMINAL_AFTER_REFRESH" ] && [ "$calls" -gt 2 ]; }; then state=MERGED; else state=OPEN; fi
   printf '{"number":41,"title":"Land entry","state":"%s","url":"https://github.com/test/repo/pull/41","headRefName":"testuser/land-wait--c-1111111","isDraft":false,"mergeable":"MERGEABLE","reviews":[],"reviewDecision":"APPROVED"}\n' "$state"
   exit 0
 fi
@@ -189,6 +196,7 @@ struct WaitingLandFixture {
     retarget_fail: std::path::PathBuf,
     clean_provider_fail: std::path::PathBuf,
     pr_view_calls: std::path::PathBuf,
+    first_terminal_after_refresh: std::path::PathBuf,
     test_home: std::path::PathBuf,
 }
 
@@ -248,6 +256,7 @@ impl WaitingLandFixture {
         let retarget_fail = repo_path.join("fake-retarget-fail");
         let clean_provider_fail = repo_path.join("fake-clean-provider-fail");
         let pr_view_calls = repo_path.join("fake-pr-view-calls");
+        let first_terminal_after_refresh = repo_path.join("fake-first-terminal-after-refresh");
         let test_home = repo_path.join(".test-home");
         fs::create_dir_all(&test_home).expect("create test home");
 
@@ -267,6 +276,7 @@ impl WaitingLandFixture {
             retarget_fail,
             clean_provider_fail,
             pr_view_calls,
+            first_terminal_after_refresh,
             test_home,
         }
     }
@@ -292,6 +302,10 @@ impl WaitingLandFixture {
             .env("GG_FAKE_RETARGET_FAIL", &self.retarget_fail)
             .env("GG_FAKE_CLEAN_PROVIDER_FAIL", &self.clean_provider_fail)
             .env("GG_FAKE_PR_VIEW_CALLS", &self.pr_view_calls)
+            .env(
+                "GG_FAKE_FIRST_TERMINAL_AFTER_REFRESH",
+                &self.first_terminal_after_refresh,
+            )
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -367,6 +381,11 @@ impl WaitingLandFixture {
     fn fail_cleanup_provider_after_first_view(&self) {
         fs::write(&self.clean_provider_fail, "fail\n")
             .expect("enable fake cleanup provider failure");
+    }
+
+    fn make_first_entry_terminal_after_refresh(&self) {
+        fs::write(&self.first_terminal_after_refresh, "enabled\n")
+            .expect("enable fake terminal race");
     }
 
     fn fail_downstream_push(&self) {
@@ -572,6 +591,46 @@ fn test_land_jsonl_default_scope_counts_terminal_prefix_entries() {
             .count(),
         2
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_jsonl_advances_when_selected_entry_becomes_terminal() {
+    let fixture = WaitingLandFixture::new();
+    fixture.add_second_entry();
+    fixture.make_first_entry_terminal_after_refresh();
+
+    let mut land =
+        fixture.start_land_with_args(&["land", "--all", "--jsonl", "--admin", "--no-clean"]);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while land.try_wait().expect("poll land").is_none() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    if land.try_wait().expect("poll land").is_none() {
+        let _ = land.kill();
+        panic!("land did not advance past the terminal first entry");
+    }
+
+    let output = land.wait_with_output().expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(output.status.success(), "land failed: {stderr}");
+    assert!(stderr.trim().is_empty(), "unexpected stderr: {stderr}");
+
+    let events = stdout
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("parse JSONL event"))
+        .collect::<Vec<_>>();
+    let entries = events
+        .iter()
+        .filter(|event| event["event"] == "entry")
+        .collect::<Vec<_>>();
+    assert_eq!(entries.len(), 2, "expected both entries to emit: {stdout}");
+    assert_eq!(entries[0]["action"], "already_merged");
+    assert_eq!(entries[0]["pr_number"], 41);
+    assert_eq!(entries[1]["action"], "merged");
+    assert_eq!(entries[1]["pr_number"], 42);
+    assert_eq!(events.last().unwrap()["remaining"], 0);
 }
 
 #[cfg(unix)]

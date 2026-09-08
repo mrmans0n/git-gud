@@ -942,6 +942,13 @@ fn delete_entry_branches(
                 }
             };
             let entry_branch = git::format_entry_branch(username, stack_name, &entry_id);
+            // Delete remote entry branch first so a remote failure leaves the local ref
+            // discoverable for a retry.
+            if delete_remote {
+                if let Some(effect) = delete_remote_branch(repo, &entry_branch)? {
+                    record_remote_effect(effect);
+                }
+            }
             // Delete local entry branch
             if let Ok(mut branch) = repo.find_branch(&entry_branch, BranchType::Local) {
                 // Check if branch is HEAD of a worktree
@@ -954,12 +961,6 @@ fn delete_entry_branches(
                 }
                 // Try to delete, ignore errors (best effort for entry branches)
                 let _ = branch.delete();
-            }
-            // Delete remote entry branch
-            if delete_remote {
-                if let Some(effect) = delete_remote_branch(repo, &entry_branch)? {
-                    record_remote_effect(effect);
-                }
             }
         }
     }
@@ -986,6 +987,13 @@ fn delete_entry_branches(
         .unwrap_or_default();
 
     for branch_name in branches {
+        // Delete remote first so a remote failure leaves the local orphan ref
+        // discoverable for a retry.
+        if delete_remote {
+            if let Some(effect) = delete_remote_branch(repo, &branch_name)? {
+                record_remote_effect(effect);
+            }
+        }
         if let Ok(mut branch) = repo.find_branch(&branch_name, BranchType::Local) {
             // Check if branch is HEAD of a worktree
             if let Some(wt_name) = git::is_branch_checked_out_in_worktree(repo, &branch_name) {
@@ -997,12 +1005,6 @@ fn delete_entry_branches(
             }
             // Try to delete, ignore errors (best effort for entry branches)
             let _ = branch.delete();
-        }
-        // Also try to delete from remote
-        if delete_remote {
-            if let Some(effect) = delete_remote_branch(repo, &branch_name)? {
-                record_remote_effect(effect);
-            }
         }
     }
     Ok(())
@@ -1151,6 +1153,83 @@ mod tests {
                 .get_stack("cleanup")
                 .is_some(),
             "stack config must remain retryable"
+        );
+    }
+
+    #[test]
+    fn verified_land_keeps_orphan_entry_retryable_when_remote_cleanup_fails() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let repo_path = temp.path().join("repo");
+        std::fs::create_dir(&repo_path).expect("create repo dir");
+
+        let init = std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git init");
+        assert!(
+            init.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git config email");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git config name");
+        std::fs::write(repo_path.join("README.md"), "test\n").expect("write readme");
+        std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git add");
+        let commit = std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git commit");
+        assert!(
+            commit.status.success(),
+            "git commit failed: {}",
+            String::from_utf8_lossy(&commit.stderr)
+        );
+        std::process::Command::new("git")
+            .args(["branch", "u/cleanup"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git branch");
+        std::process::Command::new("git")
+            .args(["branch", "u/cleanup--c-1111111"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git branch");
+
+        let gg_dir = repo_path.join(".git/gg");
+        std::fs::create_dir_all(&gg_dir).expect("create gg dir");
+        std::fs::write(
+            gg_dir.join("config.json"),
+            serde_json::json!({
+                "defaults": {"branch_username": "u", "base": "main"},
+                "stacks": {"cleanup": {}}
+            })
+            .to_string(),
+        )
+        .expect("write config");
+
+        let repo = Repository::open(&repo_path).expect("open repo");
+        let result =
+            run_for_stack_with_repo_after_verified_land(&repo, "cleanup", true, true, &mut |_| {});
+
+        assert!(result.is_err(), "missing origin should fail remote cleanup");
+        assert!(
+            repo.find_branch("u/cleanup--c-1111111", BranchType::Local)
+                .is_ok(),
+            "orphan entry branch must remain retryable"
         );
     }
 

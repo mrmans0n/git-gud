@@ -804,6 +804,12 @@ pub fn run(opts: LandOptions) -> Result<()> {
                     Some(PrState::Closed) => {
                         if let Some(gg_id) = &entry.gg_id {
                             if seen_closed.insert(gg_id.clone()) {
+                                warnings.push(format!(
+                                    "{} {}{} is closed; skipping",
+                                    provider.pr_label(),
+                                    provider.pr_number_prefix(),
+                                    num
+                                ));
                                 if !structured {
                                     println!(
                                         "{} {} {}{} ({}) — closed, skipping",
@@ -912,6 +918,12 @@ pub fn run(opts: LandOptions) -> Result<()> {
             }
             Some(PrState::Closed) => {
                 if seen_closed.insert(gg_id.clone()) {
+                    warnings.push(format!(
+                        "{} {}{} is closed; skipping",
+                        provider.pr_label(),
+                        provider.pr_number_prefix(),
+                        pr_num
+                    ));
                     if !structured {
                         println!(
                             "{} {} {}{} ({}) — closed, skipping",
@@ -1038,12 +1050,26 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 } else if !land_all && (!admin || provider != Provider::GitHub) {
                     let approved = provider.check_pr_approved(pr_num)?;
                     if !approved {
-                        land_error = Some(format!(
+                        let error = format!(
                             "{} {}{} is not approved",
                             provider.pr_label(),
                             provider.pr_number_prefix(),
                             pr_num
-                        ));
+                        );
+                        record_landed_entry(
+                            &mut landed_entries,
+                            &mut streamer,
+                            LandedEntryJson {
+                                position: entry.position,
+                                sha: entry.short_sha.clone(),
+                                title: entry.title.clone(),
+                                gg_id: gg_id.clone(),
+                                pr_number: pr_num,
+                                action: "error".to_string(),
+                                error: Some(error.clone()),
+                            },
+                        );
+                        land_error = Some(error);
                         break 'landing_loop;
                     }
                 }

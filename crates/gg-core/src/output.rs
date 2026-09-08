@@ -398,6 +398,7 @@ impl Serialize for LandStreamingResponse {
         let status = match &self.event {
             LandStreamingEvent::Wait { error: Some(_), .. } => "warning",
             LandStreamingEvent::Entry { entry } if entry.error.is_some() => "error",
+            LandStreamingEvent::Entry { entry } if entry.action == "skipped_closed" => "warning",
             LandStreamingEvent::Summary { result } if result.error.is_some() => "error",
             LandStreamingEvent::Summary { result } if !result.warnings.is_empty() => "warning",
             _ => "ok",

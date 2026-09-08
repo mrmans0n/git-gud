@@ -54,7 +54,7 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
       exit 0
       ;;
     *"--jq .reviewDecision"*)
-      echo APPROVED
+      if [ -f "$GG_FAKE_UNAPPROVED" ]; then echo REVIEW_REQUIRED; else echo APPROVED; fi
       exit 0
       ;;
   esac
@@ -65,7 +65,7 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
     exit 0
   fi
 
-  if [ -f "$GG_FAKE_MERGED" ] || { [ -f "$GG_FAKE_FIRST_TERMINAL_AFTER_REFRESH" ] && [ "$calls" -gt 2 ]; }; then state=MERGED; else state=OPEN; fi
+  if [ -f "$GG_FAKE_CLOSED" ]; then state=CLOSED; elif [ -f "$GG_FAKE_MERGED" ] || { [ -f "$GG_FAKE_FIRST_TERMINAL_AFTER_REFRESH" ] && [ "$calls" -gt 2 ]; }; then state=MERGED; else state=OPEN; fi
   printf '{"number":41,"title":"Land entry","state":"%s","url":"https://github.com/test/repo/pull/41","headRefName":"testuser/land-wait--c-1111111","isDraft":false,"mergeable":"MERGEABLE","reviews":[],"reviewDecision":"APPROVED"}\n' "$state"
   exit 0
 fi
@@ -188,6 +188,8 @@ struct WaitingLandFixture {
     polled: std::path::PathBuf,
     ready: std::path::PathBuf,
     merged: std::path::PathBuf,
+    closed: std::path::PathBuf,
+    unapproved: std::path::PathBuf,
     ci_calls: std::path::PathBuf,
     regress: std::path::PathBuf,
     merge_trains: std::path::PathBuf,
@@ -248,6 +250,8 @@ impl WaitingLandFixture {
         let polled = repo_path.join("fake-polled");
         let ready = repo_path.join("fake-ready");
         let merged = repo_path.join("fake-merged");
+        let closed = repo_path.join("fake-closed");
+        let unapproved = repo_path.join("fake-unapproved");
         let ci_calls = repo_path.join("fake-ci-calls");
         let regress = repo_path.join("fake-regress");
         let merge_trains = repo_path.join("fake-merge-trains");
@@ -268,6 +272,8 @@ impl WaitingLandFixture {
             polled,
             ready,
             merged,
+            closed,
+            unapproved,
             ci_calls,
             regress,
             merge_trains,
@@ -294,6 +300,8 @@ impl WaitingLandFixture {
             .env("GG_FAKE_POLLED", &self.polled)
             .env("GG_FAKE_READY", &self.ready)
             .env("GG_FAKE_MERGED", &self.merged)
+            .env("GG_FAKE_CLOSED", &self.closed)
+            .env("GG_FAKE_UNAPPROVED", &self.unapproved)
             .env("GG_FAKE_CI_CALLS", &self.ci_calls)
             .env("GG_FAKE_REGRESS", &self.regress)
             .env("GG_FAKE_MERGE_TRAINS", &self.merge_trains)
@@ -386,6 +394,14 @@ impl WaitingLandFixture {
     fn make_first_entry_terminal_after_refresh(&self) {
         fs::write(&self.first_terminal_after_refresh, "enabled\n")
             .expect("enable fake terminal race");
+    }
+
+    fn mark_closed(&self) {
+        fs::write(&self.closed, "closed\n").expect("mark fake PR closed");
+    }
+
+    fn mark_unapproved(&self) {
+        fs::write(&self.unapproved, "unapproved\n").expect("mark fake PR unapproved");
     }
 
     fn fail_downstream_push(&self) {
@@ -625,6 +641,74 @@ fn test_land_jsonl_default_scope_uses_refreshed_state_for_selection() {
     );
     assert_eq!(entries[0]["action"], "merged");
     assert_eq!(entries[0]["pr_number"], 41);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_jsonl_unapproved_entry_emits_error_outcome() {
+    let fixture = WaitingLandFixture::new();
+    fixture.mark_unapproved();
+
+    let output = fixture
+        .start_land_with_args(&["land", "--jsonl", "--no-clean"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(output.status.success(), "land failed: {stderr}");
+    assert!(stderr.trim().is_empty(), "unexpected stderr: {stderr}");
+
+    let events = stdout
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("parse JSONL event"))
+        .collect::<Vec<_>>();
+    let entry = events
+        .iter()
+        .find(|event| event["event"] == "entry")
+        .expect("unapproved PR should emit an entry outcome");
+    assert_eq!(entry["status"], "error");
+    assert_eq!(entry["action"], "error");
+    assert!(entry["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("is not approved")));
+    assert_eq!(events.last().unwrap()["status"], "error");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_jsonl_closed_entry_marks_warning_status() {
+    let fixture = WaitingLandFixture::new();
+    fixture.mark_closed();
+
+    let output = fixture
+        .start_land_with_args(&["land", "--jsonl", "--admin", "--no-clean"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(output.status.success(), "land failed: {stderr}");
+    assert!(stderr.trim().is_empty(), "unexpected stderr: {stderr}");
+
+    let events = stdout
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("parse JSONL event"))
+        .collect::<Vec<_>>();
+    let entry = events
+        .iter()
+        .find(|event| event["event"] == "entry")
+        .expect("closed PR should emit an entry outcome");
+    assert_eq!(entry["status"], "warning");
+    assert_eq!(entry["action"], "skipped_closed");
+
+    let summary = events.last().unwrap();
+    assert_eq!(summary["status"], "warning");
+    assert!(summary["warnings"]
+        .as_array()
+        .expect("warnings must be an array")
+        .iter()
+        .any(|warning| warning
+            .as_str()
+            .is_some_and(|warning| warning.contains("is closed"))));
 }
 
 #[cfg(unix)]

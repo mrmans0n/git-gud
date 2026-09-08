@@ -1083,6 +1083,14 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             structured,
                             streamer.as_mut(),
                         );
+                        if wait_result.is_ok() {
+                            mark_landed_entry_merged(
+                                &mut landed_entries,
+                                streamer.as_mut(),
+                                entry.position,
+                                pr_num,
+                            );
+                        }
                         lock = Some(git::acquire_operation_lock_silent(
                             &repo, "land", structured,
                         )?);
@@ -1092,12 +1100,6 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             land_error = Some(e.to_string());
                             break 'landing_loop;
                         }
-                        mark_landed_entry_merged(
-                            &mut landed_entries,
-                            streamer.as_mut(),
-                            entry.position,
-                            pr_num,
-                        );
                         if let Some(error) = stack_changed_while_waiting(&expected_stack, &stack) {
                             land_error = Some(error);
                             break 'landing_loop;
@@ -1405,7 +1407,8 @@ pub fn run(opts: LandOptions) -> Result<()> {
             ) {
                 Ok(true) => cleaned = true,
                 Ok(false) => warnings.push(
-                    "Cleanup skipped because the configured worktree was retained".to_string(),
+                    "Cleanup skipped because worktree or branch cleanup could not complete"
+                        .to_string(),
                 ),
                 Err(error) => warnings.push(format!("Cleanup skipped: {error}")),
             }

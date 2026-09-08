@@ -165,7 +165,17 @@ fn run_for_stack_with_repo_options(
                         wt_name
                     );
                 }
-                let _ = git::remove_worktree(&wt_name);
+                if let Err(e) = git::remove_worktree(&wt_name) {
+                    if !silent {
+                        println!(
+                            "{} Could not remove worktree '{}': {}",
+                            style("Warning:").yellow(),
+                            wt_name,
+                            e
+                        );
+                    }
+                    return Ok(false);
+                }
             }
         }
 
@@ -182,6 +192,7 @@ fn run_for_stack_with_repo_options(
                     "  You may need to manually remove the worktree first: git worktree remove <path>"
                 );
             }
+            return Ok(false);
         }
     }
 
@@ -1175,6 +1186,107 @@ mod tests {
                 .get_stack("cleanup")
                 .and_then(|stack| stack.worktree_path.as_deref()),
             Some(worktree_path.to_str().unwrap())
+        );
+    }
+
+    #[test]
+    fn verified_land_reports_incomplete_branch_cleanup() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let repo_path = temp.path().join("repo");
+        std::fs::create_dir(&repo_path).expect("create repo dir");
+
+        let init = std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git init");
+        assert!(
+            init.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git config email");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git config name");
+        std::fs::write(repo_path.join("README.md"), "test\n").expect("write readme");
+        std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git add");
+        let commit = std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git commit");
+        assert!(
+            commit.status.success(),
+            "git commit failed: {}",
+            String::from_utf8_lossy(&commit.stderr)
+        );
+        std::process::Command::new("git")
+            .args(["branch", "u/cleanup"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git branch");
+
+        let worktree_path = temp.path().join("stack-worktree");
+        let worktree = std::process::Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                worktree_path.to_str().unwrap(),
+                "u/cleanup",
+            ])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git worktree add");
+        assert!(
+            worktree.status.success(),
+            "git worktree add failed: {}",
+            String::from_utf8_lossy(&worktree.stderr)
+        );
+        let lock = std::process::Command::new("git")
+            .args(["worktree", "lock", worktree_path.to_str().unwrap()])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git worktree lock");
+        assert!(
+            lock.status.success(),
+            "git worktree lock failed: {}",
+            String::from_utf8_lossy(&lock.stderr)
+        );
+
+        let gg_dir = repo_path.join(".git/gg");
+        std::fs::create_dir_all(&gg_dir).expect("create gg dir");
+        std::fs::write(
+            gg_dir.join("config.json"),
+            serde_json::json!({
+                "defaults": {"branch_username": "u", "base": "main"},
+                "stacks": {"cleanup": {}}
+            })
+            .to_string(),
+        )
+        .expect("write config");
+
+        let repo = Repository::open(&repo_path).expect("open repo");
+        let result =
+            run_for_stack_with_repo_after_verified_land(&repo, "cleanup", true, true, &mut |_| {});
+
+        assert!(!result.expect("cleanup should not error"));
+        assert!(
+            Config::load_with_global(repo.commondir())
+                .expect("reload config")
+                .get_stack("cleanup")
+                .is_some(),
+            "incomplete cleanup must not remove stack config"
         );
     }
 }

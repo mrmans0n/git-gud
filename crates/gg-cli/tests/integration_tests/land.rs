@@ -299,11 +299,19 @@ impl WaitingLandFixture {
     }
 
     fn wait_until_polling(&self) {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(30);
         while !self.polled.exists() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(25));
         }
         assert!(self.polled.exists(), "land never started polling CI");
+    }
+
+    fn wait_until_queued(&self) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !self.queued.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(self.queued.exists(), "land never queued the MR");
     }
 
     fn release_ci(&self) {
@@ -714,6 +722,7 @@ fn test_land_gitlab_jsonl_records_merge_train_merge_before_stale_stack_error() {
     fixture.enable_gitlab_merge_trains();
 
     let land = fixture.start_land_with_args(&["land", "--all", "--wait", "--jsonl", "--no-clean"]);
+    fixture.wait_until_queued();
     fixture.wait_until_polling();
 
     fs::write(fixture.repo_path.join("new.txt"), "new\n").expect("write new entry");

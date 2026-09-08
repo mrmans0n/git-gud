@@ -242,7 +242,9 @@ fn cleanup_after_merge(
     pr_num: u64,
     land_all: bool,
     json: bool,
-) {
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+
     // Remove PR/MR mapping from config
     config.remove_mr_for_entry(&stack.name, gg_id);
 
@@ -272,6 +274,13 @@ fn cleanup_after_merge(
                 );
             }
             if let Err(e) = provider.update_pr_base(remaining_pr, &stack.base) {
+                let warning = format!(
+                    "Failed to update {} {}{} base: {}",
+                    provider.pr_label(),
+                    provider.pr_number_prefix(),
+                    remaining_pr,
+                    e
+                );
                 if !json {
                     println!(
                         "{} Warning: Failed to update {} {}{} base: {}",
@@ -282,9 +291,11 @@ fn cleanup_after_merge(
                         e
                     );
                 }
+                warnings.push(warning);
             }
         }
     }
+    warnings
 }
 
 /// Rebase remaining PR branches onto the base branch after a merge
@@ -1070,7 +1081,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             .expect("land segment guard")
                             .mark_touched_remote();
                         landed_count += 1;
-                        cleanup_after_merge(
+                        warnings.extend(cleanup_after_merge(
                             &mut config,
                             &stack,
                             &provider,
@@ -1078,7 +1089,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             pr_num,
                             land_multiple,
                             structured,
-                        );
+                        ));
                         if land_multiple {
                             let current_index = stack
                                 .entries
@@ -1219,7 +1230,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         },
                     );
                     landed_count += 1;
-                    cleanup_after_merge(
+                    warnings.extend(cleanup_after_merge(
                         &mut config,
                         &stack,
                         &provider,
@@ -1227,7 +1238,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         pr_num,
                         land_multiple,
                         structured,
-                    );
+                    ));
                     if land_multiple {
                         let current_index = stack
                             .entries
@@ -2383,7 +2394,7 @@ mod tests {
         // - land_all: bool (whether to update remaining PR bases)
 
         // Type-level assertion that cleanup_after_merge exists with the correct signature
-        let _fn_ptr: fn(&mut Config, &Stack, &Provider, &str, u64, bool, bool) =
+        let _fn_ptr: fn(&mut Config, &Stack, &Provider, &str, u64, bool, bool) -> Vec<String> =
             cleanup_after_merge;
     }
 

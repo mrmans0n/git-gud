@@ -47,7 +47,7 @@ pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
 
 /// Run clean for a stack with an already-open repository (no lock acquisition)
 pub fn run_for_stack_with_repo(repo: &Repository, stack_name: &str, force: bool) -> Result<()> {
-    run_for_stack_with_repo_options(repo, stack_name, force, false, false, &mut |_| {})
+    run_for_stack_with_repo_options(repo, stack_name, force, false, false, &mut |_| {}).map(|_| ())
 }
 
 /// Run clean after `gg land` has already verified that every PR/MR in the stack
@@ -64,14 +64,7 @@ pub(crate) fn run_for_stack_with_repo_after_verified_land(
     silent: bool,
     record_remote_effect: &mut dyn FnMut(RemoteEffect),
 ) -> Result<bool> {
-    let git_dir = repo.commondir();
-    let mut config = Config::load_with_global(git_dir)?;
-    if !maybe_remove_configured_worktree(repo, &mut config, stack_name, silent)? {
-        return Ok(false);
-    }
-    config.save(git_dir)?;
-    run_for_stack_with_repo_options(repo, stack_name, force, true, silent, record_remote_effect)?;
-    Ok(true)
+    run_for_stack_with_repo_options(repo, stack_name, force, true, silent, record_remote_effect)
 }
 
 fn run_for_stack_with_repo_options(
@@ -81,7 +74,7 @@ fn run_for_stack_with_repo_options(
     merge_verified_by_land: bool,
     silent: bool,
     record_remote_effect: &mut dyn FnMut(RemoteEffect),
-) -> Result<()> {
+) -> Result<bool> {
     let git_dir = repo.commondir();
     let mut config = Config::load_with_global(git_dir)?;
 
@@ -111,7 +104,9 @@ fn run_for_stack_with_repo_options(
         )));
     }
 
-    let _ = maybe_remove_configured_worktree(repo, &mut config, stack_name, silent)?;
+    if !maybe_remove_configured_worktree(repo, &mut config, stack_name, silent)? {
+        return Ok(false);
+    }
 
     // Delete local branch
     if let Ok(mut branch) = repo.find_branch(&branch_name, BranchType::Local) {
@@ -209,7 +204,7 @@ fn run_for_stack_with_repo_options(
     // Save updated config
     config.save(git_dir)?;
 
-    Ok(())
+    Ok(true)
 }
 
 /// Run the clean command
@@ -1073,5 +1068,97 @@ mod tests {
             },
             true,
         ));
+    }
+
+    #[test]
+    fn verified_land_validates_before_removing_configured_worktree() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let repo_path = temp.path().join("repo");
+        std::fs::create_dir(&repo_path).expect("create repo dir");
+
+        let init = std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git init");
+        assert!(
+            init.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git config email");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git config name");
+        std::fs::write(repo_path.join("README.md"), "test\n").expect("write readme");
+        std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git add");
+        let commit = std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git commit");
+        assert!(
+            commit.status.success(),
+            "git commit failed: {}",
+            String::from_utf8_lossy(&commit.stderr)
+        );
+
+        let worktree_path = temp.path().join("configured-worktree");
+        let worktree = std::process::Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                "--detach",
+                worktree_path.to_str().unwrap(),
+                "HEAD",
+            ])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git worktree add");
+        assert!(
+            worktree.status.success(),
+            "git worktree add failed: {}",
+            String::from_utf8_lossy(&worktree.stderr)
+        );
+
+        let gg_dir = repo_path.join(".git/gg");
+        std::fs::create_dir_all(&gg_dir).expect("create gg dir");
+        std::fs::write(
+            gg_dir.join("config.json"),
+            serde_json::json!({
+                "defaults": {"branch_username": "bad/name", "base": "main"},
+                "stacks": {"cleanup": {"worktree_path": worktree_path.display().to_string()}}
+            })
+            .to_string(),
+        )
+        .expect("write config");
+
+        let repo = Repository::open(&repo_path).expect("open repo");
+        let result =
+            run_for_stack_with_repo_after_verified_land(&repo, "cleanup", true, false, &mut |_| {});
+
+        assert!(result.is_err(), "invalid username should fail validation");
+        assert!(
+            worktree_path.exists(),
+            "configured worktree must not be removed before validation"
+        );
+        let config = Config::load_with_global(repo.commondir()).expect("reload config");
+        assert_eq!(
+            config
+                .get_stack("cleanup")
+                .and_then(|stack| stack.worktree_path.as_deref()),
+            Some(worktree_path.to_str().unwrap())
+        );
     }
 }

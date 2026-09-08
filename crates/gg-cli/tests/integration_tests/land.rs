@@ -60,6 +60,14 @@ if [ "$1" = "pr" ] && [ "$2" = "merge" ]; then
   exit 0
 fi
 
+if [ "$1" = "pr" ] && [ "$2" = "edit" ]; then
+  if [ -f "$GG_FAKE_RETARGET_FAIL" ]; then
+    echo "retarget failed" >&2
+    exit 1
+  fi
+  exit 0
+fi
+
 echo "unexpected gh invocation: $*" >&2
 exit 1
 "#,
@@ -170,6 +178,7 @@ struct WaitingLandFixture {
     merge_trains: std::path::PathBuf,
     auth_network_fail: std::path::PathBuf,
     queued: std::path::PathBuf,
+    retarget_fail: std::path::PathBuf,
     test_home: std::path::PathBuf,
 }
 
@@ -226,6 +235,7 @@ impl WaitingLandFixture {
         let merge_trains = repo_path.join("fake-merge-trains");
         let auth_network_fail = repo_path.join("fake-auth-network-fail");
         let queued = repo_path.join("fake-queued");
+        let retarget_fail = repo_path.join("fake-retarget-fail");
         let test_home = repo_path.join(".test-home");
         fs::create_dir_all(&test_home).expect("create test home");
 
@@ -242,6 +252,7 @@ impl WaitingLandFixture {
             merge_trains,
             auth_network_fail,
             queued,
+            retarget_fail,
             test_home,
         }
     }
@@ -264,6 +275,7 @@ impl WaitingLandFixture {
             .env("GG_FAKE_MERGE_TRAINS", &self.merge_trains)
             .env("GG_FAKE_AUTH_NETWORK_FAIL", &self.auth_network_fail)
             .env("GG_FAKE_QUEUED", &self.queued)
+            .env("GG_FAKE_RETARGET_FAIL", &self.retarget_fail)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -322,6 +334,10 @@ impl WaitingLandFixture {
 
     fn fail_auth_with_network_error(&self) {
         fs::write(&self.auth_network_fail, "fail\n").expect("enable fake auth failure");
+    }
+
+    fn fail_retargeting(&self) {
+        fs::write(&self.retarget_fail, "fail\n").expect("enable fake retarget failure");
     }
 }
 
@@ -448,6 +464,38 @@ fn test_land_jsonl_default_scope_reports_one_total_entry() {
         serde_json::from_str(stdout.lines().next().expect("start event")).expect("parse start");
     assert_eq!(start["event"], "start");
     assert_eq!(start["total_entries"], 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_jsonl_reports_retarget_failure_warning() {
+    let fixture = WaitingLandFixture::new();
+    fixture.add_second_entry();
+    fixture.fail_retargeting();
+    fixture.release_ci();
+
+    let output = fixture
+        .start_land_with_args(&["land", "--jsonl", "--admin", "--no-clean"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(output.status.success(), "land failed: {stderr}");
+    assert!(stderr.trim().is_empty(), "unexpected stderr: {stderr}");
+
+    let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
+        .expect("parse summary event");
+    assert_eq!(summary["event"], "summary");
+    assert!(
+        summary["warnings"]
+            .as_array()
+            .expect("warnings must be an array")
+            .iter()
+            .any(|warning| warning
+                .as_str()
+                .is_some_and(|warning| warning.contains("Failed to update PR #42 base"))),
+        "summary should include retarget failure warning: {summary}"
+    );
 }
 
 #[cfg(unix)]

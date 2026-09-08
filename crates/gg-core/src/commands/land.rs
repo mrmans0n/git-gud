@@ -577,6 +577,22 @@ fn mapped_land_total_entries(entries: &[StackEntry]) -> usize {
         .count()
 }
 
+fn unsynced_land_total_entries(entries: &[StackEntry]) -> usize {
+    let has_mapped_entry = entries.iter().any(|entry| entry.mr_number.is_some());
+    let mut seen_mapped_entry = false;
+    entries
+        .iter()
+        .filter(|entry| {
+            if entry.mr_number.is_some() {
+                seen_mapped_entry = true;
+                false
+            } else {
+                !has_mapped_entry || seen_mapped_entry
+            }
+        })
+        .count()
+}
+
 /// Run the land command
 pub fn run(opts: LandOptions) -> Result<()> {
     let LandOptions {
@@ -701,6 +717,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
         None if land_all => mapped_land_total_entries(&stack.entries),
         None => default_land_total_entries(&stack),
     };
+    let unsynced_total_entries = unsynced_land_total_entries(&stack.entries);
     let summary_total_entries = if queues_one_entry {
         match land_until {
             Some(end_pos) => {
@@ -713,7 +730,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
         total_entries
     } else {
         mapped_land_total_entries(&stack.entries)
-    };
+    } + unsynced_total_entries;
     emit_land_event(
         streamer.as_mut(),
         LandStreamingEvent::Start {
@@ -754,6 +771,17 @@ pub fn run(opts: LandOptions) -> Result<()> {
     let mut seen_closed: HashSet<String> = HashSet::new();
     let mut warnings: Vec<String> = vec![];
     let mut land_error: Option<String> = None;
+    if unsynced_total_entries > 0 {
+        warnings.push(format!(
+            "{} unsynced stack entr{} remaining. Run `gg sync` before landing them.",
+            unsynced_total_entries,
+            if unsynced_total_entries == 1 {
+                "y is"
+            } else {
+                "ies are"
+            }
+        ));
+    }
 
     'landing_loop: loop {
         let entries_to_land = if let Some(end_pos) = land_until {
@@ -2474,6 +2502,40 @@ mod tests {
 
         assert_eq!(mapped_land_total_entries(&entries), 1);
         assert_eq!(single_land_total_entries(&entries), 1);
+    }
+
+    #[test]
+    fn unsynced_land_total_entries_ignores_unmapped_prefix() {
+        use crate::stack::StackEntry;
+
+        fn entry(position: usize, mr_number: Option<u64>) -> StackEntry {
+            StackEntry {
+                oid: git2::Oid::ZERO_SHA1,
+                short_sha: format!("sha{position}"),
+                title: format!("Entry {position}"),
+                gg_id: Some(format!("c-{position:07}")),
+                gg_parent: None,
+                mr_number,
+                mr_state: mr_number.map(|_| PrState::Open),
+                approved: false,
+                changes_requested: false,
+                mergeable: false,
+                ci_status: None,
+                position,
+                in_merge_train: false,
+                merge_train_position: None,
+            }
+        }
+
+        assert_eq!(
+            unsynced_land_total_entries(&[entry(1, None), entry(2, Some(2)), entry(3, None)]),
+            1
+        );
+        assert_eq!(
+            unsynced_land_total_entries(&[entry(1, None), entry(2, Some(2))]),
+            0
+        );
+        assert_eq!(unsynced_land_total_entries(&[entry(1, None)]), 1);
     }
 
     #[test]

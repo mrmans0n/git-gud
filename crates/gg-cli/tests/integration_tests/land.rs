@@ -365,6 +365,15 @@ impl WaitingLandFixture {
         .expect("write config");
     }
 
+    fn add_unsynced_entry(&self) {
+        fs::write(self.repo_path.join("unsynced.txt"), "unsynced\n").expect("write unsynced entry");
+        run_git(&self.repo_path, &["add", "unsynced.txt"]);
+        run_git(
+            &self.repo_path,
+            &["commit", "-m", "Unsynced entry\n\nGG-ID: c-2222222"],
+        );
+    }
+
     fn use_gitlab_provider(&self) {
         let config_path = self.repo_path.join(".git/gg/config.json");
         let mut config: Value =
@@ -585,6 +594,36 @@ fn test_land_jsonl_default_scope_reports_one_total_entry() {
         .expect("parse summary event");
     assert_eq!(summary["event"], "summary");
     assert_eq!(summary["remaining"], 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_jsonl_summary_reports_unsynced_remaining_entry() {
+    let fixture = WaitingLandFixture::new();
+    fixture.add_unsynced_entry();
+    fixture.release_ci();
+
+    let output = fixture
+        .start_land_with_args(&["land", "--jsonl", "--admin", "--no-clean"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(output.status.success(), "land failed: {stderr}");
+    assert!(stderr.trim().is_empty(), "unexpected stderr: {stderr}");
+
+    let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
+        .expect("parse summary event");
+    assert_eq!(summary["event"], "summary");
+    assert_eq!(summary["status"], "warning");
+    assert_eq!(summary["remaining"], 1);
+    assert!(summary["warnings"]
+        .as_array()
+        .expect("warnings must be an array")
+        .iter()
+        .any(|warning| warning
+            .as_str()
+            .is_some_and(|warning| warning.contains("gg sync"))));
 }
 
 #[cfg(unix)]

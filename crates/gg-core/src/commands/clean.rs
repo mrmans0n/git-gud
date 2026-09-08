@@ -95,7 +95,14 @@ fn run_for_stack_with_repo_options(
     let branch_name = git::format_stack_branch(&username, stack_name);
 
     // Check if stack is fully merged
-    let merge_status = check_stack_merged(repo, &config, stack_name, &username, provider.as_ref())?;
+    let merge_status = check_stack_merged(
+        repo,
+        &config,
+        stack_name,
+        &username,
+        provider.as_ref(),
+        silent,
+    )?;
 
     if !merge_status.merged && !force {
         return Err(GgError::Other(format!(
@@ -295,8 +302,14 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
         }
 
         // Load the stack to check MR status
-        let merge_status =
-            check_stack_merged(&repo, &config, stack_name, &username, provider.as_ref())?;
+        let merge_status = check_stack_merged(
+            &repo,
+            &config,
+            stack_name,
+            &username,
+            provider.as_ref(),
+            json,
+        )?;
 
         if merge_status.merged {
             if !clean_all && !json {
@@ -558,6 +571,7 @@ fn check_stack_merged(
     stack_name: &str,
     username: &str,
     provider: Option<&Provider>,
+    silent: bool,
 ) -> Result<MergeStatus> {
     // Track whether any provider API call failed - if so, we cannot trust
     // verification and must be conservative about remote branch deletion.
@@ -607,13 +621,15 @@ fn check_stack_merged(
                         Err(e) => {
                             // PR/MR might be deleted or inaccessible.
                             // Log the error for debugging but continue checking other MRs.
-                            eprintln!(
-                                "{} Could not fetch MR #{} ({}): {}",
-                                console::style("Debug:").dim(),
-                                mr_num,
-                                gg_id,
-                                e
-                            );
+                            if !silent {
+                                eprintln!(
+                                    "{} Could not fetch MR #{} ({}): {}",
+                                    console::style("Debug:").dim(),
+                                    mr_num,
+                                    gg_id,
+                                    e
+                                );
+                            }
                             had_provider_error = true;
                             provider_was_consulted = true; // We tried, it failed
                         }

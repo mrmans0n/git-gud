@@ -28,6 +28,14 @@ if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
 fi
 
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  calls=0
+  if [ -f "$GG_FAKE_PR_VIEW_CALLS" ]; then calls=$(cat "$GG_FAKE_PR_VIEW_CALLS"); fi
+  calls=$((calls + 1))
+  echo "$calls" > "$GG_FAKE_PR_VIEW_CALLS"
+  if [ -f "$GG_FAKE_CLEAN_PROVIDER_FAIL" ] && [ "$calls" -gt 1 ]; then
+    echo "provider unavailable" >&2
+    exit 1
+  fi
   case "$*" in
     *statusCheckRollup*)
       touch "$GG_FAKE_POLLED"
@@ -179,6 +187,8 @@ struct WaitingLandFixture {
     auth_network_fail: std::path::PathBuf,
     queued: std::path::PathBuf,
     retarget_fail: std::path::PathBuf,
+    clean_provider_fail: std::path::PathBuf,
+    pr_view_calls: std::path::PathBuf,
     test_home: std::path::PathBuf,
 }
 
@@ -236,6 +246,8 @@ impl WaitingLandFixture {
         let auth_network_fail = repo_path.join("fake-auth-network-fail");
         let queued = repo_path.join("fake-queued");
         let retarget_fail = repo_path.join("fake-retarget-fail");
+        let clean_provider_fail = repo_path.join("fake-clean-provider-fail");
+        let pr_view_calls = repo_path.join("fake-pr-view-calls");
         let test_home = repo_path.join(".test-home");
         fs::create_dir_all(&test_home).expect("create test home");
 
@@ -253,6 +265,8 @@ impl WaitingLandFixture {
             auth_network_fail,
             queued,
             retarget_fail,
+            clean_provider_fail,
+            pr_view_calls,
             test_home,
         }
     }
@@ -276,6 +290,8 @@ impl WaitingLandFixture {
             .env("GG_FAKE_AUTH_NETWORK_FAIL", &self.auth_network_fail)
             .env("GG_FAKE_QUEUED", &self.queued)
             .env("GG_FAKE_RETARGET_FAIL", &self.retarget_fail)
+            .env("GG_FAKE_CLEAN_PROVIDER_FAIL", &self.clean_provider_fail)
+            .env("GG_FAKE_PR_VIEW_CALLS", &self.pr_view_calls)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -338,6 +354,29 @@ impl WaitingLandFixture {
 
     fn fail_retargeting(&self) {
         fs::write(&self.retarget_fail, "fail\n").expect("enable fake retarget failure");
+    }
+
+    fn fail_cleanup_provider_after_first_view(&self) {
+        fs::write(&self.clean_provider_fail, "fail\n")
+            .expect("enable fake cleanup provider failure");
+    }
+
+    fn fail_downstream_push(&self) {
+        fs::write(
+            self.repo_path.join("fake-bin-land-wait").join("git"),
+            r#"#!/bin/sh
+if [ "$1" = "push" ] && [ "$2" = "--force-with-lease" ]; then
+  echo "force-with-lease rejected" >&2
+  exit 1
+fi
+exec /usr/bin/git "$@"
+"#,
+        )
+        .expect("write fake git");
+        let path = self.repo_path.join("fake-bin-land-wait").join("git");
+        let mut permissions = fs::metadata(&path).expect("stat fake git").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).expect("make fake git executable");
     }
 }
 
@@ -525,6 +564,42 @@ fn test_land_jsonl_reports_retarget_failure_warning() {
 
 #[cfg(unix)]
 #[test]
+fn test_land_jsonl_reports_downstream_push_failure_warning() {
+    let fixture = WaitingLandFixture::new();
+    fixture.add_second_entry();
+    fixture.release_ci();
+    fixture.fail_downstream_push();
+    run_git(
+        &fixture.repo_path,
+        &["branch", "testuser/land-wait--c-2222222"],
+    );
+
+    let output = fixture
+        .start_land_with_args(&["land", "--all", "--jsonl", "--admin", "--no-clean"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(output.status.success(), "land failed: {stderr}");
+    assert!(stderr.trim().is_empty(), "unexpected stderr: {stderr}");
+
+    let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
+        .expect("parse summary event");
+    assert_eq!(summary["event"], "summary");
+    assert!(
+        summary["warnings"]
+            .as_array()
+            .expect("warnings must be an array")
+            .iter()
+            .any(|warning| warning.as_str().is_some_and(
+                |warning| warning.contains("Failed to push testuser/land-wait--c-2222222")
+            )),
+        "summary should include downstream push failure warning: {summary}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn test_land_gitlab_jsonl_admin_emits_no_human_warning() {
     let fixture = WaitingLandFixture::new();
     fixture.use_gitlab_provider();
@@ -540,6 +615,29 @@ fn test_land_gitlab_jsonl_admin_emits_no_human_warning() {
         fixture.merged.with_extension("glab").exists(),
         "fake GitLab MR should be merged"
     );
+    assert!(stderr.trim().is_empty(), "unexpected stderr: {stderr}");
+    assert!(
+        stdout
+            .lines()
+            .all(|line| serde_json::from_str::<Value>(line).is_ok()),
+        "every JSONL line must parse: {stdout}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_jsonl_clean_silences_provider_lookup_debug() {
+    let fixture = WaitingLandFixture::new();
+    fs::write(&fixture.merged, "already merged\n").expect("mark fake PR merged");
+    fixture.fail_cleanup_provider_after_first_view();
+
+    let output = fixture
+        .start_land_with_args(&["land", "--all", "--jsonl", "--clean"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(output.status.success(), "land failed: {stderr}");
     assert!(stderr.trim().is_empty(), "unexpected stderr: {stderr}");
     assert!(
         stdout

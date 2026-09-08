@@ -310,7 +310,9 @@ fn rebase_remaining_branches(
     provider: &Provider,
     start_index: usize,
     json: bool,
-) -> Result<()> {
+) -> Result<Vec<String>> {
+    let mut warnings = Vec::new();
+
     // Fetch the latest base branch
     if !json {
         println!(
@@ -435,6 +437,7 @@ fn rebase_remaining_branches(
 
         if !push_result.status.success() {
             let stderr = String::from_utf8_lossy(&push_result.stderr);
+            let warning = format!("Failed to push {}: {}", branch_name, stderr.trim());
             if !json {
                 println!(
                     "{} Warning: Failed to push {}: {}",
@@ -443,6 +446,7 @@ fn rebase_remaining_branches(
                     stderr
                 );
             }
+            warnings.push(warning);
             // Continue with other branches even if one push fails
         }
     }
@@ -456,7 +460,7 @@ fn rebase_remaining_branches(
             .output();
     }
 
-    Ok(())
+    Ok(warnings)
 }
 
 /// Options for the land command
@@ -1102,17 +1106,22 @@ pub fn run(opts: LandOptions) -> Result<()> {
                                 .iter()
                                 .position(|e| e.mr_number == Some(pr_num))
                                 .unwrap_or(0);
-                            if let Err(e) = rebase_remaining_branches(
+                            match rebase_remaining_branches(
                                 &repo,
                                 &stack,
                                 &provider,
                                 current_index,
                                 structured,
                             ) {
-                                warnings
-                                    .push(format!("Failed to rebase remaining branches: {}", e));
-                                land_error = Some(e.to_string());
-                                break 'landing_loop;
+                                Ok(rebase_warnings) => warnings.extend(rebase_warnings),
+                                Err(e) => {
+                                    warnings.push(format!(
+                                        "Failed to rebase remaining branches: {}",
+                                        e
+                                    ));
+                                    land_error = Some(e.to_string());
+                                    break 'landing_loop;
+                                }
                             }
                             stack = Stack::load(&repo, &config)?;
                             if !stack.is_empty() {
@@ -1251,16 +1260,20 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             .iter()
                             .position(|e| e.mr_number == Some(pr_num))
                             .unwrap_or(0);
-                        if let Err(e) = rebase_remaining_branches(
+                        match rebase_remaining_branches(
                             &repo,
                             &stack,
                             &provider,
                             current_index,
                             structured,
                         ) {
-                            warnings.push(format!("Failed to rebase remaining branches: {}", e));
-                            land_error = Some(e.to_string());
-                            break 'landing_loop;
+                            Ok(rebase_warnings) => warnings.extend(rebase_warnings),
+                            Err(e) => {
+                                warnings
+                                    .push(format!("Failed to rebase remaining branches: {}", e));
+                                land_error = Some(e.to_string());
+                                break 'landing_loop;
+                            }
                         }
                         stack = Stack::load(&repo, &config)?;
                         if !stack.is_empty() {
@@ -2417,7 +2430,7 @@ mod tests {
         // - start_index: usize (current merge position in stack)
 
         // Type-level assertion that rebase_remaining_branches exists with the correct signature
-        let _fn_ptr: fn(&git2::Repository, &Stack, &Provider, usize, bool) -> Result<()> =
+        let _fn_ptr: fn(&git2::Repository, &Stack, &Provider, usize, bool) -> Result<Vec<String>> =
             rebase_remaining_branches;
     }
 

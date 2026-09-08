@@ -30,7 +30,7 @@ pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
     )?;
 
     let mut remote_effects = Vec::new();
-    run_for_stack_with_repo_options(&repo, stack_name, force, false, &mut |effect| {
+    run_for_stack_with_repo_options(&repo, stack_name, force, false, false, &mut |effect| {
         guard.record_remote_effect(effect.clone());
         remote_effects.push(effect);
     })?;
@@ -47,7 +47,7 @@ pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
 
 /// Run clean for a stack with an already-open repository (no lock acquisition)
 pub fn run_for_stack_with_repo(repo: &Repository, stack_name: &str, force: bool) -> Result<()> {
-    run_for_stack_with_repo_options(repo, stack_name, force, false, &mut |_| {})
+    run_for_stack_with_repo_options(repo, stack_name, force, false, false, &mut |_| {}).map(|_| ())
 }
 
 /// Run clean after `gg land` has already verified that every PR/MR in the stack
@@ -61,9 +61,92 @@ pub(crate) fn run_for_stack_with_repo_after_verified_land(
     repo: &Repository,
     stack_name: &str,
     force: bool,
+    silent: bool,
     record_remote_effect: &mut dyn FnMut(RemoteEffect),
-) -> Result<()> {
-    run_for_stack_with_repo_options(repo, stack_name, force, true, record_remote_effect)
+) -> Result<bool> {
+    run_for_stack_with_repo_options(repo, stack_name, force, true, silent, record_remote_effect)
+}
+
+fn delete_stack_branch(
+    repo: &Repository,
+    config: &Config,
+    stack_name: &str,
+    branch_name: &str,
+    silent: bool,
+) -> Result<bool> {
+    let Ok(mut branch) = repo.find_branch(branch_name, BranchType::Local) else {
+        return Ok(true);
+    };
+
+    let current = git::current_branch_name(repo);
+    if current.as_deref() == Some(branch_name) {
+        let base = config
+            .get_base_for_stack(stack_name)
+            .map(|s| s.to_string())
+            .or_else(|| git::find_base_branch(repo).ok())
+            .unwrap_or_else(|| "main".to_string());
+
+        if let Err(e) = git::checkout_branch(repo, &base) {
+            let msg = e.to_string();
+            if msg.contains("current HEAD of a linked") {
+                if !silent {
+                    println!(
+                        "{} '{}' is checked out in another worktree; detaching HEAD before branch deletion.",
+                        style("Note:").cyan(),
+                        base
+                    );
+                }
+                if let Ok(head) = repo.head() {
+                    if let Some(oid) = head.target() {
+                        repo.set_head_detached(oid)?;
+                    }
+                }
+            } else {
+                return Err(e);
+            }
+        }
+    }
+
+    if let Some(wt_name) = git::is_branch_checked_out_in_worktree(repo, branch_name) {
+        if !git::try_prune_worktree(repo, &wt_name) {
+            if !silent {
+                println!(
+                    "{} Branch '{}' is checked out in worktree '{}'. Removing worktree.",
+                    style("Note:").cyan(),
+                    branch_name,
+                    wt_name
+                );
+            }
+            if let Err(e) = git::remove_worktree(&wt_name) {
+                if !silent {
+                    println!(
+                        "{} Could not remove worktree '{}': {}",
+                        style("Warning:").yellow(),
+                        wt_name,
+                        e
+                    );
+                }
+                return Ok(false);
+            }
+        }
+    }
+
+    if let Err(e) = branch.delete() {
+        if !silent {
+            println!(
+                "{} Could not delete local branch '{}': {}",
+                style("Warning:").yellow(),
+                branch_name,
+                e
+            );
+            println!(
+                "  You may need to manually remove the worktree first: git worktree remove <path>"
+            );
+        }
+        return Ok(false);
+    }
+
+    Ok(true)
 }
 
 fn run_for_stack_with_repo_options(
@@ -71,8 +154,9 @@ fn run_for_stack_with_repo_options(
     stack_name: &str,
     force: bool,
     merge_verified_by_land: bool,
+    silent: bool,
     record_remote_effect: &mut dyn FnMut(RemoteEffect),
-) -> Result<()> {
+) -> Result<bool> {
     let git_dir = repo.commondir();
     let mut config = Config::load_with_global(git_dir)?;
 
@@ -93,7 +177,14 @@ fn run_for_stack_with_repo_options(
     let branch_name = git::format_stack_branch(&username, stack_name);
 
     // Check if stack is fully merged
-    let merge_status = check_stack_merged(repo, &config, stack_name, &username, provider.as_ref())?;
+    let merge_status = check_stack_merged(
+        repo,
+        &config,
+        stack_name,
+        &username,
+        provider.as_ref(),
+        silent,
+    )?;
 
     if !merge_status.merged && !force {
         return Err(GgError::Other(format!(
@@ -102,74 +193,13 @@ fn run_for_stack_with_repo_options(
         )));
     }
 
-    let _ = maybe_remove_configured_worktree(repo, &mut config, stack_name, false)?;
-
-    // Delete local branch
-    if let Ok(mut branch) = repo.find_branch(&branch_name, BranchType::Local) {
-        // Make sure we're not on this branch
-        let current = git::current_branch_name(repo);
-        if current.as_deref() == Some(&branch_name) {
-            // Switch to base branch first
-            let base = config
-                .get_base_for_stack(stack_name)
-                .map(|s| s.to_string())
-                .or_else(|| git::find_base_branch(repo).ok())
-                .unwrap_or_else(|| "main".to_string());
-
-            // The pre-detection above can miss worktrees if
-            // Repository::open_from_worktree fails on them. Add a
-            // defensive fallback: if checkout fails because the branch is
-            // in a linked worktree, detach HEAD instead.
-            if let Err(e) = git::checkout_branch(repo, &base) {
-                let msg = e.to_string();
-                if msg.contains("current HEAD of a linked") {
-                    println!(
-                        "{} '{}' is checked out in another worktree; detaching HEAD before branch deletion.",
-                        style("Note:").cyan(),
-                        base
-                    );
-                    if let Ok(head) = repo.head() {
-                        if let Some(oid) = head.target() {
-                            repo.set_head_detached(oid)?;
-                        }
-                    }
-                } else {
-                    return Err(e);
-                }
-            }
-        }
-
-        // Check if branch is HEAD of a worktree
-        if let Some(wt_name) = git::is_branch_checked_out_in_worktree(repo, &branch_name) {
-            // Try to prune if stale
-            if !git::try_prune_worktree(repo, &wt_name) {
-                // Worktree still exists - warn and try to remove it
-                println!(
-                    "{} Branch '{}' is checked out in worktree '{}'. Removing worktree.",
-                    style("Note:").cyan(),
-                    branch_name,
-                    wt_name
-                );
-                let _ = git::remove_worktree(&wt_name);
-            }
-        }
-
-        // Try to delete the branch, handle errors gracefully
-        if let Err(e) = branch.delete() {
-            println!(
-                "{} Could not delete local branch '{}': {}",
-                style("Warning:").yellow(),
-                branch_name,
-                e
-            );
-            println!(
-                "  You may need to manually remove the worktree first: git worktree remove <path>"
-            );
-        }
+    if !maybe_remove_configured_worktree(repo, &mut config, stack_name, silent)? {
+        return Ok(false);
     }
+    config.save(git_dir)?;
 
     let allow_remote_delete = should_delete_remote_branches(merge_status, merge_verified_by_land);
-    if !allow_remote_delete {
+    if !allow_remote_delete && !silent {
         println!(
             "{} Skipping remote branch deletion for '{}' because merge verification is unavailable.",
             style("Warning:").yellow(),
@@ -184,9 +214,13 @@ fn run_for_stack_with_repo_options(
         stack_name,
         &username,
         /*delete_remote=*/ allow_remote_delete,
-        /*silent=*/ false,
+        /*silent=*/ silent,
         record_remote_effect,
-    );
+    )?;
+
+    if !delete_stack_branch(repo, &config, stack_name, &branch_name, silent)? {
+        return Ok(false);
+    }
 
     // Remove from config
     config.remove_stack(stack_name);
@@ -194,7 +228,7 @@ fn run_for_stack_with_repo_options(
     // Save updated config
     config.save(git_dir)?;
 
-    Ok(())
+    Ok(true)
 }
 
 /// Run the clean command
@@ -241,6 +275,7 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
     let mut cleaned: Vec<String> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
     let mut remote_effects = Vec::new();
+    let mut cleanup_error: Option<String> = None;
 
     if stacks.is_empty() {
         if json {
@@ -270,7 +305,7 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
             // Branch doesn't exist: clean LOCAL orphan entry branches and config.
             // Be conservative: do NOT delete remote branches here because we can't
             // reliably verify merge status without the main stack branch.
-            delete_entry_branches(
+            if let Err(error) = delete_entry_branches(
                 &repo,
                 &config,
                 stack_name,
@@ -278,15 +313,25 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
                 /*delete_remote=*/ false,
                 /*silent=*/ json,
                 &mut |_| {},
-            );
+            ) {
+                cleanup_error.get_or_insert_with(|| error.to_string());
+                skipped.push(format!("{stack_name} ({error})"));
+                continue;
+            }
             config.remove_stack(stack_name);
             cleaned.push(stack_name.clone());
             continue;
         }
 
         // Load the stack to check MR status
-        let merge_status =
-            check_stack_merged(&repo, &config, stack_name, &username, provider.as_ref())?;
+        let merge_status = check_stack_merged(
+            &repo,
+            &config,
+            stack_name,
+            &username,
+            provider.as_ref(),
+            json,
+        )?;
 
         if merge_status.merged {
             if !clean_all && !json {
@@ -304,79 +349,13 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
 
             let removed_or_not_configured =
                 maybe_remove_configured_worktree(&repo, &mut config, stack_name, json)?;
+            config.save(git_dir)?;
             if json && !removed_or_not_configured {
                 skipped.push(format!(
                     "{} (worktree not removed: confirmation defaults to false in --json mode)",
                     stack_name
                 ));
                 continue;
-            }
-
-            // Delete local branch
-            if let Ok(mut branch) = repo.find_branch(&branch_name, BranchType::Local) {
-                // Make sure we're not on this branch
-                let current = git::current_branch_name(&repo);
-                if current.as_deref() == Some(&branch_name) {
-                    // Switch to base branch first
-                    let base = config
-                        .get_base_for_stack(stack_name)
-                        .map(|s| s.to_string())
-                        .or_else(|| git::find_base_branch(&repo).ok())
-                        .unwrap_or_else(|| "main".to_string());
-
-                    // Defensive fallback for the same linked-worktree case.
-                    if let Err(e) = git::checkout_branch(&repo, &base) {
-                        let msg = e.to_string();
-                        if msg.contains("current HEAD of a linked") {
-                            if !json {
-                                println!(
-                                    "{} '{}' is checked out in another worktree; detaching HEAD before branch deletion.",
-                                    style("Note:").cyan(),
-                                    base
-                                );
-                            }
-                            if let Ok(head) = repo.head() {
-                                if let Some(oid) = head.target() {
-                                    repo.set_head_detached(oid)?;
-                                }
-                            }
-                        } else {
-                            return Err(e);
-                        }
-                    }
-                }
-
-                // Check if branch is HEAD of a worktree
-                if let Some(wt_name) = git::is_branch_checked_out_in_worktree(&repo, &branch_name) {
-                    // Try to prune if stale
-                    if !git::try_prune_worktree(&repo, &wt_name) {
-                        // Worktree still exists - warn and try to remove it
-                        if !json {
-                            println!(
-                                "{} Branch '{}' is checked out in worktree '{}'. Removing worktree.",
-                                style("Note:").cyan(),
-                                branch_name,
-                                wt_name
-                            );
-                        }
-                        let _ = git::remove_worktree(&wt_name);
-                    }
-                }
-
-                // Try to delete the branch, handle errors gracefully
-                if let Err(e) = branch.delete() {
-                    if !json {
-                        println!(
-                            "{} Could not delete local branch '{}': {}",
-                            style("Warning:").yellow(),
-                            branch_name,
-                            e
-                        );
-                        println!(
-                            "  You may need to manually remove the worktree first: git worktree remove <path>"
-                        );
-                    }
-                }
             }
 
             let allow_remote_delete = merge_status.verified;
@@ -389,7 +368,7 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
             }
 
             // Delete entry branches (local and remote when verified)
-            delete_entry_branches(
+            if let Err(error) = delete_entry_branches(
                 &repo,
                 &config,
                 stack_name,
@@ -400,7 +379,40 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
                     guard.record_remote_effect(effect.clone());
                     remote_effects.push(effect);
                 },
-            );
+            ) {
+                if !json {
+                    println!(
+                        "{} Could not delete entry branches for '{}': {}",
+                        style("Warning:").yellow(),
+                        stack_name,
+                        error
+                    );
+                }
+                cleanup_error.get_or_insert_with(|| error.to_string());
+                skipped.push(format!("{stack_name} ({error})"));
+                continue;
+            }
+
+            match delete_stack_branch(&repo, &config, stack_name, &branch_name, json) {
+                Ok(true) => {}
+                Ok(false) => {
+                    skipped.push(format!("{stack_name} (branch cleanup could not complete)"));
+                    continue;
+                }
+                Err(error) => {
+                    if !json {
+                        println!(
+                            "{} Could not delete stack branch for '{}': {}",
+                            style("Warning:").yellow(),
+                            stack_name,
+                            error
+                        );
+                    }
+                    cleanup_error.get_or_insert_with(|| error.to_string());
+                    skipped.push(format!("{stack_name} ({error})"));
+                    continue;
+                }
+            }
 
             // Remove from config
             config.remove_stack(stack_name);
@@ -453,7 +465,13 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
         touched_remote,
     )?;
 
-    Ok(())
+    if json {
+        Ok(())
+    } else if let Some(error) = cleanup_error {
+        Err(GgError::Other(error))
+    } else {
+        Ok(())
+    }
 }
 
 fn maybe_remove_configured_worktree(
@@ -548,6 +566,7 @@ fn check_stack_merged(
     stack_name: &str,
     username: &str,
     provider: Option<&Provider>,
+    silent: bool,
 ) -> Result<MergeStatus> {
     // Track whether any provider API call failed - if so, we cannot trust
     // verification and must be conservative about remote branch deletion.
@@ -597,13 +616,15 @@ fn check_stack_merged(
                         Err(e) => {
                             // PR/MR might be deleted or inaccessible.
                             // Log the error for debugging but continue checking other MRs.
-                            eprintln!(
-                                "{} Could not fetch MR #{} ({}): {}",
-                                console::style("Debug:").dim(),
-                                mr_num,
-                                gg_id,
-                                e
-                            );
+                            if !silent {
+                                eprintln!(
+                                    "{} Could not fetch MR #{} ({}): {}",
+                                    console::style("Debug:").dim(),
+                                    mr_num,
+                                    gg_id,
+                                    e
+                                );
+                            }
                             had_provider_error = true;
                             provider_was_consulted = true; // We tried, it failed
                         }
@@ -921,7 +942,7 @@ fn delete_entry_branches(
     delete_remote: bool,
     silent: bool,
     record_remote_effect: &mut dyn FnMut(RemoteEffect),
-) {
+) -> Result<()> {
     // First, delete entry branches from config (if any)
     if let Some(stack_config) = config.get_stack(stack_name) {
         for entry_id in stack_config.mrs.keys() {
@@ -939,6 +960,13 @@ fn delete_entry_branches(
                 }
             };
             let entry_branch = git::format_entry_branch(username, stack_name, &entry_id);
+            // Delete remote entry branch first so a remote failure leaves the local ref
+            // discoverable for a retry.
+            if delete_remote {
+                if let Some(effect) = delete_remote_branch(repo, &entry_branch)? {
+                    record_remote_effect(effect);
+                }
+            }
             // Delete local entry branch
             if let Ok(mut branch) = repo.find_branch(&entry_branch, BranchType::Local) {
                 // Check if branch is HEAD of a worktree
@@ -951,12 +979,6 @@ fn delete_entry_branches(
                 }
                 // Try to delete, ignore errors (best effort for entry branches)
                 let _ = branch.delete();
-            }
-            // Delete remote entry branch
-            if delete_remote {
-                if let Some(effect) = delete_remote_branch(repo, &entry_branch) {
-                    record_remote_effect(effect);
-                }
             }
         }
     }
@@ -983,6 +1005,13 @@ fn delete_entry_branches(
         .unwrap_or_default();
 
     for branch_name in branches {
+        // Delete remote first so a remote failure leaves the local orphan ref
+        // discoverable for a retry.
+        if delete_remote {
+            if let Some(effect) = delete_remote_branch(repo, &branch_name)? {
+                record_remote_effect(effect);
+            }
+        }
         if let Ok(mut branch) = repo.find_branch(&branch_name, BranchType::Local) {
             // Check if branch is HEAD of a worktree
             if let Some(wt_name) = git::is_branch_checked_out_in_worktree(repo, &branch_name) {
@@ -995,24 +1024,18 @@ fn delete_entry_branches(
             // Try to delete, ignore errors (best effort for entry branches)
             let _ = branch.delete();
         }
-        // Also try to delete from remote
-        if delete_remote {
-            if let Some(effect) = delete_remote_branch(repo, &branch_name) {
-                record_remote_effect(effect);
-            }
-        }
     }
+    Ok(())
 }
 
-fn delete_remote_branch(repo: &Repository, branch: &str) -> Option<RemoteEffect> {
-    git::delete_remote_branch(repo, branch)
-        .ok()
-        .flatten()
-        .map(|prior_oid| RemoteEffect::BranchDeleted {
+fn delete_remote_branch(repo: &Repository, branch: &str) -> Result<Option<RemoteEffect>> {
+    git::delete_remote_branch(repo, branch).map(|prior_oid| {
+        prior_oid.map(|prior_oid| RemoteEffect::BranchDeleted {
             remote: "origin".to_string(),
             branch: branch.to_string(),
             prior_oid: Some(prior_oid.to_string()),
         })
+    })
 }
 
 #[cfg(test)]
@@ -1058,5 +1081,366 @@ mod tests {
             },
             true,
         ));
+    }
+
+    #[test]
+    fn delete_remote_branch_reports_git_errors() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let repo = Repository::init(temp.path()).expect("init repo");
+
+        let error = delete_remote_branch(&repo, "u/cleanup--c-1111111").unwrap_err();
+
+        assert!(
+            error.to_string().contains("git ls-remote failed"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn verified_land_keeps_stack_retryable_when_remote_entry_cleanup_fails() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let repo_path = temp.path().join("repo");
+        std::fs::create_dir(&repo_path).expect("create repo dir");
+
+        let init = std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git init");
+        assert!(
+            init.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git config email");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git config name");
+        std::fs::write(repo_path.join("README.md"), "test\n").expect("write readme");
+        std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git add");
+        let commit = std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git commit");
+        assert!(
+            commit.status.success(),
+            "git commit failed: {}",
+            String::from_utf8_lossy(&commit.stderr)
+        );
+        std::process::Command::new("git")
+            .args(["branch", "u/cleanup"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git branch");
+
+        let gg_dir = repo_path.join(".git/gg");
+        std::fs::create_dir_all(&gg_dir).expect("create gg dir");
+        std::fs::write(
+            gg_dir.join("config.json"),
+            serde_json::json!({
+                "defaults": {"branch_username": "u", "base": "main"},
+                "stacks": {"cleanup": {"mrs": {"c-1111111": 1}}}
+            })
+            .to_string(),
+        )
+        .expect("write config");
+
+        let repo = Repository::open(&repo_path).expect("open repo");
+        let result =
+            run_for_stack_with_repo_after_verified_land(&repo, "cleanup", true, true, &mut |_| {});
+
+        assert!(result.is_err(), "missing origin should fail remote cleanup");
+        assert!(
+            repo.find_branch("u/cleanup", BranchType::Local).is_ok(),
+            "stack branch must remain retryable"
+        );
+        assert!(
+            Config::load_with_global(repo.commondir())
+                .expect("reload config")
+                .get_stack("cleanup")
+                .is_some(),
+            "stack config must remain retryable"
+        );
+    }
+
+    #[test]
+    fn verified_land_keeps_orphan_entry_retryable_when_remote_cleanup_fails() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let repo_path = temp.path().join("repo");
+        std::fs::create_dir(&repo_path).expect("create repo dir");
+
+        let init = std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git init");
+        assert!(
+            init.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git config email");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git config name");
+        std::fs::write(repo_path.join("README.md"), "test\n").expect("write readme");
+        std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git add");
+        let commit = std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git commit");
+        assert!(
+            commit.status.success(),
+            "git commit failed: {}",
+            String::from_utf8_lossy(&commit.stderr)
+        );
+        std::process::Command::new("git")
+            .args(["branch", "u/cleanup"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git branch");
+        std::process::Command::new("git")
+            .args(["branch", "u/cleanup--c-1111111"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git branch");
+
+        let gg_dir = repo_path.join(".git/gg");
+        std::fs::create_dir_all(&gg_dir).expect("create gg dir");
+        std::fs::write(
+            gg_dir.join("config.json"),
+            serde_json::json!({
+                "defaults": {"branch_username": "u", "base": "main"},
+                "stacks": {"cleanup": {}}
+            })
+            .to_string(),
+        )
+        .expect("write config");
+
+        let repo = Repository::open(&repo_path).expect("open repo");
+        let result =
+            run_for_stack_with_repo_after_verified_land(&repo, "cleanup", true, true, &mut |_| {});
+
+        assert!(result.is_err(), "missing origin should fail remote cleanup");
+        assert!(
+            repo.find_branch("u/cleanup--c-1111111", BranchType::Local)
+                .is_ok(),
+            "orphan entry branch must remain retryable"
+        );
+    }
+
+    #[test]
+    fn verified_land_validates_before_removing_configured_worktree() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let repo_path = temp.path().join("repo");
+        std::fs::create_dir(&repo_path).expect("create repo dir");
+
+        let init = std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git init");
+        assert!(
+            init.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git config email");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git config name");
+        std::fs::write(repo_path.join("README.md"), "test\n").expect("write readme");
+        std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git add");
+        let commit = std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git commit");
+        assert!(
+            commit.status.success(),
+            "git commit failed: {}",
+            String::from_utf8_lossy(&commit.stderr)
+        );
+
+        let worktree_path = temp.path().join("configured-worktree");
+        let worktree = std::process::Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                "--detach",
+                worktree_path.to_str().unwrap(),
+                "HEAD",
+            ])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git worktree add");
+        assert!(
+            worktree.status.success(),
+            "git worktree add failed: {}",
+            String::from_utf8_lossy(&worktree.stderr)
+        );
+
+        let gg_dir = repo_path.join(".git/gg");
+        std::fs::create_dir_all(&gg_dir).expect("create gg dir");
+        std::fs::write(
+            gg_dir.join("config.json"),
+            serde_json::json!({
+                "defaults": {"branch_username": "bad/name", "base": "main"},
+                "stacks": {"cleanup": {"worktree_path": worktree_path.display().to_string()}}
+            })
+            .to_string(),
+        )
+        .expect("write config");
+
+        let repo = Repository::open(&repo_path).expect("open repo");
+        let result =
+            run_for_stack_with_repo_after_verified_land(&repo, "cleanup", true, false, &mut |_| {});
+
+        assert!(result.is_err(), "invalid username should fail validation");
+        assert!(
+            worktree_path.exists(),
+            "configured worktree must not be removed before validation"
+        );
+        let config = Config::load_with_global(repo.commondir()).expect("reload config");
+        assert_eq!(
+            config
+                .get_stack("cleanup")
+                .and_then(|stack| stack.worktree_path.as_deref()),
+            Some(worktree_path.to_str().unwrap())
+        );
+    }
+
+    #[test]
+    fn verified_land_reports_incomplete_branch_cleanup() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let repo_path = temp.path().join("repo");
+        std::fs::create_dir(&repo_path).expect("create repo dir");
+
+        let init = std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git init");
+        assert!(
+            init.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git config email");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git config name");
+        std::fs::write(repo_path.join("README.md"), "test\n").expect("write readme");
+        std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git add");
+        let commit = std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git commit");
+        assert!(
+            commit.status.success(),
+            "git commit failed: {}",
+            String::from_utf8_lossy(&commit.stderr)
+        );
+        std::process::Command::new("git")
+            .args(["branch", "u/cleanup"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git branch");
+
+        let worktree_path = temp.path().join("stack-worktree");
+        let worktree = std::process::Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                worktree_path.to_str().unwrap(),
+                "u/cleanup",
+            ])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git worktree add");
+        assert!(
+            worktree.status.success(),
+            "git worktree add failed: {}",
+            String::from_utf8_lossy(&worktree.stderr)
+        );
+        let lock = std::process::Command::new("git")
+            .args(["worktree", "lock", worktree_path.to_str().unwrap()])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git worktree lock");
+        assert!(
+            lock.status.success(),
+            "git worktree lock failed: {}",
+            String::from_utf8_lossy(&lock.stderr)
+        );
+
+        let gg_dir = repo_path.join(".git/gg");
+        std::fs::create_dir_all(&gg_dir).expect("create gg dir");
+        std::fs::write(
+            gg_dir.join("config.json"),
+            serde_json::json!({
+                "defaults": {"branch_username": "u", "base": "main"},
+                "stacks": {"cleanup": {}}
+            })
+            .to_string(),
+        )
+        .expect("write config");
+
+        let repo = Repository::open(&repo_path).expect("open repo");
+        let result =
+            run_for_stack_with_repo_after_verified_land(&repo, "cleanup", true, true, &mut |_| {});
+
+        assert!(!result.expect("cleanup should not error"));
+        assert!(
+            Config::load_with_global(repo.commondir())
+                .expect("reload config")
+                .get_stack("cleanup")
+                .is_some(),
+            "incomplete cleanup must not remove stack config"
+        );
     }
 }

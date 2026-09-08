@@ -17,6 +17,7 @@ gg land [OPTIONS]
 - `--no-clean`: Disable auto-clean for this run
 - `--admin`: *(GitHub only)* Use admin privileges to bypass branch protection requirements (see [Admin Override](#admin-override) below)
 - `--json`: Emit machine-readable JSON output (no human logs)
+- `--jsonl`: Emit flushed NDJSON events as landing and polling progress; conflicts with `--json`
 
 ## Examples
 
@@ -35,6 +36,9 @@ gg land --all --auto-merge
 
 # JSON output for automation
 gg land --all --json
+
+# Stream landing progress and wait heartbeats
+gg land --all --wait --jsonl
 
 # Bypass approval requirements (GitHub admin)
 gg land --admin
@@ -123,4 +127,38 @@ Example JSON response:
     "error": null
   }
 }
+```
+
+## Streaming NDJSON (`--jsonl`)
+
+`gg land --jsonl` emits one compact JSON object per line and flushes each line.
+Every event has `version`, `command`, `status`, and `event`. Human output is
+suppressed. Use this mode to monitor a long-running `--wait` invocation.
+
+Event kinds:
+
+| Event | Fields | Emitted when |
+|---|---|---|
+| `start` | `stack`, `base`, `total_entries` | A non-empty landing run begins |
+| `wait` | `position`, `pr_number`, `phase`, `poll`, `elapsed_seconds`, `ci_status`, `approved`, `merge_train_status`, `merge_train_position`, `pipeline_running`, `error` | Each readiness or merge-train provider poll completes |
+| `entry` | Same fields as an item in `landed` | An entry reaches an outcome |
+| `summary` | Same fields as the `land` object from `--json` | Landing finishes, including partial failures |
+| `error` | `message` | A fatal error prevents a summary |
+
+`phase` is `readiness` while checking CI and approval, or `merge_train` after
+queueing an MR. Fields that the current phase did not check are `null`.
+Transient provider errors appear in a `wait` event with `status: "warning"` and
+the command keeps polling. Unchanged states still emit a heartbeat on the
+existing 10-second polling cadence.
+
+The final event is `summary` when landing reaches its normal result path.
+Consumers should inspect its `error` field because partial landing failures keep
+the existing `--json` exit behavior. Fatal setup failures emit `error` and exit
+nonzero.
+
+```ndjson
+{"version":1,"command":"land","status":"ok","event":"start","stack":"my-stack","base":"main","total_entries":1}
+{"version":1,"command":"land","status":"ok","event":"wait","position":1,"pr_number":42,"phase":"readiness","poll":1,"elapsed_seconds":0,"ci_status":"running","approved":true,"merge_train_status":null,"merge_train_position":null,"pipeline_running":null,"error":null}
+{"version":1,"command":"land","status":"ok","event":"entry","position":1,"sha":"abc1234","title":"feat: add parser","gg_id":"c-abc1234","pr_number":42,"action":"merged","error":null}
+{"version":1,"command":"land","status":"ok","event":"summary","stack":"my-stack","base":"main","landed":[{"position":1,"sha":"abc1234","title":"feat: add parser","gg_id":"c-abc1234","pr_number":42,"action":"merged","error":null}],"remaining":0,"cleaned":false,"warnings":[],"error":null}
 ```

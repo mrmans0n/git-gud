@@ -384,7 +384,68 @@ pub struct LandResponse {
     pub land: LandResultJson,
 }
 
+pub struct LandStreamingResponse {
+    pub version: u32,
+    pub command: String,
+    pub event: LandStreamingEvent,
+}
+
+impl Serialize for LandStreamingResponse {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let status = match &self.event {
+            LandStreamingEvent::Wait { error: Some(_), .. } => "warning",
+            LandStreamingEvent::Entry { entry } if entry.error.is_some() => "error",
+            LandStreamingEvent::Entry { entry } if entry.action == "skipped_closed" => "warning",
+            LandStreamingEvent::Summary { result } if result.error.is_some() => "error",
+            LandStreamingEvent::Summary { result } if !result.warnings.is_empty() => "warning",
+            _ => "ok",
+        };
+        let mut value = serde_json::to_value(&self.event).map_err(serde::ser::Error::custom)?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| serde::ser::Error::custom("streaming event serialized non-object"))?;
+        object.insert("version".to_string(), serde_json::json!(self.version));
+        object.insert("command".to_string(), serde_json::json!(self.command));
+        object.insert("status".to_string(), serde_json::json!(status));
+        value.serialize(serializer)
+    }
+}
+
 #[derive(Serialize)]
+#[serde(rename_all = "snake_case", tag = "event")]
+pub enum LandStreamingEvent {
+    Start {
+        stack: String,
+        base: String,
+        total_entries: usize,
+    },
+    Wait {
+        position: usize,
+        pr_number: u64,
+        phase: String,
+        poll: u64,
+        elapsed_seconds: u64,
+        ci_status: Option<String>,
+        approved: Option<bool>,
+        merge_train_status: Option<String>,
+        merge_train_position: Option<usize>,
+        pipeline_running: Option<bool>,
+        error: Option<String>,
+    },
+    Entry {
+        #[serde(flatten)]
+        entry: LandedEntryJson,
+    },
+    Summary {
+        #[serde(flatten)]
+        result: LandResultJson,
+    },
+}
+
+#[derive(Clone, Serialize)]
 pub struct LandResultJson {
     pub stack: String,
     pub base: String,
@@ -395,7 +456,7 @@ pub struct LandResultJson {
     pub error: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct LandedEntryJson {
     pub position: usize,
     pub sha: String,
@@ -550,6 +611,99 @@ mod tests {
             self.flushed = true;
             Ok(())
         }
+    }
+
+    #[test]
+    fn land_wait_event_serializes_structured_heartbeat() {
+        let response = LandStreamingResponse {
+            version: OUTPUT_VERSION,
+            command: "land".to_string(),
+            event: LandStreamingEvent::Wait {
+                position: 2,
+                pr_number: 42,
+                phase: "readiness".to_string(),
+                poll: 3,
+                elapsed_seconds: 20,
+                ci_status: Some("running".to_string()),
+                approved: Some(false),
+                merge_train_status: None,
+                merge_train_position: None,
+                pipeline_running: None,
+                error: None,
+            },
+        };
+
+        let json = serde_json::to_value(&response).expect("should serialize");
+
+        assert_eq!(json["version"], 1);
+        assert_eq!(json["command"], "land");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["event"], "wait");
+        assert_eq!(json["position"], 2);
+        assert_eq!(json["pr_number"], 42);
+        assert_eq!(json["phase"], "readiness");
+        assert_eq!(json["poll"], 3);
+        assert_eq!(json["elapsed_seconds"], 20);
+        assert_eq!(json["ci_status"], "running");
+        assert_eq!(json["approved"], false);
+        assert!(json["merge_train_status"].is_null());
+    }
+
+    #[test]
+    fn land_summary_event_reuses_atomic_result() {
+        let response = LandStreamingResponse {
+            version: OUTPUT_VERSION,
+            command: "land".to_string(),
+            event: LandStreamingEvent::Summary {
+                result: LandResultJson {
+                    stack: "feat-stack".to_string(),
+                    base: "main".to_string(),
+                    landed: vec![LandedEntryJson {
+                        position: 1,
+                        sha: "abc1234".to_string(),
+                        title: "First".to_string(),
+                        gg_id: "c-abc1234".to_string(),
+                        pr_number: 42,
+                        action: "merged".to_string(),
+                        error: None,
+                    }],
+                    remaining: 0,
+                    cleaned: false,
+                    warnings: vec![],
+                    error: None,
+                },
+            },
+        };
+
+        let json = serde_json::to_value(&response).expect("should serialize");
+
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["event"], "summary");
+        assert_eq!(json["stack"], "feat-stack");
+        assert_eq!(json["landed"][0]["action"], "merged");
+    }
+
+    #[test]
+    fn land_summary_with_warnings_has_warning_status() {
+        let response = LandStreamingResponse {
+            version: OUTPUT_VERSION,
+            command: "land".to_string(),
+            event: LandStreamingEvent::Summary {
+                result: LandResultJson {
+                    stack: "feat-stack".to_string(),
+                    base: "main".to_string(),
+                    landed: vec![],
+                    remaining: 0,
+                    cleaned: false,
+                    warnings: vec!["cleanup skipped".to_string()],
+                    error: None,
+                },
+            },
+        };
+
+        let json = serde_json::to_value(&response).expect("should serialize");
+
+        assert_eq!(json["status"], "warning");
     }
 
     #[test]

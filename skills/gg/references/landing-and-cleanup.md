@@ -80,8 +80,11 @@ stop before invoking global cleanup.
    confirmation immediately before execution. If cleanup may follow, record the
    exact stack name, local and remote branch names, configured worktree path, and
    PR/MR mappings before landing.
-2. Run the user-approved `gg land` scope with `--json` and explicitly without
-   cleanup. For multi-entry stacks, do not use a non-wait `gg land -a` snapshot
+2. Run the user-approved `gg land` scope explicitly without cleanup. Use
+   `--jsonl` for a monitored run and consume its final `summary`; use `--json`
+   when only the final result is needed. Treat each `wait` event as a heartbeat,
+   and inspect its typed CI, approval, and merge-train fields. For multi-entry
+   stacks, do not use a non-wait `gg land -a` snapshot
    to merge every entry after downstream PR retargeting and branch rebases.
    In squash-merge stacks with downstream entries, land the current entry with a
    one-entry multi-land command such as

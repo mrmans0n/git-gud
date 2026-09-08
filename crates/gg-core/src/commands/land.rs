@@ -551,6 +551,18 @@ fn finish_land_segment(
     )
 }
 
+fn default_land_total_entries(stack: &Stack) -> usize {
+    let mut total = 0;
+    for entry in &stack.entries {
+        total += 1;
+        match entry.mr_state {
+            Some(PrState::Merged | PrState::Closed) => {}
+            _ => break,
+        }
+    }
+    total
+}
+
 /// Run the land command
 pub fn run(opts: LandOptions) -> Result<()> {
     let LandOptions {
@@ -665,7 +677,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
     let total_entries = match land_until {
         Some(end_pos) => end_pos.min(stack.entries.len()),
         None if land_all => stack.entries.len(),
-        None => 1,
+        None => default_land_total_entries(&stack),
     };
     emit_land_event(
         streamer.as_mut(),

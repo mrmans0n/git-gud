@@ -532,6 +532,37 @@ fn test_land_jsonl_default_scope_reports_one_total_entry() {
 
 #[cfg(unix)]
 #[test]
+fn test_land_jsonl_default_scope_counts_terminal_prefix_entries() {
+    let fixture = WaitingLandFixture::new();
+    fixture.add_second_entry();
+    fs::write(&fixture.merged, "already merged\n").expect("mark fake PR merged");
+
+    let output = fixture
+        .start_land_with_args(&["land", "--jsonl", "--admin", "--no-clean"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(output.status.success(), "land failed: {stderr}");
+    assert!(stderr.trim().is_empty(), "unexpected stderr: {stderr}");
+
+    let events = stdout
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("parse JSONL event"))
+        .collect::<Vec<_>>();
+    assert_eq!(events.first().unwrap()["event"], "start");
+    assert_eq!(events.first().unwrap()["total_entries"], 2);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["event"] == "entry")
+            .count(),
+        2
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn test_land_jsonl_reports_retarget_failure_warning() {
     let fixture = WaitingLandFixture::new();
     fixture.add_second_entry();

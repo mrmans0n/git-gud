@@ -569,7 +569,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
 
     let provider = Provider::detect(&repo)?;
     provider.check_installed()?;
-    provider.check_auth()?;
+    provider.check_auth_with_silent(structured)?;
 
     let auto_merge_on_land =
         provider == Provider::GitLab && (auto_merge_flag || config.get_gitlab_auto_merge_on_land());
@@ -1051,6 +1051,12 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             land_error = Some(e.to_string());
                             break 'landing_loop;
                         }
+                        mark_landed_entry_merged(
+                            &mut landed_entries,
+                            streamer.as_mut(),
+                            entry.position,
+                            pr_num,
+                        );
                         if let Some(error) = stack_changed_while_waiting(&expected_stack, &stack) {
                             land_error = Some(error);
                             break 'landing_loop;
@@ -1064,12 +1070,6 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             .expect("land segment guard")
                             .mark_touched_remote();
                         landed_count += 1;
-                        mark_landed_entry_merged(
-                            &mut landed_entries,
-                            streamer.as_mut(),
-                            entry.position,
-                            pr_num,
-                        );
                         cleanup_after_merge(
                             &mut config,
                             &stack,
@@ -1362,12 +1362,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
 
     let mut jsonl_summary = None;
     if structured {
-        let target_len = if let Some(end_pos) = land_until {
-            end_pos.min(stack.entries.len())
-        } else {
-            stack.entries.len()
-        };
-        let remaining = target_len.saturating_sub(
+        let remaining = total_entries.saturating_sub(
             landed_entries
                 .iter()
                 .filter(|e| matches!(e.action.as_str(), "merged" | "already_merged"))

@@ -83,12 +83,55 @@ if [ "$1" = "--version" ]; then
 fi
 
 if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  if [ -f "$GG_FAKE_AUTH_NETWORK_FAIL" ]; then
+    echo "Could not resolve host: gitlab.com" >&2
+    exit 1
+  fi
   exit 0
 fi
 
 if [ "$1" = "api" ] && [ "$2" = "projects/:id" ]; then
-  echo '{"merge_trains_enabled":false}'
+  if [ -f "$GG_FAKE_MERGE_TRAINS" ]; then
+    echo '{"merge_trains_enabled":true}'
+  else
+    echo '{"merge_trains_enabled":false}'
+  fi
   exit 0
+fi
+
+if [ "$1" = "api" ] && [ "$2" = "-X" ] && [ "$3" = "POST" ]; then
+  touch "$GG_FAKE_QUEUED"
+  exit 0
+fi
+
+if [ "$1" = "api" ]; then
+  case "$2" in
+    projects/:id/merge_requests/*/approvals)
+      echo '{"approved":true}'
+      exit 0
+      ;;
+    projects/:id/merge_trains/*scope=active*)
+      if [ ! -f "$GG_FAKE_QUEUED" ]; then
+        echo '[]'
+        exit 0
+      fi
+      touch "$GG_FAKE_POLLED"
+      if [ -f "$GG_FAKE_MERGED" ]; then
+        echo '[]'
+      else
+        echo '[{"merge_request":{"iid":41},"status":"fresh","pipeline":{"status":"success"}}]'
+      fi
+      exit 0
+      ;;
+    projects/:id/merge_trains/*scope=complete*)
+      if [ -f "$GG_FAKE_MERGED" ]; then
+        echo '[{"merge_request":{"iid":41},"status":"merged","pipeline":{"status":"success"}}]'
+      else
+        echo '[]'
+      fi
+      exit 0
+      ;;
+  esac
 fi
 
 if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
@@ -124,6 +167,9 @@ struct WaitingLandFixture {
     merged: std::path::PathBuf,
     ci_calls: std::path::PathBuf,
     regress: std::path::PathBuf,
+    merge_trains: std::path::PathBuf,
+    auth_network_fail: std::path::PathBuf,
+    queued: std::path::PathBuf,
     test_home: std::path::PathBuf,
 }
 
@@ -177,6 +223,9 @@ impl WaitingLandFixture {
         let merged = repo_path.join("fake-merged");
         let ci_calls = repo_path.join("fake-ci-calls");
         let regress = repo_path.join("fake-regress");
+        let merge_trains = repo_path.join("fake-merge-trains");
+        let auth_network_fail = repo_path.join("fake-auth-network-fail");
+        let queued = repo_path.join("fake-queued");
         let test_home = repo_path.join(".test-home");
         fs::create_dir_all(&test_home).expect("create test home");
 
@@ -190,6 +239,9 @@ impl WaitingLandFixture {
             merged,
             ci_calls,
             regress,
+            merge_trains,
+            auth_network_fail,
+            queued,
             test_home,
         }
     }
@@ -209,6 +261,9 @@ impl WaitingLandFixture {
             .env("GG_FAKE_MERGED", &self.merged)
             .env("GG_FAKE_CI_CALLS", &self.ci_calls)
             .env("GG_FAKE_REGRESS", &self.regress)
+            .env("GG_FAKE_MERGE_TRAINS", &self.merge_trains)
+            .env("GG_FAKE_AUTH_NETWORK_FAIL", &self.auth_network_fail)
+            .env("GG_FAKE_QUEUED", &self.queued)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -259,6 +314,14 @@ impl WaitingLandFixture {
         )
         .expect("write config");
         write_fake_land_glab(&self.repo_path.join("fake-bin-land-wait").join("glab"));
+    }
+
+    fn enable_gitlab_merge_trains(&self) {
+        fs::write(&self.merge_trains, "enabled\n").expect("enable fake merge trains");
+    }
+
+    fn fail_auth_with_network_error(&self) {
+        fs::write(&self.auth_network_fail, "fail\n").expect("enable fake auth failure");
     }
 }
 
@@ -410,6 +473,78 @@ fn test_land_gitlab_jsonl_admin_emits_no_human_warning() {
             .lines()
             .all(|line| serde_json::from_str::<Value>(line).is_ok()),
         "every JSONL line must parse: {stdout}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_jsonl_network_auth_fallback_emits_no_human_warning() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.fail_auth_with_network_error();
+
+    let output = fixture
+        .start_land_with_args(&["land", "--all", "--jsonl", "--admin", "--no-clean"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(output.status.success(), "land failed: {stderr}");
+    assert!(stderr.trim().is_empty(), "unexpected stderr: {stderr}");
+    assert!(
+        stdout
+            .lines()
+            .all(|line| serde_json::from_str::<Value>(line).is_ok()),
+        "every JSONL line must parse: {stdout}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_jsonl_records_merge_train_merge_before_stale_stack_error() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+
+    let land = fixture.start_land_with_args(&["land", "--all", "--wait", "--jsonl", "--no-clean"]);
+    fixture.wait_until_polling();
+
+    fs::write(fixture.repo_path.join("new.txt"), "new\n").expect("write new entry");
+    run_git(&fixture.repo_path, &["add", "new.txt"]);
+    run_git(
+        &fixture.repo_path,
+        &["commit", "-m", "New entry\n\nGG-ID: c-2222222"],
+    );
+    fs::write(&fixture.merged, "merged\n").expect("complete fake merge train");
+
+    let output = land.wait_with_output().expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(
+        output.status.success(),
+        "structured land reports the error in JSONL: stderr={stderr}"
+    );
+    assert!(stderr.trim().is_empty(), "unexpected stderr: {stderr}");
+
+    let events: Vec<Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("every JSONL line must parse"))
+        .collect();
+    assert!(
+        events.iter().any(|event| event["event"] == "entry"
+            && event["pr_number"] == 41
+            && event["action"] == "merged"),
+        "merged entry should be emitted before stale-stack error: {stdout}"
+    );
+    let summary = events.last().expect("summary event");
+    assert_eq!(summary["event"], "summary");
+    assert_eq!(summary["landed"][0]["action"], "merged");
+    assert_eq!(summary["remaining"], 0);
+    assert!(
+        summary["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("Stack changed while gg land was waiting")),
+        "summary should still report the stale-stack error: {summary}"
     );
 }
 

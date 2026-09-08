@@ -66,7 +66,8 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
   fi
 
   if [ -f "$GG_FAKE_CLOSED" ]; then state=CLOSED; elif [ -f "$GG_FAKE_MERGED" ] || { [ -f "$GG_FAKE_FIRST_TERMINAL_AFTER_REFRESH" ] && [ "$calls" -gt 2 ]; }; then state=MERGED; else state=OPEN; fi
-  printf '{"number":41,"title":"Land entry","state":"%s","url":"https://github.com/test/repo/pull/41","headRefName":"testuser/land-wait--c-1111111","isDraft":false,"mergeable":"MERGEABLE","reviews":[],"reviewDecision":"APPROVED"}\n' "$state"
+  if [ -f "$GG_FAKE_DRAFT" ]; then draft=true; else draft=false; fi
+  printf '{"number":41,"title":"Land entry","state":"%s","url":"https://github.com/test/repo/pull/41","headRefName":"testuser/land-wait--c-1111111","isDraft":%s,"mergeable":"MERGEABLE","reviews":[],"reviewDecision":"APPROVED"}\n' "$state" "$draft"
   exit 0
 fi
 
@@ -189,6 +190,7 @@ struct WaitingLandFixture {
     ready: std::path::PathBuf,
     merged: std::path::PathBuf,
     closed: std::path::PathBuf,
+    draft: std::path::PathBuf,
     unapproved: std::path::PathBuf,
     ci_calls: std::path::PathBuf,
     regress: std::path::PathBuf,
@@ -251,6 +253,7 @@ impl WaitingLandFixture {
         let ready = repo_path.join("fake-ready");
         let merged = repo_path.join("fake-merged");
         let closed = repo_path.join("fake-closed");
+        let draft = repo_path.join("fake-draft");
         let unapproved = repo_path.join("fake-unapproved");
         let ci_calls = repo_path.join("fake-ci-calls");
         let regress = repo_path.join("fake-regress");
@@ -273,6 +276,7 @@ impl WaitingLandFixture {
             ready,
             merged,
             closed,
+            draft,
             unapproved,
             ci_calls,
             regress,
@@ -301,6 +305,7 @@ impl WaitingLandFixture {
             .env("GG_FAKE_READY", &self.ready)
             .env("GG_FAKE_MERGED", &self.merged)
             .env("GG_FAKE_CLOSED", &self.closed)
+            .env("GG_FAKE_DRAFT", &self.draft)
             .env("GG_FAKE_UNAPPROVED", &self.unapproved)
             .env("GG_FAKE_CI_CALLS", &self.ci_calls)
             .env("GG_FAKE_REGRESS", &self.regress)
@@ -398,6 +403,10 @@ impl WaitingLandFixture {
 
     fn mark_closed(&self) {
         fs::write(&self.closed, "closed\n").expect("mark fake PR closed");
+    }
+
+    fn mark_draft(&self) {
+        fs::write(&self.draft, "draft\n").expect("mark fake PR draft");
     }
 
     fn mark_unapproved(&self) {
@@ -676,6 +685,36 @@ fn test_land_jsonl_unapproved_entry_emits_error_outcome() {
 
 #[cfg(unix)]
 #[test]
+fn test_land_jsonl_draft_entry_emits_error_status() {
+    let fixture = WaitingLandFixture::new();
+    fixture.mark_draft();
+
+    let output = fixture
+        .start_land_with_args(&["land", "--jsonl", "--admin", "--no-clean"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(output.status.success(), "land failed: {stderr}");
+    assert!(stderr.trim().is_empty(), "unexpected stderr: {stderr}");
+
+    let events = stdout
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("parse JSONL event"))
+        .collect::<Vec<_>>();
+    let entry = events
+        .iter()
+        .find(|event| event["event"] == "entry")
+        .expect("draft PR should emit an entry outcome");
+    assert_eq!(entry["status"], "error");
+    assert_eq!(entry["action"], "skipped_draft");
+    assert!(entry["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("is a draft")));
+}
+
+#[cfg(unix)]
+#[test]
 fn test_land_jsonl_closed_entry_marks_warning_status() {
     let fixture = WaitingLandFixture::new();
     fixture.mark_closed();
@@ -805,6 +844,13 @@ fn test_land_jsonl_reports_provider_scan_failure() {
             .as_str()
             .is_some_and(|error| error.contains("Failed to fetch PR #")),
         "summary should include provider scan failure: {summary}"
+    );
+    assert!(
+        stdout.lines().any(|line| {
+            let event: Value = serde_json::from_str(line).expect("parse JSONL event");
+            event["event"] == "entry" && event["status"] == "error" && event["pr_number"] == 42
+        }),
+        "provider scan failure should emit an entry outcome: {stdout}"
     );
 }
 

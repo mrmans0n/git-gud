@@ -838,12 +838,28 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         continue;
                     }
                     None => {
-                        land_error = Some(format!(
+                        let error = format!(
                             "Failed to fetch {} {}{}",
                             provider.pr_label(),
                             provider.pr_number_prefix(),
                             num
-                        ));
+                        );
+                        if let Some(gg_id) = &entry.gg_id {
+                            record_landed_entry(
+                                &mut landed_entries,
+                                &mut streamer,
+                                LandedEntryJson {
+                                    position: entry.position,
+                                    sha: entry.short_sha.clone(),
+                                    title: entry.title.clone(),
+                                    gg_id: gg_id.clone(),
+                                    pr_number: num,
+                                    action: "error".to_string(),
+                                    error: Some(error.clone()),
+                                },
+                            );
+                        }
+                        land_error = Some(error);
                         break 'landing_loop;
                     }
                 }
@@ -951,6 +967,12 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 continue 'landing_loop;
             }
             Some(PrState::Draft) => {
+                let error = format!(
+                    "{} {}{} is a draft",
+                    provider.pr_label(),
+                    provider.pr_number_prefix(),
+                    pr_num
+                );
                 record_landed_entry(
                     &mut landed_entries,
                     &mut streamer,
@@ -961,15 +983,10 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         gg_id: gg_id.clone(),
                         pr_number: pr_num,
                         action: "skipped_draft".to_string(),
-                        error: None,
+                        error: Some(error.clone()),
                     },
                 );
-                land_error = Some(format!(
-                    "{} {}{} is a draft",
-                    provider.pr_label(),
-                    provider.pr_number_prefix(),
-                    pr_num
-                ));
+                land_error = Some(error);
                 break 'landing_loop;
             }
             Some(PrState::Open) => {

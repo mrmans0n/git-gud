@@ -227,6 +227,26 @@ impl WaitingLandFixture {
         fs::write(&self.ready, "ready\n").expect("release fake CI");
     }
 
+    fn add_second_entry(&self) {
+        fs::write(self.repo_path.join("second.txt"), "second\n").expect("write second entry");
+        run_git(&self.repo_path, &["add", "second.txt"]);
+        run_git(
+            &self.repo_path,
+            &["commit", "-m", "Second entry\n\nGG-ID: c-2222222"],
+        );
+
+        let config_path = self.repo_path.join(".git/gg/config.json");
+        let mut config: Value =
+            serde_json::from_slice(&fs::read(&config_path).expect("read config"))
+                .expect("parse config");
+        config["stacks"]["land-wait"]["mrs"]["c-2222222"] = Value::from(42);
+        fs::write(
+            &config_path,
+            serde_json::to_vec_pretty(&config).expect("serialize config"),
+        )
+        .expect("write config");
+    }
+
     fn use_gitlab_provider(&self) {
         let config_path = self.repo_path.join(".git/gg/config.json");
         let mut config: Value =
@@ -344,6 +364,27 @@ fn test_land_jsonl_admin_emits_no_human_warning() {
             .all(|line| serde_json::from_str::<Value>(line).is_ok()),
         "every JSONL line must parse: {stdout}"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_jsonl_default_scope_reports_one_total_entry() {
+    let fixture = WaitingLandFixture::new();
+    fixture.add_second_entry();
+    fixture.release_ci();
+
+    let output = fixture
+        .start_land_with_args(&["land", "--jsonl", "--admin", "--no-clean"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(output.status.success(), "land failed: {stderr}");
+
+    let start: Value =
+        serde_json::from_str(stdout.lines().next().expect("start event")).expect("parse start");
+    assert_eq!(start["event"], "start");
+    assert_eq!(start["total_entries"], 1);
 }
 
 #[cfg(unix)]

@@ -645,14 +645,17 @@ pub fn run(opts: LandOptions) -> Result<()> {
         None
     };
     let land_multiple = land_all || land_until.is_some();
+    let total_entries = match land_until {
+        Some(end_pos) => end_pos.min(stack.entries.len()),
+        None if land_all => stack.entries.len(),
+        None => 1,
+    };
     emit_land_event(
         streamer.as_mut(),
         LandStreamingEvent::Start {
             stack: stack.name.clone(),
             base: stack.base.clone(),
-            total_entries: land_until
-                .map(|end_pos| end_pos.min(stack.entries.len()))
-                .unwrap_or_else(|| stack.entries.len()),
+            total_entries,
         },
     );
 

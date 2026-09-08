@@ -595,23 +595,15 @@ fn test_land_jsonl_default_scope_counts_terminal_prefix_entries() {
 
 #[cfg(unix)]
 #[test]
-fn test_land_jsonl_advances_when_selected_entry_becomes_terminal() {
+fn test_land_jsonl_default_scope_uses_refreshed_state_for_selection() {
     let fixture = WaitingLandFixture::new();
     fixture.add_second_entry();
     fixture.make_first_entry_terminal_after_refresh();
 
-    let mut land =
-        fixture.start_land_with_args(&["land", "--all", "--jsonl", "--admin", "--no-clean"]);
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while land.try_wait().expect("poll land").is_none() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    if land.try_wait().expect("poll land").is_none() {
-        let _ = land.kill();
-        panic!("land did not advance past the terminal first entry");
-    }
-
-    let output = land.wait_with_output().expect("wait for land");
+    let output = fixture
+        .start_land_with_args(&["land", "--jsonl", "--admin", "--no-clean"])
+        .wait_with_output()
+        .expect("wait for land");
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
     let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
     assert!(output.status.success(), "land failed: {stderr}");
@@ -625,12 +617,14 @@ fn test_land_jsonl_advances_when_selected_entry_becomes_terminal() {
         .iter()
         .filter(|event| event["event"] == "entry")
         .collect::<Vec<_>>();
-    assert_eq!(entries.len(), 2, "expected both entries to emit: {stdout}");
-    assert_eq!(entries[0]["action"], "already_merged");
+    assert_eq!(events.first().unwrap()["total_entries"], 1);
+    assert_eq!(
+        entries.len(),
+        1,
+        "default land emitted too many entries: {stdout}"
+    );
+    assert_eq!(entries[0]["action"], "merged");
     assert_eq!(entries[0]["pr_number"], 41);
-    assert_eq!(entries[1]["action"], "merged");
-    assert_eq!(entries[1]["pr_number"], 42);
-    assert_eq!(events.last().unwrap()["remaining"], 0);
 }
 
 #[cfg(unix)]
@@ -765,6 +759,34 @@ fn test_land_gitlab_auto_merge_jsonl_reports_single_entry_total() {
 
     let output = fixture
         .start_land_with_args(&["land", "--all", "--jsonl", "--auto-merge", "--no-clean"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(output.status.success(), "land failed: {stderr}");
+    assert!(stderr.trim().is_empty(), "unexpected stderr: {stderr}");
+
+    let start: Value =
+        serde_json::from_str(stdout.lines().next().expect("start event")).expect("parse start");
+    assert_eq!(start["event"], "start");
+    assert_eq!(start["total_entries"], 1);
+
+    let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
+        .expect("parse summary event");
+    assert_eq!(summary["event"], "summary");
+    assert_eq!(summary["remaining"], 2);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_merge_train_jsonl_reports_single_entry_total_without_wait() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.add_second_entry();
+
+    let output = fixture
+        .start_land_with_args(&["land", "--all", "--jsonl", "--no-clean"])
         .wait_with_output()
         .expect("wait for land");
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");

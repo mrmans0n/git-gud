@@ -688,20 +688,20 @@ pub fn run(opts: LandOptions) -> Result<()> {
         None
     };
     let land_multiple = land_all || land_until.is_some();
+    let queues_one_entry =
+        (auto_merge_on_land && !merge_trains_enabled) || (merge_trains_enabled && !wait);
     let total_entries = match land_until {
-        Some(end_pos) if auto_merge_on_land && !merge_trains_enabled => {
+        Some(end_pos) if queues_one_entry => {
             single_land_total_entries(&stack.entries[..end_pos.min(stack.entries.len())])
         }
         Some(end_pos) => {
             mapped_land_total_entries(&stack.entries[..end_pos.min(stack.entries.len())])
         }
-        None if land_all && auto_merge_on_land && !merge_trains_enabled => {
-            default_land_total_entries(&stack)
-        }
+        None if land_all && queues_one_entry => default_land_total_entries(&stack),
         None if land_all => mapped_land_total_entries(&stack.entries),
         None => default_land_total_entries(&stack),
     };
-    let summary_total_entries = if auto_merge_on_land && !merge_trains_enabled {
+    let summary_total_entries = if queues_one_entry {
         match land_until {
             Some(end_pos) => {
                 mapped_land_total_entries(&stack.entries[..end_pos.min(stack.entries.len())])
@@ -880,10 +880,8 @@ pub fn run(opts: LandOptions) -> Result<()> {
             }
         };
 
-        let pr_info = provider.get_pr_info(pr_num)?;
-        match pr_info.state {
-            PrState::Merged => {
-                stack.entries[entry_idx].mr_state = Some(PrState::Merged);
+        match entry.mr_state {
+            Some(PrState::Merged) => {
                 if seen_already_merged.insert(gg_id.clone()) {
                     if !structured {
                         println!(
@@ -912,8 +910,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 }
                 continue 'landing_loop;
             }
-            PrState::Closed => {
-                stack.entries[entry_idx].mr_state = Some(PrState::Closed);
+            Some(PrState::Closed) => {
                 if seen_closed.insert(gg_id.clone()) {
                     if !structured {
                         println!(
@@ -941,7 +938,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 }
                 continue 'landing_loop;
             }
-            PrState::Draft => {
+            Some(PrState::Draft) => {
                 record_landed_entry(
                     &mut landed_entries,
                     &mut streamer,
@@ -963,7 +960,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 ));
                 break 'landing_loop;
             }
-            PrState::Open => {
+            Some(PrState::Open) => {
                 if wait {
                     let skip_approval = land_all || (admin && provider == Provider::GitHub);
                     let wait_started = Instant::now();
@@ -1050,6 +1047,15 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         break 'landing_loop;
                     }
                 }
+            }
+            None => {
+                land_error = Some(format!(
+                    "Failed to fetch {} {}{}",
+                    provider.pr_label(),
+                    provider.pr_number_prefix(),
+                    pr_num
+                ));
+                break 'landing_loop;
             }
         }
 

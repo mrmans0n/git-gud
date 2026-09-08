@@ -196,6 +196,7 @@ fn run_for_stack_with_repo_options(
     if !maybe_remove_configured_worktree(repo, &mut config, stack_name, silent)? {
         return Ok(false);
     }
+    config.save(git_dir)?;
 
     let allow_remote_delete = should_delete_remote_branches(merge_status, merge_verified_by_land);
     if !allow_remote_delete && !silent {
@@ -348,6 +349,7 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
 
             let removed_or_not_configured =
                 maybe_remove_configured_worktree(&repo, &mut config, stack_name, json)?;
+            config.save(git_dir)?;
             if json && !removed_or_not_configured {
                 skipped.push(format!(
                     "{} (worktree not removed: confirmation defaults to false in --json mode)",

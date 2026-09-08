@@ -554,6 +554,9 @@ fn finish_land_segment(
 fn default_land_total_entries(stack: &Stack) -> usize {
     let mut total = 0;
     for entry in &stack.entries {
+        if entry.mr_number.is_none() {
+            continue;
+        }
         total += 1;
         match entry.mr_state {
             Some(PrState::Merged | PrState::Closed) => {}
@@ -2271,6 +2274,45 @@ mod tests {
     #[test]
     fn test_constants() {
         assert_eq!(POLL_INTERVAL_SECS, 10);
+    }
+
+    #[test]
+    fn default_land_total_entries_skips_unmapped_entries() {
+        use crate::stack::StackEntry;
+
+        fn entry(position: usize, mr_number: Option<u64>, mr_state: Option<PrState>) -> StackEntry {
+            StackEntry {
+                oid: git2::Oid::ZERO_SHA1,
+                short_sha: format!("sha{position}"),
+                title: format!("Entry {position}"),
+                gg_id: Some(format!("c-{position:07}")),
+                gg_parent: None,
+                mr_number,
+                mr_state,
+                approved: false,
+                changes_requested: false,
+                mergeable: false,
+                ci_status: None,
+                position,
+                in_merge_train: false,
+                merge_train_position: None,
+            }
+        }
+
+        let stack = Stack {
+            name: "s".to_string(),
+            username: "u".to_string(),
+            base: "main".to_string(),
+            entries: vec![
+                entry(1, None, None),
+                entry(2, Some(2), Some(PrState::Merged)),
+                entry(3, Some(3), Some(PrState::Open)),
+                entry(4, Some(4), Some(PrState::Open)),
+            ],
+            current_position: Some(0),
+        };
+
+        assert_eq!(default_land_total_entries(&stack), 2);
     }
 
     #[test]

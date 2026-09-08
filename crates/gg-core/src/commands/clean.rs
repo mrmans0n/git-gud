@@ -393,9 +393,25 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
                 continue;
             }
 
-            if !delete_stack_branch(&repo, &config, stack_name, &branch_name, json)? {
-                skipped.push(format!("{stack_name} (branch cleanup could not complete)"));
-                continue;
+            match delete_stack_branch(&repo, &config, stack_name, &branch_name, json) {
+                Ok(true) => {}
+                Ok(false) => {
+                    skipped.push(format!("{stack_name} (branch cleanup could not complete)"));
+                    continue;
+                }
+                Err(error) => {
+                    if !json {
+                        println!(
+                            "{} Could not delete stack branch for '{}': {}",
+                            style("Warning:").yellow(),
+                            stack_name,
+                            error
+                        );
+                    }
+                    cleanup_error.get_or_insert_with(|| error.to_string());
+                    skipped.push(format!("{stack_name} ({error})"));
+                    continue;
+                }
             }
 
             // Remove from config

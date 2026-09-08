@@ -1065,7 +1065,33 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         }
                     }
                 } else if !land_all && (!admin || provider != Provider::GitHub) {
-                    let approved = provider.check_pr_approved(pr_num)?;
+                    let approved = match provider.check_pr_approved(pr_num) {
+                        Ok(approved) => approved,
+                        Err(error) => {
+                            let error = format!(
+                                "Failed to check approval for {} {}{}: {}",
+                                provider.pr_label(),
+                                provider.pr_number_prefix(),
+                                pr_num,
+                                error
+                            );
+                            record_landed_entry(
+                                &mut landed_entries,
+                                &mut streamer,
+                                LandedEntryJson {
+                                    position: entry.position,
+                                    sha: entry.short_sha.clone(),
+                                    title: entry.title.clone(),
+                                    gg_id: gg_id.clone(),
+                                    pr_number: pr_num,
+                                    action: "error".to_string(),
+                                    error: Some(error.clone()),
+                                },
+                            );
+                            land_error = Some(error);
+                            break 'landing_loop;
+                        }
+                    };
                     if !approved {
                         let error = format!(
                             "{} {}{} is not approved",

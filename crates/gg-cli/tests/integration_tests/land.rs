@@ -628,6 +628,80 @@ fn test_land_jsonl_summary_reports_unsynced_remaining_entry() {
 
 #[cfg(unix)]
 #[test]
+fn test_land_jsonl_summary_reports_unsynced_prefix_entry() {
+    let fixture = WaitingLandFixture::new();
+    fixture.add_second_entry();
+
+    let config_path = fixture.repo_path.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).expect("read config"))
+        .expect("parse config");
+    config["stacks"]["land-wait"]["mrs"]
+        .as_object_mut()
+        .expect("mrs must be an object")
+        .remove("c-1111111");
+    fs::write(
+        &config_path,
+        serde_json::to_vec_pretty(&config).expect("serialize config"),
+    )
+    .expect("write config");
+
+    fixture.release_ci();
+
+    let output = fixture
+        .start_land_with_args(&["land", "--jsonl", "--admin", "--no-clean"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(output.status.success(), "land failed: {stderr}");
+    assert!(stderr.trim().is_empty(), "unexpected stderr: {stderr}");
+
+    let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
+        .expect("parse summary event");
+    assert_eq!(summary["event"], "summary");
+    assert_eq!(summary["status"], "warning");
+    assert_eq!(summary["remaining"], 1);
+    assert!(summary["warnings"]
+        .as_array()
+        .expect("warnings must be an array")
+        .iter()
+        .any(|warning| warning
+            .as_str()
+            .is_some_and(|warning| warning.contains("gg sync"))));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_jsonl_until_ignores_out_of_scope_unsynced_entry() {
+    let fixture = WaitingLandFixture::new();
+    fixture.add_second_entry();
+    fixture.add_unsynced_entry();
+    fixture.release_ci();
+
+    let output = fixture
+        .start_land_with_args(&["land", "--jsonl", "--admin", "--no-clean", "--until", "1"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(output.status.success(), "land failed: {stderr}");
+    assert!(stderr.trim().is_empty(), "unexpected stderr: {stderr}");
+
+    let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
+        .expect("parse summary event");
+    assert_eq!(summary["event"], "summary");
+    assert_eq!(summary["remaining"], 0);
+    assert!(summary["warnings"]
+        .as_array()
+        .expect("warnings must be an array")
+        .iter()
+        .all(|warning| !warning
+            .as_str()
+            .is_some_and(|warning| warning.contains("gg sync"))));
+}
+
+#[cfg(unix)]
+#[test]
 fn test_land_jsonl_default_scope_counts_terminal_prefix_entries() {
     let fixture = WaitingLandFixture::new();
     fixture.add_second_entry();

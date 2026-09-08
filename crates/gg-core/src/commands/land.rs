@@ -578,19 +578,7 @@ fn mapped_land_total_entries(entries: &[StackEntry]) -> usize {
 }
 
 fn unsynced_land_total_entries(entries: &[StackEntry]) -> usize {
-    let has_mapped_entry = entries.iter().any(|entry| entry.mr_number.is_some());
-    let mut seen_mapped_entry = false;
-    entries
-        .iter()
-        .filter(|entry| {
-            if entry.mr_number.is_some() {
-                seen_mapped_entry = true;
-                false
-            } else {
-                !has_mapped_entry || seen_mapped_entry
-            }
-        })
-        .count()
+    entries.iter().filter(|entry| !entry.is_synced()).count()
 }
 
 /// Run the land command
@@ -717,7 +705,11 @@ pub fn run(opts: LandOptions) -> Result<()> {
         None if land_all => mapped_land_total_entries(&stack.entries),
         None => default_land_total_entries(&stack),
     };
-    let unsynced_total_entries = unsynced_land_total_entries(&stack.entries);
+    let requested_entries = match land_until {
+        Some(end_pos) => &stack.entries[..end_pos.min(stack.entries.len())],
+        None => &stack.entries[..],
+    };
+    let unsynced_total_entries = unsynced_land_total_entries(requested_entries);
     let summary_total_entries = if queues_one_entry {
         match land_until {
             Some(end_pos) => {
@@ -2505,7 +2497,7 @@ mod tests {
     }
 
     #[test]
-    fn unsynced_land_total_entries_ignores_unmapped_prefix() {
+    fn unsynced_land_total_entries_counts_unmapped_entries() {
         use crate::stack::StackEntry;
 
         fn entry(position: usize, mr_number: Option<u64>) -> StackEntry {
@@ -2529,11 +2521,11 @@ mod tests {
 
         assert_eq!(
             unsynced_land_total_entries(&[entry(1, None), entry(2, Some(2)), entry(3, None)]),
-            1
+            2
         );
         assert_eq!(
             unsynced_land_total_entries(&[entry(1, None), entry(2, Some(2))]),
-            0
+            1
         );
         assert_eq!(unsynced_land_total_entries(&[entry(1, None)]), 1);
     }

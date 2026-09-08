@@ -326,6 +326,10 @@ enum Commands {
         #[arg(long)]
         json: bool,
 
+        /// Output streaming NDJSON (one event per line; flushed after each)
+        #[arg(long = "jsonl", conflicts_with = "json")]
+        jsonl: bool,
+
         /// (GitLab only) Request auto-merge ("merge when pipeline succeeds") instead of merging immediately
         #[arg(long)]
         auto_merge: bool,
@@ -745,6 +749,7 @@ fn main() {
         Some(Commands::Land {
             all,
             json,
+            jsonl,
             auto_merge,
             no_squash,
             wait,
@@ -753,6 +758,10 @@ fn main() {
             no_clean,
             admin,
         }) => {
+            if jsonl {
+                streaming_command = Some("land");
+            }
+
             // Load config once for resolving defaults
             let land_cfg = gg_core::git::open_repo()
                 .and_then(|repo| gg_core::config::Config::load_with_global(repo.commondir()))
@@ -774,6 +783,7 @@ fn main() {
                 gg_core::commands::land::run(gg_core::commands::land::LandOptions {
                     land_all: all,
                     json,
+                    jsonl,
                     squash: !no_squash,
                     wait,
                     auto_clean,
@@ -781,8 +791,8 @@ fn main() {
                     until,
                     admin,
                 }),
-                json,
-                false,
+                json || jsonl,
+                jsonl,
             )
         }
         Some(Commands::Clean { all, json }) => {

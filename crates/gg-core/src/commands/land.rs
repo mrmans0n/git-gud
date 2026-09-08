@@ -14,7 +14,10 @@ use crate::error::{GgError, Result};
 use crate::git;
 use crate::glab::AutoMergeResult;
 use crate::operations::{OperationKind, RemoteEffect, SnapshotScope};
-use crate::output::{print_json, LandResponse, LandResultJson, LandedEntryJson, OUTPUT_VERSION};
+use crate::output::{
+    print_json, LandResponse, LandResultJson, LandStreamingEvent, LandStreamingResponse,
+    LandedEntryJson, StreamingJson, OUTPUT_VERSION,
+};
 use crate::provider::{CiStatus, PrState, Provider};
 use crate::stack::{resolve_target, Stack};
 
@@ -97,6 +100,56 @@ const MAX_CONSECUTIVE_API_ERRORS: u32 = 5;
 /// train is being recalculated). Treating Idle as a hard error is too
 /// aggressive and can fail healthy `gg land --wait --all` flows.
 const IDLE_STILL_WAITING_POLLS: u32 = 6;
+
+fn emit_land_event(streamer: Option<&mut StreamingJson>, event: LandStreamingEvent) {
+    if let Some(streamer) = streamer {
+        streamer.emit(&LandStreamingResponse {
+            version: OUTPUT_VERSION,
+            command: "land".to_string(),
+            event,
+        });
+    }
+}
+
+fn record_landed_entry(
+    landed_entries: &mut Vec<LandedEntryJson>,
+    streamer: &mut Option<StreamingJson>,
+    entry: LandedEntryJson,
+) {
+    emit_land_event(
+        streamer.as_mut(),
+        LandStreamingEvent::Entry {
+            entry: entry.clone(),
+        },
+    );
+    landed_entries.push(entry);
+}
+
+fn ci_status_name(status: &CiStatus) -> String {
+    match status {
+        CiStatus::Pending => "pending",
+        CiStatus::Running => "running",
+        CiStatus::Success => "success",
+        CiStatus::Failed => "failed",
+        CiStatus::Canceled => "canceled",
+        CiStatus::Unknown => "unknown",
+    }
+    .to_string()
+}
+
+fn merge_train_status_name(status: &crate::glab::MergeTrainStatus) -> String {
+    use crate::glab::MergeTrainStatus;
+    match status {
+        MergeTrainStatus::Idle => "idle",
+        MergeTrainStatus::Stale => "stale",
+        MergeTrainStatus::Fresh => "fresh",
+        MergeTrainStatus::Merging => "merging",
+        MergeTrainStatus::Merged => "merged",
+        MergeTrainStatus::SkipMerged => "skip_merged",
+        MergeTrainStatus::Unknown => "unknown",
+    }
+    .to_string()
+}
 
 fn merge_train_idle_state_message(idle_count: u32, seen_in_train: bool) -> &'static str {
     if seen_in_train {
@@ -377,6 +430,7 @@ fn rebase_remaining_branches(
 pub struct LandOptions {
     pub land_all: bool,
     pub json: bool,
+    pub jsonl: bool,
     pub squash: bool,
     pub wait: bool,
     pub auto_clean: bool,
@@ -464,6 +518,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
     let LandOptions {
         land_all,
         json,
+        jsonl,
         squash,
         wait,
         auto_clean,
@@ -471,6 +526,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
         until,
         admin,
     } = opts;
+    let structured = json || jsonl;
     let repo = git::open_repo()?;
     let git_dir = repo.commondir();
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -496,7 +552,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
         provider == Provider::GitLab && (auto_merge_flag || config.get_gitlab_auto_merge_on_land());
 
     let merge_trains_enabled = provider.check_merge_trains_enabled().unwrap_or(false);
-    if merge_trains_enabled && !json {
+    if merge_trains_enabled && !structured {
         println!(
             "{}",
             style(format!(
@@ -508,13 +564,14 @@ pub fn run(opts: LandOptions) -> Result<()> {
     }
 
     let mut stack = Stack::load(&repo, &config)?;
+    let mut streamer = jsonl.then(StreamingJson::new);
     if stack.is_empty() {
         if json {
             print_json(&LandResponse {
                 version: OUTPUT_VERSION,
                 land: LandResultJson {
-                    stack: stack.name,
-                    base: stack.base,
+                    stack: stack.name.clone(),
+                    base: stack.base.clone(),
                     landed: vec![],
                     remaining: 0,
                     cleaned: false,
@@ -522,7 +579,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                     error: None,
                 },
             });
-        } else {
+        } else if !jsonl {
             println!("{}", style("Stack is empty. Nothing to land.").dim());
         }
         finish_land_segment(
@@ -532,10 +589,26 @@ pub fn run(opts: LandOptions) -> Result<()> {
             &mut remote_effects,
             &mut touched_remote,
         )?;
+        if jsonl {
+            emit_land_event(
+                streamer.as_mut(),
+                LandStreamingEvent::Summary {
+                    result: LandResultJson {
+                        stack: stack.name,
+                        base: stack.base,
+                        landed: vec![],
+                        remaining: 0,
+                        cleaned: false,
+                        warnings: vec![],
+                        error: None,
+                    },
+                },
+            );
+        }
         return Ok(());
     }
 
-    if !json {
+    if !structured {
         println!(
             "{}",
             style(format!("Checking {} status...", provider.pr_label())).dim()
@@ -549,11 +622,21 @@ pub fn run(opts: LandOptions) -> Result<()> {
         None
     };
     let land_multiple = land_all || land_until.is_some();
+    emit_land_event(
+        streamer.as_mut(),
+        LandStreamingEvent::Start {
+            stack: stack.name.clone(),
+            base: stack.base.clone(),
+            total_entries: land_until
+                .map(|end_pos| end_pos.min(stack.entries.len()))
+                .unwrap_or_else(|| stack.entries.len()),
+        },
+    );
 
     let interrupted = if wait {
         let flag = Arc::new(AtomicBool::new(false));
         let flag_clone = Arc::clone(&flag);
-        let json_mode = json;
+        let json_mode = structured;
         ctrlc::set_handler(move || {
             if flag_clone.load(Ordering::SeqCst) {
                 // Use abort() instead of process::exit(130) to avoid potential
@@ -599,7 +682,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                     } else if info.state == PrState::Merged {
                         if let Some(gg_id) = &entry.gg_id {
                             if seen_already_merged.insert(gg_id.clone()) {
-                                if !json {
+                                if !structured {
                                     println!(
                                         "{} {} {}{} ({}) — already merged",
                                         style("→").cyan(),
@@ -609,15 +692,19 @@ pub fn run(opts: LandOptions) -> Result<()> {
                                         entry.title
                                     );
                                 }
-                                landed_entries.push(LandedEntryJson {
-                                    position: entry.position,
-                                    sha: entry.short_sha.clone(),
-                                    title: entry.title.clone(),
-                                    gg_id: gg_id.clone(),
-                                    pr_number: num,
-                                    action: "already_merged".to_string(),
-                                    error: None,
-                                });
+                                record_landed_entry(
+                                    &mut landed_entries,
+                                    &mut streamer,
+                                    LandedEntryJson {
+                                        position: entry.position,
+                                        sha: entry.short_sha.clone(),
+                                        title: entry.title.clone(),
+                                        gg_id: gg_id.clone(),
+                                        pr_number: num,
+                                        action: "already_merged".to_string(),
+                                        error: None,
+                                    },
+                                );
                                 landed_count += 1;
                             }
                         }
@@ -625,7 +712,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                     } else if info.state == PrState::Closed {
                         if let Some(gg_id) = &entry.gg_id {
                             if seen_closed.insert(gg_id.clone()) {
-                                if !json {
+                                if !structured {
                                     println!(
                                         "{} {} {}{} ({}) — closed, skipping",
                                         style("⚠").yellow(),
@@ -635,15 +722,19 @@ pub fn run(opts: LandOptions) -> Result<()> {
                                         entry.title
                                     );
                                 }
-                                landed_entries.push(LandedEntryJson {
-                                    position: entry.position,
-                                    sha: entry.short_sha.clone(),
-                                    title: entry.title.clone(),
-                                    gg_id: gg_id.clone(),
-                                    pr_number: num,
-                                    action: "skipped_closed".to_string(),
-                                    error: None,
-                                });
+                                record_landed_entry(
+                                    &mut landed_entries,
+                                    &mut streamer,
+                                    LandedEntryJson {
+                                        position: entry.position,
+                                        sha: entry.short_sha.clone(),
+                                        title: entry.title.clone(),
+                                        gg_id: gg_id.clone(),
+                                        pr_number: num,
+                                        action: "skipped_closed".to_string(),
+                                        error: None,
+                                    },
+                                );
                             }
                         }
                         continue;
@@ -692,7 +783,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
         match pr_info.state {
             PrState::Merged => {
                 if seen_already_merged.insert(gg_id.clone()) {
-                    if !json {
+                    if !structured {
                         println!(
                             "{} {} {}{} ({}) — already merged",
                             style("→").cyan(),
@@ -702,22 +793,26 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             entry.title
                         );
                     }
-                    landed_entries.push(LandedEntryJson {
-                        position: entry.position,
-                        sha: entry.short_sha.clone(),
-                        title: entry.title.clone(),
-                        gg_id: gg_id.clone(),
-                        pr_number: pr_num,
-                        action: "already_merged".to_string(),
-                        error: None,
-                    });
+                    record_landed_entry(
+                        &mut landed_entries,
+                        &mut streamer,
+                        LandedEntryJson {
+                            position: entry.position,
+                            sha: entry.short_sha.clone(),
+                            title: entry.title.clone(),
+                            gg_id: gg_id.clone(),
+                            pr_number: pr_num,
+                            action: "already_merged".to_string(),
+                            error: None,
+                        },
+                    );
                     landed_count += 1;
                 }
                 continue 'landing_loop;
             }
             PrState::Closed => {
                 if seen_closed.insert(gg_id.clone()) {
-                    if !json {
+                    if !structured {
                         println!(
                             "{} {} {}{} ({}) — closed, skipping",
                             style("⚠").yellow(),
@@ -727,28 +822,36 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             entry.title
                         );
                     }
-                    landed_entries.push(LandedEntryJson {
+                    record_landed_entry(
+                        &mut landed_entries,
+                        &mut streamer,
+                        LandedEntryJson {
+                            position: entry.position,
+                            sha: entry.short_sha.clone(),
+                            title: entry.title.clone(),
+                            gg_id: gg_id.clone(),
+                            pr_number: pr_num,
+                            action: "skipped_closed".to_string(),
+                            error: None,
+                        },
+                    );
+                }
+                continue 'landing_loop;
+            }
+            PrState::Draft => {
+                record_landed_entry(
+                    &mut landed_entries,
+                    &mut streamer,
+                    LandedEntryJson {
                         position: entry.position,
                         sha: entry.short_sha.clone(),
                         title: entry.title.clone(),
                         gg_id: gg_id.clone(),
                         pr_number: pr_num,
-                        action: "skipped_closed".to_string(),
+                        action: "skipped_draft".to_string(),
                         error: None,
-                    });
-                }
-                continue 'landing_loop;
-            }
-            PrState::Draft => {
-                landed_entries.push(LandedEntryJson {
-                    position: entry.position,
-                    sha: entry.short_sha.clone(),
-                    title: entry.title.clone(),
-                    gg_id: gg_id.clone(),
-                    pr_number: pr_num,
-                    action: "skipped_draft".to_string(),
-                    error: None,
-                });
+                    },
+                );
                 land_error = Some(format!(
                     "{} {}{} is a draft",
                     provider.pr_label(),
@@ -761,6 +864,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 if wait {
                     let skip_approval = land_all || (admin && provider == Provider::GitHub);
                     let wait_started = Instant::now();
+                    let mut readiness_poll = 0;
                     loop {
                         let expected_stack = LandStackFingerprint::from(&stack);
                         finish_land_segment(
@@ -775,40 +879,51 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         let timeout_minutes = config.get_land_wait_timeout_minutes();
                         let wait_result = wait_for_pr_ready(
                             &provider,
+                            entry.position,
                             pr_num,
                             skip_approval,
                             wait_started,
                             timeout_minutes,
                             interrupted.as_ref(),
                             &stack.base,
-                            json,
+                            structured,
+                            streamer.as_mut(),
+                            &mut readiness_poll,
                         );
                         lock = Some(git::acquire_operation_lock(&repo, "land")?);
                         config = Config::load_with_global(git_dir)?;
                         stack = Stack::load(&repo, &config)?;
                         if let Err(e) = wait_result {
-                            landed_entries.push(LandedEntryJson {
-                                position: entry.position,
-                                sha: entry.short_sha.clone(),
-                                title: entry.title.clone(),
-                                gg_id: gg_id.clone(),
-                                pr_number: pr_num,
-                                action: "error".to_string(),
-                                error: Some(e.to_string()),
-                            });
+                            record_landed_entry(
+                                &mut landed_entries,
+                                &mut streamer,
+                                LandedEntryJson {
+                                    position: entry.position,
+                                    sha: entry.short_sha.clone(),
+                                    title: entry.title.clone(),
+                                    gg_id: gg_id.clone(),
+                                    pr_number: pr_num,
+                                    action: "error".to_string(),
+                                    error: Some(e.to_string()),
+                                },
+                            );
                             land_error = Some(e.to_string());
                             break 'landing_loop;
                         }
                         if let Some(error) = stack_changed_while_waiting(&expected_stack, &stack) {
-                            landed_entries.push(LandedEntryJson {
-                                position: entry.position,
-                                sha: entry.short_sha.clone(),
-                                title: entry.title.clone(),
-                                gg_id: gg_id.clone(),
-                                pr_number: pr_num,
-                                action: "error".to_string(),
-                                error: Some(error.clone()),
-                            });
+                            record_landed_entry(
+                                &mut landed_entries,
+                                &mut streamer,
+                                LandedEntryJson {
+                                    position: entry.position,
+                                    sha: entry.short_sha.clone(),
+                                    title: entry.title.clone(),
+                                    gg_id: gg_id.clone(),
+                                    pr_number: pr_num,
+                                    action: "error".to_string(),
+                                    error: Some(error.clone()),
+                                },
+                            );
                             land_error = Some(error);
                             break 'landing_loop;
                         }
@@ -833,7 +948,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
             }
         }
 
-        if !land_multiple && !wait && !json {
+        if !land_multiple && !wait && !structured {
             let confirm = Confirm::new()
                 .with_prompt(format!(
                     "Merge {} {}{} ({})? ",
@@ -868,15 +983,19 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         AutoMergeResult::Queued => "queued",
                         AutoMergeResult::AlreadyQueued => "already_queued",
                     };
-                    landed_entries.push(LandedEntryJson {
-                        position: entry.position,
-                        sha: entry.short_sha.clone(),
-                        title: entry.title.clone(),
-                        gg_id: gg_id.clone(),
-                        pr_number: pr_num,
-                        action: action.to_string(),
-                        error: None,
-                    });
+                    record_landed_entry(
+                        &mut landed_entries,
+                        &mut streamer,
+                        LandedEntryJson {
+                            position: entry.position,
+                            sha: entry.short_sha.clone(),
+                            title: entry.title.clone(),
+                            gg_id: gg_id.clone(),
+                            pr_number: pr_num,
+                            action: action.to_string(),
+                            error: None,
+                        },
+                    );
                     if wait {
                         let expected_stack = LandStackFingerprint::from(&stack);
                         finish_land_segment(
@@ -891,11 +1010,13 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         let timeout_minutes = config.get_land_wait_timeout_minutes();
                         let wait_result = wait_for_merge_train_completion(
                             &provider,
+                            entry.position,
                             pr_num,
                             timeout_minutes,
                             interrupted.as_ref(),
                             &stack.base,
-                            json,
+                            structured,
+                            streamer.as_mut(),
                         );
                         lock = Some(git::acquire_operation_lock(&repo, "land")?);
                         config = Config::load_with_global(git_dir)?;
@@ -924,7 +1045,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             &gg_id,
                             pr_num,
                             land_multiple,
-                            json,
+                            structured,
                         );
                         if land_multiple {
                             let current_index = stack
@@ -937,7 +1058,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                                 &stack,
                                 &provider,
                                 current_index,
-                                json,
+                                structured,
                             ) {
                                 warnings
                                     .push(format!("Failed to rebase remaining branches: {}", e));
@@ -954,15 +1075,19 @@ pub fn run(opts: LandOptions) -> Result<()> {
                     }
                 }
                 Err(e) => {
-                    landed_entries.push(LandedEntryJson {
-                        position: entry.position,
-                        sha: entry.short_sha.clone(),
-                        title: entry.title.clone(),
-                        gg_id: gg_id.clone(),
-                        pr_number: pr_num,
-                        action: "error".to_string(),
-                        error: Some(e.to_string()),
-                    });
+                    record_landed_entry(
+                        &mut landed_entries,
+                        &mut streamer,
+                        LandedEntryJson {
+                            position: entry.position,
+                            sha: entry.short_sha.clone(),
+                            title: entry.title.clone(),
+                            gg_id: gg_id.clone(),
+                            pr_number: pr_num,
+                            action: "error".to_string(),
+                            error: Some(e.to_string()),
+                        },
+                    );
                     land_error = Some(e.to_string());
                     break 'landing_loop;
                 }
@@ -979,35 +1104,47 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         .as_mut()
                         .expect("land segment guard")
                         .mark_touched_remote();
-                    landed_entries.push(LandedEntryJson {
-                        position: entry.position,
-                        sha: entry.short_sha.clone(),
-                        title: entry.title.clone(),
-                        gg_id: gg_id.clone(),
-                        pr_number: pr_num,
-                        action: "queued".to_string(),
-                        error: None,
-                    });
+                    record_landed_entry(
+                        &mut landed_entries,
+                        &mut streamer,
+                        LandedEntryJson {
+                            position: entry.position,
+                            sha: entry.short_sha.clone(),
+                            title: entry.title.clone(),
+                            gg_id: gg_id.clone(),
+                            pr_number: pr_num,
+                            action: "queued".to_string(),
+                            error: None,
+                        },
+                    );
                 }
-                Ok(AutoMergeResult::AlreadyQueued) => landed_entries.push(LandedEntryJson {
-                    position: entry.position,
-                    sha: entry.short_sha.clone(),
-                    title: entry.title.clone(),
-                    gg_id: gg_id.clone(),
-                    pr_number: pr_num,
-                    action: "already_queued".to_string(),
-                    error: None,
-                }),
-                Err(e) => {
-                    landed_entries.push(LandedEntryJson {
+                Ok(AutoMergeResult::AlreadyQueued) => record_landed_entry(
+                    &mut landed_entries,
+                    &mut streamer,
+                    LandedEntryJson {
                         position: entry.position,
                         sha: entry.short_sha.clone(),
                         title: entry.title.clone(),
                         gg_id: gg_id.clone(),
                         pr_number: pr_num,
-                        action: "error".to_string(),
-                        error: Some(e.to_string()),
-                    });
+                        action: "already_queued".to_string(),
+                        error: None,
+                    },
+                ),
+                Err(e) => {
+                    record_landed_entry(
+                        &mut landed_entries,
+                        &mut streamer,
+                        LandedEntryJson {
+                            position: entry.position,
+                            sha: entry.short_sha.clone(),
+                            title: entry.title.clone(),
+                            gg_id: gg_id.clone(),
+                            pr_number: pr_num,
+                            action: "error".to_string(),
+                            error: Some(e.to_string()),
+                        },
+                    );
                     land_error = Some(e.to_string());
                 }
             }
@@ -1035,15 +1172,19 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         .expect("land segment guard")
                         .record_remote_effect(effect);
 
-                    landed_entries.push(LandedEntryJson {
-                        position: entry.position,
-                        sha: entry.short_sha.clone(),
-                        title: entry.title.clone(),
-                        gg_id: gg_id.clone(),
-                        pr_number: pr_num,
-                        action: "merged".to_string(),
-                        error: None,
-                    });
+                    record_landed_entry(
+                        &mut landed_entries,
+                        &mut streamer,
+                        LandedEntryJson {
+                            position: entry.position,
+                            sha: entry.short_sha.clone(),
+                            title: entry.title.clone(),
+                            gg_id: gg_id.clone(),
+                            pr_number: pr_num,
+                            action: "merged".to_string(),
+                            error: None,
+                        },
+                    );
                     landed_count += 1;
                     cleanup_after_merge(
                         &mut config,
@@ -1052,7 +1193,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         &gg_id,
                         pr_num,
                         land_multiple,
-                        json,
+                        structured,
                     );
                     if land_multiple {
                         let current_index = stack
@@ -1060,9 +1201,13 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             .iter()
                             .position(|e| e.mr_number == Some(pr_num))
                             .unwrap_or(0);
-                        if let Err(e) =
-                            rebase_remaining_branches(&repo, &stack, &provider, current_index, json)
-                        {
+                        if let Err(e) = rebase_remaining_branches(
+                            &repo,
+                            &stack,
+                            &provider,
+                            current_index,
+                            structured,
+                        ) {
                             warnings.push(format!("Failed to rebase remaining branches: {}", e));
                             land_error = Some(e.to_string());
                             break 'landing_loop;
@@ -1074,15 +1219,19 @@ pub fn run(opts: LandOptions) -> Result<()> {
                     }
                 }
                 Err(e) => {
-                    landed_entries.push(LandedEntryJson {
-                        position: entry.position,
-                        sha: entry.short_sha.clone(),
-                        title: entry.title.clone(),
-                        gg_id: gg_id.clone(),
-                        pr_number: pr_num,
-                        action: "error".to_string(),
-                        error: Some(e.to_string()),
-                    });
+                    record_landed_entry(
+                        &mut landed_entries,
+                        &mut streamer,
+                        LandedEntryJson {
+                            position: entry.position,
+                            sha: entry.short_sha.clone(),
+                            title: entry.title.clone(),
+                            gg_id: gg_id.clone(),
+                            pr_number: pr_num,
+                            action: "error".to_string(),
+                            error: Some(e.to_string()),
+                        },
+                    );
                     land_error = Some(e.to_string());
                     break 'landing_loop;
                 }
@@ -1125,7 +1274,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
 
     let mut cleaned = false;
     if landed_count > 0 && landed_count >= stack.len() {
-        let should_clean = if json {
+        let should_clean = if structured {
             auto_clean
         } else if auto_clean {
             true
@@ -1149,8 +1298,12 @@ pub fn run(opts: LandOptions) -> Result<()> {
             // After landing, the stack contains merged commits by definition.
             // Bypass the immutability guard since the rebase here is a
             // sanctioned cleanup step, not a user-driven history rewrite.
-            let _ =
-                crate::commands::rebase::run_with_repo(&repo, Some(stack.base.clone()), json, true);
+            let _ = crate::commands::rebase::run_with_repo(
+                &repo,
+                Some(stack.base.clone()),
+                structured,
+                true,
+            );
             if crate::commands::clean::run_for_stack_with_repo_after_verified_land(
                 &repo,
                 &stack.name,
@@ -1171,7 +1324,8 @@ pub fn run(opts: LandOptions) -> Result<()> {
         }
     }
 
-    if json {
+    let mut jsonl_summary = None;
+    if structured {
         let target_len = if let Some(end_pos) = land_until {
             end_pos.min(stack.entries.len())
         } else {
@@ -1183,18 +1337,23 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 .filter(|e| matches!(e.action.as_str(), "merged" | "already_merged"))
                 .count(),
         );
-        print_json(&LandResponse {
-            version: OUTPUT_VERSION,
-            land: LandResultJson {
-                stack: stack.name,
-                base: stack.base,
-                landed: landed_entries,
-                remaining,
-                cleaned,
-                warnings,
-                error: land_error.clone(),
-            },
-        });
+        let result = LandResultJson {
+            stack: stack.name,
+            base: stack.base,
+            landed: landed_entries,
+            remaining,
+            cleaned,
+            warnings,
+            error: land_error.clone(),
+        };
+        if json {
+            print_json(&LandResponse {
+                version: OUTPUT_VERSION,
+                land: result,
+            });
+        } else {
+            jsonl_summary = Some(result);
+        }
     } else if let Some(ref error) = land_error {
         // Report error in non-JSON mode
         if landed_count > 0 {
@@ -1235,11 +1394,13 @@ pub fn run(opts: LandOptions) -> Result<()> {
         &mut touched_remote,
     )?;
     drop(lock);
+    if let Some(result) = jsonl_summary {
+        emit_land_event(streamer.as_mut(), LandStreamingEvent::Summary { result });
+    }
 
-    // In JSON mode, the error is already included in the LandResponse payload.
-    // Returning Err would cause gg-cli to emit a second JSON error object,
-    // breaking machine consumers that expect a single JSON document.
-    if json {
+    // In structured modes, the error is already included in the final payload.
+    // Returning Err would cause gg-cli to emit a second error object.
+    if structured {
         Ok(())
     } else if let Some(_error) = land_error {
         Err(GgError::Silenced)
@@ -1253,6 +1414,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
 #[allow(clippy::too_many_arguments)]
 fn wait_for_pr_ready(
     provider: &Provider,
+    position: usize,
     pr_num: u64,
     skip_approval: bool,
     start_time: Instant,
@@ -1260,6 +1422,8 @@ fn wait_for_pr_ready(
     interrupted: Option<&Arc<AtomicBool>>,
     target_branch: &str,
     json: bool,
+    mut streamer: Option<&mut StreamingJson>,
+    poll: &mut u64,
 ) -> Result<()> {
     let timeout = Duration::from_secs(timeout_minutes * 60);
     let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
@@ -1310,50 +1474,79 @@ fn wait_for_pr_ready(
             }
         }
 
+        *poll += 1;
+
         let mut new_state = String::new();
         let mut ci_ready = false;
+        let mut merge_train_status = None;
+        let mut merge_train_position = None;
+        let mut pipeline_running = None;
+        let mut heartbeat_error = None;
 
         // Check merge train status if enabled
         if merge_trains_enabled {
-            if let Ok(Some(train_info)) = provider.get_merge_train_status(pr_num, target_branch) {
-                use crate::glab::MergeTrainStatus;
-                match train_info.status {
-                    MergeTrainStatus::Merged => {
-                        if let Some(ref spinner) = current_spinner {
-                            finish_spinner(
-                                spinner,
-                                &format!(
-                                    "{} {}{} merged via merge train",
-                                    provider.pr_label(),
-                                    provider.pr_number_prefix(),
-                                    pr_num
-                                ),
-                                state_start_time,
+            match provider.get_merge_train_status(pr_num, target_branch) {
+                Ok(Some(train_info)) => {
+                    use crate::glab::MergeTrainStatus;
+                    merge_train_status = Some(merge_train_status_name(&train_info.status));
+                    merge_train_position = train_info.position;
+                    pipeline_running = Some(train_info.pipeline_running);
+                    match train_info.status {
+                        MergeTrainStatus::Merged => {
+                            emit_land_event(
+                                streamer.as_deref_mut(),
+                                LandStreamingEvent::Wait {
+                                    position,
+                                    pr_number: pr_num,
+                                    phase: "readiness".to_string(),
+                                    poll: *poll,
+                                    elapsed_seconds: start_time.elapsed().as_secs(),
+                                    ci_status: None,
+                                    approved: None,
+                                    merge_train_status,
+                                    merge_train_position,
+                                    pipeline_running,
+                                    error: None,
+                                },
                             );
+                            if let Some(ref spinner) = current_spinner {
+                                finish_spinner(
+                                    spinner,
+                                    &format!(
+                                        "{} {}{} merged via merge train",
+                                        provider.pr_label(),
+                                        provider.pr_number_prefix(),
+                                        pr_num
+                                    ),
+                                    state_start_time,
+                                );
+                            }
+                            return Ok(());
                         }
-                        return Ok(());
-                    }
-                    MergeTrainStatus::Merging => {
-                        new_state = "Merge train: merging now...".to_string();
-                    }
-                    MergeTrainStatus::Fresh => {
-                        if let Some(pos) = train_info.position {
-                            new_state = format!("Merge train: position {} (fresh, ready)", pos);
+                        MergeTrainStatus::Merging => {
+                            new_state = "Merge train: merging now...".to_string();
+                        }
+                        MergeTrainStatus::Fresh => {
+                            if let Some(pos) = train_info.position {
+                                new_state = format!("Merge train: position {} (fresh, ready)", pos);
+                            }
+                        }
+                        MergeTrainStatus::Stale => {
+                            new_state = "Merge train: stale (needs rebase)".to_string();
+                        }
+                        _ => {
+                            if let Some(pos) = train_info.position {
+                                new_state = format!("Merge train: position {}", pos);
+                            }
                         }
                     }
-                    MergeTrainStatus::Stale => {
-                        new_state = "Merge train: stale (needs rebase)".to_string();
-                    }
-                    _ => {
-                        if let Some(pos) = train_info.position {
-                            new_state = format!("Merge train: position {}", pos);
-                        }
-                    }
-                }
 
-                if train_info.pipeline_running {
-                    new_state = format!("{} (pipeline running)", new_state);
+                    if train_info.pipeline_running {
+                        new_state = format!("{} (pipeline running)", new_state);
+                    }
                 }
+                Ok(None) => {}
+                Err(e) => heartbeat_error = Some(e.to_string()),
             }
         }
 
@@ -1362,6 +1555,27 @@ fn wait_for_pr_ready(
             Ok(status) => status,
             Err(e) => {
                 consecutive_errors += 1;
+                // Transient error — update spinner and retry on next poll
+                let error_state = format!(
+                    "API error (attempt {}/{}): {}",
+                    consecutive_errors, MAX_CONSECUTIVE_API_ERRORS, e
+                );
+                emit_land_event(
+                    streamer.as_deref_mut(),
+                    LandStreamingEvent::Wait {
+                        position,
+                        pr_number: pr_num,
+                        phase: "readiness".to_string(),
+                        poll: *poll,
+                        elapsed_seconds: start_time.elapsed().as_secs(),
+                        ci_status: None,
+                        approved: None,
+                        merge_train_status,
+                        merge_train_position,
+                        pipeline_running,
+                        error: Some(e.to_string()),
+                    },
+                );
                 if consecutive_errors >= MAX_CONSECUTIVE_API_ERRORS {
                     if let Some(ref spinner) = current_spinner {
                         spinner.finish_and_clear();
@@ -1371,11 +1585,6 @@ fn wait_for_pr_ready(
                         consecutive_errors, e
                     )));
                 }
-                // Transient error — update spinner and retry on next poll
-                let error_state = format!(
-                    "API error (attempt {}/{}): {}",
-                    consecutive_errors, MAX_CONSECUTIVE_API_ERRORS, e
-                );
                 if !json && current_state.as_ref() != Some(&error_state) {
                     if let Some(ref spinner) = current_spinner {
                         finish_spinner(
@@ -1392,6 +1601,7 @@ fn wait_for_pr_ready(
                 continue;
             }
         };
+        let ci_status_json = ci_status_name(&ci_status);
         match ci_status {
             CiStatus::Success => {
                 ci_ready = true;
@@ -1424,18 +1634,51 @@ fn wait_for_pr_ready(
                         ));
                     }
                 }
+                emit_land_event(
+                    streamer.as_deref_mut(),
+                    LandStreamingEvent::Wait {
+                        position,
+                        pr_number: pr_num,
+                        phase: "readiness".to_string(),
+                        poll: *poll,
+                        elapsed_seconds: start_time.elapsed().as_secs(),
+                        ci_status: Some(ci_status_json),
+                        approved: None,
+                        merge_train_status,
+                        merge_train_position,
+                        pipeline_running,
+                        error: Some(msg.clone()),
+                    },
+                );
                 return Err(GgError::Other(msg));
             }
             CiStatus::Canceled => {
                 if let Some(ref spinner) = current_spinner {
                     spinner.finish_and_clear();
                 }
-                return Err(GgError::Other(format!(
+                let msg = format!(
                     "{} {}{} CI was canceled",
                     provider.pr_label(),
                     provider.pr_number_prefix(),
                     pr_num
-                )));
+                );
+                emit_land_event(
+                    streamer.as_deref_mut(),
+                    LandStreamingEvent::Wait {
+                        position,
+                        pr_number: pr_num,
+                        phase: "readiness".to_string(),
+                        poll: *poll,
+                        elapsed_seconds: start_time.elapsed().as_secs(),
+                        ci_status: Some(ci_status_json),
+                        approved: None,
+                        merge_train_status,
+                        merge_train_position,
+                        pipeline_running,
+                        error: Some(msg.clone()),
+                    },
+                );
+                return Err(GgError::Other(msg));
             }
             CiStatus::Unknown => {
                 if new_state.is_empty() {
@@ -1446,13 +1689,34 @@ fn wait_for_pr_ready(
 
         // Check approval status (unless --all flag is used AND merge trains are off).
         // With merge trains, approval is always required to enter the queue.
-        let approval_ready = if skip_approval && !merge_trains_enabled {
-            true
+        let approved = if skip_approval && !merge_trains_enabled {
+            None
         } else {
             let approved = match provider.check_pr_approved(pr_num) {
                 Ok(approved) => approved,
                 Err(e) => {
                     consecutive_errors += 1;
+                    // Transient error — update spinner and retry on next poll
+                    let error_state = format!(
+                        "API error (attempt {}/{}): {}",
+                        consecutive_errors, MAX_CONSECUTIVE_API_ERRORS, e
+                    );
+                    emit_land_event(
+                        streamer.as_deref_mut(),
+                        LandStreamingEvent::Wait {
+                            position,
+                            pr_number: pr_num,
+                            phase: "readiness".to_string(),
+                            poll: *poll,
+                            elapsed_seconds: start_time.elapsed().as_secs(),
+                            ci_status: Some(ci_status_json),
+                            approved: None,
+                            merge_train_status,
+                            merge_train_position,
+                            pipeline_running,
+                            error: Some(e.to_string()),
+                        },
+                    );
                     if consecutive_errors >= MAX_CONSECUTIVE_API_ERRORS {
                         if let Some(ref spinner) = current_spinner {
                             spinner.finish_and_clear();
@@ -1462,11 +1726,6 @@ fn wait_for_pr_ready(
                             consecutive_errors, e
                         )));
                     }
-                    // Transient error — update spinner and retry on next poll
-                    let error_state = format!(
-                        "API error (attempt {}/{}): {}",
-                        consecutive_errors, MAX_CONSECUTIVE_API_ERRORS, e
-                    );
                     if !json && current_state.as_ref() != Some(&error_state) {
                         if let Some(ref spinner) = current_spinner {
                             finish_spinner(
@@ -1486,11 +1745,29 @@ fn wait_for_pr_ready(
             if !approved && ci_ready && new_state.is_empty() {
                 new_state = "Waiting for approval...".to_string();
             }
-            approved
+            Some(approved)
         };
+        let approval_ready = approved.unwrap_or(true);
 
         // All API calls succeeded this iteration — reset retry counter
         consecutive_errors = 0;
+
+        emit_land_event(
+            streamer.as_deref_mut(),
+            LandStreamingEvent::Wait {
+                position,
+                pr_number: pr_num,
+                phase: "readiness".to_string(),
+                poll: *poll,
+                elapsed_seconds: start_time.elapsed().as_secs(),
+                ci_status: Some(ci_status_json),
+                approved,
+                merge_train_status,
+                merge_train_position,
+                pipeline_running,
+                error: heartbeat_error,
+            },
+        );
 
         // If both CI and approval are ready, we're done
         if ci_ready && approval_ready {
@@ -1534,18 +1811,22 @@ fn wait_for_pr_ready(
 
 /// Wait for an MR to complete merging through the merge train
 /// Polls the merge train status until the MR is fully merged
+#[allow(clippy::too_many_arguments)]
 fn wait_for_merge_train_completion(
     provider: &Provider,
+    position: usize,
     pr_num: u64,
     timeout_minutes: u64,
     interrupted: Option<&Arc<AtomicBool>>,
     target_branch: &str,
     json: bool,
+    mut streamer: Option<&mut StreamingJson>,
 ) -> Result<()> {
     let start_time = Instant::now();
     let timeout = Duration::from_secs(timeout_minutes * 60);
     let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
     let mut consecutive_errors: u32 = 0;
+    let mut poll = 0;
 
     // After adding to merge train, the MR may not appear in the train list
     // immediately. Idle/not-found is a polling state; the overall timeout is
@@ -1595,11 +1876,34 @@ fn wait_for_merge_train_completion(
             }
         }
 
+        poll += 1;
+
         // Check if MR is actually merged by checking its state first
         let pr_info = match provider.get_pr_info(pr_num) {
             Ok(info) => info,
             Err(e) => {
                 consecutive_errors += 1;
+                // Transient error — update spinner and retry on next poll
+                let error_state = format!(
+                    "API error (attempt {}/{}): {}",
+                    consecutive_errors, MAX_CONSECUTIVE_API_ERRORS, e
+                );
+                emit_land_event(
+                    streamer.as_deref_mut(),
+                    LandStreamingEvent::Wait {
+                        position,
+                        pr_number: pr_num,
+                        phase: "merge_train".to_string(),
+                        poll,
+                        elapsed_seconds: start_time.elapsed().as_secs(),
+                        ci_status: None,
+                        approved: None,
+                        merge_train_status: None,
+                        merge_train_position: None,
+                        pipeline_running: None,
+                        error: Some(e.to_string()),
+                    },
+                );
                 if consecutive_errors >= MAX_CONSECUTIVE_API_ERRORS {
                     if let Some(ref spinner) = current_spinner {
                         spinner.finish_and_clear();
@@ -1609,11 +1913,6 @@ fn wait_for_merge_train_completion(
                         consecutive_errors, e
                     )));
                 }
-                // Transient error — update spinner and retry on next poll
-                let error_state = format!(
-                    "API error (attempt {}/{}): {}",
-                    consecutive_errors, MAX_CONSECUTIVE_API_ERRORS, e
-                );
                 if !json && current_state.as_ref() != Some(&error_state) {
                     if let Some(ref spinner) = current_spinner {
                         finish_spinner(
@@ -1631,6 +1930,22 @@ fn wait_for_merge_train_completion(
             }
         };
         if pr_info.state == PrState::Merged {
+            emit_land_event(
+                streamer.as_deref_mut(),
+                LandStreamingEvent::Wait {
+                    position,
+                    pr_number: pr_num,
+                    phase: "merge_train".to_string(),
+                    poll,
+                    elapsed_seconds: start_time.elapsed().as_secs(),
+                    ci_status: None,
+                    approved: None,
+                    merge_train_status: None,
+                    merge_train_position: None,
+                    pipeline_running: None,
+                    error: None,
+                },
+            );
             if let Some(ref spinner) = current_spinner {
                 finish_spinner(
                     spinner,
@@ -1648,39 +1963,52 @@ fn wait_for_merge_train_completion(
 
         // Check if MR was closed (removed from train or rejected)
         if pr_info.state == PrState::Closed {
-            if let Some(ref spinner) = current_spinner {
-                spinner.finish_and_clear();
-            }
-            return Err(GgError::Other(format!(
+            let msg = format!(
                 "{} {}{} was closed (may have been removed from merge train)",
                 provider.pr_label(),
                 provider.pr_number_prefix(),
                 pr_num
-            )));
+            );
+            emit_land_event(
+                streamer.as_deref_mut(),
+                LandStreamingEvent::Wait {
+                    position,
+                    pr_number: pr_num,
+                    phase: "merge_train".to_string(),
+                    poll,
+                    elapsed_seconds: start_time.elapsed().as_secs(),
+                    ci_status: None,
+                    approved: None,
+                    merge_train_status: None,
+                    merge_train_position: None,
+                    pipeline_running: None,
+                    error: Some(msg.clone()),
+                },
+            );
+            if let Some(ref spinner) = current_spinner {
+                spinner.finish_and_clear();
+            }
+            return Err(GgError::Other(msg));
         }
 
         let mut new_state = String::new();
+        let mut merge_train_status = None;
+        let mut merge_train_position = None;
+        let mut pipeline_running = None;
+        let mut heartbeat_error = None;
+        let mut terminal_result = None;
 
         // Check merge train status
         let mut api_calls_succeeded = true;
         match provider.get_merge_train_status(pr_num, target_branch) {
             Ok(Some(train_info)) => {
                 use crate::glab::MergeTrainStatus;
+                merge_train_status = Some(merge_train_status_name(&train_info.status));
+                merge_train_position = train_info.position;
+                pipeline_running = Some(train_info.pipeline_running);
                 match train_info.status {
                     MergeTrainStatus::Merged => {
-                        if let Some(ref spinner) = current_spinner {
-                            finish_spinner(
-                                spinner,
-                                &format!(
-                                    "{} {}{} merged via merge train",
-                                    provider.pr_label(),
-                                    provider.pr_number_prefix(),
-                                    pr_num
-                                ),
-                                state_start_time,
-                            );
-                        }
-                        return Ok(());
+                        terminal_result = Some(Ok(()));
                     }
                     MergeTrainStatus::Merging => {
                         seen_in_train = true;
@@ -1700,31 +2028,29 @@ fn wait_for_merge_train_completion(
                         new_state = "Merge train: stale (waiting for rebase/pipeline)".to_string();
                     }
                     MergeTrainStatus::SkipMerged => {
-                        if let Some(ref spinner) = current_spinner {
-                            spinner.finish_and_clear();
-                        }
-                        return Err(GgError::Other(format!(
+                        let msg = format!(
                             "{} {}{} was skipped from the merge train",
                             provider.pr_label(),
                             provider.pr_number_prefix(),
                             pr_num
-                        )));
+                        );
+                        heartbeat_error = Some(msg.clone());
+                        terminal_result = Some(Err(GgError::Other(msg)));
                     }
                     MergeTrainStatus::Idle => {
                         idle_count += 1;
                         if let Some(message) = terminal_detailed_merge_status_message(
                             pr_info.detailed_merge_status.as_deref(),
                         ) {
-                            if let Some(ref spinner) = current_spinner {
-                                spinner.finish_and_clear();
-                            }
-                            return Err(GgError::Other(format!(
+                            let msg = format!(
                                 "{} {}{} cannot continue in the merge train: {}",
                                 provider.pr_label(),
                                 provider.pr_number_prefix(),
                                 pr_num,
                                 message
-                            )));
+                            );
+                            heartbeat_error = Some(msg.clone());
+                            terminal_result = Some(Err(GgError::Other(msg)));
                         }
                         new_state =
                             merge_train_idle_state_message(idle_count, seen_in_train).to_string();
@@ -1734,18 +2060,19 @@ fn wait_for_merge_train_completion(
                             api_calls_succeeded = false;
                             consecutive_errors += 1;
                             if consecutive_errors >= MAX_CONSECUTIVE_API_ERRORS {
-                                if let Some(ref spinner) = current_spinner {
-                                    spinner.finish_and_clear();
-                                }
-                                return Err(GgError::Other(format!(
+                                let msg = format!(
                                     "Too many consecutive API errors ({}) while checking merge train status",
                                     consecutive_errors
-                                )));
+                                );
+                                heartbeat_error = Some(msg.clone());
+                                terminal_result = Some(Err(GgError::Other(msg)));
+                            } else {
+                                new_state = format!(
+                                    "Merge train status unavailable (attempt {}/{}), retrying...",
+                                    consecutive_errors, MAX_CONSECUTIVE_API_ERRORS
+                                );
+                                heartbeat_error = Some(new_state.clone());
                             }
-                            new_state = format!(
-                                "Merge train status unavailable (attempt {}/{}), retrying...",
-                                consecutive_errors, MAX_CONSECUTIVE_API_ERRORS
-                            );
                         } else {
                             new_state = "Merge train returned an unrecognized status; waiting conservatively...".to_string();
                         }
@@ -1768,24 +2095,68 @@ fn wait_for_merge_train_completion(
                 api_calls_succeeded = false;
                 consecutive_errors += 1;
                 if consecutive_errors >= MAX_CONSECUTIVE_API_ERRORS {
-                    if let Some(ref spinner) = current_spinner {
-                        spinner.finish_and_clear();
-                    }
-                    return Err(GgError::Other(format!(
+                    let msg = format!(
                         "Too many consecutive API errors ({}) while checking merge train status: {}",
                         consecutive_errors, e
-                    )));
+                    );
+                    heartbeat_error = Some(msg.clone());
+                    terminal_result = Some(Err(GgError::Other(msg)));
+                } else {
+                    new_state = format!(
+                        "Merge train API error (attempt {}/{}): {}",
+                        consecutive_errors, MAX_CONSECUTIVE_API_ERRORS, e
+                    );
+                    heartbeat_error = Some(e.to_string());
                 }
-                new_state = format!(
-                    "Merge train API error (attempt {}/{}): {}",
-                    consecutive_errors, MAX_CONSECUTIVE_API_ERRORS, e
-                );
             }
         }
 
         // All API calls succeeded this iteration — reset retry counter
         if api_calls_succeeded {
             consecutive_errors = 0;
+        }
+
+        emit_land_event(
+            streamer.as_deref_mut(),
+            LandStreamingEvent::Wait {
+                position,
+                pr_number: pr_num,
+                phase: "merge_train".to_string(),
+                poll,
+                elapsed_seconds: start_time.elapsed().as_secs(),
+                ci_status: None,
+                approved: None,
+                merge_train_status,
+                merge_train_position,
+                pipeline_running,
+                error: heartbeat_error,
+            },
+        );
+
+        if let Some(result) = terminal_result {
+            match result {
+                Ok(()) => {
+                    if let Some(ref spinner) = current_spinner {
+                        finish_spinner(
+                            spinner,
+                            &format!(
+                                "{} {}{} merged via merge train",
+                                provider.pr_label(),
+                                provider.pr_number_prefix(),
+                                pr_num
+                            ),
+                            state_start_time,
+                        );
+                    }
+                    return Ok(());
+                }
+                Err(error) => {
+                    if let Some(ref spinner) = current_spinner {
+                        spinner.finish_and_clear();
+                    }
+                    return Err(error);
+                }
+            }
         }
 
         // Update spinner if state changed
@@ -2103,6 +2474,7 @@ mod tests {
         // Type assertion that the function signature includes target_branch: &str
         let _fn_ptr: fn(
             &Provider,
+            usize,
             u64,
             bool,
             Instant,
@@ -2110,6 +2482,8 @@ mod tests {
             Option<&Arc<AtomicBool>>,
             &str,
             bool,
+            Option<&mut StreamingJson>,
+            &mut u64,
         ) -> Result<()> = wait_for_pr_ready;
     }
 

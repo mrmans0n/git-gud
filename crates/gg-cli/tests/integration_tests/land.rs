@@ -3,6 +3,7 @@ use crate::helpers::{create_test_repo, create_test_repo_with_remote, run_gg, run
 use serde_json::Value;
 use std::ffi::OsString;
 use std::fs;
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -151,8 +152,12 @@ impl WaitingLandFixture {
     }
 
     fn start_land(&self) -> std::process::Child {
+        self.start_land_with_args(&["land", "--all", "--wait", "--no-clean"])
+    }
+
+    fn start_land_with_args(&self, args: &[&str]) -> std::process::Child {
         Command::new(env!("CARGO_BIN_EXE_gg"))
-            .args(["land", "--all", "--wait", "--no-clean"])
+            .args(args)
             .current_dir(&self.repo_path)
             .env("HOME", &self.test_home)
             .env("PATH", &self.path)
@@ -178,6 +183,88 @@ impl WaitingLandFixture {
     fn release_ci(&self) {
         fs::write(&self.ready, "ready\n").expect("release fake CI");
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_jsonl_streams_wait_entry_and_summary() {
+    let fixture = WaitingLandFixture::new();
+    let mut land = fixture.start_land_with_args(&["land", "--wait", "--no-clean", "--jsonl"]);
+    let stdout = land.stdout.take().expect("capture land stdout");
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut events = Vec::new();
+        loop {
+            let mut line = String::new();
+            assert!(
+                reader.read_line(&mut line).expect("read JSONL event") > 0,
+                "land exited before emitting a wait heartbeat"
+            );
+            let event: Value = serde_json::from_str(line.trim_end()).expect("parse JSONL event");
+            let is_wait = event["event"] == "wait";
+            events.push(event);
+            if is_wait {
+                sender.send((reader, events)).expect("return JSONL reader");
+                break;
+            }
+        }
+    });
+    let (mut reader, mut events) = match receiver.recv_timeout(Duration::from_secs(20)) {
+        Ok(result) => result,
+        Err(error) => {
+            let _ = land.kill();
+            panic!("land did not flush a wait heartbeat: {error}");
+        }
+    };
+
+    // The command cannot finish until this file exists, so observing the wait
+    // event first proves StreamingJson flushed the heartbeat immediately.
+    fixture.release_ci();
+    let mut remaining_stdout = String::new();
+    reader
+        .read_to_string(&mut remaining_stdout)
+        .expect("read remaining JSONL events");
+
+    let output = land.wait_with_output().expect("wait for land");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(
+        output.status.success(),
+        "land --jsonl failed: stdout={remaining_stdout} stderr={stderr}"
+    );
+    assert!(stderr.trim().is_empty(), "unexpected stderr: {stderr}");
+
+    events.extend(
+        remaining_stdout
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("every JSONL line must parse")),
+    );
+    assert_eq!(events.first().unwrap()["event"], "start");
+    assert_eq!(events.first().unwrap()["total_entries"], 1);
+
+    let wait = events
+        .iter()
+        .find(|event| event["event"] == "wait")
+        .expect("pending CI should emit a wait heartbeat");
+    assert_eq!(wait["phase"], "readiness");
+    assert_eq!(wait["position"], 1);
+    assert_eq!(wait["pr_number"], 41);
+    assert_eq!(wait["poll"], 1);
+    assert_eq!(wait["ci_status"], "pending");
+    assert_eq!(wait["approved"], true);
+    assert!(wait["elapsed_seconds"].is_number());
+
+    let entry = events
+        .iter()
+        .find(|event| event["event"] == "entry")
+        .expect("merge should emit an entry event");
+    assert_eq!(entry["action"], "merged");
+    assert_eq!(entry["pr_number"], 41);
+
+    let summary = events.last().unwrap();
+    assert_eq!(summary["event"], "summary");
+    assert_eq!(summary["landed"][0]["action"], "merged");
+    assert_eq!(summary["remaining"], 0);
 }
 
 #[cfg(unix)]
@@ -313,6 +400,24 @@ fn test_gg_land_json_help() {
 }
 
 #[test]
+fn test_gg_land_jsonl_help() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    let (success, stdout, _stderr) = run_gg(&repo_path, &["land", "--help"]);
+
+    assert!(success);
+    assert!(stdout.contains("--jsonl"), "help should mention --jsonl");
+}
+
+#[test]
+fn test_gg_land_rejects_json_and_jsonl_together() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["land", "--json", "--jsonl"]);
+
+    assert!(!success, "--json and --jsonl should conflict");
+    assert!(stderr.contains("cannot be used with"));
+}
+
+#[test]
 fn test_gg_land_json_error_without_provider() {
     let (_temp_dir, repo_path) = create_test_repo();
 
@@ -337,6 +442,38 @@ fn test_gg_land_json_error_without_provider() {
     let parsed: Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
     assert_eq!(parsed["version"], 1);
     assert!(parsed["error"].is_string(), "error field must be string");
+}
+
+#[test]
+fn test_gg_land_jsonl_error_without_provider() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser"}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _stdout, stderr) = run_gg(&repo_path, &["co", "jsonl-land-error"]);
+    assert!(success, "Failed to create stack: {stderr}");
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["land", "--jsonl"]);
+    assert!(!success, "land --jsonl should fail without provider");
+    assert!(
+        stderr.trim().is_empty(),
+        "stderr should be empty in JSONL mode: {stderr}"
+    );
+
+    let lines: Vec<_> = stdout.lines().collect();
+    assert_eq!(lines.len(), 1, "fatal error should emit one event");
+    let event: Value = serde_json::from_str(lines[0]).expect("error line must be valid JSON");
+    assert_eq!(event["version"], 1);
+    assert_eq!(event["command"], "land");
+    assert_eq!(event["status"], "error");
+    assert_eq!(event["event"], "error");
+    assert!(event["message"].is_string());
 }
 
 #[test]

@@ -68,6 +68,15 @@ fn test_rebase_updates_local_main() {
 
 #[test]
 fn test_rebase_updates_local_main_from_worktree() {
+    rebase_from_worktree(false);
+}
+
+#[test]
+fn test_rebase_skips_dirty_local_main_from_worktree() {
+    rebase_from_worktree(true);
+}
+
+fn rebase_from_worktree(dirty: bool) {
     let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
 
     // Set up config
@@ -119,10 +128,16 @@ fn test_rebase_updates_local_main_from_worktree() {
     run_git(&repo_path, &["push", "origin", "main"]);
     run_git(&repo_path, &["reset", "--hard", initial_main_sha]);
 
+    if dirty {
+        fs::write(repo_path.join("local.txt"), "local work").unwrap();
+        run_git(&repo_path, &["add", "local.txt"]);
+    }
+
     // Run rebase from linked worktree
     let worktree_path_buf = worktree_path.to_path_buf();
-    let (_success, stdout, stderr) = run_gg(&worktree_path_buf, &["rebase"]);
+    let (success, stdout, stderr) = run_gg(&worktree_path_buf, &["rebase"]);
     let combined = format!("{}{}", stdout, stderr);
+    assert!(success, "rebase should succeed: {}", combined);
 
     assert!(
         !combined.contains("already used by worktree"),
@@ -130,14 +145,44 @@ fn test_rebase_updates_local_main_from_worktree() {
         combined
     );
 
-    // Local main should be updated to origin/main via fast-forward fetch
+    // The stack uses origin/main even when the local base update is skipped.
+    let (success, _) = run_git(
+        &worktree_path_buf,
+        &["merge-base", "--is-ancestor", "origin/main", "HEAD"],
+    );
+    assert!(success, "Stack should be rebased onto origin/main");
     let (_, local_main_sha) = run_git(&repo_path, &["rev-parse", "main"]);
     let (_, remote_main_sha) = run_git(&repo_path, &["rev-parse", "origin/main"]);
     assert_eq!(
         local_main_sha.trim(),
-        remote_main_sha.trim(),
-        "Local main should fast-forward to origin/main"
+        if dirty {
+            initial_main_sha
+        } else {
+            remote_main_sha.trim()
+        },
+        "Local main should only advance when its checkout is clean"
     );
+    let (success, status) = run_git(&repo_path, &["status", "--porcelain"]);
+    assert!(success);
+    if dirty {
+        assert_eq!(status.trim(), "A  local.txt");
+        assert_eq!(
+            fs::read_to_string(repo_path.join("local.txt")).unwrap(),
+            "local work"
+        );
+        assert!(combined.contains("uncommitted changes"), "{combined}");
+        assert!(
+            combined.contains(repo_path.to_str().unwrap()),
+            "Warning should name the checkout: {combined}"
+        );
+        let (_, stashes) = run_git(&repo_path, &["stash", "list"]);
+        assert!(stashes.is_empty());
+    } else {
+        assert!(
+            status.is_empty(),
+            "Primary worktree should stay clean: {status}"
+        );
+    }
 }
 
 #[test]

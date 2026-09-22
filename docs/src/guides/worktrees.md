@@ -31,13 +31,17 @@ gg co user-auth -w
 
 ## Why use worktrees
 
-- Keep your main checkout untouched
+- Keep stack changes separate from your main checkout
 - Work on multiple stacks side by side
 - Avoid stashing/switching overhead
 - Run `gg` on another stack while `gg land --wait` polls in a different worktree
 
 Waiting does not reserve the stack being landed. If that stack changes before
 the next merge, `gg land --wait` stops and must be rerun.
+
+`gg rebase`, including auto-rebase during `gg sync`, also fast-forwards a clean
+base checkout. If that checkout has uncommitted changes, git-gud leaves it alone,
+warns with its path, and rebases the stack onto `origin/<base>`.
 
 ## Default path behavior
 

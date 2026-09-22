@@ -111,7 +111,7 @@ fn prepare_rebase(
 
     // Update local base branch to match remote (fast-forward)
     // This ensures merged PRs are reflected in the local base
-    let update_result = update_local_branch(&target_branch);
+    let update_result = update_local_branch(repo, &target_branch);
     if let Err(e) = update_result {
         if !json {
             println!(
@@ -271,9 +271,17 @@ fn execute_rebase(repo: &Repository, target_branch: &str, json: bool) -> Result<
 }
 
 /// Update a local branch to match its remote counterpart (fast-forward only)
-fn update_local_branch(branch: &str) -> Result<()> {
+pub(crate) fn update_local_branch(repo: &Repository, branch: &str) -> Result<()> {
+    let repo_path = repo.workdir().unwrap_or(repo.path()).to_string_lossy();
+    let run_git = |args: &[&str]| {
+        let mut command = vec!["-C", repo_path.as_ref()];
+        command.extend_from_slice(args);
+        git::run_git_command(&command)
+    };
+
     // Check if the local branch exists
-    let local_exists = git::run_git_command(&["rev-parse", "--verify", branch]).is_ok();
+    let local_ref = format!("refs/heads/{}", branch);
+    let local_exists = run_git(&["rev-parse", "--verify", &local_ref]).is_ok();
 
     if !local_exists {
         // Branch doesn't exist locally, nothing to update
@@ -282,23 +290,51 @@ fn update_local_branch(branch: &str) -> Result<()> {
 
     // Check if remote branch exists
     let remote_ref = format!("origin/{}", branch);
-    if git::run_git_command(&["rev-parse", "--verify", &remote_ref]).is_err() {
+    if run_git(&["rev-parse", "--verify", &remote_ref]).is_err() {
         // Remote branch doesn't exist
         return Ok(());
     }
 
-    // Fast-forward local branch ref without checking it out.
-    // This is worktree-safe because it avoids `git checkout <branch>`.
-    if git::run_git_command(&["merge-base", "--is-ancestor", branch, &remote_ref]).is_err() {
+    if run_git(&["merge-base", "--is-ancestor", &local_ref, &remote_ref]).is_err() {
         return Err(GgError::Other(format!(
             "Local {} has diverged from {}",
             branch, remote_ref
         )));
     }
 
-    let remote_oid = git::run_git_command(&["rev-parse", &remote_ref])?;
-    let local_ref = format!("refs/heads/{}", branch);
-    git::run_git_command(&["update-ref", &local_ref, remote_oid.trim()])?;
+    // A checked-out branch must advance its index and files along with HEAD.
+    // NUL-delimited output preserves paths containing spaces or newlines.
+    let worktrees = run_git(&["worktree", "list", "--porcelain", "-z"])?;
+    let mut worktree_path = None;
+    for field in worktrees.split('\0') {
+        if let Some(path) = field.strip_prefix("worktree ") {
+            worktree_path = Some(path);
+        } else if field.strip_prefix("branch ") == Some(local_ref.as_str()) {
+            let path = worktree_path.ok_or_else(|| {
+                GgError::Other(format!("Could not locate worktree for {}", branch))
+            })?;
+            let status = git::run_git_command(&[
+                "-C",
+                path,
+                "status",
+                "--porcelain",
+                "--untracked-files=normal",
+                "--ignore-submodules=none",
+            ])?;
+            if !status.is_empty() {
+                return Err(GgError::Other(format!(
+                    "Worktree at {} has uncommitted changes; leaving it unchanged. Commit or stash them before updating {}",
+                    path, branch
+                )));
+            }
+            git::run_git_command(&["-C", path, "merge", "--ff-only", &remote_ref])?;
+            return Ok(());
+        }
+    }
+
+    // Updating only the ref is safe when no worktree has this branch checked out.
+    let remote_oid = run_git(&["rev-parse", &remote_ref])?;
+    run_git(&["update-ref", &local_ref, remote_oid.trim()])?;
 
     Ok(())
 }

@@ -8,6 +8,12 @@ gg rebase [TARGET]
 
 - If `TARGET` is omitted, git-gud uses the stack base branch.
 
+The local base branch is fast-forwarded to `origin/<base>`. If it is checked out
+in a worktree, that checkout's index and files are updated together. If the
+checkout has uncommitted changes, git-gud warns with its path and skips the
+local base update. The stack still rebases onto `origin/<base>`. This also
+applies when `gg sync` auto-rebases.
+
 ## Options
 
 - `-f, --force` (alias `--ignore-immutable`): Override the immutability guard.

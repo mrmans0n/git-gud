@@ -1720,6 +1720,128 @@ mod tests {
         assert_eq!(result.as_deref(), Some("Body text"));
     }
 
+    fn repo_with_outdated_main() -> (tempfile::TempDir, Repository) {
+        let dir = tempfile::Builder::new()
+            .prefix("gg base ")
+            .tempdir()
+            .unwrap();
+        let path = dir.path();
+        run_git(path, &["init", "--initial-branch=main"]);
+        run_git(path, &["config", "user.email", "test@example.com"]);
+        run_git(path, &["config", "user.name", "Test User"]);
+        std::fs::write(path.join("file.txt"), "base\n").unwrap();
+        run_git(path, &["add", "."]);
+        run_git(path, &["commit", "-m", "initial"]);
+        std::fs::write(path.join("landed.txt"), "landed\n").unwrap();
+        run_git(path, &["add", "."]);
+        run_git(path, &["commit", "-m", "landed"]);
+        run_git(path, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        run_git(path, &["reset", "--hard", "HEAD~"]);
+        let repo = Repository::open(path).unwrap();
+        (dir, repo)
+    }
+
+    #[test]
+    fn test_update_local_branch_not_checked_out() {
+        let (dir, repo) = repo_with_outdated_main();
+        run_git(dir.path(), &["checkout", "-b", "feature"]);
+        let head = repo.head().unwrap().target().unwrap();
+
+        crate::commands::rebase::update_local_branch(&repo, "main").unwrap();
+
+        assert_eq!(
+            repo.refname_to_id("refs/heads/main").unwrap(),
+            repo.refname_to_id("refs/remotes/origin/main").unwrap()
+        );
+        assert_eq!(repo.head().unwrap().target().unwrap(), head);
+        assert!(!dir.path().join("landed.txt").exists());
+        assert!(is_working_directory_clean(&repo).unwrap());
+    }
+
+    #[test]
+    fn test_update_local_branch_checked_out_clean() {
+        // Cover the current checkout, the primary checkout from a linked
+        // worktree, and a linked base checkout from the primary worktree.
+        for checkout in ["current", "primary", "linked"] {
+            let (dir, repo) = repo_with_outdated_main();
+            let linked_dir = tempfile::tempdir().unwrap();
+            let linked_path = linked_dir.path().join("linked base");
+            let linked_path = linked_path.to_str().unwrap();
+            let (caller, base_path) = match checkout {
+                "primary" => {
+                    run_git(
+                        dir.path(),
+                        &["worktree", "add", "-b", "feature", linked_path],
+                    );
+                    (Repository::open(linked_path).unwrap(), dir.path())
+                }
+                "linked" => {
+                    run_git(dir.path(), &["checkout", "-b", "feature"]);
+                    run_git(dir.path(), &["worktree", "add", linked_path, "main"]);
+                    (repo, std::path::Path::new(linked_path))
+                }
+                _ => (repo, dir.path()),
+            };
+
+            crate::commands::rebase::update_local_branch(&caller, "main").unwrap();
+
+            let base = Repository::open(base_path).unwrap();
+            assert_eq!(
+                base.head().unwrap().target().unwrap(),
+                base.refname_to_id("refs/remotes/origin/main").unwrap()
+            );
+            assert_eq!(
+                std::fs::read_to_string(base_path.join("landed.txt")).unwrap(),
+                "landed\n"
+            );
+            let status =
+                run_git_command(&["-C", base_path.to_str().unwrap(), "status", "--porcelain"])
+                    .unwrap();
+            assert!(
+                status.is_empty(),
+                "{checkout} checkout should stay clean: {status}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_update_local_branch_preserves_dirty_worktree() {
+        for change in ["staged", "unstaged", "untracked"] {
+            let (dir, repo) = repo_with_outdated_main();
+            let path = dir.path();
+            let head = repo.head().unwrap().target().unwrap();
+            let file = if change == "untracked" {
+                "new.txt"
+            } else {
+                "file.txt"
+            };
+            std::fs::write(path.join(file), "local work\n").unwrap();
+            if change == "staged" {
+                run_git(path, &["add", file]);
+            }
+            let status_args = ["-C", path.to_str().unwrap(), "status", "--porcelain"];
+            let status_before = run_git_command(&status_args).unwrap();
+
+            let err = crate::commands::rebase::update_local_branch(&repo, "main").unwrap_err();
+
+            assert!(err.to_string().contains(
+                repo.workdir()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .trim_end_matches('/')
+            ));
+            assert_eq!(repo.head().unwrap().target().unwrap(), head);
+            assert_eq!(run_git_command(&status_args).unwrap(), status_before);
+            assert_eq!(
+                std::fs::read_to_string(path.join(file)).unwrap(),
+                "local work\n"
+            );
+            assert!(!path.join("landed.txt").exists());
+            assert!(repo.find_reference("refs/stash").is_err());
+        }
+    }
+
     #[test]
     fn test_count_commits_behind() {
         use std::process::Command;

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-09-22
+
+### Fixed
+- `gg rebase` now preserves checked-out base branches in linked worktrees instead of trying to move them (#448).
+
+### Changed
+- Updated dependencies including `skim`, `uuid`, `console`, `rmcp`, `clap`, and `clap_complete` (#439, #440, #441, #442, #443, #444, #445, #446, #447).
+
 ## [0.10.2] - 2026-09-08
 
 ### Added
@@ -572,7 +580,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.10.2...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.10.3...HEAD
+[0.10.3]: https://github.com/mrmans0n/git-gud/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/mrmans0n/git-gud/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/mrmans0n/git-gud/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/mrmans0n/git-gud/compare/v0.9.12...v0.10.0

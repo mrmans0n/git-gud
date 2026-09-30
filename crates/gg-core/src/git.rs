@@ -443,6 +443,15 @@ pub fn get_stack_commit_oids(
         repo.head()?.peel_to_commit()?.id()
     };
 
+    get_stack_commit_oids_from_tip(repo, base_branch, tip_oid)
+}
+
+/// Get and validate all stack commits between a base branch and a specific tip.
+pub(crate) fn get_stack_commit_oids_from_tip(
+    repo: &Repository,
+    base_branch: &str,
+    tip_oid: Oid,
+) -> Result<Vec<Oid>> {
     let base_ref = repo
         .revparse_single(base_branch)
         .or_else(|_| repo.revparse_single(&format!("origin/{}", base_branch)))

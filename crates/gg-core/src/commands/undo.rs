@@ -38,12 +38,12 @@ pub struct UndoCliOptions {
 /// Run the undo command.
 pub fn run(options: UndoCliOptions) -> Result<()> {
     let repo = git::open_repo()?;
-    let config = Config::load_with_global(repo.commondir())?;
-
     if options.list {
         return run_list(&repo, &options);
     }
-    run_undo(&repo, &config, &options)
+    let _lock = git::acquire_operation_lock(&repo, "undo")?;
+    let mut config = Config::load_with_global(repo.commondir())?;
+    run_undo(&repo, &mut config, &options)
 }
 
 fn run_list(repo: &git2::Repository, options: &UndoCliOptions) -> Result<()> {
@@ -66,11 +66,11 @@ fn run_list(repo: &git2::Repository, options: &UndoCliOptions) -> Result<()> {
     Ok(())
 }
 
-fn run_undo(repo: &git2::Repository, config: &Config, options: &UndoCliOptions) -> Result<()> {
+fn run_undo(repo: &git2::Repository, config: &mut Config, options: &UndoCliOptions) -> Result<()> {
     // Undo itself takes a lock and records itself (D5). Use AllUserBranches
     // scope so the undo record's refs_before captures whatever user-owned
     // state existed before the replay.
-    let (_lock, guard) = git::acquire_operation_lock_and_record(
+    let mut guard = git::begin_recorded_op(
         repo,
         config,
         OperationKind::Undo,
@@ -83,7 +83,7 @@ fn run_undo(repo: &git2::Repository, config: &Config, options: &UndoCliOptions) 
         operation_id: options.operation_id.clone(),
         json: options.json,
     };
-    let outcome = operations::run_undo(repo, config, undo_opts)?;
+    let outcome = operations::run_undo(repo, config, undo_opts, Some(&mut guard))?;
 
     // On success we capture the post-replay snapshot and finalize. On any
     // refusal we drop the guard without finalize (see module docs).
@@ -356,6 +356,7 @@ mod tests {
             touched_remote,
             undoes: None,
             pending_plan: None,
+            remote_branch_deletion_changes: vec![],
         }
     }
 

@@ -1540,12 +1540,20 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 true,
                 structured,
                 &mut |effect| {
-                    guard
-                        .as_mut()
-                        .expect("land segment guard")
-                        .record_remote_effect(effect.clone());
-                    remote_effects.push(effect);
                     touched_remote = true;
+                    if let Some(effect) = effect {
+                        guard
+                            .as_mut()
+                            .expect("land segment guard")
+                            .record_remote_effect(effect.clone());
+                        remote_effects.push(effect);
+                        Ok(())
+                    } else {
+                        guard
+                            .as_mut()
+                            .expect("land segment guard")
+                            .mark_touched_remote_before_attempt()
+                    }
                 },
             ) {
                 Ok(true) => cleaned = true,
@@ -2575,6 +2583,7 @@ mod tests {
             defaults: Defaults::default(),
             worktree_base_path: None,
             stacks: HashMap::new(),
+            pending_remote_branch_deletions: vec![],
         };
 
         let mut stack_config = StackConfig {
@@ -2605,6 +2614,7 @@ mod tests {
             defaults: Defaults::default(),
             worktree_base_path: None,
             stacks: HashMap::new(),
+            pending_remote_branch_deletions: vec![],
         };
 
         let mut stack_config = StackConfig {
@@ -2637,6 +2647,7 @@ mod tests {
             defaults: Defaults::default(),
             worktree_base_path: None,
             stacks: HashMap::new(),
+            pending_remote_branch_deletions: vec![],
         };
 
         // Try to remove from non-existent stack - should not panic
@@ -2652,6 +2663,7 @@ mod tests {
             defaults: Defaults::default(),
             worktree_base_path: None,
             stacks: HashMap::new(),
+            pending_remote_branch_deletions: vec![],
         };
 
         let mut stack_config = StackConfig {

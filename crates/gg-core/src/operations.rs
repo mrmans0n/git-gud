@@ -24,7 +24,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use git2::{BranchType, Repository};
 use serde::{Deserialize, Serialize};
 
-use crate::config::Config;
+use crate::config::{Config, PendingRemoteBranchDeletion};
 use crate::error::{GgError, Result};
 use crate::stack::Stack;
 
@@ -129,6 +129,17 @@ pub enum RemoteEffect {
     PrClosed { number: u64, url: String },
 }
 
+/// One repository-local remote-deletion intent changed by an Undo operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteBranchDeletionChange {
+    pub remote: String,
+    pub branch: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<PendingRemoteBranchDeletion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<PendingRemoteBranchDeletion>,
+}
+
 /// Durable operation record. One JSON file per record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationRecord {
@@ -164,6 +175,10 @@ pub struct OperationRecord {
     /// use (e.g. partial-rebase state).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_plan: Option<serde_json::Value>,
+    /// Exact deletion-intent changes made by an Undo operation. This is a
+    /// narrow config delta, not a snapshot of unrelated repository settings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remote_branch_deletion_changes: Vec<RemoteBranchDeletionChange>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -708,11 +723,32 @@ impl OperationGuard {
         let _ = self.store.save(&self.record);
     }
 
+    /// Persist remote uncertainty before issuing a mutation whose outcome may
+    /// be ambiguous. Unlike post-mutation bookkeeping, failure must stop the
+    /// caller before it touches the remote.
+    pub fn mark_touched_remote_before_attempt(&mut self) -> Result<()> {
+        if self.record.touched_remote {
+            return Ok(());
+        }
+        self.record.touched_remote = true;
+        self.store.save(&self.record)
+    }
+
     /// Persist command-specific state needed to finish a conflict-resumed
     /// operation from a later `gg continue` invocation.
     pub fn set_pending_plan(&mut self, pending_plan: serde_json::Value) {
         self.record.pending_plan = Some(pending_plan);
         let _ = self.store.save(&self.record);
+    }
+
+    /// Persist the config delta before applying it so an interrupted replay
+    /// records every local effect it may already have made.
+    pub fn set_remote_branch_deletion_changes(
+        &mut self,
+        changes: Vec<RemoteBranchDeletionChange>,
+    ) -> Result<()> {
+        self.record.remote_branch_deletion_changes = changes;
+        self.store.save(&self.record)
     }
 
     /// Mark the operation as Committed with the given post-mutation ref
@@ -808,7 +844,12 @@ pub fn list(repo: &Repository, limit: usize) -> Result<Vec<OperationRecord>> {
 
 /// Replay an operation's `refs_before` atop the repo. Consumes nothing from
 /// the log itself; the caller wraps this in a fresh `Undo` record.
-pub fn run_undo(repo: &Repository, _config: &Config, opts: UndoOptions) -> Result<UndoOutcome> {
+pub fn run_undo(
+    repo: &Repository,
+    config: &mut Config,
+    opts: UndoOptions,
+    undo_guard: Option<&mut OperationGuard>,
+) -> Result<UndoOutcome> {
     let gg_dir = crate::git::gg_dir(repo);
     let store = OperationStore::new(&gg_dir);
 
@@ -861,7 +902,68 @@ pub fn run_undo(repo: &Repository, _config: &Config, opts: UndoOptions) -> Resul
         }
     }
 
-    // 3. Apply refs_before.
+    // 3. Replay only the target's deletion-intent delta. A direct Drop undo
+    // cancels any authority that still exists; undoing an Undo reverses the
+    // exact state transition that Undo recorded. Consumed authority is absent
+    // and therefore never reconstructed from the older Drop record.
+    let deletion_changes = if target.kind == OperationKind::Drop {
+        config
+            .pending_remote_branch_deletions
+            .iter()
+            .filter(|intent| intent.source_operation_id == target.id)
+            .map(|intent| RemoteBranchDeletionChange {
+                remote: intent.remote.clone(),
+                branch: intent.branch.clone(),
+                before: Some(intent.clone()),
+                after: None,
+            })
+            .collect::<Vec<_>>()
+    } else if target.kind == OperationKind::Undo {
+        let mut changes = Vec::with_capacity(target.remote_branch_deletion_changes.len());
+        for change in &target.remote_branch_deletion_changes {
+            let current = config
+                .pending_remote_branch_deletions
+                .iter()
+                .find(|intent| intent.remote == change.remote && intent.branch == change.branch);
+            if current != change.after.as_ref() {
+                return Ok(UndoOutcome::RefusedStale {
+                    ref_name: format!(
+                        "pending_remote_branch_deletions[{}/{}]",
+                        change.remote, change.branch
+                    ),
+                    expected: serde_json::to_string(&change.after)?,
+                    actual: serde_json::to_string(&current)?,
+                    target,
+                });
+            }
+            changes.push(RemoteBranchDeletionChange {
+                remote: change.remote.clone(),
+                branch: change.branch.clone(),
+                before: change.after.clone(),
+                after: change.before.clone(),
+            });
+        }
+        changes
+    } else {
+        vec![]
+    };
+
+    if !deletion_changes.is_empty() {
+        if let Some(guard) = undo_guard {
+            guard.set_remote_branch_deletion_changes(deletion_changes.clone())?;
+        }
+        for change in &deletion_changes {
+            config
+                .pending_remote_branch_deletions
+                .retain(|intent| intent.remote != change.remote || intent.branch != change.branch);
+            if let Some(intent) = &change.after {
+                config.pending_remote_branch_deletions.push(intent.clone());
+            }
+        }
+        config.save(repo.commondir())?;
+    }
+
+    // 4. Apply refs_before.
     for snap in &target.refs_before {
         if snap.name == "HEAD" {
             apply_head_snapshot(repo, snap)?;
@@ -958,6 +1060,7 @@ pub(crate) mod tests {
             touched_remote: false,
             undoes: None,
             pending_plan: None,
+            remote_branch_deletion_changes: vec![],
         }
     }
 
@@ -990,6 +1093,7 @@ pub(crate) mod tests {
             touched_remote: false,
             undoes: None,
             pending_plan: None,
+            remote_branch_deletion_changes: vec![],
         };
         let json = serde_json::to_string(&record).unwrap();
         let back: OperationRecord = serde_json::from_str(&json).unwrap();
@@ -1025,6 +1129,7 @@ pub(crate) mod tests {
         assert!(record.touched_remote);
         assert!(record.undoes.is_none());
         assert!(record.pending_plan.is_none());
+        assert!(record.remote_branch_deletion_changes.is_empty());
 
         let encoded = serde_json::to_string(&record).unwrap();
         let round_tripped: OperationRecord = serde_json::from_str(&encoded).unwrap();
@@ -1202,6 +1307,7 @@ pub(crate) mod tests {
             touched_remote: false,
             undoes: None,
             pending_plan: None,
+            remote_branch_deletion_changes: vec![],
         };
         store.save(&rec).unwrap();
         let guard = OperationGuard {
@@ -1234,6 +1340,7 @@ pub(crate) mod tests {
                 touched_remote: false,
                 undoes: None,
                 pending_plan: None,
+                remote_branch_deletion_changes: vec![],
             };
             store.save(&rec).unwrap();
             let _guard = OperationGuard {
@@ -1494,19 +1601,22 @@ mod undo_tests {
             touched_remote: false,
             undoes: None,
             pending_plan: None,
+            remote_branch_deletion_changes: vec![],
         };
         store.save(&rec).unwrap();
 
         repo.reference("refs/heads/nacho/feat/1", c2, true, "test setup")
             .unwrap();
 
+        let mut config = cfg_user("nacho");
         let outcome = run_undo(
             &repo,
-            &cfg_user("nacho"),
+            &mut config,
             UndoOptions {
                 operation_id: Some(rec.id.clone()),
                 json: false,
             },
+            None,
         )
         .unwrap();
 
@@ -1547,17 +1657,20 @@ mod undo_tests {
             touched_remote: false,
             undoes: None,
             pending_plan: None,
+            remote_branch_deletion_changes: vec![],
         };
         store.save(&rec).unwrap();
 
         // Branch is still at c1 (different from refs_after c2).
+        let mut config = cfg_user("nacho");
         let outcome = run_undo(
             &repo,
-            &cfg_user("nacho"),
+            &mut config,
             UndoOptions {
                 operation_id: Some(rec.id.clone()),
                 json: false,
             },
+            None,
         )
         .unwrap();
         assert!(matches!(outcome, UndoOutcome::RefusedStale { .. }));
@@ -1586,15 +1699,18 @@ mod undo_tests {
             touched_remote: true,
             undoes: None,
             pending_plan: None,
+            remote_branch_deletion_changes: vec![],
         };
         store.save(&rec).unwrap();
+        let mut config = cfg_user("nacho");
         let out = run_undo(
             &repo,
-            &cfg_user("nacho"),
+            &mut config,
             UndoOptions {
                 operation_id: Some(rec.id.clone()),
                 json: false,
             },
+            None,
         )
         .unwrap();
         assert!(matches!(out, UndoOutcome::RefusedRemote { .. }));
@@ -1608,13 +1724,15 @@ mod undo_tests {
         let mut rec = crate::operations::tests::make_record(OperationKind::Drop, now_ms());
         rec.status = OperationStatus::Interrupted;
         store.save(&rec).unwrap();
+        let mut config = cfg_user("nacho");
         let out = run_undo(
             &repo,
-            &cfg_user("nacho"),
+            &mut config,
             UndoOptions {
                 operation_id: Some(rec.id.clone()),
                 json: false,
             },
+            None,
         )
         .unwrap();
         assert!(matches!(out, UndoOutcome::RefusedInterrupted(_)));

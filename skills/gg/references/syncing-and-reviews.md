@@ -28,6 +28,16 @@
 2. Respect repository lint and draft configuration unless the user specifies
    an override. Complete the metadata-normalization preflight before every
    `gg sync`. If lint will run, also complete the amend-mode safety preflight.
+   Sync may consume one-shot remote deletion intent created by a successful
+   local `gg drop`, including during `--until`. Each intent authorizes only the
+   exact remote OID known at Drop time. Stop if the branch changed or if sync
+   reports any unsuccessful deletion attempt or an uncertain prior outcome; do
+   not retry automatically or replace the expected OID with a fresh server tip.
+   Undo or local recreation cancels intent, and absence
+   from this clone or a historical Drop journal record is never authority.
+   A "Kept remote branch" warning means an open PR/MR still targets the
+   dropped branch; retarget it with a full `gg sync`, never delete the branch
+   by hand.
 3. Prefer `gg sync --jsonl` for monitored agent execution. Use `gg sync --json`
    when only the final aggregate is needed.
 4. Consume the final summary event for publication results only: stack, base,

@@ -27,6 +27,7 @@ pub fn run(all: bool) -> Result<()> {
     let repo = git::open_repo()?;
     let git_dir = repo.commondir();
     let config_path = Config::config_path(git_dir);
+    let _lock = git::acquire_operation_lock(&repo, "setup")?;
     let mut config = Config::load(git_dir)?;
     let theme = ColorfulTheme::default();
 

@@ -182,6 +182,27 @@ pub struct StackConfig {
     pub worktree_path: Option<String>,
 }
 
+/// Lifecycle of an authorized remote entry-branch deletion.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteBranchDeletionState {
+    #[default]
+    Pending,
+    /// The delete was attempted, but its final local persistence is not known.
+    Deleting,
+}
+
+/// Durable, version-bound authority to delete one remote entry branch.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PendingRemoteBranchDeletion {
+    pub remote: String,
+    pub branch: String,
+    pub expected_oid: String,
+    pub source_operation_id: String,
+    #[serde(default)]
+    pub state: RemoteBranchDeletionState,
+}
+
 /// Root configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -197,6 +218,10 @@ pub struct Config {
     /// Per-stack configurations
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub stacks: HashMap<String, StackConfig>,
+
+    /// Repository-local remote deletion authority created by successful Drops.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_remote_branch_deletions: Vec<PendingRemoteBranchDeletion>,
 }
 
 impl Config {
@@ -439,7 +464,10 @@ impl Config {
             return Ok(None);
         }
         let contents = fs::read_to_string(&path)?;
-        let config: Config = serde_json::from_str(&contents)?;
+        let mut config: Config = serde_json::from_str(&contents)?;
+        // Remote deletion authority is repository-local and must never be
+        // inherited from a global config file.
+        config.pending_remote_branch_deletions.clear();
         Ok(Some(config))
     }
 
@@ -478,8 +506,9 @@ impl Config {
     fn merge_local_with_github_presence(&mut self, local: Config, local_has_github: bool) {
         let inherited_github = self.defaults.github.clone();
 
-        // Stacks are always local
+        // Stacks and pending remote mutations are always local.
         self.stacks = local.stacks;
+        self.pending_remote_branch_deletions = local.pending_remote_branch_deletions;
 
         // worktree_base_path: local wins if present
         if local.worktree_base_path.is_some() {
@@ -516,6 +545,19 @@ impl Config {
             path
         } else {
             repo_root.join(path)
+        }
+    }
+
+    /// Add or replace version-bound deletion authority for the same remote ref.
+    pub fn queue_remote_branch_deletions(
+        &mut self,
+        intents: impl IntoIterator<Item = PendingRemoteBranchDeletion>,
+    ) {
+        for intent in intents {
+            self.pending_remote_branch_deletions.retain(|existing| {
+                existing.remote != intent.remote || existing.branch != intent.branch
+            });
+            self.pending_remote_branch_deletions.push(intent);
         }
     }
 }

@@ -2,6 +2,10 @@
 
 Remove one or more commits from the stack.
 
+For a published entry, running `gg drop` also authorizes a later `gg sync` to
+delete that entry's remote branch. The Drop itself remains local: it records
+deferred deletion intent, and Sync performs the remote deletion.
+
 **Alias:** `gg abandon`
 
 ```bash
@@ -30,10 +34,29 @@ gg drop <TARGET>... [OPTIONS]
 2. Resolves each target to a commit in the stack
 3. Shows which commits will be dropped and asks for confirmation (unless `--force`)
 4. Performs a `git rebase -i` that omits the dropped commits
-5. Cleans up per-commit branches for dropped commits
-6. Prints a summary of what was dropped
+5. Cleans up local per-commit branches for dropped commits
+6. Records deferred remote-branch deletion authority for published entries
+7. Prints a summary of what was dropped
 
 At least one commit must remain in the stack after dropping.
+
+Deferred deletion authority is bound to the exact remote-tracking OID known
+when Drop runs. If no trusted remote version is known, Drop records no
+authority and Sync keeps the remote branch. Sync also refuses deletion if the
+live branch has moved to another OID; it never adopts that newer version as
+authority.
+
+`gg undo` of the Drop restores the local entry and cancels any unconsumed
+deletion intent. Undoing that Undo (redoing the Drop) restores the exact saved
+intent, including its OID and lifecycle state. Intent already consumed by a
+completed Sync is never recreated. An intent left in `deleting` after an
+uncertain remote outcome stays uncertain across undo/redo and is not retried
+automatically.
+
+When Sync reports a changed branch or uncertain deletion, inspect the named
+remote ref and `.git/gg/config.json` before reconciling manually. GG cannot
+determine whether an ambiguous server response applied the deletion, and it
+will not authorize a retry or a newer branch version on your behalf.
 
 ## Examples
 

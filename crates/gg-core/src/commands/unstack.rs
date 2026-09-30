@@ -43,9 +43,8 @@ pub struct UnstackOptions {
 /// Run the unstack command.
 pub fn run(options: UnstackOptions) -> Result<()> {
     let repo = git::open_repo()?;
-    let mut config = Config::load_with_global(repo.commondir())?;
-
     let _lock = git::acquire_operation_lock(&repo, "unstack")?;
+    let mut config = Config::load_with_global(repo.commondir())?;
     git::require_clean_working_directory(&repo)?;
 
     let mut stack_obj = Stack::load(&repo, &config)?;

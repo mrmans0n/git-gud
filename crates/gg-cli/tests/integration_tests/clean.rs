@@ -5,10 +5,291 @@ use crate::helpers::{
 
 use serde_json::Value;
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+
+fn checked_git(repo: &Path, args: &[&str]) -> String {
+    let (success, output) = run_git(repo, args);
+    assert!(success, "git {args:?} failed: {output}");
+    output.trim().to_string()
+}
+
+fn install_fake_merged_gh(repo_path: &Path) -> std::ffi::OsString {
+    let fake_bin = repo_path.join("fake-bin");
+    fs::create_dir_all(&fake_bin).unwrap();
+    fs::write(
+        fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+if [ "$1" = "--version" ] || { [ "$1" = "auth" ] && [ "$2" = "status" ]; }; then
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
+  echo "https://github.com/test/repo/pull/101"
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  echo '{"number":101,"title":"Entry","state":"MERGED","url":"https://github.com/test/repo/pull/101","headRefName":null,"isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+  if [ "$3" = "--base" ] && [ -f "$(dirname "$0")/targets/$(echo "$4" | tr / _)" ]; then
+    cat "$(dirname "$0")/targets/$(echo "$4" | tr / _)"
+  fi
+  exit 0
+fi
+echo "unexpected gh invocation: $@" >&2
+exit 1
+"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        let mut permissions = fs::metadata(fake_bin.join("gh")).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(fake_bin.join("gh"), permissions).unwrap();
+    }
+    let mut path = std::ffi::OsString::from(fake_bin.as_os_str());
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap_or_default());
+    path
+}
+
+fn setup_published_drop_for_clean(
+    stack_name: &str,
+) -> (
+    tempfile::TempDir,
+    PathBuf,
+    PathBuf,
+    std::ffi::OsString,
+    String,
+) {
+    let (temp, repo_path, remote_path) = create_test_repo_with_remote();
+    fs::create_dir_all(repo_path.join(".git/gg")).unwrap();
+    fs::write(
+        repo_path.join(".git/gg/config.json"),
+        r#"{
+  "defaults": {
+    "branch_username": "testuser",
+    "provider": "github",
+    "base": "main",
+    "sync_behind_threshold": 0,
+    "github": { "stacks_integration": "off" }
+  }
+}"#,
+    )
+    .unwrap();
+    let fake_path = install_fake_merged_gh(&repo_path);
+    let (success, stdout, stderr) = run_gg(&repo_path, &["co", stack_name]);
+    assert!(success, "checkout failed: {stdout}\n{stderr}");
+    for id in ["c-1111111", "c-2222222", "c-3333333"] {
+        checked_git(
+            &repo_path,
+            &[
+                "commit",
+                "--allow-empty",
+                "-m",
+                &format!("Entry\n\nGG-ID: {id}"),
+            ],
+        );
+    }
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["sync", "--no-rebase-check"],
+        &[("PATH", fake_path.as_os_str())],
+    );
+    assert!(success, "sync failed: {stdout}\n{stderr}");
+    let dropped_branch = format!("testuser/{stack_name}--c-3333333");
+    let (success, stdout, stderr) = run_gg(&repo_path, &["drop", "3", "--yes"]);
+    assert!(success, "drop failed: {stdout}\n{stderr}");
+    checked_git(&repo_path, &["checkout", "main"]);
+    (temp, repo_path, remote_path, fake_path, dropped_branch)
+}
+
+#[test]
+fn test_clean_consumes_pending_drop_before_removing_local_stack() {
+    let (temp, repo_path, remote_path, fake_path, dropped_branch) =
+        setup_published_drop_for_clean("clean-drop");
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["clean", "--all"],
+        &[("PATH", fake_path.as_os_str())],
+    );
+    assert!(success, "clean failed: {stdout}\n{stderr}");
+    assert!(
+        !run_git(
+            &remote_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{dropped_branch}")
+            ]
+        )
+        .0,
+        "clean must consume the durable drop intent"
+    );
+    let config: Value =
+        serde_json::from_slice(&fs::read(repo_path.join(".git/gg/config.json")).unwrap()).unwrap();
+    assert!(
+        config["pending_remote_branch_deletions"]
+            .as_array()
+            .is_none_or(Vec::is_empty),
+        "successful clean must consume deletion authority: {config}"
+    );
+
+    let reader = temp.path().join("clean-reader");
+    checked_git(
+        &repo_path,
+        &[
+            "clone",
+            remote_path.to_str().unwrap(),
+            reader.to_str().unwrap(),
+        ],
+    );
+    fs::create_dir_all(reader.join(".git/gg")).unwrap();
+    fs::write(
+        reader.join(".git/gg/config.json"),
+        r#"{"defaults":{"branch_username":"testuser","base":"main"}}"#,
+    )
+    .unwrap();
+    let (success, stdout, stderr) = run_gg(&reader, &["co", "clean-drop"]);
+    assert!(success, "fresh checkout failed: {stdout}\n{stderr}");
+    assert_eq!(
+        checked_git(&reader, &["rev-list", "--count", "main..HEAD"]),
+        "0",
+        "fresh checkout must not resurrect a remotely published dropped entry"
+    );
+}
+
+#[test]
+fn test_clean_orphan_stack_keeps_dropped_branch_targeted_by_open_review() {
+    let (_temp, repo_path, remote_path, fake_path, dropped_branch) =
+        setup_published_drop_for_clean("clean-orphan-dependent");
+    checked_git(
+        &repo_path,
+        &["branch", "-D", "testuser/clean-orphan-dependent"],
+    );
+    let targets = repo_path.join("fake-bin/targets");
+    fs::create_dir_all(&targets).unwrap();
+    let target_file = targets.join(dropped_branch.replace('/', "_"));
+    fs::write(&target_file, "104\n").unwrap();
+    let remote_has_dropped = || {
+        run_git(
+            &remote_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{dropped_branch}"),
+            ],
+        )
+        .0
+    };
+
+    let (_success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["clean", "--all"],
+        &[("PATH", fake_path.as_os_str())],
+    );
+    assert!(
+        format!("{stdout}{stderr}").contains("#104 still targets it"),
+        "clean must explain the deferral: {stdout}\n{stderr}"
+    );
+    assert!(
+        remote_has_dropped(),
+        "clean must not delete a branch an open review targets"
+    );
+    let config: Value =
+        serde_json::from_slice(&fs::read(repo_path.join(".git/gg/config.json")).unwrap()).unwrap();
+    assert!(
+        config["stacks"]["clean-orphan-dependent"].is_object(),
+        "stack config must stay so a later clean can retry: {config}"
+    );
+
+    fs::remove_file(&target_file).unwrap();
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["clean", "--all"],
+        &[("PATH", fake_path.as_os_str())],
+    );
+    assert!(success, "retry clean failed: {stdout}\n{stderr}");
+    assert!(!remote_has_dropped(), "retry clean must prune the branch");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_clean_retains_stack_when_pending_drop_deletion_is_uncertain() {
+    let (_temp, repo_path, remote_path, fake_path, dropped_branch) =
+        setup_published_drop_for_clean("clean-drop-rejected");
+    let hook = remote_path.join("hooks/pre-receive");
+    fs::write(
+        &hook,
+        format!(
+            r#"#!/bin/sh
+while read -r old new ref; do
+  if [ "$ref" = "refs/heads/{dropped_branch}" ] && [ "$new" = "0000000000000000000000000000000000000000" ]; then
+    echo "deletion rejected" >&2
+    exit 1
+  fi
+done
+exit 0
+"#
+        ),
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&hook).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&hook, permissions).unwrap();
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["clean", "--all"],
+        &[("PATH", fake_path.as_os_str())],
+    );
+    assert!(!success, "rejected clean must fail: {stdout}\n{stderr}");
+    assert!(stderr.contains("uncertain outcome"), "{stderr}");
+    assert!(
+        run_git(
+            &repo_path,
+            &[
+                "show-ref",
+                "--verify",
+                "refs/heads/testuser/clean-drop-rejected"
+            ]
+        )
+        .0,
+        "clean must retain the local stack for recovery"
+    );
+    let config: Value =
+        serde_json::from_slice(&fs::read(repo_path.join(".git/gg/config.json")).unwrap()).unwrap();
+    assert!(config["stacks"]["clean-drop-rejected"].is_object());
+    let intent = config["pending_remote_branch_deletions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|intent| intent["branch"] == dropped_branch)
+        .expect("deletion authority must remain recoverable");
+    assert_eq!(intent["state"], "deleting");
+
+    let clean_operation: Value = fs::read_dir(repo_path.join(".git/gg/operations"))
+        .unwrap()
+        .map(|entry| serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap())
+        .filter(|operation: &Value| operation["kind"] == "clean")
+        .max_by_key(|operation| operation["created_at_ms"].as_u64().unwrap())
+        .expect("clean operation must be recorded");
+    assert_eq!(clean_operation["touched_remote"], true);
+    let operation_id = clean_operation["id"].as_str().unwrap();
+    let (success, stdout, stderr) = run_gg(&repo_path, &["undo", operation_id, "--json"]);
+    assert!(
+        !success,
+        "undo must refuse uncertain remote effects: {stdout}\n{stderr}"
+    );
+    let refusal: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(refusal["refusal"]["reason"], "remote");
+}
 
 #[test]
 fn test_gg_clean_json_help() {

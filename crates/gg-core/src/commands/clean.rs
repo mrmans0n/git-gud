@@ -3,6 +3,7 @@
 use console::style;
 use dialoguer::Confirm;
 use git2::{BranchType, Repository};
+use std::collections::HashSet;
 use std::path::Path;
 
 use crate::config::Config;
@@ -17,10 +18,10 @@ use crate::stack;
 #[allow(dead_code)]
 pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
     let repo = git::open_repo()?;
+    let _lock = git::acquire_operation_lock(&repo, "clean")?;
     let config = Config::load_with_global(repo.commondir())?;
 
-    // Acquire operation lock + record a Pending op for the undo log.
-    let (_lock, mut guard) = git::acquire_operation_lock_and_record(
+    let mut guard = git::begin_recorded_op(
         &repo,
         &config,
         OperationKind::Clean,
@@ -30,11 +31,17 @@ pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
     )?;
 
     let mut remote_effects = Vec::new();
+    let mut touched_remote = false;
     run_for_stack_with_repo_options(&repo, stack_name, force, false, false, &mut |effect| {
-        guard.record_remote_effect(effect.clone());
-        remote_effects.push(effect);
+        touched_remote = true;
+        if let Some(effect) = effect {
+            guard.record_remote_effect(effect.clone());
+            remote_effects.push(effect);
+            Ok(())
+        } else {
+            guard.mark_touched_remote_before_attempt()
+        }
     })?;
-    let touched_remote = !remote_effects.is_empty();
 
     guard.finalize_with_scope(
         &repo,
@@ -45,9 +52,11 @@ pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
     )
 }
 
-/// Run clean for a stack with an already-open repository (no lock acquisition)
+/// Run clean for a stack with an already-open repository.
 pub fn run_for_stack_with_repo(repo: &Repository, stack_name: &str, force: bool) -> Result<()> {
-    run_for_stack_with_repo_options(repo, stack_name, force, false, false, &mut |_| {}).map(|_| ())
+    let _lock = git::acquire_operation_lock(repo, "clean")?;
+    run_for_stack_with_repo_options(repo, stack_name, force, false, false, &mut |_| Ok(()))
+        .map(|_| ())
 }
 
 /// Run clean after `gg land` has already verified that every PR/MR in the stack
@@ -62,8 +71,9 @@ pub(crate) fn run_for_stack_with_repo_after_verified_land(
     stack_name: &str,
     force: bool,
     silent: bool,
-    record_remote_effect: &mut dyn FnMut(RemoteEffect),
+    record_remote_effect: &mut dyn FnMut(Option<RemoteEffect>) -> Result<()>,
 ) -> Result<bool> {
+    // Land holds the shared operation lock whenever it calls this helper.
     run_for_stack_with_repo_options(repo, stack_name, force, true, silent, record_remote_effect)
 }
 
@@ -149,13 +159,56 @@ fn delete_stack_branch(
     Ok(true)
 }
 
+fn reconcile_pending_deletions(
+    repo: &Repository,
+    provider: Option<&Provider>,
+    config: &mut Config,
+    stack_name: &str,
+    username: &str,
+    record_remote_effect: &mut dyn FnMut(Option<RemoteEffect>) -> Result<()>,
+) -> Result<()> {
+    let branch_name = git::format_stack_branch(username, stack_name);
+    let current_branches = if let Ok(stack_ref) = repo.revparse_single(&branch_name) {
+        let base = config
+            .get_base_for_stack(stack_name)
+            .map(str::to_owned)
+            .or_else(|| git::find_base_branch(repo).ok())
+            .ok_or(GgError::NoBaseBranch)?;
+        let mut branches = HashSet::new();
+        for oid in git::get_stack_commit_oids_from_tip(repo, &base, stack_ref.id())? {
+            if let Some(entry_id) = git::get_gg_id(&repo.find_commit(oid)?) {
+                branches.insert(git::format_entry_branch(username, stack_name, &entry_id));
+            }
+        }
+        branches
+    } else {
+        HashSet::new()
+    };
+
+    let deferred = super::sync::reconcile_pending_remote_entry_deletions(
+        repo,
+        provider,
+        username,
+        stack_name,
+        &current_branches,
+        config,
+        record_remote_effect,
+    )?;
+    // Keep the stack (and its intents) recoverable instead of stranding them.
+    if deferred.is_empty() {
+        Ok(())
+    } else {
+        Err(GgError::Other(deferred.join(" ")))
+    }
+}
+
 fn run_for_stack_with_repo_options(
     repo: &Repository,
     stack_name: &str,
     force: bool,
     merge_verified_by_land: bool,
     silent: bool,
-    record_remote_effect: &mut dyn FnMut(RemoteEffect),
+    record_remote_effect: &mut dyn FnMut(Option<RemoteEffect>) -> Result<()>,
 ) -> Result<bool> {
     let git_dir = repo.commondir();
     let mut config = Config::load_with_global(git_dir)?;
@@ -192,6 +245,15 @@ fn run_for_stack_with_repo_options(
             stack_name
         )));
     }
+
+    reconcile_pending_deletions(
+        repo,
+        provider.as_ref(),
+        &mut config,
+        stack_name,
+        &username,
+        record_remote_effect,
+    )?;
 
     if !maybe_remove_configured_worktree(repo, &mut config, stack_name, silent)? {
         return Ok(false);
@@ -243,10 +305,10 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
     }
 
     let git_dir = repo.commondir();
+    let _lock = git::acquire_operation_lock(&repo, "clean")?;
     let mut config = Config::load_with_global(git_dir)?;
 
-    // Acquire operation lock + record a Pending op for the undo log.
-    let (_lock, mut guard) = git::acquire_operation_lock_and_record(
+    let mut guard = git::begin_recorded_op(
         &repo,
         &config,
         OperationKind::Clean,
@@ -275,6 +337,7 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
     let mut cleaned: Vec<String> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
     let mut remote_effects = Vec::new();
+    let mut touched_remote = false;
     let mut cleanup_error: Option<String> = None;
 
     if stacks.is_empty() {
@@ -305,6 +368,27 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
             // Branch doesn't exist: clean LOCAL orphan entry branches and config.
             // Be conservative: do NOT delete remote branches here because we can't
             // reliably verify merge status without the main stack branch.
+            if let Err(error) = reconcile_pending_deletions(
+                &repo,
+                provider.as_ref(),
+                &mut config,
+                stack_name,
+                &username,
+                &mut |effect| {
+                    touched_remote = true;
+                    if let Some(effect) = effect {
+                        guard.record_remote_effect(effect.clone());
+                        remote_effects.push(effect);
+                        Ok(())
+                    } else {
+                        guard.mark_touched_remote_before_attempt()
+                    }
+                },
+            ) {
+                cleanup_error.get_or_insert_with(|| error.to_string());
+                skipped.push(format!("{stack_name} ({error})"));
+                continue;
+            }
             if let Err(error) = delete_entry_branches(
                 &repo,
                 &config,
@@ -312,7 +396,7 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
                 &username,
                 /*delete_remote=*/ false,
                 /*silent=*/ json,
-                &mut |_| {},
+                &mut |_| Ok(()),
             ) {
                 cleanup_error.get_or_insert_with(|| error.to_string());
                 skipped.push(format!("{stack_name} ({error})"));
@@ -347,6 +431,28 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
                 }
             }
 
+            if let Err(error) = reconcile_pending_deletions(
+                &repo,
+                provider.as_ref(),
+                &mut config,
+                stack_name,
+                &username,
+                &mut |effect| {
+                    touched_remote = true;
+                    if let Some(effect) = effect {
+                        guard.record_remote_effect(effect.clone());
+                        remote_effects.push(effect);
+                        Ok(())
+                    } else {
+                        guard.mark_touched_remote_before_attempt()
+                    }
+                },
+            ) {
+                cleanup_error.get_or_insert_with(|| error.to_string());
+                skipped.push(format!("{stack_name} ({error})"));
+                continue;
+            }
+
             let removed_or_not_configured =
                 maybe_remove_configured_worktree(&repo, &mut config, stack_name, json)?;
             config.save(git_dir)?;
@@ -376,8 +482,12 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
                 /*delete_remote=*/ allow_remote_delete,
                 /*silent=*/ json,
                 &mut |effect| {
-                    guard.record_remote_effect(effect.clone());
-                    remote_effects.push(effect);
+                    if let Some(effect) = effect {
+                        touched_remote = true;
+                        guard.record_remote_effect(effect.clone());
+                        remote_effects.push(effect);
+                    }
+                    Ok(())
                 },
             ) {
                 if !json {
@@ -456,7 +566,6 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
         println!("{}", style("No stacks to clean.").dim());
     }
 
-    let touched_remote = !remote_effects.is_empty();
     guard.finalize_with_scope(
         &repo,
         &config,
@@ -941,7 +1050,7 @@ fn delete_entry_branches(
     username: &str,
     delete_remote: bool,
     silent: bool,
-    record_remote_effect: &mut dyn FnMut(RemoteEffect),
+    record_remote_effect: &mut dyn FnMut(Option<RemoteEffect>) -> Result<()>,
 ) -> Result<()> {
     // First, delete entry branches from config (if any)
     if let Some(stack_config) = config.get_stack(stack_name) {
@@ -964,7 +1073,7 @@ fn delete_entry_branches(
             // discoverable for a retry.
             if delete_remote {
                 if let Some(effect) = delete_remote_branch(repo, &entry_branch)? {
-                    record_remote_effect(effect);
+                    record_remote_effect(Some(effect))?;
                 }
             }
             // Delete local entry branch
@@ -1009,7 +1118,7 @@ fn delete_entry_branches(
         // discoverable for a retry.
         if delete_remote {
             if let Some(effect) = delete_remote_branch(repo, &branch_name)? {
-                record_remote_effect(effect);
+                record_remote_effect(Some(effect))?;
             }
         }
         if let Ok(mut branch) = repo.find_branch(&branch_name, BranchType::Local) {
@@ -1158,7 +1267,9 @@ mod tests {
 
         let repo = Repository::open(&repo_path).expect("open repo");
         let result =
-            run_for_stack_with_repo_after_verified_land(&repo, "cleanup", true, true, &mut |_| {});
+            run_for_stack_with_repo_after_verified_land(&repo, "cleanup", true, true, &mut |_| {
+                Ok(())
+            });
 
         assert!(result.is_err(), "missing origin should fail remote cleanup");
         assert!(
@@ -1241,7 +1352,9 @@ mod tests {
 
         let repo = Repository::open(&repo_path).expect("open repo");
         let result =
-            run_for_stack_with_repo_after_verified_land(&repo, "cleanup", true, true, &mut |_| {});
+            run_for_stack_with_repo_after_verified_land(&repo, "cleanup", true, true, &mut |_| {
+                Ok(())
+            });
 
         assert!(result.is_err(), "missing origin should fail remote cleanup");
         assert!(
@@ -1327,7 +1440,9 @@ mod tests {
 
         let repo = Repository::open(&repo_path).expect("open repo");
         let result =
-            run_for_stack_with_repo_after_verified_land(&repo, "cleanup", true, false, &mut |_| {});
+            run_for_stack_with_repo_after_verified_land(&repo, "cleanup", true, false, &mut |_| {
+                Ok(())
+            });
 
         assert!(result.is_err(), "invalid username should fail validation");
         assert!(
@@ -1432,7 +1547,9 @@ mod tests {
 
         let repo = Repository::open(&repo_path).expect("open repo");
         let result =
-            run_for_stack_with_repo_after_verified_land(&repo, "cleanup", true, true, &mut |_| {});
+            run_for_stack_with_repo_after_verified_land(&repo, "cleanup", true, true, &mut |_| {
+                Ok(())
+            });
 
         assert!(!result.expect("cleanup should not error"));
         assert!(

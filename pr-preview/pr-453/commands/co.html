@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-ee2cd037.js";
+            window.path_to_searchindex_js = "../searchindex-ae8d8bcd.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-95fa4ef1.js"></script>
@@ -187,8 +187,9 @@
 <p>If the stack is not available locally, <code>gg co</code> fetches from <code>origin</code>. It uses
 <code>origin/&lt;username&gt;/&lt;stack-name&gt;</code> when that branch exists. Otherwise, it rebuilds
 the local stack from <code>&lt;username&gt;/&lt;stack-name&gt;--&lt;gg-id&gt;</code> entry branches, choosing
-the commit that contains every entry in a linear history above the configured
-base. GG-ID sorting does not determine stack order.</p>
+the commit that contains every entry in a linear history above the explicit
+<code>--base</code>, stack-configured base, or auto-detected base, in that order. GG-ID
+sorting does not determine stack order.</p>
 <p>If the entry branches have diverged, including when a merge commit joins them,
 checkout fails without creating the local stack branch. Resolve the divergent
 remote branches into a linear stack, then retry. The same selection applies with

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-5e17555c.js";
+            window.path_to_searchindex_js = "../searchindex-ee2cd037.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-95fa4ef1.js"></script>
@@ -187,11 +187,13 @@
 Otherwise, it reconstructs the stack from remote entry branches named
 <code>&lt;username&gt;/&lt;stack-name&gt;--&lt;gg-id&gt;</code> and imports available PR/MR mappings. Checkout
 selects the tip by Git ancestry, so the local branch includes all entries even
-when GG-IDs sort in a different order.</p>
-<p>If checkout reports that entry branches have diverged, it cannot identify a
-single tip containing all entries. Inspect the remote branches and resolve the
-divergence before retrying. It leaves your current checkout unchanged and does
-not create a partial local stack.</p>
+when GG-IDs sort in a different order. The selected stack history above its
+configured base must be linear.</p>
+<p>If checkout reports that entry branches have diverged, no single linear tip
+contains all entries; joining divergent entries with a merge commit is not a
+supported stack. Inspect the remote branches and resolve the divergence before
+retrying. It leaves your current checkout unchanged and does not create a
+partial local stack.</p>
 <h2 id="typical-collaboration-loop"><a class="header" href="#typical-collaboration-loop">Typical collaboration loop</a></h2>
 <pre><code class="language-bash">gg co teammate-feature
 gg ls

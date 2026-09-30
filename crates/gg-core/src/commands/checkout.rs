@@ -153,17 +153,40 @@ pub fn run(stack_name: Option<String>, base: Option<String>, use_worktree: bool)
                 remote_stack_branch
             } else {
                 // Find an entry branch for this stack
-                find_remote_entry_branch(&repo, &username, &stack_name).ok_or_else(|| {
-                    GgError::Other(format!(
-                        "Could not find remote branch for stack '{}'",
-                        stack_name
-                    ))
-                })?
+                let base_branch = base
+                    .clone()
+                    .or_else(|| config.get_base_for_stack(&stack_name).map(str::to_owned))
+                    .or_else(|| git::find_base_branch(&repo).ok())
+                    .ok_or(GgError::NoBaseBranch)?;
+                find_remote_entry_branch(&repo, &username, &stack_name, &base_branch)?.ok_or_else(
+                    || {
+                        GgError::Other(format!(
+                            "Could not find remote branch for stack '{}'",
+                            stack_name
+                        ))
+                    },
+                )?
             };
 
             // Get the commit from the remote branch
             let remote_ref = repo.revparse_single(&target_branch)?;
             let remote_commit = remote_ref.peel_to_commit()?;
+
+            if let Some(base_branch) = base.as_deref() {
+                let base_ref = repo
+                    .revparse_single(base_branch)
+                    .or_else(|_| repo.revparse_single(&format!("origin/{}", base_branch)))
+                    .map_err(|_| GgError::NoBaseBranch)?;
+                // The base may have advanced since the stack forked; only
+                // reject histories that share no commits at all.
+                if repo.merge_base(remote_commit.id(), base_ref.id()).is_err() {
+                    return Err(GgError::Other(format!(
+                        "Base branch '{}' shares no history with the stack tip",
+                        base_branch
+                    )));
+                }
+                git::get_stack_commit_oids_from_tip(&repo, base_branch, remote_commit.id())?;
+            }
 
             // Create local stack branch pointing to this commit
             let local_branch = git::format_stack_branch(&username, &stack_name);
@@ -181,6 +204,11 @@ pub fn run(stack_name: Option<String>, base: Option<String>, use_worktree: bool)
                 git::checkout_branch(&repo, &local_branch)?;
                 None
             };
+
+            if let Some(base_branch) = base {
+                config.get_or_create_stack(&stack_name).base = Some(base_branch);
+                config.save(git_dir)?;
+            }
 
             // Import PR mappings from remote
             if let Err(e) =
@@ -388,27 +416,64 @@ fn is_worktree_registered(repo_root: &Path, target_path: &Path) -> bool {
     })
 }
 
-/// Find a remote entry branch for a stack (returns the first one found)
+/// Find the remote entry branch at the tip of a stack using commit ancestry.
 fn find_remote_entry_branch(
     repo: &git2::Repository,
     username: &str,
     stack_name: &str,
-) -> Option<String> {
-    let branches = repo.branches(Some(git2::BranchType::Remote)).ok()?;
-
-    for branch_result in branches.flatten() {
-        if let Ok(Some(name)) = branch_result.0.name() {
+    base_branch: &str,
+) -> Result<Option<String>> {
+    let mut entries = Vec::new();
+    for branch_result in repo.branches(Some(BranchType::Remote))? {
+        let (branch, _) = branch_result?;
+        if let Some(name) = branch.name()? {
             if let Some(branch_name) = name.strip_prefix("origin/") {
-                if let Some((branch_user, branch_stack, _)) = git::parse_entry_branch(branch_name) {
-                    if branch_user == username && branch_stack == stack_name {
-                        return Some(name.to_string());
+                if let Some((branch_user, branch_stack, entry_id)) =
+                    git::parse_entry_branch(branch_name)
+                {
+                    if branch_user == username
+                        && branch_stack == stack_name
+                        && git::normalize_gg_id(&entry_id).is_some()
+                    {
+                        entries.push((name.to_string(), branch.get().peel_to_commit()?.id()));
                     }
                 }
             }
         }
     }
 
-    None
+    let Some(mut tip) = entries.first() else {
+        return Ok(None);
+    };
+    for entry in &entries {
+        if repo.graph_descendant_of(entry.1, tip.1)? {
+            tip = entry;
+        }
+    }
+
+    // A candidate is only a stack tip if it contains every entry. Check after
+    // scanning: initially diverged candidates may have a common descendant.
+    for entry in &entries {
+        if entry.1 != tip.1 && !repo.graph_descendant_of(tip.1, entry.1)? {
+            return Err(GgError::Other(format!(
+                "Remote entry branches for stack '{}' have diverged; no single tip contains all entries. Resolve the remote branches before retrying `gg co {}`.",
+                stack_name, stack_name
+            )));
+        }
+    }
+
+    match git::get_stack_commit_oids_from_tip(repo, base_branch, tip.1) {
+        Err(GgError::MergeCommitInStack) => {
+            return Err(GgError::Other(format!(
+                "Remote entry branches for stack '{}' have diverged; no single linear tip contains all entries. Resolve the remote branches before retrying `gg co {}`.",
+                stack_name, stack_name
+            )));
+        }
+        Err(error) => return Err(error),
+        Ok(_) => {}
+    }
+
+    Ok(Some(tip.0.clone()))
 }
 
 /// Check if a stack exists on remote (either main branch or entry branches)
@@ -424,10 +489,13 @@ fn check_remote_stack_exists(repo: &git2::Repository, username: &str, stack_name
         for branch_result in branches.flatten() {
             if let Ok(Some(name)) = branch_result.0.name() {
                 if let Some(branch_name) = name.strip_prefix("origin/") {
-                    if let Some((branch_user, branch_stack, _)) =
+                    if let Some((branch_user, branch_stack, entry_id)) =
                         git::parse_entry_branch(branch_name)
                     {
-                        if branch_user == username && branch_stack == stack_name {
+                        if branch_user == username
+                            && branch_stack == stack_name
+                            && git::normalize_gg_id(&entry_id).is_some()
+                        {
                             return true;
                         }
                     }

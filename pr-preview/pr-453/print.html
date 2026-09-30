@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-ae8d8bcd.js";
+            window.path_to_searchindex_js = "searchindex-3c32c54b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-95fa4ef1.js"></script>
@@ -1128,6 +1128,10 @@ recreation of the entry cancels it. Partial pruning persists confirmed progress 
 branch. Any unsuccessful deletion attempt remains uncertain and cannot be
 retried automatically, even when stderr reports a rejection. This also applies to
 <code>--until</code>: the complete local stack protects every retained or recreated entry.
+Pruning is deferred, with intent kept pending, while a retained entry’s PR/MR
+that was stacked on the dropped branch was not retargeted in this run (outside
+the <code>--until</code> range, or its base update failed), so no open review is left
+pointing at a deleted branch.
 Remote deletions make the sync operation ineligible for local <code>gg undo</code>.</p>
 <p>If a deletion attempt fails, or sync reports an uncertain prior deletion outcome, inspect the named remote
 branch and the repository-local <code>pending_remote_branch_deletions</code> config entry

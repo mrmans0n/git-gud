@@ -3,7 +3,7 @@
 use console::style;
 use git2::Repository;
 
-use crate::config::Config;
+use crate::config::{Config, PendingRemoteBranchDeletion};
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::immutability::{self, ImmutabilityPolicy};
@@ -342,13 +342,12 @@ pub(crate) fn update_local_branch(repo: &Repository, branch: &str) -> Result<()>
 /// Continue a paused rebase
 pub fn continue_rebase() -> Result<()> {
     let repo = git::open_repo()?;
-    let config = Config::load_with_global(repo.commondir())?;
+    let _lock = git::acquire_operation_lock(&repo, "continue")?;
+    let mut config = Config::load_with_global(repo.commondir())?;
 
     if !git::is_rebase_in_progress(&repo) {
         return Err(GgError::NoRebaseInProgress);
     }
-
-    let _lock = git::acquire_operation_lock(&repo, "continue")?;
 
     // Check for unstaged changes before continuing
     let statuses = repo.statuses(None)?;
@@ -388,7 +387,7 @@ pub fn continue_rebase() -> Result<()> {
             if let Some((branch_name, head_oid)) =
                 crate::stack::read_pending_integration(repo.path())
             {
-                let config = Config::load_with_global(repo.commondir())?;
+                let mut config = Config::load_with_global(repo.commondir())?;
                 let (new_head_oid, stack_name) =
                     crate::commands::restack::finalize_detached_integration(
                         &repo,
@@ -414,11 +413,11 @@ pub fn continue_rebase() -> Result<()> {
                     "  {}",
                     style("Run `gg sync` to push the updated stack.").dim()
                 );
-                finalize_continued_operation(&repo, &config, continued_operation)?;
+                finalize_continued_operation(&repo, &mut config, continued_operation)?;
                 return Ok(());
             }
 
-            finalize_continued_operation(&repo, &config, continued_operation)?;
+            finalize_continued_operation(&repo, &mut config, continued_operation)?;
             println!(
                 "{} Rebase continued successfully",
                 style("OK").green().bold()
@@ -453,6 +452,7 @@ pub fn continue_rebase() -> Result<()> {
 /// Abort a paused rebase
 pub fn abort_rebase() -> Result<()> {
     let repo = git::open_repo()?;
+    let _lock = git::acquire_operation_lock(&repo, "abort")?;
 
     if !git::is_rebase_in_progress(&repo) {
         return Err(GgError::NoRebaseInProgress);
@@ -471,7 +471,7 @@ pub fn abort_rebase() -> Result<()> {
 
 fn finalize_continued_operation(
     repo: &Repository,
-    config: &Config,
+    config: &mut Config,
     operation: Option<operations::OperationRecord>,
 ) -> Result<()> {
     let Some(operation) = operation else {
@@ -500,8 +500,30 @@ fn finalize_continued_operation(
         vec![],
         false,
     )?;
+    if operation.kind == OperationKind::Drop {
+        publish_continued_drop_deletions(repo, config, &operation)?;
+    }
     operations::clear_interrupted_rebase_operation(repo)?;
     Ok(())
+}
+
+fn publish_continued_drop_deletions(
+    repo: &Repository,
+    config: &mut Config,
+    operation: &operations::OperationRecord,
+) -> Result<()> {
+    let Some(value) = operation
+        .pending_plan
+        .as_ref()
+        .and_then(|plan| plan.get("drop"))
+        .and_then(|drop| drop.get("remote_deletions"))
+    else {
+        return Ok(());
+    };
+
+    let intents: Vec<PendingRemoteBranchDeletion> = serde_json::from_value(value.clone())?;
+    config.queue_remote_branch_deletions(intents);
+    config.save(repo.commondir())
 }
 
 fn operation_needs_metadata_normalization_after_continue(kind: OperationKind) -> bool {
@@ -746,6 +768,7 @@ mod tests {
                     "remainder_gg_id": "c-two222",
                 }
             })),
+            remote_branch_deletion_changes: vec![],
         };
 
         let previous_dir = std::env::current_dir().unwrap();

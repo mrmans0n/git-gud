@@ -80,13 +80,14 @@ pub struct ReconcileOptions {
 pub fn run(options: ReconcileOptions) -> Result<()> {
     let repo = git::open_repo()?;
     let git_dir = repo.commondir();
+    let _lock = git::acquire_operation_lock(&repo, "reconcile")?;
     let mut config = Config::load_with_global(git_dir)?;
 
     // Acquire operation lock + record a Pending op for the undo log.
     // NOTE: behaviour change — reconcile previously had no lock. Only the
     // mutating (non-dry-run) path actually changes state, but we record both
     // so the user can see dry-runs in `gg undo --list`.
-    let (_lock, guard) = git::acquire_operation_lock_and_record(
+    let guard = git::begin_recorded_op(
         &repo,
         &config,
         OperationKind::Reconcile,

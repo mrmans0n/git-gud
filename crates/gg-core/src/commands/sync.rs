@@ -4,16 +4,17 @@ use console::style;
 use dialoguer::Confirm;
 use git2::Repository;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use std::collections::HashSet;
 use std::time::Duration;
 
-use crate::config::{Config, GithubStacksIntegration};
+use crate::config::{Config, GithubStacksIntegration, RemoteBranchDeletionState};
 use crate::error::{GgError, Result};
 use crate::git::{self, get_commit_description, strip_gg_id_from_message};
 use crate::github_stacks::{
     reconcile_with_gh_before_mutation, GithubStackAction, GithubStackReason, GithubStackSyncResult,
 };
 use crate::managed_body;
-use crate::operations::{OperationKind, RemoteEffect, SnapshotScope};
+use crate::operations::{OperationGuard, OperationKind, RemoteEffect, SnapshotScope};
 use crate::output::{
     print_json, StreamingJson, SyncEntryResultJson, SyncMetadataJson, SyncResponse, SyncResultJson,
     SyncStreamingEvent, SyncStreamingResponse, OUTPUT_VERSION,
@@ -246,6 +247,176 @@ fn compute_target_branch(
     base.to_string()
 }
 
+/// Delete remote entry branches authorized by earlier Drops.
+///
+/// Returns one message per branch whose deletion was deferred because an open
+/// PR/MR still targets it, or because that could not be verified. Deferred
+/// intents stay pending for a later sync or clean.
+pub(crate) fn reconcile_pending_remote_entry_deletions(
+    repo: &Repository,
+    provider: Option<&Provider>,
+    username: &str,
+    stack_name: &str,
+    current_branches: &HashSet<String>,
+    config: &mut Config,
+    mut record_remote_effect: impl FnMut(Option<RemoteEffect>) -> Result<()>,
+) -> Result<Vec<String>> {
+    let before = config.pending_remote_branch_deletions.len();
+    config
+        .pending_remote_branch_deletions
+        .retain(|intent| !current_branches.contains(&intent.branch));
+    if config.pending_remote_branch_deletions.len() != before {
+        config.save(repo.commondir())?;
+    }
+
+    let intents = config
+        .pending_remote_branch_deletions
+        .iter()
+        .filter(|intent| {
+            matches!(
+                git::parse_entry_branch(&intent.branch),
+                Some((ref user, ref name, ref entry_id))
+                    if user == username
+                        && name == stack_name
+                        && git::normalize_gg_id(entry_id).is_some()
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let mut deferred = Vec::new();
+    for intent in intents {
+        if intent.state == RemoteBranchDeletionState::Deleting {
+            return Err(GgError::Other(format!(
+                "Remote deletion of '{}' has an uncertain prior outcome. Inspect '{}' and remove or reset its pending_remote_branch_deletions entry before retrying.",
+                intent.branch,
+                Config::config_path(repo.commondir()).display()
+            )));
+        }
+
+        let expected_oid = git2::Oid::from_str(&intent.expected_oid)?;
+        let live_oid = git::get_live_remote_branch_oid(repo, &intent.remote, &intent.branch)?;
+        let Some(live_oid) = live_oid else {
+            config.pending_remote_branch_deletions.retain(|candidate| {
+                candidate.remote != intent.remote || candidate.branch != intent.branch
+            });
+            config.save(repo.commondir())?;
+            continue;
+        };
+        if live_oid != expected_oid {
+            return Err(GgError::Other(format!(
+                "Refusing to delete remote branch '{}': it changed after the local drop (authorized {}, now {}). Keep the branch or drop its current version explicitly.",
+                intent.branch, expected_oid, live_oid
+            )));
+        }
+
+        // Deleting a branch that an open review still targets would close or
+        // break that review. Keep the intent until nothing targets it.
+        let dependents = match provider {
+            Some(provider) => provider.list_prs_targeting_branch(&intent.branch),
+            None => Err(GgError::Other("no provider detected".to_string())),
+        };
+        match dependents {
+            Ok(numbers) if numbers.is_empty() => {}
+            Ok(numbers) => {
+                let provider = provider.expect("dependents were listed by a provider");
+                let numbers = numbers
+                    .iter()
+                    .map(|n| format!("{}{n}", provider.pr_number_prefix()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                deferred.push(format!(
+                    "Kept remote branch '{}': open {} {} still targets it. Retarget them (a full `gg sync` does), then sync again.",
+                    intent.branch,
+                    provider.pr_label(),
+                    numbers
+                ));
+                continue;
+            }
+            Err(error) => {
+                deferred.push(format!(
+                    "Kept remote branch '{}': could not check for open reviews targeting it ({error}).",
+                    intent.branch
+                ));
+                continue;
+            }
+        }
+
+        let stored = config
+            .pending_remote_branch_deletions
+            .iter_mut()
+            .find(|candidate| {
+                candidate.remote == intent.remote && candidate.branch == intent.branch
+            })
+            .expect("cloned pending deletion must still exist");
+        stored.state = RemoteBranchDeletionState::Deleting;
+        config.save(repo.commondir())?;
+
+        // Any unsuccessful push is ambiguous: the server may have applied the
+        // deletion before the response was lost. Persist remote uncertainty
+        // before attempting it, and leave the intent in `deleting` on error.
+        record_remote_effect(None)?;
+        git::delete_remote_branch_at_oid(repo, &intent.remote, &intent.branch, expected_oid)?;
+
+        record_remote_effect(Some(RemoteEffect::BranchDeleted {
+            remote: intent.remote.clone(),
+            branch: intent.branch.clone(),
+            prior_oid: Some(intent.expected_oid.clone()),
+        }))?;
+        config.pending_remote_branch_deletions.retain(|candidate| {
+            candidate.remote != intent.remote || candidate.branch != intent.branch
+        });
+        config.save(repo.commondir())?;
+    }
+
+    Ok(deferred)
+}
+
+fn print_prune_deferrals(deferrals: &[String]) {
+    for message in deferrals {
+        println!("{} {}", style("Warning:").yellow(), message);
+    }
+}
+
+/// Prune remote branches of dropped entries, appending deferrals to `warnings`.
+#[allow(clippy::too_many_arguments)]
+fn prune_stale_remote_entry_branches_for_operation(
+    repo: &Repository,
+    provider: Option<&Provider>,
+    stack: &Stack,
+    config: &mut Config,
+    guard: &mut OperationGuard,
+    remote_effects: &mut Vec<RemoteEffect>,
+    touched_remote: &mut bool,
+    warnings: &mut Vec<String>,
+) -> Result<()> {
+    let current_branches = stack
+        .entries
+        .iter()
+        .filter_map(|entry| stack.entry_branch_name(entry))
+        .collect();
+    let deferred = reconcile_pending_remote_entry_deletions(
+        repo,
+        provider,
+        &stack.username,
+        &stack.name,
+        &current_branches,
+        config,
+        |effect| {
+            *touched_remote = true;
+            if let Some(effect) = effect {
+                remote_effects.push(effect.clone());
+                guard.record_remote_effect(effect);
+                Ok(())
+            } else {
+                guard.mark_touched_remote_before_attempt()
+            }
+        },
+    )?;
+    warnings.extend(deferred);
+    Ok(())
+}
+
 /// Run the sync command
 #[allow(clippy::too_many_arguments)]
 pub fn run(
@@ -261,12 +432,15 @@ pub fn run(
     no_verify: bool,
 ) -> Result<()> {
     let repo = git::open_repo()?;
-
     let git_dir = repo.commondir();
+    git::signal_sync_test_before_lock()?;
+    let _lock = git::acquire_operation_lock(&repo, "sync")?;
+    git::wait_for_sync_test_release()?;
     let mut config = Config::load_with_global(git_dir)?;
 
-    // Acquire operation lock + record a Pending op for the undo log.
-    let (_lock, mut guard) = git::acquire_operation_lock_and_record(
+    // Config is authoritative only after the operation lock is held. Record
+    // the operation from that same locked snapshot before mutating anything.
+    let mut guard = git::begin_recorded_op(
         &repo,
         &config,
         OperationKind::Sync,
@@ -303,6 +477,20 @@ pub fn run(
         }
     }
     if initial_stack.is_empty() {
+        let warnings_before_prune = warnings.len();
+        prune_stale_remote_entry_branches_for_operation(
+            &repo,
+            Provider::detect(&repo).ok().as_ref(),
+            &initial_stack,
+            &mut config,
+            &mut guard,
+            &mut remote_effects,
+            &mut touched_remote,
+            &mut warnings,
+        )?;
+        if !json && !jsonl {
+            print_prune_deferrals(&warnings[warnings_before_prune..]);
+        }
         if json {
             print_json(&SyncResponse {
                 version: OUTPUT_VERSION,
@@ -339,8 +527,8 @@ pub fn run(
             &repo,
             &config,
             SnapshotScope::AllUserBranches,
-            vec![],
-            false,
+            remote_effects,
+            touched_remote,
         )?;
         return Ok(());
     }
@@ -358,7 +546,7 @@ pub fn run(
     provider.check_auth()?;
 
     // Fetch from remote to ensure we have up-to-date refs
-    let _ = git::fetch_and_prune();
+    git::fetch_and_prune()?;
 
     let mut rebased_before_sync = false;
     if !no_rebase_check {
@@ -420,6 +608,20 @@ pub fn run(
     let mut stack = Stack::load(&repo, &config)?;
 
     if stack.is_empty() {
+        let warnings_before_prune = warnings.len();
+        prune_stale_remote_entry_branches_for_operation(
+            &repo,
+            Some(&provider),
+            &stack,
+            &mut config,
+            &mut guard,
+            &mut remote_effects,
+            &mut touched_remote,
+            &mut warnings,
+        )?;
+        if !json && !jsonl {
+            print_prune_deferrals(&warnings[warnings_before_prune..]);
+        }
         if json {
             print_json(&SyncResponse {
                 version: OUTPUT_VERSION,
@@ -505,6 +707,7 @@ pub fn run(
     let mut force_draft = draft;
     let mut json_entries: Vec<SyncEntryResultJson> = Vec::new();
     let mut nav_snapshots: Vec<Option<NavEntrySnapshot>> = Vec::new();
+    let mut branch_push_failed = false;
     // Track which entries are closed/merged so downstream entries can skip them
     // when computing their target branch (walk-back algorithm for stacked MRs).
     let mut entry_is_closed: Vec<bool> = Vec::with_capacity(entries_to_sync.len());
@@ -601,6 +804,7 @@ pub fn run(
             );
             if let Err(e) = push_result {
                 pb.finish_and_clear();
+                branch_push_failed = true;
                 if json || jsonl {
                     if let Some(s) = streamer.as_mut() {
                         s.emit(&SyncStreamingResponse {
@@ -1194,8 +1398,29 @@ pub fn run(
         pb.inc(1);
     }
 
+    let warnings_before_prune = warnings.len();
+    let prune_result = if branch_push_failed {
+        Ok(())
+    } else {
+        prune_stale_remote_entry_branches_for_operation(
+            &repo,
+            Some(&provider),
+            &stack,
+            &mut config,
+            &mut guard,
+            &mut remote_effects,
+            &mut touched_remote,
+            &mut warnings,
+        )
+    };
+    if let Err(error) = prune_result {
+        pb.finish_and_clear();
+        return Err(error);
+    }
+
     if !json && !jsonl {
         pb.finish_with_message("Done!");
+        print_prune_deferrals(&warnings[warnings_before_prune..]);
     }
 
     let active_pr_numbers: Vec<u64> = nav_snapshots

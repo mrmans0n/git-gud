@@ -38,7 +38,11 @@ record. The completed operation then appears as undoable in `gg undo
 --list`.
 
 A second `gg undo` redoes the first — because `undo` is itself
-recorded as an operation, running it twice reverses the reversal.
+recorded as an operation, running it twice reverses the reversal. For a
+published `gg drop`, this also replays the exact deferred remote-branch
+deletion-intent change: undo cancels unconsumed authority and redo restores
+the same OID-bound state. It does not recreate authority already consumed by
+Sync or turn an uncertain `deleting` state back into retryable authority.
 Entries created by `gg undo` appear in `--list` with a `↶` marker and
 an `undoes` field pointing at the original operation id.
 
@@ -179,9 +183,11 @@ UI/agent actions; use `is_undo` + `undoes` to render redo markers.
 - It does **not** touch remotes. Operations that pushed, deleted a remote
   branch, or created/merged/closed PRs/MRs are recorded (so you can see them in `--list`) but
   refused for local replay.
-- It does **not** guarantee atomicity of the replay. If the process
-  dies mid-replay, a second `gg undo` will finish the job — the
-  working tree is clean throughout, so only refs move.
+- It does **not** guarantee atomicity of the replay. If the process dies
+  mid-replay, inspect the interrupted operation, refs, and any
+  `pending_remote_branch_deletions` entries before reconciling manually. The
+  working tree remains untouched, but refs or recorded deletion intent may
+  already have changed.
 - It does **not** support an `--all` / `--range` mode. Each call
   reverses exactly one operation.
 

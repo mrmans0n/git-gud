@@ -19,10 +19,10 @@ use std::process::Command;
 pub fn run(stack_name: Option<String>, base: Option<String>, use_worktree: bool) -> Result<()> {
     let repo = git::open_repo()?;
     let git_dir = repo.commondir();
+    let _lock = git::acquire_operation_lock(&repo, "checkout")?;
     let mut config = Config::load_with_global(git_dir)?;
 
-    // Acquire operation lock + record a Pending op for the undo log.
-    let (_lock, guard) = git::acquire_operation_lock_and_record(
+    let guard = git::begin_recorded_op(
         &repo,
         &config,
         OperationKind::Checkout,

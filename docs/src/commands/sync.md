@@ -26,6 +26,32 @@ When you run `gg sync --lint`, lint runs before any push/PR updates. If lint fai
 
 Before pushing, `gg sync` also normalizes commit metadata (`GG-ID` and `GG-Parent`) for the whole stack. This normalization is always enforced during sync (including adding missing `GG-ID` trailers) to keep stack identity and PR/MR mappings stable.
 
+After syncing the selected entries, `gg sync` consumes durable deletion intent
+created by a successful local `gg drop`. Each intent is bound to the exact
+remote-tracking OID known at Drop time; a fresh server tip is never adopted as
+deletion authority. If the remote branch changed, sync fails with the expected
+and current OIDs and leaves it intact. If no trusted remote version existed at
+Drop time, no intent is created and the branch is retained.
+
+Intent is one-shot and independent of the 100-record undo journal. Confirmed
+deletion or observed remote absence consumes it, while `gg undo` of the Drop or
+recreation of the entry cancels it. Partial pruning persists confirmed progress per
+branch. Any unsuccessful deletion attempt remains uncertain and cannot be
+retried automatically, even when stderr reports a rejection. This also applies to
+`--until`: the complete local stack protects every retained or recreated entry.
+Before deleting, sync asks GitHub/GitLab whether any open PR/MR still targets
+the branch (for example, a later entry outside the `--until` range, or one whose
+base update failed). If one does, or the check fails, the branch is kept, the
+intent stays pending, and sync prints a warning (also in the JSON `warnings`).
+Retarget the review, usually with a full `gg sync`, and sync again. `gg clean`
+applies the same check and keeps the stack when it defers a deletion.
+Remote deletions make the sync operation ineligible for local `gg undo`.
+
+If a deletion attempt fails, or sync reports an uncertain prior deletion outcome, inspect the named remote
+branch and the repository-local `pending_remote_branch_deletions` config entry
+before manually removing or resetting it. This conservative stop prevents an
+ambiguous prior success from deleting a later same-OID republication.
+
 If the current stack branch has a valid stack shape but uses a different prefix
 than `defaults.branch_username`, `gg sync` continues and warns that stack
 discovery, listing, and saved PR/MR mappings may be inaccurate. In `--json`

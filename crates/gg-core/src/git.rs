@@ -79,6 +79,31 @@ pub fn acquire_operation_lock_silent(
     acquire_operation_lock_with_timeout_and_silent(repo, operation, INDEX_LOCK_TIMEOUT_SECS, silent)
 }
 
+/// Test-only file coordination for the sync lock-ordering integration test.
+pub fn signal_sync_test_before_lock() -> Result<()> {
+    #[cfg(debug_assertions)]
+    if let Some(path) = std::env::var_os("GG_TEST_SYNC_BEFORE_LOCK") {
+        fs::write(path, b"ready")?;
+    }
+    Ok(())
+}
+
+/// Test-only pause after sync acquires the operation lock and before config load.
+pub fn wait_for_sync_test_release() -> Result<()> {
+    #[cfg(debug_assertions)]
+    if let (Some(ready), Some(release)) = (
+        std::env::var_os("GG_TEST_SYNC_LOCKED"),
+        std::env::var_os("GG_TEST_SYNC_RELEASE"),
+    ) {
+        fs::write(ready, b"ready")?;
+        let release = std::path::PathBuf::from(release);
+        while !release.exists() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    Ok(())
+}
+
 /// Internal version with configurable timeout (for testing)
 #[cfg(test)]
 pub(crate) fn acquire_operation_lock_with_timeout(
@@ -252,6 +277,7 @@ pub fn begin_recorded_op(
         touched_remote: false,
         undoes: None,
         pending_plan: None,
+        remote_branch_deletion_changes: vec![],
     };
     store.save(&record)?;
 
@@ -802,10 +828,17 @@ pub fn run_git_command(args: &[&str]) -> Result<String> {
 /// This ensures we have up-to-date remote state before operations like sync
 pub fn fetch_and_prune() -> Result<()> {
     // Using subprocess because git2's fetch requires complex auth callback setup
-    let _ = std::process::Command::new("git")
+    let output = std::process::Command::new("git")
         .args(["fetch", "origin", "--prune"])
-        .output();
-    Ok(())
+        .output()?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(GgError::Other(format!(
+            "git fetch origin --prune failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )))
+    }
 }
 
 /// Get the OID of a remote branch, if it exists
@@ -1030,18 +1063,20 @@ fn parse_push_error(stderr: &str) -> (Option<String>, Option<String>) {
     (hook_error, git_error)
 }
 
-/// Delete a remote branch only if its server tip still matches the tip resolved
-/// immediately before deletion. Returns the exact deleted OID, or `None` when
-/// the branch does not exist on the server.
-pub fn delete_remote_branch(repo: &Repository, branch_name: &str) -> Result<Option<Oid>> {
+/// Resolve a branch directly from the remote server.
+pub fn get_live_remote_branch_oid(
+    repo: &Repository,
+    remote: &str,
+    branch_name: &str,
+) -> Result<Option<Oid>> {
     let workdir = repo
         .workdir()
-        .ok_or_else(|| GgError::Other("Cannot delete a remote branch from a bare repo".into()))?;
+        .ok_or_else(|| GgError::Other("Cannot inspect a remote branch from a bare repo".into()))?;
     let branch_ref = format!("refs/heads/{branch_name}");
     let lookup = Command::new("git")
         .args(["-C"])
         .arg(workdir)
-        .args(["ls-remote", "--heads", "origin", &branch_ref])
+        .args(["ls-remote", "--heads", remote, &branch_ref])
         .output()?;
     if !lookup.status.success() {
         return Err(GgError::Other(format!(
@@ -1059,23 +1094,48 @@ pub fn delete_remote_branch(repo: &Repository, branch_name: &str) -> Result<Opti
     }) else {
         return Ok(None);
     };
-    let oid = Oid::from_str(oid_text)?;
+    Ok(Some(Oid::from_str(oid_text)?))
+}
 
-    let lease = format!("--force-with-lease={branch_ref}:{oid}");
+/// Delete a remote branch only at the exact OID authorized by the caller.
+pub fn delete_remote_branch_at_oid(
+    repo: &Repository,
+    remote: &str,
+    branch_name: &str,
+    expected_oid: Oid,
+) -> Result<()> {
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| GgError::Other("Cannot delete a remote branch from a bare repo".into()))?;
+    let branch_ref = format!("refs/heads/{branch_name}");
+    let lease = format!("--force-with-lease={branch_ref}:{expected_oid}");
     let delete_refspec = format!(":{branch_ref}");
     let deletion = Command::new("git")
         .args(["-C"])
         .arg(workdir)
-        .args(["push", &lease, "origin", &delete_refspec])
+        .args(["push", &lease, remote, &delete_refspec])
         .output()?;
     if !deletion.status.success() {
         return Err(GgError::Other(format!(
-            "Refusing to delete remote branch '{branch_name}' because its server tip changed: {}",
+            "Remote deletion attempt for '{branch_name}' failed with an uncertain outcome; reconcile it before retrying: {}",
             String::from_utf8_lossy(&deletion.stderr).trim()
         )));
     }
 
-    Ok(Some(oid))
+    Ok(())
+}
+
+/// Delete a remote branch using its current server tip as the lease.
+///
+/// This is appropriate for explicit cleanup commands. Deferred deletion flows
+/// must call [`delete_remote_branch_at_oid`] with their previously authorized
+/// version instead of adopting the current server tip.
+pub fn delete_remote_branch(repo: &Repository, branch_name: &str) -> Result<Option<Oid>> {
+    let Some(prior_oid) = get_live_remote_branch_oid(repo, "origin", branch_name)? else {
+        return Ok(None);
+    };
+    delete_remote_branch_at_oid(repo, "origin", branch_name, prior_oid)?;
+    Ok(Some(prior_oid))
 }
 
 /// Continue a rebase
@@ -2563,7 +2623,7 @@ mod tests {
         }
 
         let error = delete_remote_branch(&repo, "feature").unwrap_err();
-        assert!(error.to_string().contains("server tip changed"));
+        assert!(error.to_string().contains("uncertain outcome"));
         let output = Command::new("git")
             .args([
                 "--git-dir",

@@ -616,11 +616,20 @@ pub fn get_pr_ci_status(pr_number: u64) -> Result<CiStatus> {
 /// List PRs for a specific head branch
 /// Returns a list of PR numbers for open PRs with the given head branch
 pub fn list_prs_for_branch(branch: &str) -> Result<Vec<u64>> {
+    list_open_prs("--head", branch)
+}
+
+/// List open PRs whose base branch is `branch`
+pub fn list_prs_targeting_branch(branch: &str) -> Result<Vec<u64>> {
+    list_open_prs("--base", branch)
+}
+
+fn list_open_prs(branch_flag: &str, branch: &str) -> Result<Vec<u64>> {
     let output = Command::new("gh")
         .args([
             "pr",
             "list",
-            "--head",
+            branch_flag,
             branch,
             "--json",
             "number",

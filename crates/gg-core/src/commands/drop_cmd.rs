@@ -6,7 +6,7 @@ use console::style;
 use dialoguer::Confirm;
 use serde_json::json;
 
-use crate::config::Config;
+use crate::config::{Config, PendingRemoteBranchDeletion, RemoteBranchDeletionState};
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::immutability::{self, ImmutabilityPolicy};
@@ -33,13 +33,12 @@ pub struct DropOptions {
 /// Run the drop command
 pub fn run(options: DropOptions) -> Result<()> {
     let repo = git::open_repo()?;
-    let config = Config::load_with_global(repo.commondir())?;
-
     // Acquire the operation lock early so all validation runs under it, but
     // defer writing the op-log record until *after* the immutability guard
     // passes. This keeps refused operations from polluting `gg undo --list`
     // with Interrupted ghosts (design §4.6).
     let _lock = git::acquire_operation_lock(&repo, "drop")?;
+    let mut config = Config::load_with_global(repo.commondir())?;
 
     // Require clean working directory
     git::require_clean_working_directory(&repo)?;
@@ -155,9 +154,24 @@ pub fn run(options: DropOptions) -> Result<()> {
         .filter_map(|entry| stack_obj.get_entry_by_position(entry.position))
         .filter_map(|entry| stack_obj.entry_branch_name(entry))
         .collect();
+    let remote_deletion_intents: Vec<PendingRemoteBranchDeletion> = dropped_entry_branches
+        .iter()
+        .filter_map(|branch| {
+            git::get_remote_branch_oid(&repo, branch).map(|expected_oid| {
+                PendingRemoteBranchDeletion {
+                    remote: "origin".to_string(),
+                    branch: branch.clone(),
+                    expected_oid: expected_oid.to_string(),
+                    source_operation_id: guard.id().to_string(),
+                    state: RemoteBranchDeletionState::Pending,
+                }
+            })
+        })
+        .collect();
     guard.set_pending_plan(json!({
         "drop": {
             "entry_branches": dropped_entry_branches,
+            "remote_deletions": remote_deletion_intents,
         }
     }));
 
@@ -240,6 +254,11 @@ pub fn run(options: DropOptions) -> Result<()> {
         vec![],
         false,
     )?;
+
+    // Publish deletion authority only after the local Drop and its undo record
+    // are durable. Branches without a trusted remote OID produce no intent.
+    config.queue_remote_branch_deletions(remote_deletion_intents);
+    config.save(repo.commondir())?;
 
     if options.json {
         print_json(&DropResponse {

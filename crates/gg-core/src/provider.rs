@@ -429,6 +429,14 @@ impl Provider {
         }
     }
 
+    /// List open PRs/MRs whose base/target is the given branch
+    pub fn list_prs_targeting_branch(&self, branch: &str) -> Result<Vec<u64>> {
+        match self {
+            Provider::GitHub => gh::list_prs_targeting_branch(branch),
+            Provider::GitLab => glab::list_mrs_targeting_branch(branch),
+        }
+    }
+
     /// Get PR/MR label (PR or MR)
     pub fn pr_label(&self) -> &'static str {
         match self {

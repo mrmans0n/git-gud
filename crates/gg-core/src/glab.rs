@@ -741,8 +741,17 @@ pub fn get_mr_ci_status(mr_number: u64) -> Result<CiStatus> {
 /// List MRs for a specific source branch
 /// Returns a list of MR numbers (iids) for open MRs with the given source branch
 pub fn list_mrs_for_branch(branch: &str) -> Result<Vec<u64>> {
+    list_open_mrs("--source-branch", branch)
+}
+
+/// List open MRs whose target branch is `branch`
+pub fn list_mrs_targeting_branch(branch: &str) -> Result<Vec<u64>> {
+    list_open_mrs("--target-branch", branch)
+}
+
+fn list_open_mrs(branch_flag: &str, branch: &str) -> Result<Vec<u64>> {
     let output = Command::new("glab")
-        .args(["mr", "list", "--source-branch", branch, "--output", "json"])
+        .args(["mr", "list", branch_flag, branch, "--output", "json"])
         .output()?;
 
     if !output.status.success() {

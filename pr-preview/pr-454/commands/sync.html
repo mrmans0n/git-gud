@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-3c32c54b.js";
+            window.path_to_searchindex_js = "../searchindex-94f41f2d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-95fa4ef1.js"></script>
@@ -207,10 +207,12 @@ recreation of the entry cancels it. Partial pruning persists confirmed progress 
 branch. Any unsuccessful deletion attempt remains uncertain and cannot be
 retried automatically, even when stderr reports a rejection. This also applies to
 <code>--until</code>: the complete local stack protects every retained or recreated entry.
-Pruning is deferred, with intent kept pending, while a retained entry’s PR/MR
-that was stacked on the dropped branch was not retargeted in this run (outside
-the <code>--until</code> range, or its base update failed), so no open review is left
-pointing at a deleted branch.
+Before deleting, sync asks GitHub/GitLab whether any open PR/MR still targets
+the branch (for example, a later entry outside the <code>--until</code> range, or one whose
+base update failed). If one does, or the check fails, the branch is kept, the
+intent stays pending, and sync prints a warning (also in the JSON <code>warnings</code>).
+Retarget the review, usually with a full <code>gg sync</code>, and sync again. <code>gg clean</code>
+applies the same check and keeps the stack when it defers a deletion.
 Remote deletions make the sync operation ineligible for local <code>gg undo</code>.</p>
 <p>If a deletion attempt fails, or sync reports an uncertain prior deletion outcome, inspect the named remote
 branch and the repository-local <code>pending_remote_branch_deletions</code> config entry

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-3c32c54b.js";
+            window.path_to_searchindex_js = "../searchindex-de1e76e7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-95fa4ef1.js"></script>
@@ -176,9 +176,6 @@
                     <main>
                         <h1 id="gg-drop"><a class="header" href="#gg-drop"><code>gg drop</code></a></h1>
 <p>Remove one or more commits from the stack.</p>
-<p>For a published entry, running <code>gg drop</code> also authorizes a later <code>gg sync</code> to
-delete that entry’s remote branch. The Drop itself remains local: it records
-deferred deletion intent, and Sync performs the remote deletion.</p>
 <p><strong>Alias:</strong> <code>gg abandon</code></p>
 <pre><code class="language-bash">gg drop &lt;TARGET&gt;... [OPTIONS]
 </code></pre>
@@ -207,26 +204,10 @@ from <code>origin/&lt;base&gt;</code>; this flag bypasses both safeties. See
 <li>Resolves each target to a commit in the stack</li>
 <li>Shows which commits will be dropped and asks for confirmation (unless <code>--force</code>)</li>
 <li>Performs a <code>git rebase -i</code> that omits the dropped commits</li>
-<li>Cleans up local per-commit branches for dropped commits</li>
-<li>Records deferred remote-branch deletion authority for published entries</li>
+<li>Cleans up per-commit branches for dropped commits</li>
 <li>Prints a summary of what was dropped</li>
 </ol>
 <p>At least one commit must remain in the stack after dropping.</p>
-<p>Deferred deletion authority is bound to the exact remote-tracking OID known
-when Drop runs. If no trusted remote version is known, Drop records no
-authority and Sync keeps the remote branch. Sync also refuses deletion if the
-live branch has moved to another OID; it never adopts that newer version as
-authority.</p>
-<p><code>gg undo</code> of the Drop restores the local entry and cancels any unconsumed
-deletion intent. Undoing that Undo (redoing the Drop) restores the exact saved
-intent, including its OID and lifecycle state. Intent already consumed by a
-completed Sync is never recreated. An intent left in <code>deleting</code> after an
-uncertain remote outcome stays uncertain across undo/redo and is not retried
-automatically.</p>
-<p>When Sync reports a changed branch or uncertain deletion, inspect the named
-remote ref and <code>.git/gg/config.json</code> before reconciling manually. GG cannot
-determine whether an ambiguous server response applied the deletion, and it
-will not authorize a retry or a newer branch version on your behalf.</p>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <pre><code class="language-bash"># Drop the second commit in the stack
 gg drop 2

@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3c32c54b.js";
+            window.path_to_searchindex_js = "searchindex-de1e76e7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-95fa4ef1.js"></script>
@@ -1116,27 +1116,6 @@ treating the inbox as complete.</p>
 <p>Before pushing, <code>gg sync</code> checks whether your stack base is behind <code>origin/&lt;base&gt;</code>. If it is behind by at least the configured threshold, git-gud warns and suggests rebasing first (<code>gg rebase</code>).</p>
 <p>When you run <code>gg sync --lint</code>, lint runs before any push/PR updates. If lint fails, sync aborts immediately and git-gud restores your repository to the pre-sync snapshot.</p>
 <p>Before pushing, <code>gg sync</code> also normalizes commit metadata (<code>GG-ID</code> and <code>GG-Parent</code>) for the whole stack. This normalization is always enforced during sync (including adding missing <code>GG-ID</code> trailers) to keep stack identity and PR/MR mappings stable.</p>
-<p>After syncing the selected entries, <code>gg sync</code> consumes durable deletion intent
-created by a successful local <code>gg drop</code>. Each intent is bound to the exact
-remote-tracking OID known at Drop time; a fresh server tip is never adopted as
-deletion authority. If the remote branch changed, sync fails with the expected
-and current OIDs and leaves it intact. If no trusted remote version existed at
-Drop time, no intent is created and the branch is retained.</p>
-<p>Intent is one-shot and independent of the 100-record undo journal. Confirmed
-deletion or observed remote absence consumes it, while <code>gg undo</code> of the Drop or
-recreation of the entry cancels it. Partial pruning persists confirmed progress per
-branch. Any unsuccessful deletion attempt remains uncertain and cannot be
-retried automatically, even when stderr reports a rejection. This also applies to
-<code>--until</code>: the complete local stack protects every retained or recreated entry.
-Pruning is deferred, with intent kept pending, while a retained entry’s PR/MR
-that was stacked on the dropped branch was not retargeted in this run (outside
-the <code>--until</code> range, or its base update failed), so no open review is left
-pointing at a deleted branch.
-Remote deletions make the sync operation ineligible for local <code>gg undo</code>.</p>
-<p>If a deletion attempt fails, or sync reports an uncertain prior deletion outcome, inspect the named remote
-branch and the repository-local <code>pending_remote_branch_deletions</code> config entry
-before manually removing or resetting it. This conservative stop prevents an
-ambiguous prior success from deleting a later same-OID republication.</p>
 <p>If the current stack branch has a valid stack shape but uses a different prefix
 than <code>defaults.branch_username</code>, <code>gg sync</code> continues and warns that stack
 discovery, listing, and saved PR/MR mappings may be inaccurate. In <code>--json</code>
@@ -1441,9 +1420,6 @@ gg absorb --whole-file --no-limit
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="gg-drop"><a class="header" href="#gg-drop"><code>gg drop</code></a></h1>
 <p>Remove one or more commits from the stack.</p>
-<p>For a published entry, running <code>gg drop</code> also authorizes a later <code>gg sync</code> to
-delete that entry’s remote branch. The Drop itself remains local: it records
-deferred deletion intent, and Sync performs the remote deletion.</p>
 <p><strong>Alias:</strong> <code>gg abandon</code></p>
 <pre><code class="language-bash">gg drop &lt;TARGET&gt;... [OPTIONS]
 </code></pre>
@@ -1472,26 +1448,10 @@ from <code>origin/&lt;base&gt;</code>; this flag bypasses both safeties. See
 <li>Resolves each target to a commit in the stack</li>
 <li>Shows which commits will be dropped and asks for confirmation (unless <code>--force</code>)</li>
 <li>Performs a <code>git rebase -i</code> that omits the dropped commits</li>
-<li>Cleans up local per-commit branches for dropped commits</li>
-<li>Records deferred remote-branch deletion authority for published entries</li>
+<li>Cleans up per-commit branches for dropped commits</li>
 <li>Prints a summary of what was dropped</li>
 </ol>
 <p>At least one commit must remain in the stack after dropping.</p>
-<p>Deferred deletion authority is bound to the exact remote-tracking OID known
-when Drop runs. If no trusted remote version is known, Drop records no
-authority and Sync keeps the remote branch. Sync also refuses deletion if the
-live branch has moved to another OID; it never adopts that newer version as
-authority.</p>
-<p><code>gg undo</code> of the Drop restores the local entry and cancels any unconsumed
-deletion intent. Undoing that Undo (redoing the Drop) restores the exact saved
-intent, including its OID and lifecycle state. Intent already consumed by a
-completed Sync is never recreated. An intent left in <code>deleting</code> after an
-uncertain remote outcome stays uncertain across undo/redo and is not retried
-automatically.</p>
-<p>When Sync reports a changed branch or uncertain deletion, inspect the named
-remote ref and <code>.git/gg/config.json</code> before reconciling manually. GG cannot
-determine whether an ambiguous server response applied the deletion, and it
-will not authorize a retry or a newer branch version on your behalf.</p>
 <h2 id="examples-5"><a class="header" href="#examples-5">Examples</a></h2>
 <pre><code class="language-bash"># Drop the second commit in the stack
 gg drop 2
@@ -2454,11 +2414,7 @@ refs back to where they were.</p>
 conflict and running <code>gg continue</code> finalises the original operation
 record. The completed operation then appears as undoable in <code>gg undo --list</code>.</p>
 <p>A second <code>gg undo</code> redoes the first — because <code>undo</code> is itself
-recorded as an operation, running it twice reverses the reversal. For a
-published <code>gg drop</code>, this also replays the exact deferred remote-branch
-deletion-intent change: undo cancels unconsumed authority and redo restores
-the same OID-bound state. It does not recreate authority already consumed by
-Sync or turn an uncertain <code>deleting</code> state back into retryable authority.
+recorded as an operation, running it twice reverses the reversal.
 Entries created by <code>gg undo</code> appear in <code>--list</code> with a <code>↶</code> marker and
 an <code>undoes</code> field pointing at the original operation id.</p>
 <h2 id="native-client-correlation"><a class="header" href="#native-client-correlation">Native-client correlation</a></h2>
@@ -2580,11 +2536,9 @@ a commit and want the old source back, use <code>git reflog</code> or
 <li>It does <strong>not</strong> touch remotes. Operations that pushed, deleted a remote
 branch, or created/merged/closed PRs/MRs are recorded (so you can see them in <code>--list</code>) but
 refused for local replay.</li>
-<li>It does <strong>not</strong> guarantee atomicity of the replay. If the process dies
-mid-replay, inspect the interrupted operation, refs, and any
-<code>pending_remote_branch_deletions</code> entries before reconciling manually. The
-working tree remains untouched, but refs or recorded deletion intent may
-already have changed.</li>
+<li>It does <strong>not</strong> guarantee atomicity of the replay. If the process
+dies mid-replay, a second <code>gg undo</code> will finish the job — the
+working tree is clean throughout, so only refs move.</li>
 <li>It does <strong>not</strong> support an <code>--all</code> / <code>--range</code> mode. Each call
 reverses exactly one operation.</li>
 </ul>

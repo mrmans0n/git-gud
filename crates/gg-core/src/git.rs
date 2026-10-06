@@ -779,7 +779,7 @@ pub fn ensure_branch_attached(repo: &Repository, branch_name: &str) -> Result<()
         if let Ok(branch_ref) = repo.find_reference(&refname) {
             if let Ok(branch_commit) = branch_ref.peel_to_commit() {
                 if head_oid == branch_commit.id() {
-                    run_git_command(&["symbolic-ref", "HEAD", &refname])?;
+                    run_git_command_in_repo(repo, &["symbolic-ref", "HEAD", &refname])?;
                 }
             }
         }
@@ -810,7 +810,36 @@ pub fn get_signature(repo: &Repository) -> Result<Signature<'static>> {
 
 /// Run git command as subprocess (for operations git2 doesn't support well)
 pub fn run_git_command(args: &[&str]) -> Result<String> {
-    let output = Command::new("git").args(args).output()?;
+    execute_git_command(Command::new("git"), args)
+}
+
+fn run_git_command_in_repo(repo: &Repository, args: &[&str]) -> Result<String> {
+    let workdir = repo.workdir().ok_or_else(|| {
+        GgError::Other("Cannot run a worktree Git command in a bare repository".to_string())
+    })?;
+    let mut command = Command::new("git");
+    command
+        .arg("--git-dir")
+        .arg(repo.path())
+        .arg("--work-tree")
+        .arg(workdir)
+        .current_dir(workdir);
+    for variable in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_NAMESPACE",
+    ] {
+        command.env_remove(variable);
+    }
+    execute_git_command(command, args)
+}
+
+fn execute_git_command(mut command: Command, args: &[&str]) -> Result<String> {
+    let output = command.args(args).output()?;
 
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -1323,11 +1352,16 @@ pub fn normalize_gg_id(gg_id: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
+    use std::path::Path;
+    use std::process::{Command, Output};
 
     use crate::stack::{Stack, StackEntry};
 
-    fn run_git(repo_path: &std::path::Path, args: &[&str]) {
+    const CHILD_CASE_ENV: &str = "GG_TEST_CHILD_CASE";
+    const ATTACH_NORMAL_CASE: &str = "ensure-branch-attached-normal";
+    const ATTACH_LINKED_WORKTREE_CASE: &str = "ensure-branch-attached-linked-worktree";
+
+    fn run_git(repo_path: &Path, args: &[&str]) {
         let output = Command::new("git")
             .args(args)
             .current_dir(repo_path)
@@ -1337,6 +1371,77 @@ mod tests {
             output.status.success(),
             "git {} failed: {}",
             args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn git_stdout(repo_path: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn init_repo_with_commit(repo_path: &Path, branch_name: &str) {
+        std::fs::create_dir_all(repo_path).unwrap();
+        run_git(repo_path, &["init", "--initial-branch", branch_name]);
+        run_git(repo_path, &["config", "user.name", "Test"]);
+        run_git(repo_path, &["config", "user.email", "test@test.com"]);
+        std::fs::write(repo_path.join("README.md"), "test\n").unwrap();
+        run_git(repo_path, &["add", "."]);
+        run_git(repo_path, &["commit", "-m", "initial"]);
+    }
+
+    fn run_ensure_branch_attached_child(
+        test_name: &str,
+        child_case: &str,
+        repo_path: &Path,
+        branch_name: &str,
+        decoy_path: &Path,
+    ) -> Output {
+        Command::new(std::env::current_exe().unwrap())
+            .arg(test_name)
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(CHILD_CASE_ENV, child_case)
+            .env("GG_TEST_ATTACH_REPO", repo_path)
+            .env("GG_TEST_ATTACH_BRANCH", branch_name)
+            .env("GIT_DIR", decoy_path.join(".git"))
+            .current_dir(decoy_path)
+            .output()
+            .unwrap()
+    }
+
+    fn run_ensure_branch_attached_child_case(expected_case: &str) -> bool {
+        if std::env::var(CHILD_CASE_ENV).as_deref() != Ok(expected_case) {
+            return false;
+        }
+        let repo_path = std::env::var_os("GG_TEST_ATTACH_REPO").unwrap();
+        let branch_name = std::env::var("GG_TEST_ATTACH_BRANCH").unwrap();
+        let repo = Repository::open(repo_path).unwrap();
+        ensure_branch_attached(&repo, &branch_name).unwrap();
+        true
+    }
+
+    fn assert_child_test_succeeded(output: &Output) {
+        assert!(
+            output.status.success(),
+            "child test failed\nstdout={}\nstderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("test result: ok. 1 passed; 0 failed"),
+            "child invocation did not run exactly one passing test\nstdout={}\nstderr={}",
+            String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
     }
@@ -2285,38 +2390,101 @@ mod tests {
     }
 
     #[test]
-    fn test_ensure_branch_attached_reattaches_detached_head() {
+    fn test_ensure_branch_attached_reattaches_target_repository_only() {
+        if run_ensure_branch_attached_child_case(ATTACH_NORMAL_CASE) {
+            return;
+        }
+
         let dir = tempfile::tempdir().unwrap();
-        let repo = Repository::init(dir.path()).unwrap();
+        let repo_path = dir.path().join("target");
+        let decoy_path = dir.path().join("decoy");
+        let branch_name = "target-branch";
+        init_repo_with_commit(&repo_path, branch_name);
+        init_repo_with_commit(&decoy_path, "decoy-branch");
 
-        let mut config = repo.config().unwrap();
-        config.set_str("user.name", "Test").unwrap();
-        config.set_str("user.email", "test@test.com").unwrap();
-
-        let sig = repo.signature().unwrap();
-        let tree_id = repo.index().unwrap().write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        let oid = repo
-            .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
-            .unwrap();
-
-        let branch_name = repo.head().unwrap().shorthand().unwrap().to_string();
-
-        // Detach HEAD at the same commit as the branch
+        let repo = Repository::open(&repo_path).unwrap();
+        let oid = repo.head().unwrap().peel_to_commit().unwrap().id();
         repo.set_head_detached(oid).unwrap();
         assert!(repo.head_detached().unwrap());
 
-        // run_git_command uses CWD, so we need to be in the repo dir
-        let prev_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
+        let decoy_head = git_stdout(&decoy_path, &["symbolic-ref", "HEAD"]);
+        let output = run_ensure_branch_attached_child(
+            "git::tests::test_ensure_branch_attached_reattaches_target_repository_only",
+            ATTACH_NORMAL_CASE,
+            &repo_path,
+            branch_name,
+            &decoy_path,
+        );
 
-        // Should re-attach because HEAD and branch tip match
-        let result = ensure_branch_attached(&repo, &branch_name);
+        assert_eq!(
+            git_stdout(&decoy_path, &["symbolic-ref", "HEAD"]),
+            decoy_head,
+            "the child process must not rewrite the decoy repository HEAD"
+        );
+        assert_child_test_succeeded(&output);
 
-        std::env::set_current_dir(&prev_dir).unwrap();
-
-        result.unwrap();
+        let repo = Repository::open(&repo_path).unwrap();
         assert!(!repo.head_detached().unwrap());
+        assert_eq!(repo.head().unwrap().shorthand().unwrap(), branch_name);
+    }
+
+    #[test]
+    fn test_ensure_branch_attached_scopes_linked_worktree_head() {
+        if run_ensure_branch_attached_child_case(ATTACH_LINKED_WORKTREE_CASE) {
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let primary_path = dir.path().join("primary");
+        let linked_path = dir.path().join("linked");
+        let decoy_path = dir.path().join("decoy");
+        let linked_branch = "linked-branch";
+        init_repo_with_commit(&primary_path, "main");
+        init_repo_with_commit(&decoy_path, "decoy-branch");
+        run_git(
+            &primary_path,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                linked_branch,
+                linked_path.to_str().unwrap(),
+            ],
+        );
+
+        let linked_repo = Repository::open(&linked_path).unwrap();
+        let linked_tip = linked_repo.head().unwrap().peel_to_commit().unwrap().id();
+        linked_repo.set_head_detached(linked_tip).unwrap();
+        assert!(linked_repo.head_detached().unwrap());
+
+        let primary_head = git_stdout(&primary_path, &["symbolic-ref", "HEAD"]);
+        let decoy_head = git_stdout(&decoy_path, &["symbolic-ref", "HEAD"]);
+        let output = run_ensure_branch_attached_child(
+            "git::tests::test_ensure_branch_attached_scopes_linked_worktree_head",
+            ATTACH_LINKED_WORKTREE_CASE,
+            &linked_path,
+            linked_branch,
+            &decoy_path,
+        );
+
+        assert_eq!(
+            git_stdout(&decoy_path, &["symbolic-ref", "HEAD"]),
+            decoy_head,
+            "the child process must not rewrite the decoy repository HEAD"
+        );
+        assert_child_test_succeeded(&output);
+        assert_eq!(
+            git_stdout(&primary_path, &["symbolic-ref", "HEAD"]),
+            primary_head,
+            "reattaching the linked worktree must not change the primary checkout HEAD"
+        );
+
+        let linked_repo = Repository::open(&linked_path).unwrap();
+        assert!(!linked_repo.head_detached().unwrap());
+        assert_eq!(
+            linked_repo.head().unwrap().shorthand().unwrap(),
+            linked_branch
+        );
     }
 
     #[test]

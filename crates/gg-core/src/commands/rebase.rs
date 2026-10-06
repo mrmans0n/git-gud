@@ -663,11 +663,15 @@ fn cleanup_continued_drop_branches(repo: &Repository, operation: &operations::Op
 mod tests {
     use serde_json::json;
     use std::fs;
+    use std::path::Path;
     use std::process::Command;
 
     use super::*;
 
-    fn run_git_command(repo_path: &std::path::Path, args: &[&str]) {
+    const CHILD_CASE_ENV: &str = "GG_TEST_CHILD_CASE";
+    const CONTINUED_SPLIT_CASE: &str = "continued-split";
+
+    fn run_git_command(repo_path: &Path, args: &[&str]) {
         let output = Command::new("git")
             .args(args)
             .current_dir(repo_path)
@@ -680,6 +684,57 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    fn git_stdout(repo_path: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo_path)
+            .output()
+            .expect("git command should run");
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout={}\nstderr={}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn init_decoy_repo(repo_path: &Path) {
+        fs::create_dir(repo_path).unwrap();
+        run_git_command(repo_path, &["init", "--initial-branch=decoy-branch"]);
+        run_git_command(repo_path, &["config", "user.email", "test@test.com"]);
+        run_git_command(repo_path, &["config", "user.name", "Test User"]);
+        fs::write(repo_path.join("README.md"), "decoy\n").unwrap();
+        run_git_command(repo_path, &["add", "."]);
+        run_git_command(repo_path, &["commit", "-m", "Decoy"]);
+    }
+
+    fn continued_split_operation() -> operations::OperationRecord {
+        operations::OperationRecord {
+            id: operations::new_id(),
+            schema_version: operations::SCHEMA_VERSION,
+            kind: OperationKind::Split,
+            status: operations::OperationStatus::Pending,
+            created_at_ms: operations::now_ms(),
+            args: vec!["split".to_string()],
+            stack_name: Some("split-wt".to_string()),
+            refs_before: vec![],
+            refs_after: vec![],
+            remote_effects: vec![],
+            touched_remote: false,
+            undoes: None,
+            pending_plan: Some(json!({
+                "split": {
+                    "branch_name": "testuser/split-wt",
+                    "remainder_position": 2,
+                    "remainder_gg_id": "c-two222",
+                }
+            })),
+            remote_branch_deletion_changes: vec![],
+        }
     }
 
     fn fake_entry(position: usize, gg_id: Option<&str>) -> stack::StackEntry {
@@ -717,9 +772,22 @@ mod tests {
 
     #[test]
     fn continued_split_navigation_reattaches_branch_before_loading_stack() {
+        if std::env::var(CHILD_CASE_ENV).as_deref() == Ok(CONTINUED_SPLIT_CASE) {
+            let repo_path = std::env::var_os("GG_TEST_CONTINUED_SPLIT_REPO").unwrap();
+            let repo = Repository::open(repo_path).unwrap();
+            let mut config = Config::default();
+            config.defaults.base = Some("main".to_string());
+            config.defaults.branch_username = Some("testuser".to_string());
+            restore_continued_split_navigation(&repo, &config, &continued_split_operation())
+                .unwrap();
+            return;
+        }
+
         let temp_dir = tempfile::tempdir().unwrap();
         let repo_path = temp_dir.path().join("repo");
+        let decoy_path = temp_dir.path().join("decoy");
         fs::create_dir(&repo_path).unwrap();
+        init_decoy_repo(&decoy_path);
 
         run_git_command(&repo_path, &["init", "--initial-branch=main"]);
         run_git_command(&repo_path, &["config", "user.email", "test@test.com"]);
@@ -745,38 +813,38 @@ mod tests {
         repo.set_head_detached(branch_tip.id()).unwrap();
         assert!(repo.head_detached().unwrap());
 
-        let mut config = Config::default();
-        config.defaults.base = Some("main".to_string());
-        config.defaults.branch_username = Some("testuser".to_string());
-        let operation = operations::OperationRecord {
-            id: operations::new_id(),
-            schema_version: operations::SCHEMA_VERSION,
-            kind: OperationKind::Split,
-            status: operations::OperationStatus::Pending,
-            created_at_ms: operations::now_ms(),
-            args: vec!["split".to_string()],
-            stack_name: Some("split-wt".to_string()),
-            refs_before: vec![],
-            refs_after: vec![],
-            remote_effects: vec![],
-            touched_remote: false,
-            undoes: None,
-            pending_plan: Some(json!({
-                "split": {
-                    "branch_name": "testuser/split-wt",
-                    "remainder_position": 2,
-                    "remainder_gg_id": "c-two222",
-                }
-            })),
-            remote_branch_deletion_changes: vec![],
-        };
+        let decoy_head = git_stdout(&decoy_path, &["symbolic-ref", "HEAD"]);
+        let output = Command::new(std::env::current_exe().unwrap())
+            .arg(
+                "commands::rebase::tests::continued_split_navigation_reattaches_branch_before_loading_stack",
+            )
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(CHILD_CASE_ENV, CONTINUED_SPLIT_CASE)
+            .env("GG_TEST_CONTINUED_SPLIT_REPO", &repo_path)
+            .env("GIT_DIR", decoy_path.join(".git"))
+            .current_dir(&decoy_path)
+            .output()
+            .unwrap();
 
-        let previous_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&repo_path).unwrap();
-        let result = restore_continued_split_navigation(&repo, &config, &operation);
-        std::env::set_current_dir(previous_dir).unwrap();
+        assert_eq!(
+            git_stdout(&decoy_path, &["symbolic-ref", "HEAD"]),
+            decoy_head,
+            "the child process must not rewrite the decoy repository HEAD"
+        );
+        assert!(
+            output.status.success(),
+            "child test failed\nstdout={}\nstderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("test result: ok. 1 passed; 0 failed"),
+            "child invocation did not run exactly one passing test\nstdout={}\nstderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
 
-        result.unwrap();
         let (branch_name, position, oid) = stack::read_nav_context(repo.path()).unwrap();
         assert_eq!(branch_name, "testuser/split-wt");
         assert_eq!(position, 1);

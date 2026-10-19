@@ -81,6 +81,27 @@ fn interruptible_sleep(
     Ok(())
 }
 
+/// Retry a provider call that can fail transiently. GitLab often rejects
+/// `glab mr view` for a few seconds right after a base update + force-push.
+fn retry_transient<T>(
+    attempts: u32,
+    delay: Duration,
+    interrupted: Option<&Arc<AtomicBool>>,
+    mut f: impl FnMut() -> Result<T>,
+) -> Result<T> {
+    let mut attempt = 1;
+    loop {
+        match f() {
+            Ok(value) => return Ok(value),
+            Err(e) if attempt >= attempts => return Err(e),
+            Err(_) => {
+                interruptible_sleep(delay, interrupted, None)?;
+                attempt += 1;
+            }
+        }
+    }
+}
+
 fn wait_timed_out(start_time: Instant, timeout: Duration) -> bool {
     start_time.elapsed() > timeout
 }
@@ -91,6 +112,9 @@ const POLL_INTERVAL_SECS: u64 = 10;
 /// Maximum number of consecutive API-like failures (hard API errors or
 /// `MergeTrainStatus::Unknown` status responses caused by endpoint failures).
 const MAX_CONSECUTIVE_API_ERRORS: u32 = 5;
+
+/// Delay between retries when fetching PR/MR info fails transiently.
+const PR_INFO_RETRY_DELAY_SECS: u64 = 3;
 
 /// Number of consecutive Idle polls after which we show an explicit
 /// "still waiting" state message while continuing to poll.
@@ -866,11 +890,31 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         continue;
                     }
                     None => {
+                        // refresh_mr_info swallows errors; retry here so a transient
+                        // failure right after a rebase/force-push doesn't abort landing.
+                        let fetch = retry_transient(
+                            MAX_CONSECUTIVE_API_ERRORS,
+                            Duration::from_secs(PR_INFO_RETRY_DELAY_SECS),
+                            interrupted.as_ref(),
+                            || provider.get_pr_info(num),
+                        );
+                        let fetch_error = match fetch {
+                            Ok(info) => {
+                                let entry = &mut stack.entries[idx];
+                                entry.mr_state = Some(info.state);
+                                entry.approved = info.approved;
+                                entry.changes_requested = info.changes_requested;
+                                entry.mergeable = info.mergeable;
+                                continue 'landing_loop;
+                            }
+                            Err(e) => e,
+                        };
                         let error = format!(
-                            "Failed to fetch {} {}{}",
+                            "Failed to fetch {} {}{}: {}",
                             provider.pr_label(),
                             provider.pr_number_prefix(),
-                            num
+                            num,
+                            fetch_error
                         );
                         if let Some(gg_id) = &entry.gg_id {
                             record_landed_entry(
@@ -2428,6 +2472,31 @@ mod tests {
     #[test]
     fn test_constants() {
         assert_eq!(POLL_INTERVAL_SECS, 10);
+    }
+
+    #[test]
+    fn retry_transient_recovers_after_failures() {
+        let mut calls = 0;
+        let result = retry_transient(3, Duration::ZERO, None, || {
+            calls += 1;
+            if calls < 3 {
+                Err(GgError::Other("transient".to_string()))
+            } else {
+                Ok(calls)
+            }
+        });
+        assert_eq!(result.unwrap(), 3);
+    }
+
+    #[test]
+    fn retry_transient_returns_last_error_when_exhausted() {
+        let mut calls = 0;
+        let result: Result<()> = retry_transient(2, Duration::ZERO, None, || {
+            calls += 1;
+            Err(GgError::Other(format!("fail {}", calls)))
+        });
+        assert_eq!(calls, 2);
+        assert!(result.unwrap_err().to_string().contains("fail 2"));
     }
 
     #[test]

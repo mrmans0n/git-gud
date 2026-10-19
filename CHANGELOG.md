@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-10-19
+
+### Fixed
+- Retry transient GitLab MR fetch failures after rebasing during `gg land`, and report the underlying provider error if retries are exhausted (#466).
+- Bind branch reattachment to the target repository and worktree rather than the process working directory or inherited Git environment (#460).
+- Prune published branches of dropped stack entries during sync and clean using exact-OID leases, while preserving branches still targeted by open reviews (#454).
+- Select remote stack tips by ancestry when checking out per-entry branches, recover the complete stack, and reject divergent tips or invalid bases before local mutation (#453).
+
+### Changed
+- Update dependencies including `rmcp`, `skim`, `thiserror`, `uuid`, `tokio`, `serde_json`, and `schemars` (#449, #450, #451, #452, #455, #456, #457, #458, #459, #461, #462, #463, #464, #465).
+
 ## [0.10.3] - 2026-09-22
 
 ### Fixed
@@ -580,7 +591,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.10.3...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.10.4...HEAD
+[0.10.4]: https://github.com/mrmans0n/git-gud/compare/v0.10.3...v0.10.4
 [0.10.3]: https://github.com/mrmans0n/git-gud/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/mrmans0n/git-gud/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/mrmans0n/git-gud/compare/v0.10.0...v0.10.1

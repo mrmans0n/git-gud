@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.5] - 2026-10-20
+
+### Fixed
+- Rebase only the unlanded commits after each successful `gg land --all` merge, restore the original branch when rebasing fails, and avoid repeating Git's error output (#467).
+
 ## [0.10.4] - 2026-10-19
 
 ### Fixed
@@ -591,7 +596,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.10.4...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.10.5...HEAD
+[0.10.5]: https://github.com/mrmans0n/git-gud/compare/v0.10.4...v0.10.5
 [0.10.4]: https://github.com/mrmans0n/git-gud/compare/v0.10.3...v0.10.4
 [0.10.3]: https://github.com/mrmans0n/git-gud/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/mrmans0n/git-gud/compare/v0.10.1...v0.10.2

@@ -2799,20 +2799,24 @@ mod tests {
             cleanup_after_merge;
     }
 
-    #[test]
-    fn rebase_remaining_branches_skips_landed_commit() {
-        use crate::stack::StackEntry;
-        use std::path::Path;
+    fn git(dir: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {:?}: {:?}", args, out);
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    }
 
-        fn git(dir: &Path, args: &[&str]) -> String {
-            let out = std::process::Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .output()
-                .unwrap();
-            assert!(out.status.success(), "git {:?}: {:?}", args, out);
-            String::from_utf8(out.stdout).unwrap().trim().to_string()
-        }
+    /// Two-entry stack on branch `u/s` whose first entry landed on origin/main
+    /// in a tweaked form (so replaying it would conflict). The second entry
+    /// writes `c2_content` to `c2_file`.
+    fn landed_stack_fixture(
+        c2_file: &str,
+        c2_content: &str,
+    ) -> (tempfile::TempDir, std::path::PathBuf, Stack) {
+        use crate::stack::StackEntry;
 
         let temp = tempfile::tempdir().unwrap();
         let origin = temp.path().join("origin.git");
@@ -2827,13 +2831,12 @@ mod tests {
         git(&work, &["commit", "-m", "base"]);
         git(&work, &["push", "origin", "main"]);
 
-        // Stack: c1 edits f, c2 adds g.
         git(&work, &["checkout", "-b", "u/s"]);
         std::fs::write(work.join("f"), "ONE\n").unwrap();
         git(&work, &["commit", "-am", "c1"]);
         let c1 = git(&work, &["rev-parse", "HEAD"]);
         git(&work, &["branch", "u/s--c-1111111"]);
-        std::fs::write(work.join("g"), "g\n").unwrap();
+        std::fs::write(work.join(c2_file), c2_content).unwrap();
         git(&work, &["add", "."]);
         git(&work, &["commit", "-m", "c2"]);
         git(&work, &["branch", "u/s--c-2222222"]);
@@ -2842,7 +2845,6 @@ mod tests {
             &["push", "origin", "u/s--c-1111111", "u/s--c-2222222"],
         );
 
-        // c1 lands with a tweak, so replaying it onto main would conflict.
         let land = temp.path().join("land");
         git(temp.path(), &["clone", origin.to_str().unwrap(), "land"]);
         git(&land, &["config", "user.email", "t@t"]);
@@ -2877,6 +2879,12 @@ mod tests {
             ],
             current_position: None,
         };
+        (temp, work, stack)
+    }
+
+    #[test]
+    fn rebase_remaining_branches_skips_landed_commit() {
+        let (_temp, work, stack) = landed_stack_fixture("g", "g\n");
 
         let repo = git2::Repository::open(&work).unwrap();
         rebase_remaining_branches(&repo, &stack, &Provider::GitLab, 0, true).unwrap();
@@ -2893,6 +2901,25 @@ mod tests {
                 .next()
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn rebase_remaining_branches_restores_branch_on_conflict() {
+        // c2 edits the same line the landed commit changed, so it conflicts.
+        let (_temp, work, stack) = landed_stack_fixture("f", "TWO\n");
+        let before = git(&work, &["rev-parse", "u/s--c-2222222"]);
+
+        let repo = git2::Repository::open(&work).unwrap();
+        let err = rebase_remaining_branches(&repo, &stack, &Provider::GitLab, 0, true)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("error: could not apply"), "{err}");
+        assert!(!err.contains("hint:"), "{err}");
+        assert_eq!(git(&work, &["branch", "--show-current"]), "u/s");
+        assert_eq!(git(&work, &["rev-parse", "u/s--c-2222222"]), before);
+        assert!(!work.join(".git/rebase-merge").exists());
+        assert!(git(&work, &["status", "--porcelain"]).is_empty());
     }
 
     #[test]

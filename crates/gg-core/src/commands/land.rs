@@ -336,6 +336,9 @@ fn rebase_remaining_branches(
     json: bool,
 ) -> Result<Vec<String>> {
     let mut warnings = Vec::new();
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| GgError::Other("Repository has no working directory".to_string()))?;
 
     // Fetch the latest base branch
     if !json {
@@ -349,10 +352,7 @@ fn rebase_remaining_branches(
         .arg("fetch")
         .arg("origin")
         .arg(&stack.base)
-        .current_dir(
-            repo.workdir()
-                .ok_or_else(|| GgError::Other("Repository has no working directory".to_string()))?,
-        )
+        .current_dir(workdir)
         .output()
         .map_err(|e| GgError::Other(format!("Failed to fetch: {}", e)))?;
 
@@ -375,116 +375,139 @@ fn rebase_remaining_branches(
         None
     };
 
-    // Rebase each remaining branch
-    for entry in stack.entries.iter().skip(start_index + 1) {
-        let pr_num = match entry.mr_number {
-            Some(num) => num,
-            None => continue,
-        };
+    let rebase_target = format!("origin/{}", stack.base);
+    // Only replay commits above the landed one; replaying the landed commit
+    // itself conflicts with its squashed copy on the base branch.
+    let landed = &stack.entries[start_index];
+    let upstream = stack
+        .entry_branch_name(landed)
+        .and_then(|b| repo.revparse_single(&b).ok())
+        .map(|o| o.id())
+        .unwrap_or(landed.oid)
+        .to_string();
 
-        let branch_name = match stack.entry_branch_name(entry) {
-            Some(name) => name,
-            None => continue,
-        };
+    let result = (|| -> Result<()> {
+        for entry in stack.entries.iter().skip(start_index + 1) {
+            let pr_num = match entry.mr_number {
+                Some(num) => num,
+                None => continue,
+            };
 
-        if !json {
-            println!(
-                "{}",
-                style(format!(
-                    "  Rebasing branch {} ({}{}{})...",
-                    branch_name,
-                    provider.pr_label(),
-                    provider.pr_number_prefix(),
-                    pr_num
-                ))
-                .dim()
-            );
-        }
+            let branch_name = match stack.entry_branch_name(entry) {
+                Some(name) => name,
+                None => continue,
+            };
 
-        // Checkout the branch
-        let checkout_result = std::process::Command::new("git")
-            .arg("checkout")
-            .arg(&branch_name)
-            .current_dir(repo.workdir().unwrap())
-            .output()
-            .map_err(|e| GgError::Other(format!("Failed to checkout {}: {}", branch_name, e)))?;
-
-        if !checkout_result.status.success() {
-            let stderr = String::from_utf8_lossy(&checkout_result.stderr);
-            return Err(GgError::Other(format!(
-                "Failed to checkout branch {}: {}",
-                branch_name, stderr
-            )));
-        }
-
-        // Rebase onto origin/base
-        let rebase_target = format!("origin/{}", stack.base);
-        let rebase_result = std::process::Command::new("git")
-            .arg("rebase")
-            .arg(&rebase_target)
-            .current_dir(repo.workdir().unwrap())
-            .output()
-            .map_err(|e| GgError::Other(format!("Failed to rebase {}: {}", branch_name, e)))?;
-
-        if !rebase_result.status.success() {
-            // Abort the rebase
-            let _ = std::process::Command::new("git")
-                .arg("rebase")
-                .arg("--abort")
-                .current_dir(repo.workdir().unwrap())
-                .output();
-
-            let stderr = String::from_utf8_lossy(&rebase_result.stderr);
-            return Err(GgError::Other(format!(
-                "Failed to rebase {} onto {}: {}. Please rebase manually.",
-                branch_name, rebase_target, stderr
-            )));
-        }
-
-        // Force push with lease
-        if !json {
-            println!(
-                "{}",
-                style(format!("  Force-pushing {}...", branch_name)).dim()
-            );
-        }
-
-        let branch_name_clone = branch_name.clone();
-        let push_result = std::process::Command::new("git")
-            .arg("push")
-            .arg("--force-with-lease")
-            .arg("origin")
-            .arg(&branch_name)
-            .current_dir(repo.workdir().unwrap())
-            .output()
-            .map_err(|e| GgError::Other(format!("Failed to push {}: {}", branch_name_clone, e)))?;
-
-        if !push_result.status.success() {
-            let stderr = String::from_utf8_lossy(&push_result.stderr);
-            let warning = format!("Failed to push {}: {}", branch_name, stderr.trim());
             if !json {
                 println!(
-                    "{} Warning: Failed to push {}: {}",
-                    style("⚠").yellow(),
-                    branch_name,
-                    stderr
+                    "{}",
+                    style(format!(
+                        "  Rebasing branch {} ({}{}{})...",
+                        branch_name,
+                        provider.pr_label(),
+                        provider.pr_number_prefix(),
+                        pr_num
+                    ))
+                    .dim()
                 );
             }
-            warnings.push(warning);
-            // Continue with other branches even if one push fails
-        }
-    }
 
-    // Restore original branch
+            // Checkout the branch
+            let checkout_result = std::process::Command::new("git")
+                .arg("checkout")
+                .arg(&branch_name)
+                .current_dir(workdir)
+                .output()
+                .map_err(|e| {
+                    GgError::Other(format!("Failed to checkout {}: {}", branch_name, e))
+                })?;
+
+            if !checkout_result.status.success() {
+                let stderr = String::from_utf8_lossy(&checkout_result.stderr);
+                return Err(GgError::Other(format!(
+                    "Failed to checkout branch {}: {}",
+                    branch_name, stderr
+                )));
+            }
+
+            // Rebase onto origin/base
+            let rebase_result = std::process::Command::new("git")
+                .arg("rebase")
+                .arg("--onto")
+                .arg(&rebase_target)
+                .arg(&upstream)
+                .current_dir(workdir)
+                .output()
+                .map_err(|e| GgError::Other(format!("Failed to rebase {}: {}", branch_name, e)))?;
+
+            if !rebase_result.status.success() {
+                // Abort the rebase
+                let _ = std::process::Command::new("git")
+                    .arg("rebase")
+                    .arg("--abort")
+                    .current_dir(workdir)
+                    .output();
+
+                let stderr = String::from_utf8_lossy(&rebase_result.stderr);
+                // Keep only git's one-line reason; drop the hint noise.
+                let reason = stderr
+                    .lines()
+                    .find_map(|l| l.find("error:").or(l.find("fatal:")).map(|i| &l[i..]))
+                    .unwrap_or("rebase failed");
+                return Err(GgError::Other(format!(
+                    "Failed to rebase {} onto {} ({}). Run `gg rebase` to resolve it.",
+                    branch_name, rebase_target, reason
+                )));
+            }
+
+            // Force push with lease
+            if !json {
+                println!(
+                    "{}",
+                    style(format!("  Force-pushing {}...", branch_name)).dim()
+                );
+            }
+
+            let branch_name_clone = branch_name.clone();
+            let push_result = std::process::Command::new("git")
+                .arg("push")
+                .arg("--force-with-lease")
+                .arg("origin")
+                .arg(&branch_name)
+                .current_dir(workdir)
+                .output()
+                .map_err(|e| {
+                    GgError::Other(format!("Failed to push {}: {}", branch_name_clone, e))
+                })?;
+
+            if !push_result.status.success() {
+                let stderr = String::from_utf8_lossy(&push_result.stderr);
+                let warning = format!("Failed to push {}: {}", branch_name, stderr.trim());
+                if !json {
+                    println!(
+                        "{} Warning: Failed to push {}: {}",
+                        style("⚠").yellow(),
+                        branch_name,
+                        stderr
+                    );
+                }
+                warnings.push(warning);
+                // Continue with other branches even if one push fails
+            }
+        }
+        Ok(())
+    })();
+
+    // Restore original branch, even if a rebase failed
     if let Some(branch) = current_branch {
         let _ = std::process::Command::new("git")
             .arg("checkout")
             .arg(&branch)
-            .current_dir(repo.workdir().unwrap())
+            .current_dir(workdir)
             .output();
     }
 
-    Ok(warnings)
+    result.map(|_| warnings)
 }
 
 /// Options for the land command
@@ -1324,10 +1347,6 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             ) {
                                 Ok(rebase_warnings) => warnings.extend(rebase_warnings),
                                 Err(e) => {
-                                    warnings.push(format!(
-                                        "Failed to rebase remaining branches: {}",
-                                        e
-                                    ));
                                     land_error = Some(e.to_string());
                                     break 'landing_loop;
                                 }
@@ -1478,8 +1497,6 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         ) {
                             Ok(rebase_warnings) => warnings.extend(rebase_warnings),
                             Err(e) => {
-                                warnings
-                                    .push(format!("Failed to rebase remaining branches: {}", e));
                                 land_error = Some(e.to_string());
                                 break 'landing_loop;
                             }
@@ -2780,6 +2797,102 @@ mod tests {
         // Type-level assertion that cleanup_after_merge exists with the correct signature
         let _fn_ptr: fn(&mut Config, &Stack, &Provider, &str, u64, bool, bool) -> Vec<String> =
             cleanup_after_merge;
+    }
+
+    #[test]
+    fn rebase_remaining_branches_skips_landed_commit() {
+        use crate::stack::StackEntry;
+        use std::path::Path;
+
+        fn git(dir: &Path, args: &[&str]) -> String {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {:?}: {:?}", args, out);
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let origin = temp.path().join("origin.git");
+        let work = temp.path().join("work");
+        git(temp.path(), &["init", "--bare", "-b", "main", "origin.git"]);
+        git(temp.path(), &["clone", "origin.git", "work"]);
+        git(&work, &["config", "user.email", "t@t"]);
+        git(&work, &["config", "user.name", "t"]);
+        git(&work, &["checkout", "-b", "main"]);
+        std::fs::write(work.join("f"), "one\n").unwrap();
+        git(&work, &["add", "."]);
+        git(&work, &["commit", "-m", "base"]);
+        git(&work, &["push", "origin", "main"]);
+
+        // Stack: c1 edits f, c2 adds g.
+        git(&work, &["checkout", "-b", "u/s"]);
+        std::fs::write(work.join("f"), "ONE\n").unwrap();
+        git(&work, &["commit", "-am", "c1"]);
+        let c1 = git(&work, &["rev-parse", "HEAD"]);
+        git(&work, &["branch", "u/s--c-1111111"]);
+        std::fs::write(work.join("g"), "g\n").unwrap();
+        git(&work, &["add", "."]);
+        git(&work, &["commit", "-m", "c2"]);
+        git(&work, &["branch", "u/s--c-2222222"]);
+        git(
+            &work,
+            &["push", "origin", "u/s--c-1111111", "u/s--c-2222222"],
+        );
+
+        // c1 lands with a tweak, so replaying it onto main would conflict.
+        let land = temp.path().join("land");
+        git(temp.path(), &["clone", origin.to_str().unwrap(), "land"]);
+        git(&land, &["config", "user.email", "t@t"]);
+        git(&land, &["config", "user.name", "t"]);
+        std::fs::write(land.join("f"), "ONE!\n").unwrap();
+        git(&land, &["commit", "-am", "c1 (squashed)"]);
+        git(&land, &["push", "origin", "main"]);
+
+        let entry = |pos: usize, gg_id: &str, oid: git2::Oid| StackEntry {
+            oid,
+            short_sha: String::new(),
+            title: String::new(),
+            gg_id: Some(gg_id.to_string()),
+            gg_parent: None,
+            mr_number: Some(pos as u64),
+            mr_state: None,
+            approved: false,
+            changes_requested: false,
+            mergeable: false,
+            ci_status: None,
+            position: pos,
+            in_merge_train: false,
+            merge_train_position: None,
+        };
+        let stack = Stack {
+            name: "s".to_string(),
+            username: "u".to_string(),
+            base: "main".to_string(),
+            entries: vec![
+                entry(1, "c-1111111", git2::Oid::from_str(&c1).unwrap()),
+                entry(2, "c-2222222", git2::Oid::ZERO_SHA1),
+            ],
+            current_position: None,
+        };
+
+        let repo = git2::Repository::open(&work).unwrap();
+        rebase_remaining_branches(&repo, &stack, &Provider::GitLab, 0, true).unwrap();
+
+        assert_eq!(git(&work, &["branch", "--show-current"]), "u/s");
+        assert_eq!(
+            git(&work, &["rev-parse", "u/s--c-2222222~1"]),
+            git(&work, &["rev-parse", "origin/main"])
+        );
+        assert_eq!(
+            git(&work, &["rev-parse", "u/s--c-2222222"]),
+            git(&work, &["ls-remote", "origin", "u/s--c-2222222"])
+                .split_whitespace()
+                .next()
+                .unwrap()
+        );
     }
 
     #[test]

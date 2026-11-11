@@ -134,6 +134,19 @@ if [ "$1" = "api" ]; then
       echo '{"approved":true}'
       exit 0
       ;;
+    projects/:id/merge_trains/merge_requests/*)
+      if [ -f "$GG_FAKE_MERGED" ]; then
+        echo '{"merge_request":{"iid":41},"status":"merged","pipeline":{"status":"success"}}'
+        exit 0
+      fi
+      if [ -f "$GG_FAKE_QUEUED" ]; then
+        touch "$GG_FAKE_POLLED"
+        echo '{"merge_request":{"iid":41},"status":"fresh","pipeline":{"status":"success"}}'
+        exit 0
+      fi
+      echo "404 Not Found" >&2
+      exit 1
+      ;;
     projects/:id/merge_trains/*scope=active*)
       if [ ! -f "$GG_FAKE_QUEUED" ]; then
         echo '[]'

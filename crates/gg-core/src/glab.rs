@@ -962,27 +962,73 @@ fn merge_train_endpoint(
     )
 }
 
+/// Build the per-MR merge-train endpoint (GitLab 15.11+).
+fn merge_train_mr_endpoint(mr_number: u64) -> String {
+    format!("projects/:id/merge_trains/merge_requests/{}", mr_number)
+}
+
+/// Run `glab api <endpoint>`. Returns `Ok(None)` on HTTP 404, stdout otherwise.
+fn glab_api_get(endpoint: &str, target_branch: &str) -> Result<Option<String>> {
+    let output = Command::new("glab").args(["api", endpoint]).output()?;
+    if output.status.success() {
+        return Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned()));
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("404") {
+        return Ok(None);
+    }
+    Err(GgError::GlabError(format!(
+        "Failed to query merge train for target branch {}: {}",
+        target_branch,
+        stderr.trim()
+    )))
+}
+
 /// Get merge train status for an MR.
 ///
-/// Queries the active train first so that queue positions are accurate.
-/// If the MR is not found there, falls back to a complete lookup so
-/// terminal states (`merged`, `skip_merged`) that have left the active
-/// train are still surfaced instead of being misreported as `Idle`.
+/// Uses the per-MR endpoint, which is a single call and also surfaces terminal
+/// states (`merged`, `skip_merged`). If it 404s (MR not on a train, or GitLab
+/// older than 15.11), falls back to scanning the *active* train only. The
+/// `complete` history is never scanned: it can have thousands of entries and
+/// an MR that was never on a train would page through all of them.
 pub fn get_merge_train_status(mr_number: u64, target_branch: &str) -> Result<MergeTrainInfo> {
+    lookup_merge_train_status(mr_number, target_branch, &mut |endpoint| {
+        glab_api_get(endpoint, target_branch)
+    })
+}
+
+fn lookup_merge_train_status(
+    mr_number: u64,
+    target_branch: &str,
+    fetch: &mut dyn FnMut(&str) -> Result<Option<String>>,
+) -> Result<MergeTrainInfo> {
     const PER_PAGE: usize = 100;
 
-    // Active scope gives accurate, current queue positions.
-    if let Some(info) = query_merge_train(mr_number, target_branch, PER_PAGE, Some("active"))? {
+    if let Some(stdout) = fetch(&merge_train_mr_endpoint(mr_number))? {
+        if let Ok(entry) = serde_json::from_str::<MergeTrainEntry>(&stdout) {
+            if entry.merge_request.iid == mr_number {
+                // The per-MR endpoint has no queue position; active scan adds it
+                // only for MRs still queued.
+                let info = merge_train_info_from_entry(&entry, None);
+                if !matches!(
+                    info.status,
+                    MergeTrainStatus::Merged | MergeTrainStatus::SkipMerged
+                ) {
+                    if let Some(active) =
+                        query_merge_train_active(mr_number, target_branch, PER_PAGE, fetch)?
+                    {
+                        return Ok(active);
+                    }
+                }
+                return Ok(info);
+            }
+        }
+    }
+
+    if let Some(info) = query_merge_train_active(mr_number, target_branch, PER_PAGE, fetch)? {
         return Ok(info);
     }
 
-    // Terminal entries (merged / skip_merged) disappear from `scope=active`.
-    // A complete fallback preserves those states instead of timing out on Idle.
-    if let Some(info) = query_merge_train(mr_number, target_branch, PER_PAGE, Some("complete"))? {
-        return Ok(info);
-    }
-
-    // MR not found in train at all.
     Ok(MergeTrainInfo {
         status: MergeTrainStatus::Idle,
         position: None,
@@ -990,55 +1036,30 @@ pub fn get_merge_train_status(mr_number: u64, target_branch: &str) -> Result<Mer
     })
 }
 
-/// Query one scope of the merge-train API, paginating until the MR is found
-/// or the list is exhausted.
-fn query_merge_train(
+/// Scan the active merge train (small, bounded by queue size) for an MR.
+fn query_merge_train_active(
     mr_number: u64,
     target_branch: &str,
     per_page: usize,
-    scope: Option<&str>,
+    fetch: &mut dyn FnMut(&str) -> Result<Option<String>>,
 ) -> Result<Option<MergeTrainInfo>> {
     let mut page = 1usize;
     let mut position_offset = 0usize;
-    let include_position = scope == Some("active");
-    // Active entries need ascending order to compute queue positions correctly.
-    // Completed entries use descending order so the most recently completed MR
-    // appears on the first page, avoiding pagination through the full history.
-    let sort = if scope == Some("complete") {
-        "desc"
-    } else {
-        "asc"
-    };
 
     loop {
-        let output = Command::new("glab")
-            .args([
-                "api",
-                &merge_train_endpoint(target_branch, per_page, page, scope, sort),
-            ])
-            .output()?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(GgError::GlabError(format!(
-                "Failed to query merge train for target branch {}: {}",
-                target_branch,
-                stderr.trim()
-            )));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let endpoint = merge_train_endpoint(target_branch, per_page, page, Some("active"), "asc");
+        let Some(stdout) = fetch(&endpoint)? else {
+            break;
+        };
         let page_entries = parse_merge_train_page(&stdout);
         if let Some(info) =
-            find_mr_in_merge_train_page(mr_number, &page_entries, position_offset, include_position)
+            find_mr_in_merge_train_page(mr_number, &page_entries, position_offset, true)
         {
             return Ok(Some(info));
         }
-
         if page_entries.len() < per_page {
             break;
         }
-
         position_offset += page_entries.len();
         page += 1;
     }
@@ -1068,6 +1089,28 @@ fn parse_merge_train_page(stdout: &str) -> Vec<MergeTrainEntry> {
     serde_json::from_str(stdout).unwrap_or_default()
 }
 
+fn merge_train_info_from_entry(entry: &MergeTrainEntry, position: Option<usize>) -> MergeTrainInfo {
+    let status = match entry.status.as_str() {
+        "idle" => MergeTrainStatus::Idle,
+        "stale" => MergeTrainStatus::Stale,
+        "fresh" => MergeTrainStatus::Fresh,
+        "merging" => MergeTrainStatus::Merging,
+        "merged" => MergeTrainStatus::Merged,
+        "skip_merged" => MergeTrainStatus::SkipMerged,
+        _ => MergeTrainStatus::Unknown,
+    };
+    let pipeline_running = entry
+        .pipeline
+        .as_ref()
+        .map(|p| matches!(p.status.as_str(), "running" | "pending"))
+        .unwrap_or(false);
+    MergeTrainInfo {
+        status,
+        position,
+        pipeline_running,
+    }
+}
+
 fn find_mr_in_merge_train_page(
     mr_number: u64,
     trains: &[MergeTrainEntry],
@@ -1076,27 +1119,10 @@ fn find_mr_in_merge_train_page(
 ) -> Option<MergeTrainInfo> {
     for (idx, entry) in trains.iter().enumerate() {
         if entry.merge_request.iid == mr_number {
-            let status = match entry.status.as_str() {
-                "idle" => MergeTrainStatus::Idle,
-                "stale" => MergeTrainStatus::Stale,
-                "fresh" => MergeTrainStatus::Fresh,
-                "merging" => MergeTrainStatus::Merging,
-                "merged" => MergeTrainStatus::Merged,
-                "skip_merged" => MergeTrainStatus::SkipMerged,
-                _ => MergeTrainStatus::Unknown,
-            };
-
-            let pipeline_running = entry
-                .pipeline
-                .as_ref()
-                .map(|p| matches!(p.status.as_str(), "running" | "pending"))
-                .unwrap_or(false);
-
-            return Some(MergeTrainInfo {
-                status,
-                position: include_position.then_some(position_offset + idx + 1),
-                pipeline_running,
-            });
+            return Some(merge_train_info_from_entry(
+                entry,
+                include_position.then_some(position_offset + idx + 1),
+            ));
         }
     }
 
@@ -1571,6 +1597,61 @@ mod tests {
         let original = MergeTrainStatus::Merging;
         let cloned = original.clone();
         assert_eq!(original, cloned);
+    }
+
+    fn fake_fetch<'a>(
+        calls: &'a std::cell::RefCell<Vec<String>>,
+        mr_body: Option<&'static str>,
+    ) -> impl FnMut(&str) -> Result<Option<String>> + 'a {
+        move |endpoint: &str| {
+            calls.borrow_mut().push(endpoint.to_string());
+            if endpoint.contains("merge_requests/") {
+                Ok(mr_body.map(String::from))
+            } else if endpoint.contains("scope=active") {
+                Ok(Some("[]".to_string()))
+            } else {
+                panic!("unexpected endpoint (history scan?): {endpoint}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_status_for_mr_never_on_train_does_not_scan_complete_history() {
+        let calls = std::cell::RefCell::new(Vec::new());
+        let info = lookup_merge_train_status(42, "main", &mut fake_fetch(&calls, None)).unwrap();
+        assert_eq!(info.status, MergeTrainStatus::Idle);
+        let calls = calls.borrow();
+        assert!(calls.iter().all(|c| !c.contains("scope=complete")));
+        assert!(calls.len() <= 2, "too many API calls: {calls:?}");
+    }
+
+    #[test]
+    fn test_status_merged_mr_uses_single_call() {
+        let calls = std::cell::RefCell::new(Vec::new());
+        let body = r#"{"merge_request":{"iid":42},"status":"merged"}"#;
+        let info =
+            lookup_merge_train_status(42, "main", &mut fake_fetch(&calls, Some(body))).unwrap();
+        assert_eq!(info.status, MergeTrainStatus::Merged);
+        assert_eq!(calls.borrow().len(), 1);
+    }
+
+    #[test]
+    fn test_status_queued_mr_gets_position_from_active_scan() {
+        let mut fetch = |endpoint: &str| -> Result<Option<String>> {
+            if endpoint.contains("merge_requests/") {
+                Ok(Some(
+                    r#"{"merge_request":{"iid":42},"status":"fresh"}"#.into(),
+                ))
+            } else {
+                Ok(Some(
+                    r#"[{"merge_request":{"iid":7},"status":"fresh"},{"merge_request":{"iid":42},"status":"fresh"}]"#
+                        .into(),
+                ))
+            }
+        };
+        let info = lookup_merge_train_status(42, "main", &mut fetch).unwrap();
+        assert_eq!(info.status, MergeTrainStatus::Fresh);
+        assert_eq!(info.position, Some(2));
     }
 
     #[test]

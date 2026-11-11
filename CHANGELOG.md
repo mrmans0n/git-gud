@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.7] - 2026-11-11
+
+### Added
+- Stream per-entry and per-command lint progress from `gg sync --jsonl`, including failed command output, timings, amendment state, and the first failing commit and command in abort errors (#482).
+
 ## [0.10.6] - 2026-11-11
 
 ### Fixed
@@ -606,7 +611,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.10.6...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.10.7...HEAD
+[0.10.7]: https://github.com/mrmans0n/git-gud/compare/v0.10.6...v0.10.7
 [0.10.6]: https://github.com/mrmans0n/git-gud/compare/v0.10.5...v0.10.6
 [0.10.5]: https://github.com/mrmans0n/git-gud/compare/v0.10.4...v0.10.5
 [0.10.4]: https://github.com/mrmans0n/git-gud/compare/v0.10.3...v0.10.4

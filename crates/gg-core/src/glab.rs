@@ -810,20 +810,32 @@ pub fn check_merge_trains_enabled() -> Result<bool> {
     Ok(false)
 }
 
-/// Add an MR to the merge train
-/// This is used instead of direct merge when merge trains are enabled
+/// Add an MR to the merge train once its checks pass.
+///
+/// Sends `auto_merge=true`, so GitLab adds the MR immediately when its pipeline
+/// has already succeeded and otherwise marks it "set to be added to the merge
+/// train when checks pass". gg therefore does not have to wait for the MR
+/// pipeline client-side, and the MR still joins the train if gg exits.
+/// `when_pipeline_succeeds` is the pre-17.11 name for the same flag; GitLab
+/// ignores whichever parameter it does not know.
 ///
 /// Returns:
-/// - `Ok(AutoMergeResult::Queued)` if successfully added to the merge train
+/// - `Ok(AutoMergeResult::Queued)` if added to, or scheduled for, the merge train
 /// - `Ok(AutoMergeResult::AlreadyQueued)` if already in the merge train (HTTP 409)
 /// - `Err(...)` for other errors
-pub fn add_to_merge_train(mr_number: u64) -> Result<AutoMergeResult> {
+pub fn add_to_merge_train(mr_number: u64, squash: bool) -> Result<AutoMergeResult> {
     let output = Command::new("glab")
         .args([
             "api",
             "-X",
             "POST",
             &format!("projects/:id/merge_trains/merge_requests/{}", mr_number),
+            "-f",
+            "auto_merge=true",
+            "-f",
+            "when_pipeline_succeeds=true",
+            "-f",
+            &format!("squash={}", squash),
         ])
         .output()?;
 

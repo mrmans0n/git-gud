@@ -601,19 +601,35 @@ pub fn run(
             });
             start_emitted = true;
         }
+        // If the client closes the stream mid-lint, stop emitting but let lint
+        // finish so the checkout is restored (a broken pipe in `emit` would
+        // exit the process while HEAD is detached on a linted commit).
+        let stream_closed = std::rc::Rc::new(std::cell::Cell::new(false));
         let progress: Option<crate::commands::run::RunProgressFn> = if jsonl {
-            Some(Box::new(|event| {
-                StreamingJson::new().emit(&SyncStreamingResponse {
+            let closed = stream_closed.clone();
+            Some(Box::new(move |event| {
+                if closed.get() {
+                    return;
+                }
+                let result = StreamingJson::new().try_emit(&SyncStreamingResponse {
                     version: OUTPUT_VERSION,
                     command: "sync".to_string(),
                     event: lint_progress_event(event),
                 });
+                if result.is_err() {
+                    closed.set(true);
+                }
             }))
         } else {
             None
         };
         let lint_result =
             crate::commands::lint::run_for_sync(Some(end_pos), json || jsonl, progress)?;
+        if stream_closed.get() {
+            return Err(GgError::Other(
+                "Output stream closed during lint; sync aborted.".to_string(),
+            ));
+        }
         if !lint_result.all_passed {
             restore_sync_start_position(
                 &repo,

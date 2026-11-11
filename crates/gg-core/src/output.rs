@@ -45,6 +45,15 @@ impl StreamingJson {
         }
     }
 
+    /// Emit a single NDJSON line, returning the write error instead of
+    /// terminating the process. Use when the caller must clean up (e.g.
+    /// restore a checkout) before giving up on a closed stream.
+    pub fn try_emit<T: Serialize>(&mut self, event: &T) -> io::Result<()> {
+        let line = serde_json::to_string(event).expect("failed to serialize streaming event");
+        let mut lock = self.stdout.lock();
+        write_streaming_line(&mut lock, &line)
+    }
+
     /// Emit an event and terminate the process with the given exit code.
     ///
     /// This is the streaming equivalent of `print_json_error` + `exit(1)`: it

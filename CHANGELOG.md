@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.6] - 2026-11-11
+
+### Fixed
+- Avoid scanning completed GitLab merge-train history when resolving MR status, preventing long `gg ls --json` delays on projects with large train histories (#479).
+- Queue approved GitLab merge-train MRs with auto-merge before CI finishes, and stop promptly if their pipeline fails before joining the train (#480).
+
+### Changed
+- Forward the selected squash behavior to GitLab merge-train requests, including `--no-squash` (#480).
+- Update `rmcp` to 3.9.0 (#468, #471, #473, #475), `skim` to 5.9.0 (#469, #474), `tokio` to 1.54.1 (#470), and `uuid` to 1.29.2 (#472, #476, #477).
+
 ## [0.10.5] - 2026-10-20
 
 ### Fixed
@@ -596,7 +606,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.10.5...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.10.6...HEAD
+[0.10.6]: https://github.com/mrmans0n/git-gud/compare/v0.10.5...v0.10.6
 [0.10.5]: https://github.com/mrmans0n/git-gud/compare/v0.10.4...v0.10.5
 [0.10.4]: https://github.com/mrmans0n/git-gud/compare/v0.10.3...v0.10.4
 [0.10.3]: https://github.com/mrmans0n/git-gud/compare/v0.10.2...v0.10.3

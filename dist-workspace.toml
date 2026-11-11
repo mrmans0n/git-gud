@@ -17,3 +17,7 @@ targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-da
 # Publish to Homebrew tap automatically
 tap = "mrmans0n/homebrew-tap"
 publish-jobs = ["homebrew"]
+
+# GitHub retired the macos-14 arm64 configuration used by cargo-dist 0.30.3.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"

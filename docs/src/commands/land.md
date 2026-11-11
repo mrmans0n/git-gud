@@ -68,11 +68,11 @@ This applies to both GitHub PRs and GitLab MRs. No manual retargeting in the pro
 
 ## Merge Trains (GitLab)
 
-When merge trains are enabled on the target branch, `gg land` automatically adds MRs to the merge train instead of merging directly.
+When merge trains are enabled on the target branch, `gg land` adds MRs to the merge train instead of merging directly. It uses GitLab's auto-merge: if the MR pipeline is still pending or running, GitLab marks the MR "set to be added to the merge train" and adds it once the pipeline passes. You don't have to wait for CI before queueing, and the MR still joins the train if `gg` exits. The squash setting (`--no-squash` to disable) is sent with the request.
 
-**Approval is always required** before an MR can enter the merge train queue — even with `--all`. If using `--wait`, the command will show "Waiting for approval..." until a reviewer approves the MR.
+**Approval is always required** before an MR can enter the merge train queue — even with `--all`. If using `--wait`, the command will show "Waiting for approval..." until a reviewer approves the MR. A pipeline that has already failed or been canceled stops the command instead of queueing.
 
-After queueing, GitLab can take time to report the MR in the merge train listing. With `--wait`, `gg` keeps polling until the configured `land_wait_timeout_minutes` instead of failing after a short not-found window. It still stops promptly if the MR is closed, GitLab reports it was skipped from the train, CI fails, or repeated API errors occur.
+After queueing, GitLab can take time to report the MR in the merge train listing. With `--wait`, `gg` keeps polling until the configured `land_wait_timeout_minutes` instead of failing after a short not-found window. It still stops promptly if the MR is closed, GitLab reports it was skipped from the train, the MR pipeline fails before the MR joins the train, or repeated API errors occur.
 
 ## CI Failure Details
 

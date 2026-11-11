@@ -462,22 +462,18 @@ impl Provider {
         }
     }
 
-    /// Add PR/MR to merge train (GitLab only)
-    /// Falls back to regular merge for GitHub
+    /// Add PR/MR to the merge train once its checks pass (GitLab only)
     ///
     /// Returns:
-    /// - `Ok(AutoMergeResult::Queued)` if successfully added to the merge train
+    /// - `Ok(AutoMergeResult::Queued)` if added to, or scheduled for, the merge train
     /// - `Ok(AutoMergeResult::AlreadyQueued)` if already in the merge train
     /// - `Err(...)` for other errors or if provider is GitHub
-    pub fn add_to_merge_train(&self, number: u64) -> Result<AutoMergeResult> {
+    pub fn add_to_merge_train(&self, number: u64, squash: bool) -> Result<AutoMergeResult> {
         match self {
-            Provider::GitHub => {
-                // GitHub doesn't support merge trains, fallback to regular merge
-                Err(GgError::Other(
-                    "Merge trains are not supported on GitHub".to_string(),
-                ))
-            }
-            Provider::GitLab => glab::add_to_merge_train(number),
+            Provider::GitHub => Err(GgError::Other(
+                "Merge trains are not supported on GitHub".to_string(),
+            )),
+            Provider::GitLab => glab::add_to_merge_train(number, squash),
         }
     }
 

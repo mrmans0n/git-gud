@@ -106,6 +106,10 @@ if [ "$1" = "--version" ]; then
   exit 0
 fi
 
+# MR pipeline status; with auto-merge the MR joins the train only once it passes.
+ci=success
+if [ -f "$GG_FAKE_GLAB_CI" ]; then ci=$(cat "$GG_FAKE_GLAB_CI"); fi
+
 if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
   if [ -f "$GG_FAKE_AUTH_NETWORK_FAIL" ]; then
     echo "Could not resolve host: gitlab.com" >&2
@@ -124,7 +128,7 @@ if [ "$1" = "api" ] && [ "$2" = "projects/:id" ]; then
 fi
 
 if [ "$1" = "api" ] && [ "$2" = "-X" ] && [ "$3" = "POST" ]; then
-  touch "$GG_FAKE_QUEUED"
+  printf '%s\n' "$*" > "$GG_FAKE_QUEUED"
   exit 0
 fi
 
@@ -139,7 +143,7 @@ if [ "$1" = "api" ]; then
         echo '{"merge_request":{"iid":41},"status":"merged","pipeline":{"status":"success"}}'
         exit 0
       fi
-      if [ -f "$GG_FAKE_QUEUED" ]; then
+      if [ -f "$GG_FAKE_QUEUED" ] && [ "$ci" = success ]; then
         touch "$GG_FAKE_POLLED"
         echo '{"merge_request":{"iid":41},"status":"fresh","pipeline":{"status":"success"}}'
         exit 0
@@ -148,7 +152,7 @@ if [ "$1" = "api" ]; then
       exit 1
       ;;
     projects/:id/merge_trains/*scope=active*)
-      if [ ! -f "$GG_FAKE_QUEUED" ]; then
+      if [ ! -f "$GG_FAKE_QUEUED" ] || [ "$ci" != success ]; then
         echo '[]'
         exit 0
       fi
@@ -173,7 +177,7 @@ fi
 
 if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
   if [ -f "$GG_FAKE_MERGED" ]; then state=merged; else state=opened; fi
-  printf '{"iid":41,"title":"Land entry","state":"%s","web_url":"https://gitlab.example/test/repo/-/merge_requests/41","source_branch":"testuser/land-wait/c-1111111","draft":false,"work_in_progress":false,"detailed_merge_status":"mergeable","head_pipeline":{"status":"success"}}\n' "$state"
+  printf '{"iid":41,"title":"Land entry","state":"%s","web_url":"https://gitlab.example/test/repo/-/merge_requests/41","source_branch":"testuser/land-wait/c-1111111","draft":false,"work_in_progress":false,"detailed_merge_status":"mergeable","head_pipeline":{"status":"%s"}}\n' "$state" "$ci"
   exit 0
 fi
 
@@ -213,6 +217,7 @@ struct WaitingLandFixture {
     retarget_fail: std::path::PathBuf,
     clean_provider_fail: std::path::PathBuf,
     pr_view_calls: std::path::PathBuf,
+    glab_ci: std::path::PathBuf,
     first_terminal_after_refresh: std::path::PathBuf,
     test_home: std::path::PathBuf,
 }
@@ -276,6 +281,7 @@ impl WaitingLandFixture {
         let retarget_fail = repo_path.join("fake-retarget-fail");
         let clean_provider_fail = repo_path.join("fake-clean-provider-fail");
         let pr_view_calls = repo_path.join("fake-pr-view-calls");
+        let glab_ci = repo_path.join("fake-glab-ci");
         let first_terminal_after_refresh = repo_path.join("fake-first-terminal-after-refresh");
         let test_home = repo_path.join(".test-home");
         fs::create_dir_all(&test_home).expect("create test home");
@@ -299,6 +305,7 @@ impl WaitingLandFixture {
             retarget_fail,
             clean_provider_fail,
             pr_view_calls,
+            glab_ci,
             first_terminal_after_refresh,
             test_home,
         }
@@ -328,6 +335,7 @@ impl WaitingLandFixture {
             .env("GG_FAKE_RETARGET_FAIL", &self.retarget_fail)
             .env("GG_FAKE_CLEAN_PROVIDER_FAIL", &self.clean_provider_fail)
             .env("GG_FAKE_PR_VIEW_CALLS", &self.pr_view_calls)
+            .env("GG_FAKE_GLAB_CI", &self.glab_ci)
             .env(
                 "GG_FAKE_FIRST_TERMINAL_AFTER_REFRESH",
                 &self.first_terminal_after_refresh,
@@ -403,6 +411,14 @@ impl WaitingLandFixture {
 
     fn enable_gitlab_merge_trains(&self) {
         fs::write(&self.merge_trains, "enabled\n").expect("enable fake merge trains");
+    }
+
+    fn set_glab_pipeline_status(&self, status: &str) {
+        fs::write(&self.glab_ci, status).expect("set fake GitLab pipeline status");
+    }
+
+    fn queued_request(&self) -> String {
+        fs::read_to_string(&self.queued).expect("read fake merge-train request")
     }
 
     fn fail_auth_with_network_error(&self) {
@@ -1080,6 +1096,63 @@ fn test_land_gitlab_jsonl_records_merge_train_merge_before_stale_stack_error() {
             .as_str()
             .is_some_and(|error| error.contains("Stack changed while gg land was waiting")),
         "summary should still report the stale-stack error: {summary}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_merge_train_wait_queues_auto_merge_before_pipeline_passes() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.set_glab_pipeline_status("running");
+
+    let land = fixture.start_land_with_args(&["land", "--all", "--wait", "--jsonl", "--no-clean"]);
+    fixture.wait_until_queued();
+    let request = fixture.queued_request();
+    assert!(
+        request.contains("auto_merge=true"),
+        "merge-train request must ask GitLab to add the MR when checks pass: {request}"
+    );
+    assert!(
+        request.contains("squash=true"),
+        "merge-train request must forward the default squash: {request}"
+    );
+
+    fs::write(&fixture.merged, "merged\n").expect("complete fake merge train");
+    let output = land.wait_with_output().expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(output.status.success(), "land failed: {stderr}");
+    let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
+        .expect("parse summary event");
+    assert_eq!(summary["event"], "summary");
+    assert_eq!(summary["landed"][0]["action"], "merged", "{summary}");
+    assert!(summary["error"].is_null(), "{summary}");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_merge_train_wait_stops_when_pipeline_fails_before_joining_train() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.set_glab_pipeline_status("running");
+
+    let land = fixture.start_land_with_args(&["land", "--all", "--wait", "--jsonl", "--no-clean"]);
+    fixture.wait_until_queued();
+    fixture.set_glab_pipeline_status("failed");
+
+    let output = land.wait_with_output().expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
+        .expect("parse summary event");
+    assert_eq!(summary["event"], "summary");
+    assert!(
+        summary["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("pipeline failed")),
+        "a failed pipeline must end the merge-train wait: {summary}"
     );
 }
 

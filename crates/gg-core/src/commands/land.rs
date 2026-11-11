@@ -552,14 +552,28 @@ fn stack_changed_while_waiting(expected: &LandStackFingerprint, stack: &Stack) -
     })
 }
 
+/// Whether `status` lets gg hand the PR/MR over for merging.
+///
+/// Merge-train queueing uses GitLab auto-merge, which waits for a pending or
+/// running pipeline itself, so only a finished failure blocks it. Direct merges
+/// need a green pipeline.
+fn ci_allows_landing(status: &CiStatus, merge_trains_enabled: bool) -> bool {
+    match status {
+        CiStatus::Success => true,
+        CiStatus::Failed | CiStatus::Canceled => false,
+        CiStatus::Pending | CiStatus::Running | CiStatus::Unknown => merge_trains_enabled,
+    }
+}
+
 fn pr_is_still_ready(
     provider: &Provider,
     pr_num: u64,
     skip_approval: bool,
     merge_trains_enabled: bool,
 ) -> bool {
-    if !matches!(provider.get_pr_ci_status(pr_num), Ok(CiStatus::Success)) {
-        return false;
+    match provider.get_pr_ci_status(pr_num) {
+        Ok(status) if ci_allows_landing(&status, merge_trains_enabled) => {}
+        _ => return false,
     }
     (skip_approval && !merge_trains_enabled) || provider.check_pr_approved(pr_num).unwrap_or(false)
 }
@@ -1113,6 +1127,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             structured,
                             streamer.as_mut(),
                             &mut readiness_poll,
+                            merge_trains_enabled,
                         );
                         lock = Some(git::acquire_operation_lock_silent(
                             &repo, "land", structured,
@@ -1241,7 +1256,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
         }
 
         if merge_trains_enabled {
-            match provider.add_to_merge_train(pr_num) {
+            match provider.add_to_merge_train(pr_num, squash) {
                 Ok(result) => {
                     // Queueing a PR/MR on the merge train is a remote state
                     // mutation even when the PR was already queued — the
@@ -1707,8 +1722,10 @@ pub fn run(opts: LandOptions) -> Result<()> {
     }
 }
 
-/// Wait for a PR/MR to be ready to merge (CI passes, approvals met)
-/// Also monitors merge train status if merge trains are enabled
+/// Wait for a PR/MR to be ready to merge (CI passes, approvals met).
+///
+/// With merge trains, GitLab's auto-merge waits for the pipeline, so this only
+/// waits for approval and fails fast on a failed or canceled pipeline.
 #[allow(clippy::too_many_arguments)]
 fn wait_for_pr_ready(
     provider: &Provider,
@@ -1722,13 +1739,11 @@ fn wait_for_pr_ready(
     json: bool,
     mut streamer: Option<&mut StreamingJson>,
     poll: &mut u64,
+    merge_trains_enabled: bool,
 ) -> Result<()> {
     let timeout = Duration::from_secs(timeout_minutes * 60);
     let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
     let mut consecutive_errors: u32 = 0;
-
-    // Check if merge trains are enabled
-    let merge_trains_enabled = provider.check_merge_trains_enabled().unwrap_or(false);
 
     if !json {
         println!(
@@ -1775,7 +1790,6 @@ fn wait_for_pr_ready(
         *poll += 1;
 
         let mut new_state = String::new();
-        let mut ci_ready = false;
         let mut merge_train_status = None;
         let mut merge_train_position = None;
         let mut pipeline_running = None;
@@ -1900,10 +1914,11 @@ fn wait_for_pr_ready(
             }
         };
         let ci_status_json = ci_status_name(&ci_status);
+        let ci_ready = ci_allows_landing(&ci_status, merge_trains_enabled);
         match ci_status {
-            CiStatus::Success => {
-                ci_ready = true;
-            }
+            CiStatus::Success => {}
+            // With merge trains, GitLab auto-merge waits for the pipeline itself.
+            CiStatus::Pending | CiStatus::Running | CiStatus::Unknown if ci_ready => {}
             CiStatus::Pending => {
                 if new_state.is_empty() {
                     new_state = "Waiting for CI to start...".to_string();
@@ -2295,6 +2310,7 @@ fn wait_for_merge_train_completion(
         let mut pipeline_running = None;
         let mut heartbeat_error = None;
         let mut terminal_result = None;
+        let mut ci_status = None;
 
         // Check merge train status
         let mut api_calls_succeeded = true;
@@ -2352,6 +2368,35 @@ fn wait_for_merge_train_completion(
                         }
                         new_state =
                             merge_train_idle_state_message(idle_count, seen_in_train).to_string();
+                        // Not on the train yet: GitLab auto-merge is waiting for
+                        // the MR pipeline, and it never adds the MR if that fails.
+                        if terminal_result.is_none() {
+                            if let Ok(status) = provider.get_pr_ci_status(pr_num) {
+                                ci_status = Some(ci_status_name(&status));
+                                match status {
+                                    CiStatus::Failed | CiStatus::Canceled => {
+                                        let msg = format!(
+                                            "{} {}{} pipeline {}; GitLab will not add it to the merge train",
+                                            provider.pr_label(),
+                                            provider.pr_number_prefix(),
+                                            pr_num,
+                                            if status == CiStatus::Failed {
+                                                "failed"
+                                            } else {
+                                                "was canceled"
+                                            }
+                                        );
+                                        heartbeat_error = Some(msg.clone());
+                                        terminal_result = Some(Err(GgError::Other(msg)));
+                                    }
+                                    CiStatus::Pending | CiStatus::Running if !seen_in_train => {
+                                        new_state = "Waiting for pipeline before joining the merge train..."
+                                            .to_string();
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
                     }
                     MergeTrainStatus::Unknown => {
                         if should_count_merge_train_status_as_api_error(&train_info) {
@@ -2422,7 +2467,7 @@ fn wait_for_merge_train_completion(
                 phase: "merge_train".to_string(),
                 poll,
                 elapsed_seconds: start_time.elapsed().as_secs(),
-                ci_status: None,
+                ci_status,
                 approved: None,
                 merge_train_status,
                 merge_train_position,
@@ -3026,31 +3071,6 @@ mod tests {
         // - Aborts rebase on conflict
         // - Returns Result<()> to propagate errors
         // - Caller (land command) breaks loop on error
-    }
-
-    #[test]
-    #[allow(clippy::type_complexity)]
-    fn test_wait_for_pr_ready_takes_target_branch() {
-        // This test documents that wait_for_pr_ready accepts target_branch parameter
-        // instead of using a hardcoded "main". The actual function requires a real
-        // Provider and network access, so we just verify the signature.
-
-        use std::sync::Arc;
-
-        // Type assertion that the function signature includes target_branch: &str
-        let _fn_ptr: fn(
-            &Provider,
-            usize,
-            u64,
-            bool,
-            Instant,
-            u64,
-            Option<&Arc<AtomicBool>>,
-            &str,
-            bool,
-            Option<&mut StreamingJson>,
-            &mut u64,
-        ) -> Result<()> = wait_for_pr_ready;
     }
 
     // ==========================================================================

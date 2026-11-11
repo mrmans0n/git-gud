@@ -1053,3 +1053,96 @@ fn test_lint_position_clamped_to_stack_size() {
     );
 }
 // ========== Split command tests ==========
+
+#[test]
+fn test_sync_jsonl_streams_lint_progress_before_failure() {
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","provider":"github","lint":["./lint-fail.sh"]}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "lint-sync-jsonl"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(
+        repo_path.join("lint-fail.sh"),
+        "#!/bin/sh\necho 'lint-says-no' >&2\nexit 1\n",
+    )
+    .expect("Failed to write lint script");
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(repo_path.join("lint-fail.sh"))
+            .unwrap()
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(repo_path.join("lint-fail.sh"), perms).unwrap();
+    }
+    run_git(&repo_path, &["add", "lint-fail.sh"]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Stack commit\n\nGG-ID: c-jsonl01"],
+    );
+
+    let fake_bin = repo_path.join("fake-bin");
+    fs::create_dir_all(&fake_bin).unwrap();
+    fs::write(
+        fake_bin.join("gh"),
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo 'gh version 2.0.0'\n  exit 0\nfi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then\n  exit 0\nfi\nexit 1\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(fake_bin.join("gh")).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(fake_bin.join("gh"), perms).unwrap();
+    }
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut new_path = std::ffi::OsString::from(fake_bin.as_os_str());
+    new_path.push(":");
+    new_path.push(old_path);
+
+    let (success, stdout, _stderr) = run_gg_with_env(
+        &repo_path,
+        &["sync", "--lint", "--jsonl"],
+        &[("PATH", new_path.as_os_str())],
+    );
+    assert!(!success, "sync should fail when lint fails");
+
+    let events: Vec<Value> = stdout
+        .lines()
+        .filter(|l| l.trim_start().starts_with('{'))
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    let names: Vec<&str> = events.iter().filter_map(|e| e["event"].as_str()).collect();
+    assert_eq!(
+        &names[..5],
+        &[
+            "start",
+            "lint_started",
+            "lint_entry_started",
+            "lint_command_done",
+            "lint_entry_done"
+        ],
+        "unexpected events: {:?}",
+        names
+    );
+    assert!(names.contains(&"lint_done"));
+    assert!(!names.contains(&"entry_started"), "push must not start");
+
+    assert_eq!(events[0]["total_entries"], 1);
+    assert_eq!(events[1]["commands"][0], "./lint-fail.sh");
+    assert_eq!(events[3]["passed"], false);
+    assert!(events[3]["output"]
+        .as_str()
+        .unwrap()
+        .contains("lint-says-no"));
+    assert!(events[3]["duration_ms"].is_u64());
+    assert_eq!(events[4]["amended"], false);
+    let done = events.iter().find(|e| e["event"] == "lint_done").unwrap();
+    assert_eq!(done["all_passed"], false);
+}

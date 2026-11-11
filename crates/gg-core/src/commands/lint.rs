@@ -34,6 +34,47 @@ pub fn run_brief_no_commands(
     run_with_no_commands_help(until, json, emit_json_output, NoCommandsHelp::Brief)
 }
 
+/// Run lint for `gg sync`, reporting progress through `progress`.
+///
+/// Returns the raw per-commit results (empty when no lint commands are
+/// configured). Nothing is printed except what `json` allows.
+pub fn run_for_sync(
+    until: Option<usize>,
+    json: bool,
+    progress: Option<run::RunProgressFn>,
+) -> Result<run::RunResult> {
+    let repo = git::open_repo()?;
+    let config = Config::load_with_global(repo.commondir())?;
+    let lint_commands = &config.defaults.lint;
+    if lint_commands.is_empty() {
+        if !json {
+            println!(
+                "{}",
+                style("No lint commands configured. Run 'gg setup' to configure lint commands.")
+                    .dim()
+            );
+        }
+        return Ok(run::RunResult {
+            all_passed: true,
+            results: vec![],
+        });
+    }
+    run::execute_raw(RunOptions {
+        commands: lint_commands
+            .iter()
+            .map(|s| run::RunCommand::Shell(s.clone()))
+            .collect(),
+        change_mode: ChangeMode::Amend,
+        until,
+        stop_on_error: false,
+        json,
+        emit_json_output: false,
+        header_label: Some("lint".to_string()),
+        jobs: 1,
+        progress,
+    })
+}
+
 #[derive(Clone, Copy)]
 enum NoCommandsHelp {
     Brief,
@@ -84,6 +125,7 @@ fn run_with_no_commands_help(
         emit_json_output,
         header_label: Some("lint".to_string()),
         jobs: 1,
+        progress: None,
     })?;
 
     if json && emit_json_output {

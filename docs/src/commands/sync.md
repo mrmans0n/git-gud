@@ -240,6 +240,11 @@ Event kinds:
 | Event | Fields | Emitted when |
 |---|---|---|
 | `start` | `stack`, `base`, `total_entries` | Sync begins |
+| `lint_started` | `total_entries`, `commands` | Lint begins (only when lint runs; follows `start`) |
+| `lint_entry_started` | `position`, `sha`, `title` | Lint begins on a commit |
+| `lint_command_done` | `position`, `command`, `passed`, `duration_ms`, `output` | One lint command finished; `output` (last 8 KB) only on failure |
+| `lint_entry_done` | `position`, `sha`, `passed`, `amended` | Lint finished on a commit; `amended: true` means its SHA changed (`sha` is the new one) |
+| `lint_done` | `all_passed` | Lint phase finished; on failure sync aborts with an `error` event naming the first failing commit and command |
 | `entry_started` | `position`, `sha`, `title`, `gg_id`, `branch` | Processing begins for a stack entry |
 | `push_started` | `position`, `branch` | A push is about to start |
 | `push_done` | `position`, `branch`, `forced` | Push succeeded |

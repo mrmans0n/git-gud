@@ -81,6 +81,40 @@ fn display_argv(argv: &[String]) -> String {
         .join(" ")
 }
 
+/// Progress notification emitted while commands run on a stack (sequential path).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunProgress {
+    Started {
+        total_entries: usize,
+        commands: Vec<String>,
+    },
+    EntryStarted {
+        position: usize,
+        sha: String,
+        title: String,
+    },
+    CommandDone {
+        position: usize,
+        command: String,
+        passed: bool,
+        duration_ms: u64,
+        /// Combined stderr/stdout of a failed command (full text; callers trim).
+        output: Option<String>,
+    },
+    EntryDone {
+        position: usize,
+        sha: String,
+        passed: bool,
+        amended: bool,
+    },
+    Done {
+        all_passed: bool,
+    },
+}
+
+/// Callback invoked for each [`RunProgress`] notification.
+pub type RunProgressFn = Box<dyn Fn(RunProgress)>;
+
 /// Options for `run::execute()`.
 pub struct RunOptions {
     /// Commands to execute on each commit.
@@ -100,6 +134,16 @@ pub struct RunOptions {
     /// Number of parallel jobs. 0 = auto (num CPUs), 1 = sequential.
     /// Parallel only applies to ReadOnly mode.
     pub jobs: usize,
+    /// Optional progress callback (sequential execution only).
+    pub progress: Option<RunProgressFn>,
+}
+
+impl RunOptions {
+    fn notify(&self, event: RunProgress) {
+        if let Some(cb) = &self.progress {
+            cb(event);
+        }
+    }
 }
 
 /// Raw result from running commands on the stack.
@@ -250,6 +294,10 @@ fn execute_raw_body(
     }
 
     // --- Sequential path ---
+    options.notify(RunProgress::Started {
+        total_entries: end_pos,
+        commands: options.commands.iter().map(|c| c.display()).collect(),
+    });
     if !options.json {
         let header = if let Some(ref label) = options.header_label {
             format!(
@@ -339,6 +387,12 @@ fn run_on_commits(
             );
         }
 
+        options.notify(RunProgress::EntryStarted {
+            position: entry.position,
+            sha: entry.short_sha.clone(),
+            title: entry.title.clone(),
+        });
+
         // Checkout this commit
         let commit = repo.find_commit(entry.oid)?;
         git::checkout_commit(repo, &commit)?;
@@ -353,6 +407,7 @@ fn run_on_commits(
                 print!("  Running: {} ... ", style(&cmd_display).dim());
             }
 
+            let started_at = std::time::Instant::now();
             let output = match execute_command(cmd, repo_root, repo) {
                 Ok(output) => output,
                 Err(e) => {
@@ -412,6 +467,14 @@ fn run_on_commits(
                     Some(text)
                 }
             };
+
+            options.notify(RunProgress::CommandDone {
+                position: entry.position,
+                command: cmd_display.clone(),
+                passed,
+                duration_ms: started_at.elapsed().as_millis() as u64,
+                output: combined_output.clone(),
+            });
 
             command_results.push(RunCommandResult {
                 command: cmd_display.clone(),
@@ -595,6 +658,13 @@ fn run_on_commits(
             entry.short_sha.clone()
         };
 
+        options.notify(RunProgress::EntryDone {
+            position: entry.position,
+            sha: final_sha.clone(),
+            passed: commit_passed,
+            amended: had_changes_this_commit,
+        });
+
         run_results.push(RunCommitResult {
             position: entry.position,
             sha: final_sha,
@@ -666,6 +736,8 @@ fn run_on_commits(
         };
         println!("{}", status_msg);
     }
+
+    options.notify(RunProgress::Done { all_passed });
 
     Ok(RunResult {
         all_passed,

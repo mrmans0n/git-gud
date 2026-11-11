@@ -571,6 +571,8 @@ pub fn run(
     let sync_start_branch = git::current_branch_name(&repo);
     let sync_start_head = repo.head()?.peel_to_commit()?.id();
 
+    let mut start_emitted = false;
+
     // Run lint ONCE if requested (before GG-ID addition loop)
     if run_lint {
         // Reload stack to get post-rebase state. After rebase, landed commits
@@ -585,9 +587,34 @@ pub fn run(
         if !json && !jsonl {
             println!("{}", console::style("Running lint before sync...").dim());
         }
-        let lint_passed =
-            crate::commands::lint::run_brief_no_commands(Some(end_pos), json || jsonl, false)?;
-        if !lint_passed {
+        // Emit Start before lint so streaming clients know the stack and
+        // entry count up front instead of waiting for lint to finish.
+        if let Some(s) = streamer.as_mut() {
+            s.emit(&SyncStreamingResponse {
+                version: OUTPUT_VERSION,
+                command: "sync".to_string(),
+                event: SyncStreamingEvent::Start {
+                    stack: current_stack.name.clone(),
+                    base: current_stack.base.clone(),
+                    total_entries: end_pos,
+                },
+            });
+            start_emitted = true;
+        }
+        let progress: Option<crate::commands::run::RunProgressFn> = if jsonl {
+            Some(Box::new(|event| {
+                StreamingJson::new().emit(&SyncStreamingResponse {
+                    version: OUTPUT_VERSION,
+                    command: "sync".to_string(),
+                    event: lint_progress_event(event),
+                });
+            }))
+        } else {
+            None
+        };
+        let lint_result =
+            crate::commands::lint::run_for_sync(Some(end_pos), json || jsonl, progress)?;
+        if !lint_result.all_passed {
             restore_sync_start_position(
                 &repo,
                 sync_start_branch.as_deref(),
@@ -595,10 +622,7 @@ pub fn run(
                 json,
                 jsonl,
             )?;
-            return Err(GgError::Other(
-                "Lint failed for one or more commits. Sync aborted; repository restored to its original state."
-                    .to_string(),
-            ));
+            return Err(GgError::Other(lint_failure_message(&lint_result.results)));
         }
         if !json && !jsonl {
             println!();
@@ -713,16 +737,18 @@ pub fn run(
     let mut entry_is_closed: Vec<bool> = Vec::with_capacity(entries_to_sync.len());
     let mut entry_has_unresolved_pr_state: Vec<bool> = Vec::with_capacity(entries_to_sync.len());
 
-    if let Some(s) = streamer.as_mut() {
-        s.emit(&SyncStreamingResponse {
-            version: OUTPUT_VERSION,
-            command: "sync".to_string(),
-            event: SyncStreamingEvent::Start {
-                stack: stack.name.clone(),
-                base: stack.base.clone(),
-                total_entries: entries_to_sync.len(),
-            },
-        });
+    if !start_emitted {
+        if let Some(s) = streamer.as_mut() {
+            s.emit(&SyncStreamingResponse {
+                version: OUTPUT_VERSION,
+                command: "sync".to_string(),
+                event: SyncStreamingEvent::Start {
+                    stack: stack.name.clone(),
+                    base: stack.base.clone(),
+                    total_entries: entries_to_sync.len(),
+                },
+            });
+        }
     }
 
     for (i, entry) in entries_to_sync.iter().enumerate() {
@@ -2593,5 +2619,129 @@ mod tests {
         // Should skip entries[1] (merged) and target entries[0]
         let expected = stack.entry_branch_name(&entries[0]).unwrap();
         assert_eq!(result, expected);
+    }
+}
+
+/// Max bytes of failed-command output carried on `lint_command_done` events.
+const LINT_EVENT_OUTPUT_MAX_BYTES: usize = 8 * 1024;
+
+fn tail_bytes(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let mut start = text.len() - max;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("…{}", &text[start..])
+}
+
+fn lint_progress_event(event: crate::commands::run::RunProgress) -> SyncStreamingEvent {
+    use crate::commands::run::RunProgress as P;
+    match event {
+        P::Started {
+            total_entries,
+            commands,
+        } => SyncStreamingEvent::LintStarted {
+            total_entries,
+            commands,
+        },
+        P::EntryStarted {
+            position,
+            sha,
+            title,
+        } => SyncStreamingEvent::LintEntryStarted {
+            position,
+            sha,
+            title,
+        },
+        P::CommandDone {
+            position,
+            command,
+            passed,
+            duration_ms,
+            output,
+        } => SyncStreamingEvent::LintCommandDone {
+            position,
+            command,
+            passed,
+            duration_ms,
+            output: output.map(|o| tail_bytes(&o, LINT_EVENT_OUTPUT_MAX_BYTES)),
+        },
+        P::EntryDone {
+            position,
+            sha,
+            passed,
+            amended,
+        } => SyncStreamingEvent::LintEntryDone {
+            position,
+            sha,
+            passed,
+            amended,
+        },
+        P::Done { all_passed } => SyncStreamingEvent::LintDone { all_passed },
+    }
+}
+
+/// Build the sync-abort error, naming the first failing commit and command.
+fn lint_failure_message(results: &[crate::output::RunCommitResult]) -> String {
+    let detail = results
+        .iter()
+        .find(|r| !r.passed)
+        .map(|r| {
+            let cmd = r
+                .commands
+                .iter()
+                .find(|c| !c.passed)
+                .map(|c| format!(" (command: {})", c.command))
+                .unwrap_or_default();
+            format!(": first failure at [{}] {}{}", r.position, r.sha, cmd)
+        })
+        .unwrap_or_default();
+    format!(
+        "Lint failed for one or more commits{}. Sync aborted; repository restored to its original state.",
+        detail
+    )
+}
+
+#[cfg(test)]
+mod lint_event_tests {
+    use super::*;
+    use crate::output::{RunCommandResult, RunCommitResult};
+
+    #[test]
+    fn tail_bytes_keeps_tail_on_char_boundary() {
+        assert_eq!(tail_bytes("abc", 10), "abc");
+        assert_eq!(tail_bytes("abcdef", 3), "…def");
+        assert_eq!(tail_bytes("aéé", 3), "…é");
+    }
+
+    #[test]
+    fn failure_message_names_commit_and_command() {
+        let results = vec![
+            RunCommitResult {
+                position: 1,
+                sha: "aaa".into(),
+                title: "t".into(),
+                passed: true,
+                commands: vec![],
+            },
+            RunCommitResult {
+                position: 2,
+                sha: "bbb".into(),
+                title: "t".into(),
+                passed: false,
+                commands: vec![RunCommandResult {
+                    command: "./lint.sh".into(),
+                    passed: false,
+                    output: None,
+                }],
+            },
+        ];
+        let msg = lint_failure_message(&results);
+        assert!(msg.starts_with("Lint failed for one or more commits"));
+        assert!(msg.contains("[2] bbb"));
+        assert!(msg.contains("./lint.sh"));
+        assert!(msg.contains("restored"));
     }
 }

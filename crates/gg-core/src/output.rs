@@ -223,6 +223,34 @@ pub enum SyncStreamingEvent {
         base: String,
         total_entries: usize,
     },
+    LintStarted {
+        total_entries: usize,
+        commands: Vec<String>,
+    },
+    LintEntryStarted {
+        position: usize,
+        sha: String,
+        title: String,
+    },
+    LintCommandDone {
+        position: usize,
+        command: String,
+        passed: bool,
+        duration_ms: u64,
+        /// Tail of the command output, present only when the command failed.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output: Option<String>,
+    },
+    LintEntryDone {
+        position: usize,
+        /// Commit SHA after lint (differs from the start SHA when `amended`).
+        sha: String,
+        passed: bool,
+        amended: bool,
+    },
+    LintDone {
+        all_passed: bool,
+    },
     EntryStarted {
         position: usize,
         sha: String,
@@ -1072,6 +1100,41 @@ mod tests {
         assert_eq!(v["stack"], "my-feature");
         assert_eq!(v["base"], "main");
         assert_eq!(v["total_entries"], 3);
+    }
+
+    #[test]
+    fn sync_streaming_lint_events_serialize_flat() {
+        let response = SyncStreamingResponse {
+            version: OUTPUT_VERSION,
+            command: "sync".to_string(),
+            event: SyncStreamingEvent::LintCommandDone {
+                position: 2,
+                command: "./lint.sh".to_string(),
+                passed: false,
+                duration_ms: 12,
+                output: Some("boom".to_string()),
+            },
+        };
+        let v = serde_json::to_value(&response).unwrap();
+        assert_eq!(v["event"], "lint_command_done");
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["position"], 2);
+        assert_eq!(v["duration_ms"], 12);
+        assert_eq!(v["output"], "boom");
+
+        let passed = SyncStreamingResponse {
+            version: OUTPUT_VERSION,
+            command: "sync".to_string(),
+            event: SyncStreamingEvent::LintCommandDone {
+                position: 1,
+                command: "x".to_string(),
+                passed: true,
+                duration_ms: 1,
+                output: None,
+            },
+        };
+        let v = serde_json::to_value(&passed).unwrap();
+        assert!(v.get("output").is_none());
     }
 
     fn created_github_stack_result() -> GithubStackSyncResult {

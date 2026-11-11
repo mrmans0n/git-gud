@@ -834,6 +834,7 @@ fn main() {
                 emit_json_output: json,
                 header_label: None,
                 jobs,
+                progress: None,
             }) {
                 Ok(true) => (Ok(()), json, false),
                 // `execute` has already emitted the JSON run payload (when

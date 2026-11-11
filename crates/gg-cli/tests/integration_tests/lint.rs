@@ -1,11 +1,12 @@
 use crate::helpers::{
     create_test_repo, create_test_repo_with_remote, create_test_repo_with_worktree_support,
-    create_worktree, run_gg, run_gg_with_env, run_git,
+    create_worktree, run_gg, run_gg_with_env, run_git, run_git_full,
 };
 
 use serde_json::Value;
 use std::fs;
-use std::process::Command;
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -1145,4 +1146,120 @@ fn test_sync_jsonl_streams_lint_progress_before_failure() {
     assert_eq!(events[4]["amended"], false);
     let done = events.iter().find(|e| e["event"] == "lint_done").unwrap();
     assert_eq!(done["all_passed"], false);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_sync_jsonl_closed_stream_restores_failed_lint_changes() {
+    let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","provider":"github","lint":["./lint-fail.sh"]}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "lint-closed-stream"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    fs::write(repo_path.join("tracked.txt"), "original\n").expect("Failed to write tracked file");
+    fs::write(
+        repo_path.join("lint-fail.sh"),
+        "#!/bin/sh\nprintf 'changed by failed lint\\n' > tracked.txt\nsleep 1\nexit 1\n",
+    )
+    .expect("Failed to write lint script");
+    let mut perms = fs::metadata(repo_path.join("lint-fail.sh"))
+        .unwrap()
+        .permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(repo_path.join("lint-fail.sh"), perms).unwrap();
+    run_git(&repo_path, &["add", "lint-fail.sh", "tracked.txt"]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Stack commit\n\nGG-ID: c-closed01"],
+    );
+
+    let fake_bin = repo_path.join("fake-bin");
+    fs::create_dir_all(&fake_bin).unwrap();
+    fs::write(
+        fake_bin.join("gh"),
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo 'gh version 2.0.0'\n  exit 0\nfi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then\n  exit 0\nfi\nexit 1\n",
+    )
+    .unwrap();
+    let mut perms = fs::metadata(fake_bin.join("gh")).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(fake_bin.join("gh"), perms).unwrap();
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut new_path = std::ffi::OsString::from(fake_bin.as_os_str());
+    new_path.push(":");
+    new_path.push(old_path);
+
+    let original_branch = run_git_full(&repo_path, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .1
+        .trim()
+        .to_string();
+    let original_head = run_git_full(&repo_path, &["rev-parse", "HEAD"])
+        .1
+        .trim()
+        .to_string();
+    let original_refs = run_git_full(&repo_path, &["show-ref"]).1;
+
+    let gg_path = env!("CARGO_BIN_EXE_gg");
+    let mut child = Command::new(gg_path)
+        .args(["sync", "--lint", "--jsonl"])
+        .current_dir(&repo_path)
+        .env("PATH", &new_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn gg sync");
+
+    let stdout = child.stdout.take().expect("stdout must be piped");
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let bytes = reader
+            .read_line(&mut line)
+            .expect("Failed to read JSONL event");
+        assert!(bytes > 0, "gg sync ended before lint started");
+        let event: Value = serde_json::from_str(line.trim()).expect("stdout must contain JSONL");
+        if event["event"] == "lint_entry_started" {
+            break;
+        }
+    }
+    drop(reader);
+
+    let output = child
+        .wait_with_output()
+        .expect("Failed to wait for gg sync");
+    assert!(
+        !output.status.success(),
+        "sync should abort after the stream closes"
+    );
+
+    let current_branch = run_git_full(&repo_path, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .1
+        .trim()
+        .to_string();
+    let current_head = run_git_full(&repo_path, &["rev-parse", "HEAD"])
+        .1
+        .trim()
+        .to_string();
+    let current_refs = run_git_full(&repo_path, &["show-ref"]).1;
+
+    assert_eq!(
+        current_branch, original_branch,
+        "sync must restore the original branch"
+    );
+    assert_eq!(
+        current_head, original_head,
+        "sync must restore the original HEAD"
+    );
+    assert_eq!(
+        current_refs, original_refs,
+        "sync must not move local or remote refs"
+    );
 }

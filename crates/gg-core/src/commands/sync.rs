@@ -625,11 +625,6 @@ pub fn run(
         };
         let lint_result =
             crate::commands::lint::run_for_sync(Some(end_pos), json || jsonl, progress)?;
-        if stream_closed.get() {
-            return Err(GgError::Other(
-                "Output stream closed during lint; sync aborted.".to_string(),
-            ));
-        }
         if !lint_result.all_passed {
             restore_sync_start_position(
                 &repo,
@@ -638,7 +633,14 @@ pub fn run(
                 json,
                 jsonl,
             )?;
-            return Err(GgError::Other(lint_failure_message(&lint_result.results)));
+            if !stream_closed.get() {
+                return Err(GgError::Other(lint_failure_message(&lint_result.results)));
+            }
+        }
+        if stream_closed.get() {
+            return Err(GgError::Other(
+                "Output stream closed during lint; sync aborted.".to_string(),
+            ));
         }
         if !json && !jsonl {
             println!();

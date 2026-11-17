@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.8] - 2026-11-17
+
+### Added
+- `gg land --no-rebase` skips rebasing and force-pushing remaining stack branches after each merge, avoiding repeated CI runs when used with `--no-squash` (#487).
+
+### Changed
+- Updated locked dependencies: `rmcp` to 3.10.0 (#483), `clap_complete` to 4.6.12 (#485), `clap` to 4.6.8 (#484), and `uuid` to 1.29.3 (#486).
+
 ## [0.10.7] - 2026-11-11
 
 ### Added
@@ -611,7 +619,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.10.7...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.10.8...HEAD
+[0.10.8]: https://github.com/mrmans0n/git-gud/compare/v0.10.7...v0.10.8
 [0.10.7]: https://github.com/mrmans0n/git-gud/compare/v0.10.6...v0.10.7
 [0.10.6]: https://github.com/mrmans0n/git-gud/compare/v0.10.5...v0.10.6
 [0.10.5]: https://github.com/mrmans0n/git-gud/compare/v0.10.4...v0.10.5

@@ -576,11 +576,15 @@ pub fn update_mr_title(mr_number: u64, title: &str) -> Result<()> {
 /// so `squash=false` on those endpoints leaves an MR created with the project's
 /// `default_on` squash option squashing anyway. Updating the MR itself does
 /// apply `false`.
-fn ensure_mr_squash_disabled(mr_number: u64) -> Result<()> {
+fn ensure_mr_squash_disabled(
+    mr_number: u64,
+    before_mutation: impl FnOnce() -> Result<()>,
+) -> Result<bool> {
     if !view_mr(mr_number)?.squash {
-        return Ok(());
+        return Ok(false);
     }
 
+    before_mutation()?;
     let output = Command::new("glab")
         .args([
             "api",
@@ -600,13 +604,22 @@ fn ensure_mr_squash_disabled(mr_number: u64) -> Result<()> {
         )));
     }
 
-    Ok(())
+    Ok(true)
+}
+
+/// Disable squash on an MR before a landing request and report whether the MR
+/// was changed remotely.
+pub fn prepare_mr_no_squash(
+    mr_number: u64,
+    before_mutation: impl FnOnce() -> Result<()>,
+) -> Result<bool> {
+    ensure_mr_squash_disabled(mr_number, before_mutation)
 }
 
 /// Merge an MR
 pub fn merge_mr(mr_number: u64, squash: bool, delete_branch: bool) -> Result<()> {
     if !squash {
-        ensure_mr_squash_disabled(mr_number)?;
+        let _ = ensure_mr_squash_disabled(mr_number, || Ok(()))?;
     }
 
     let mr_num_str = mr_number.to_string();
@@ -648,7 +661,7 @@ pub fn auto_merge_mr_when_pipeline_succeeds(
     delete_branch: bool,
 ) -> Result<AutoMergeResult> {
     if !squash {
-        ensure_mr_squash_disabled(mr_number)?;
+        let _ = ensure_mr_squash_disabled(mr_number, || Ok(()))?;
     }
 
     let output = Command::new("glab")
@@ -864,9 +877,6 @@ pub struct ProjectMergeSettings {
 }
 
 /// Read the current project's merge settings with one `glab api projects/:id` call.
-///
-/// A failed call or unparsable response yields the defaults (no merge trains,
-/// unknown squash option).
 pub fn get_project_merge_settings() -> Result<ProjectMergeSettings> {
     // Note: We don't use --jq flag as it's not available in all glab versions
     let output = Command::new("glab")
@@ -874,19 +884,22 @@ pub fn get_project_merge_settings() -> Result<ProjectMergeSettings> {
         .output()?;
 
     if !output.status.success() {
-        return Ok(ProjectMergeSettings::default());
+        return Err(GgError::GlabError(format!(
+            "Failed to read GitLab project merge settings: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
     }
 
-    Ok(parse_project_merge_settings(&String::from_utf8_lossy(
-        &output.stdout,
-    )))
+    parse_project_merge_settings(&String::from_utf8_lossy(&output.stdout))
 }
 
-fn parse_project_merge_settings(stdout: &str) -> ProjectMergeSettings {
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(stdout) else {
-        return ProjectMergeSettings::default();
-    };
-    ProjectMergeSettings {
+fn parse_project_merge_settings(stdout: &str) -> Result<ProjectMergeSettings> {
+    let json = serde_json::from_str::<serde_json::Value>(stdout).map_err(|error| {
+        GgError::GlabError(format!(
+            "Failed to parse GitLab project merge settings: {error}"
+        ))
+    })?;
+    Ok(ProjectMergeSettings {
         merge_trains_enabled: json
             .get("merge_trains_enabled")
             .and_then(|v| v.as_bool())
@@ -895,7 +908,7 @@ fn parse_project_merge_settings(stdout: &str) -> ProjectMergeSettings {
             .get("squash_option")
             .and_then(|v| v.as_str())
             .map(str::to_string),
-    }
+    })
 }
 
 /// Add an MR to the merge train once its checks pass.
@@ -913,7 +926,7 @@ fn parse_project_merge_settings(stdout: &str) -> ProjectMergeSettings {
 /// - `Err(...)` for other errors
 pub fn add_to_merge_train(mr_number: u64, squash: bool) -> Result<AutoMergeResult> {
     if !squash {
-        ensure_mr_squash_disabled(mr_number)?;
+        let _ = ensure_mr_squash_disabled(mr_number, || Ok(()))?;
     }
 
     let output = Command::new("glab")
@@ -2092,7 +2105,8 @@ mod tests {
     fn project_merge_settings_reads_merge_trains_and_squash_option() {
         let settings = parse_project_merge_settings(
             r#"{"merge_trains_enabled": true, "squash_option": "default_on", "merge_method": "merge"}"#,
-        );
+        )
+        .unwrap();
         assert_eq!(
             settings,
             ProjectMergeSettings {
@@ -2103,13 +2117,10 @@ mod tests {
     }
 
     #[test]
-    fn project_merge_settings_default_when_unparsable_or_missing() {
+    fn project_merge_settings_rejects_unparsable_output() {
+        assert!(parse_project_merge_settings("not json").is_err());
         assert_eq!(
-            parse_project_merge_settings("not json"),
-            ProjectMergeSettings::default()
-        );
-        assert_eq!(
-            parse_project_merge_settings("{}"),
+            parse_project_merge_settings("{}").unwrap(),
             ProjectMergeSettings::default()
         );
     }

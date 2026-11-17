@@ -119,6 +119,19 @@ if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
 fi
 
 if [ "$1" = "api" ] && [ "$2" = "projects/:id" ]; then
+  if [ -f "$GG_FAKE_MERGE_SETTINGS_FAIL" ]; then
+    merge_settings_mode=$(cat "$GG_FAKE_MERGE_SETTINGS_FAIL")
+    if [ "$merge_settings_mode" = "invalid" ]; then
+      echo "not json"
+      exit 0
+    fi
+    if [ "$merge_settings_mode" = "missing" ]; then
+      echo '{}'
+      exit 0
+    fi
+    echo "project settings unavailable" >&2
+    exit 1
+  fi
   if [ -f "$GG_FAKE_MERGE_TRAINS" ]; then trains=true; else trains=false; fi
   squash_option=default_off
   if [ -f "$GG_FAKE_SQUASH_OPTION" ]; then squash_option=$(cat "$GG_FAKE_SQUASH_OPTION"); fi
@@ -129,10 +142,22 @@ fi
 if [ "$1" = "api" ] && [ "$2" = "--method" ] && [ "$3" = "PUT" ] && [ "$4" = "projects/:id/merge_requests/41" ]; then
   printf '%s\n' "$*" > "$GG_FAKE_SQUASH_DISABLED"
   rm -f "$GG_FAKE_MR_SQUASH"
+  if [ -f "$GG_FAKE_LANDING_REQUEST_FAIL" ] && [ "$(cat "$GG_FAKE_LANDING_REQUEST_FAIL")" = "squash-response-fail" ]; then
+    echo "connection lost after squash update" >&2
+    exit 1
+  fi
   exit 0
 fi
 
 if [ "$1" = "api" ] && [ "$2" = "-X" ] && [ "$3" = "POST" ]; then
+  landing_request_mode=ok
+  if [ -f "$GG_FAKE_LANDING_REQUEST_FAIL" ]; then
+    landing_request_mode=$(cat "$GG_FAKE_LANDING_REQUEST_FAIL")
+  fi
+  if [ "$landing_request_mode" = "fail" ]; then
+    echo "landing request failed" >&2
+    exit 1
+  fi
   if [ -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; then
     printf '%s\n' "$*" > "$GG_FAKE_REQUEUED"
     rm -f "$GG_FAKE_AUTO_MERGE_DROPPED"
@@ -215,6 +240,7 @@ exit 1
 struct WaitingLandFixture {
     _temp_dir: tempfile::TempDir,
     repo_path: std::path::PathBuf,
+    remote_path: std::path::PathBuf,
     other_worktree: std::path::PathBuf,
     path: OsString,
     polled: std::path::PathBuf,
@@ -226,6 +252,8 @@ struct WaitingLandFixture {
     ci_calls: std::path::PathBuf,
     regress: std::path::PathBuf,
     merge_trains: std::path::PathBuf,
+    merge_settings_fail: std::path::PathBuf,
+    landing_request_fail: std::path::PathBuf,
     auth_network_fail: std::path::PathBuf,
     queued: std::path::PathBuf,
     retarget_fail: std::path::PathBuf,
@@ -245,7 +273,7 @@ struct WaitingLandFixture {
 #[cfg(unix)]
 impl WaitingLandFixture {
     fn new() -> Self {
-        let (temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+        let (temp_dir, repo_path, remote_path) = create_test_repo_with_remote();
         let gg_dir = repo_path.join(".git/gg");
         fs::create_dir_all(&gg_dir).expect("create gg dir");
         fs::write(
@@ -296,6 +324,8 @@ impl WaitingLandFixture {
         let ci_calls = repo_path.join("fake-ci-calls");
         let regress = repo_path.join("fake-regress");
         let merge_trains = repo_path.join("fake-merge-trains");
+        let merge_settings_fail = repo_path.join("fake-merge-settings-fail");
+        let landing_request_fail = repo_path.join("fake-landing-request-fail");
         let auth_network_fail = repo_path.join("fake-auth-network-fail");
         let queued = repo_path.join("fake-queued");
         let retarget_fail = repo_path.join("fake-retarget-fail");
@@ -315,6 +345,7 @@ impl WaitingLandFixture {
         Self {
             _temp_dir: temp_dir,
             repo_path,
+            remote_path,
             other_worktree,
             path,
             polled,
@@ -326,6 +357,8 @@ impl WaitingLandFixture {
             ci_calls,
             regress,
             merge_trains,
+            merge_settings_fail,
+            landing_request_fail,
             auth_network_fail,
             queued,
             retarget_fail,
@@ -362,6 +395,8 @@ impl WaitingLandFixture {
             .env("GG_FAKE_CI_CALLS", &self.ci_calls)
             .env("GG_FAKE_REGRESS", &self.regress)
             .env("GG_FAKE_MERGE_TRAINS", &self.merge_trains)
+            .env("GG_FAKE_MERGE_SETTINGS_FAIL", &self.merge_settings_fail)
+            .env("GG_FAKE_LANDING_REQUEST_FAIL", &self.landing_request_fail)
             .env("GG_FAKE_AUTH_NETWORK_FAIL", &self.auth_network_fail)
             .env("GG_FAKE_QUEUED", &self.queued)
             .env("GG_FAKE_RETARGET_FAIL", &self.retarget_fail)
@@ -451,6 +486,28 @@ impl WaitingLandFixture {
         fs::write(&self.merge_trains, "enabled\n").expect("enable fake merge trains");
     }
 
+    fn fail_gitlab_merge_settings_lookup(&self) {
+        fs::write(&self.merge_settings_fail, "fail\n").expect("fail fake merge settings lookup");
+    }
+
+    fn return_invalid_gitlab_merge_settings(&self) {
+        fs::write(&self.merge_settings_fail, "invalid\n")
+            .expect("return invalid fake merge settings");
+    }
+
+    fn omit_gitlab_squash_option(&self) {
+        fs::write(&self.merge_settings_fail, "missing\n").expect("omit fake squash option");
+    }
+
+    fn fail_gitlab_landing_request(&self) {
+        fs::write(&self.landing_request_fail, "fail\n").expect("fail fake landing request");
+    }
+
+    fn fail_gitlab_squash_update_response(&self) {
+        fs::write(&self.landing_request_fail, "squash-response-fail\n")
+            .expect("fail fake squash update response");
+    }
+
     fn set_glab_pipeline_status(&self, status: &str) {
         fs::write(&self.glab_ci, status).expect("set fake GitLab pipeline status");
     }
@@ -506,6 +563,26 @@ exec /usr/bin/git "$@"
         permissions.set_mode(0o755);
         fs::set_permissions(path, permissions).expect("make fake git executable");
     }
+}
+
+#[cfg(unix)]
+fn land_operation_records(repo_path: &Path) -> Vec<Value> {
+    fs::read_dir(repo_path.join(".git/gg/operations"))
+        .expect("read operation records")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .and_then(|extension| extension.to_str())
+                == Some("json")
+        })
+        .map(|entry| {
+            serde_json::from_slice(&fs::read(entry.path()).expect("read operation record"))
+                .expect("parse operation record")
+        })
+        .filter(|record: &Value| record["kind"] == "land")
+        .collect()
 }
 
 #[cfg(unix)]
@@ -1380,6 +1457,163 @@ fn test_land_gitlab_no_squash_turns_off_mr_squash_before_queueing() {
 
 #[cfg(unix)]
 #[test]
+fn test_land_gitlab_no_squash_records_remote_touch_when_landing_request_fails() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fs::write(&fixture.squash_option, "default_on").expect("set fake squash option");
+    fs::write(&fixture.mr_squash, "on\n").expect("enable fake MR squash");
+    fixture.fail_gitlab_landing_request();
+
+    let output = fixture
+        .start_land_with_args(&["land", "--json", "--no-clean", "--no-squash"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let result: Value = serde_json::from_str(&stdout).expect("parse land JSON");
+
+    assert!(
+        fixture.squash_disabled.exists(),
+        "MR squash must be disabled before the final request"
+    );
+    assert!(!fixture.queued.exists(), "final landing request must fail");
+    assert!(result["land"]["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("landing request failed")));
+
+    let records = land_operation_records(&fixture.repo_path);
+    assert_eq!(records.len(), 1, "expected one land operation: {records:?}");
+    assert_eq!(records[0]["status"], "committed");
+    assert_eq!(
+        records[0]["touched_remote"], true,
+        "the successful squash-setting mutation must make the operation non-undoable: {}",
+        records[0]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_no_squash_records_remote_uncertainty_before_update() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fs::write(&fixture.squash_option, "default_on").expect("set fake squash option");
+    fs::write(&fixture.mr_squash, "on\n").expect("enable fake MR squash");
+    fixture.fail_gitlab_squash_update_response();
+
+    let output = fixture
+        .start_land_with_args(&["land", "--json", "--no-clean", "--no-squash"])
+        .wait_with_output()
+        .expect("wait for land");
+
+    assert!(
+        !output.status.success(),
+        "land must report the failed update"
+    );
+    assert!(
+        fixture.squash_disabled.exists(),
+        "the fake GitLab server must apply the squash update before the response fails"
+    );
+    assert!(!fixture.queued.exists(), "the landing request must not run");
+
+    let records = land_operation_records(&fixture.repo_path);
+    assert_eq!(records.len(), 1, "expected one land operation: {records:?}");
+    assert_eq!(
+        records[0]["touched_remote"], true,
+        "an ambiguous squash-update outcome must be persisted before the request: {}",
+        records[0]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_jsonl_disconnect_after_merge_train_requeue_finalizes_operation() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.set_glab_pipeline_status("running");
+
+    let original_branch = run_git(&fixture.repo_path, &["branch", "--show-current"]).1;
+    let original_head = run_git(&fixture.repo_path, &["rev-parse", "HEAD"]).1;
+    let original_local_refs = run_git(&fixture.repo_path, &["show-ref"]).1;
+    let original_remote_refs = Command::new("git")
+        .args([
+            "--git-dir",
+            fixture.remote_path.to_str().unwrap(),
+            "show-ref",
+        ])
+        .output()
+        .expect("read original remote refs")
+        .stdout;
+
+    let mut land =
+        fixture.start_land_with_args(&["land", "--all", "--wait", "--jsonl", "--no-clean"]);
+    let stdout = land.stdout.take().expect("capture land stdout");
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    reader.read_line(&mut line).expect("read land start event");
+    let start: Value = serde_json::from_str(line.trim()).expect("parse land start event");
+    assert_eq!(start["event"], "start");
+
+    fixture.wait_until_queued();
+    fs::write(&fixture.head_moved, "moved\n").expect("move fake MR head");
+    fs::write(&fixture.auto_merge_dropped, "dropped\n").expect("drop fake auto-merge");
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !fixture.requeued.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        fixture.requeued.exists(),
+        "land never re-queued the MR before the JSONL disconnect"
+    );
+    drop(reader);
+
+    let output = land.wait_with_output().expect("wait for land");
+    assert!(
+        !output.status.success(),
+        "land must fail when its JSONL consumer disconnects"
+    );
+    assert_eq!(
+        run_git(&fixture.repo_path, &["branch", "--show-current"]).1,
+        original_branch,
+        "land must preserve the checkout"
+    );
+    assert_eq!(
+        run_git(&fixture.repo_path, &["rev-parse", "HEAD"]).1,
+        original_head,
+        "land must preserve HEAD"
+    );
+    assert_eq!(
+        run_git(&fixture.repo_path, &["show-ref"]).1,
+        original_local_refs,
+        "land must preserve local refs"
+    );
+    let remote_refs = Command::new("git")
+        .args([
+            "--git-dir",
+            fixture.remote_path.to_str().unwrap(),
+            "show-ref",
+        ])
+        .output()
+        .expect("read final remote refs")
+        .stdout;
+    assert_eq!(
+        remote_refs, original_remote_refs,
+        "land must preserve remote refs"
+    );
+
+    let records = land_operation_records(&fixture.repo_path);
+    assert_eq!(records.len(), 1, "expected one land operation: {records:?}");
+    assert_eq!(
+        records[0]["status"], "committed",
+        "the operation must be finalized before the broken-pipe failure returns: {}",
+        records[0]
+    );
+    assert_eq!(records[0]["touched_remote"], true);
+}
+
+#[cfg(unix)]
+#[test]
 fn test_land_gitlab_no_squash_refused_when_project_requires_squash() {
     let fixture = WaitingLandFixture::new();
     fixture.use_gitlab_provider();
@@ -1400,6 +1634,118 @@ fn test_land_gitlab_no_squash_refused_when_project_requires_squash() {
     );
     assert!(!fixture.queued.exists(), "no MR may be queued");
     assert!(!fixture.merged.exists(), "no MR may be merged");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_no_squash_refuses_when_project_settings_cannot_be_read() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.fail_gitlab_merge_settings_lookup();
+
+    let output = fixture
+        .start_land_with_args(&["land", "--json", "--no-clean", "--no-squash"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert!(!output.status.success(), "land must fail closed: {stdout}");
+    assert!(
+        format!("{stdout}{stderr}").contains("project merge settings"),
+        "error should explain that GitLab project merge settings could not be read: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        !fixture.squash_disabled.exists(),
+        "MR squash must not be changed"
+    );
+    assert!(!fixture.queued.exists(), "MR must not be queued");
+    assert!(!fixture.merged.exists(), "MR must not be merged");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_no_squash_refuses_unparseable_project_settings() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.return_invalid_gitlab_merge_settings();
+
+    let output = fixture
+        .start_land_with_args(&["land", "--json", "--no-clean", "--no-squash"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert!(!output.status.success(), "land must fail closed: {stdout}");
+    assert!(
+        format!("{stdout}{stderr}").contains("parse GitLab project merge settings"),
+        "error should explain that GitLab project merge settings could not be parsed: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        !fixture.squash_disabled.exists(),
+        "MR squash must not be changed"
+    );
+    assert!(!fixture.queued.exists(), "MR must not be queued");
+    assert!(!fixture.merged.exists(), "MR must not be merged");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_no_squash_refuses_missing_squash_option() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.omit_gitlab_squash_option();
+
+    let output = fixture
+        .start_land_with_args(&["land", "--json", "--no-clean", "--no-squash"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert!(!output.status.success(), "land must fail closed: {stdout}");
+    assert!(
+        format!("{stdout}{stderr}")
+            .to_ascii_lowercase()
+            .contains("could not establish"),
+        "error should explain that the squash policy is unknown: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        !fixture.squash_disabled.exists(),
+        "MR squash must not be changed"
+    );
+    assert!(!fixture.queued.exists(), "MR must not be queued");
+    assert!(!fixture.merged.exists(), "MR must not be merged");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_no_squash_refuses_unrecognized_squash_option() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fs::write(&fixture.squash_option, "unexpected").expect("set unknown squash option");
+
+    let output = fixture
+        .start_land_with_args(&["land", "--json", "--no-clean", "--no-squash"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert!(!output.status.success(), "land must fail closed: {stdout}");
+    assert!(
+        format!("{stdout}{stderr}")
+            .to_ascii_lowercase()
+            .contains("could not establish"),
+        "error should explain that the squash policy is unknown: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        !fixture.squash_disabled.exists(),
+        "MR squash must not be changed"
+    );
+    assert!(!fixture.queued.exists(), "MR must not be queued");
+    assert!(!fixture.merged.exists(), "MR must not be merged");
 }
 
 #[cfg(unix)]

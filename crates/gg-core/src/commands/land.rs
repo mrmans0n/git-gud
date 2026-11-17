@@ -434,12 +434,22 @@ fn poll_base_mergeability(
     }
 }
 
-/// Refuse `--no-squash` up front when the project forces squashing.
+/// Validate the GitLab squash policy before allowing `--no-squash`.
 fn no_squash_refusal(squash: bool, squash_option: Option<&str>) -> Option<String> {
-    (!squash && squash_option == Some("always")).then(|| {
-        "This GitLab project requires squashing (squash option \"Require\"), so --no-squash cannot land merge commits. Drop --no-squash or change the project's squash setting."
-            .to_string()
-    })
+    if squash {
+        return None;
+    }
+    match squash_option {
+        Some("always") => Some(
+            "This GitLab project requires squashing (squash option \"Require\"), so --no-squash cannot land merge commits. Drop --no-squash or change the project's squash setting."
+                .to_string(),
+        ),
+        Some("never" | "default_on" | "default_off") => None,
+        Some(_) | None => Some(
+            "Could not establish the GitLab project's squash policy, so --no-squash cannot safely continue."
+                .to_string(),
+        ),
+    }
 }
 
 /// What a merge-train wait does about an MR GitLab is not tracking anymore.
@@ -887,9 +897,15 @@ pub fn run(opts: LandOptions) -> Result<()> {
     let auto_merge_on_land =
         provider == Provider::GitLab && (auto_merge_flag || config.get_gitlab_auto_merge_on_land());
 
-    let merge_settings = provider.get_project_merge_settings().unwrap_or_default();
-    if let Some(error) = no_squash_refusal(squash, merge_settings.squash_option.as_deref()) {
-        return Err(GgError::Other(error));
+    let merge_settings = match provider.get_project_merge_settings() {
+        Ok(settings) => settings,
+        Err(error) if provider == Provider::GitLab && !squash => return Err(error),
+        Err(_) => Default::default(),
+    };
+    if provider == Provider::GitLab {
+        if let Some(error) = no_squash_refusal(squash, merge_settings.squash_option.as_deref()) {
+            return Err(GgError::Other(error));
+        }
     }
     let merge_trains_enabled = merge_settings.merge_trains_enabled;
     if merge_trains_enabled && !structured {
@@ -1451,6 +1467,16 @@ pub fn run(opts: LandOptions) -> Result<()> {
             if !confirm {
                 break 'landing_loop;
             }
+        }
+
+        if !squash {
+            let _ = provider.prepare_no_squash(pr_num, || {
+                touched_remote = true;
+                guard
+                    .as_mut()
+                    .expect("land segment guard")
+                    .mark_touched_remote_before_attempt()
+            })?;
         }
 
         if merge_trains_enabled {
@@ -3410,12 +3436,23 @@ mod tests {
     }
 
     #[test]
-    fn no_squash_allowed_for_other_squash_options() {
+    fn no_squash_allowed_for_known_non_required_squash_options() {
         assert_eq!(no_squash_refusal(true, Some("always")), None);
         for option in ["never", "default_on", "default_off"] {
             assert_eq!(no_squash_refusal(false, Some(option)), None, "{option}");
         }
-        assert_eq!(no_squash_refusal(false, None), None);
+    }
+
+    #[test]
+    fn no_squash_refused_when_project_policy_is_unknown() {
+        let error = no_squash_refusal(false, None).unwrap();
+        assert!(error.contains("Could not establish"), "{error}");
+    }
+
+    #[test]
+    fn no_squash_refused_when_project_policy_is_unrecognized() {
+        let error = no_squash_refusal(false, Some("unexpected")).unwrap();
+        assert!(error.contains("Could not establish"), "{error}");
     }
 
     #[test]

@@ -492,6 +492,19 @@ impl Provider {
         }
     }
 
+    /// Prepare a GitLab MR for `--no-squash`, returning whether this changed
+    /// remote state. Other providers do not require a preparatory mutation.
+    pub fn prepare_no_squash(
+        &self,
+        number: u64,
+        before_mutation: impl FnOnce() -> Result<()>,
+    ) -> Result<bool> {
+        match self {
+            Provider::GitHub => Ok(false),
+            Provider::GitLab => glab::prepare_mr_no_squash(number, before_mutation),
+        }
+    }
+
     /// Add PR/MR to the merge train once its checks pass (GitLab only)
     ///
     /// Returns:

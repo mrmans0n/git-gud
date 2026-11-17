@@ -33,11 +33,13 @@ gg land --until 2
 gg land --no-squash
 ```
 
-By default, landing several entries rebases and force-pushes the remaining branches after every merge, which re-triggers CI on each of them. On large stacks, combine merge commits with `--no-rebase` to skip that. Original commit SHAs then reach the base branch, so the remaining PRs/MRs don't need rebasing:
+By default, landing several entries rebases and force-pushes the remaining branches after every merge, which re-triggers CI on each of them. On large stacks, land with merge commits and `--rebase-if-needed`. After each merge, gg checks that the landed commit reached the base branch unchanged and that the forge says the next PR/MR still merges cleanly. When both hold, the remaining branches stay as they are; otherwise gg rebases them as usual:
 
 ```bash
-gg land --all --no-squash --no-rebase
+gg land --all --wait --no-squash --rebase-if-needed
 ```
+
+`--no-rebase` skips the rebase without checking. Use it only when you know the base branch keeps original commits.
 
 GitLab auto-merge queue:
 

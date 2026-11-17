@@ -569,6 +569,7 @@ fn show_stack(stack: &Stack, json: bool) -> Result<()> {
                     is_current,
                     in_merge_train: entry.in_merge_train,
                     merge_train_position: entry.merge_train_position,
+                    auto_merge: entry.auto_merge,
                 }
             })
             .collect();

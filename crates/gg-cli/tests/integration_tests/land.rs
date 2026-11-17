@@ -119,15 +119,24 @@ if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
 fi
 
 if [ "$1" = "api" ] && [ "$2" = "projects/:id" ]; then
-  if [ -f "$GG_FAKE_MERGE_TRAINS" ]; then
-    echo '{"merge_trains_enabled":true}'
-  else
-    echo '{"merge_trains_enabled":false}'
-  fi
+  if [ -f "$GG_FAKE_MERGE_TRAINS" ]; then trains=true; else trains=false; fi
+  squash_option=default_off
+  if [ -f "$GG_FAKE_SQUASH_OPTION" ]; then squash_option=$(cat "$GG_FAKE_SQUASH_OPTION"); fi
+  printf '{"merge_trains_enabled":%s,"squash_option":"%s"}\n' "$trains" "$squash_option"
+  exit 0
+fi
+
+if [ "$1" = "api" ] && [ "$2" = "--method" ] && [ "$3" = "PUT" ] && [ "$4" = "projects/:id/merge_requests/41" ]; then
+  printf '%s\n' "$*" > "$GG_FAKE_SQUASH_DISABLED"
+  rm -f "$GG_FAKE_MR_SQUASH"
   exit 0
 fi
 
 if [ "$1" = "api" ] && [ "$2" = "-X" ] && [ "$3" = "POST" ]; then
+  if [ -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; then
+    printf '%s\n' "$*" > "$GG_FAKE_REQUEUED"
+    rm -f "$GG_FAKE_AUTO_MERGE_DROPPED"
+  fi
   printf '%s\n' "$*" > "$GG_FAKE_QUEUED"
   exit 0
 fi
@@ -177,7 +186,12 @@ fi
 
 if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
   if [ -f "$GG_FAKE_MERGED" ]; then state=merged; else state=opened; fi
-  printf '{"iid":41,"title":"Land entry","state":"%s","web_url":"https://gitlab.example/test/repo/-/merge_requests/41","source_branch":"testuser/land-wait/c-1111111","draft":false,"work_in_progress":false,"detailed_merge_status":"mergeable","head_pipeline":{"status":"%s"}}\n' "$state" "$ci"
+  # GitLab reports queued MRs (auto-merge or merge train) through this flag.
+  if [ -f "$GG_FAKE_QUEUED" ] && [ ! -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; then auto=true; else auto=false; fi
+  if [ -f "$GG_FAKE_MR_SQUASH" ]; then squash=true; else squash=false; fi
+  # A push to the source branch moves the MR head.
+  if [ -f "$GG_FAKE_HEAD_MOVED" ]; then sha=2222222222222222222222222222222222222222; else sha=1111111111111111111111111111111111111111; fi
+  printf '{"iid":41,"title":"Land entry","state":"%s","web_url":"https://gitlab.example/test/repo/-/merge_requests/41","source_branch":"testuser/land-wait/c-1111111","sha":"%s","draft":false,"work_in_progress":false,"detailed_merge_status":"mergeable","has_conflicts":false,"squash":%s,"merge_when_pipeline_succeeds":%s,"head_pipeline":{"status":"%s"}}\n' "$state" "$sha" "$squash" "$auto" "$ci"
   exit 0
 fi
 
@@ -219,6 +233,12 @@ struct WaitingLandFixture {
     pr_view_calls: std::path::PathBuf,
     glab_ci: std::path::PathBuf,
     first_terminal_after_refresh: std::path::PathBuf,
+    mr_squash: std::path::PathBuf,
+    squash_disabled: std::path::PathBuf,
+    squash_option: std::path::PathBuf,
+    auto_merge_dropped: std::path::PathBuf,
+    requeued: std::path::PathBuf,
+    head_moved: std::path::PathBuf,
     test_home: std::path::PathBuf,
 }
 
@@ -283,6 +303,12 @@ impl WaitingLandFixture {
         let pr_view_calls = repo_path.join("fake-pr-view-calls");
         let glab_ci = repo_path.join("fake-glab-ci");
         let first_terminal_after_refresh = repo_path.join("fake-first-terminal-after-refresh");
+        let mr_squash = repo_path.join("fake-mr-squash");
+        let squash_disabled = repo_path.join("fake-squash-disabled");
+        let squash_option = repo_path.join("fake-squash-option");
+        let auto_merge_dropped = repo_path.join("fake-auto-merge-dropped");
+        let requeued = repo_path.join("fake-requeued");
+        let head_moved = repo_path.join("fake-head-moved");
         let test_home = repo_path.join(".test-home");
         fs::create_dir_all(&test_home).expect("create test home");
 
@@ -307,6 +333,12 @@ impl WaitingLandFixture {
             pr_view_calls,
             glab_ci,
             first_terminal_after_refresh,
+            mr_squash,
+            squash_disabled,
+            squash_option,
+            auto_merge_dropped,
+            requeued,
+            head_moved,
             test_home,
         }
     }
@@ -340,6 +372,12 @@ impl WaitingLandFixture {
                 "GG_FAKE_FIRST_TERMINAL_AFTER_REFRESH",
                 &self.first_terminal_after_refresh,
             )
+            .env("GG_FAKE_MR_SQUASH", &self.mr_squash)
+            .env("GG_FAKE_SQUASH_DISABLED", &self.squash_disabled)
+            .env("GG_FAKE_SQUASH_OPTION", &self.squash_option)
+            .env("GG_FAKE_AUTO_MERGE_DROPPED", &self.auto_merge_dropped)
+            .env("GG_FAKE_REQUEUED", &self.requeued)
+            .env("GG_FAKE_HEAD_MOVED", &self.head_moved)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -901,6 +939,28 @@ fn test_gg_land_help_has_no_rebase() {
     assert!(stdout.contains("--no-rebase"));
 }
 
+#[test]
+fn test_gg_land_help_has_rebase_if_needed() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    let (success, stdout, _stderr) = run_gg(&repo_path, &["land", "--help"]);
+
+    assert!(success);
+    assert!(stdout.contains("--rebase-if-needed"));
+}
+
+#[test]
+fn test_gg_land_rejects_no_rebase_with_rebase_if_needed() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    let (success, _stdout, stderr) =
+        run_gg(&repo_path, &["land", "--no-rebase", "--rebase-if-needed"]);
+
+    assert!(
+        !success,
+        "--no-rebase and --rebase-if-needed should conflict"
+    );
+    assert!(stderr.contains("cannot be used with"), "{stderr}");
+}
+
 #[cfg(unix)]
 #[test]
 fn test_land_jsonl_reports_downstream_push_failure_warning() {
@@ -1205,6 +1265,141 @@ fn test_land_gitlab_merge_train_wait_stops_when_pipeline_fails_before_joining_tr
             .is_some_and(|error| error.contains("pipeline failed")),
         "a failed pipeline must end the merge-train wait: {summary}"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_merge_train_wait_requeues_when_a_push_cancels_auto_merge() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.set_glab_pipeline_status("running");
+
+    let land = fixture.start_land_with_args(&["land", "--all", "--wait", "--jsonl", "--no-clean"]);
+    fixture.wait_until_queued();
+    // A push to the source branch moves the MR head and makes GitLab cancel
+    // auto-merge.
+    fs::write(&fixture.head_moved, "moved\n").expect("move fake MR head");
+    fs::write(&fixture.auto_merge_dropped, "dropped\n").expect("drop fake auto-merge");
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !fixture.requeued.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        fixture.requeued.exists(),
+        "land never re-queued the MR after auto-merge was cancelled"
+    );
+    let requeue = fs::read_to_string(&fixture.requeued).expect("read re-queue request");
+    assert!(requeue.contains("auto_merge=true"), "{requeue}");
+    assert!(requeue.contains("squash=true"), "{requeue}");
+
+    fs::write(&fixture.merged, "merged\n").expect("complete fake merge train");
+    let output = land.wait_with_output().expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(output.status.success(), "land failed: {stderr}");
+
+    let events: Vec<Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("parse JSONL event"))
+        .collect();
+    assert!(
+        events.iter().any(|event| event["event"] == "wait"
+            && event["status"] == "warning"
+            && event["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("re-queued"))),
+        "a wait event must report the re-queue: {stdout}"
+    );
+    let summary = events.last().expect("summary event");
+    assert_eq!(summary["event"], "summary");
+    assert_eq!(summary["landed"][0]["action"], "merged", "{summary}");
+    assert!(summary["error"].is_null(), "{summary}");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_merge_train_wait_stops_when_auto_merge_cancelled_without_a_push() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.set_glab_pipeline_status("running");
+
+    let land = fixture.start_land_with_args(&["land", "--all", "--wait", "--jsonl", "--no-clean"]);
+    fixture.wait_until_queued();
+    // Same head: the train pipeline failed or someone cancelled auto-merge.
+    fs::write(&fixture.auto_merge_dropped, "dropped\n").expect("drop fake auto-merge");
+
+    let output = land.wait_with_output().expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
+        .expect("parse summary event");
+    assert_eq!(summary["event"], "summary");
+    assert!(
+        summary["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("removed") && error.contains("without a new push")),
+        "the wait must stop without re-queueing: {summary}"
+    );
+    assert!(
+        !fixture.requeued.exists(),
+        "gg must not re-queue an MR whose head did not move"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_no_squash_turns_off_mr_squash_before_queueing() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fs::write(&fixture.squash_option, "default_on").expect("set fake squash option");
+    fs::write(&fixture.mr_squash, "on\n").expect("enable fake MR squash");
+
+    let land = fixture.start_land_with_args(&[
+        "land",
+        "--all",
+        "--wait",
+        "--jsonl",
+        "--no-clean",
+        "--no-squash",
+    ]);
+    fixture.wait_until_queued();
+    let squash_update =
+        fs::read_to_string(&fixture.squash_disabled).expect("MR squash must be turned off first");
+    assert!(squash_update.contains("squash=false"), "{squash_update}");
+    let request = fixture.queued_request();
+    assert!(request.contains("squash=false"), "{request}");
+
+    fs::write(&fixture.merged, "merged\n").expect("complete fake merge train");
+    let output = land.wait_with_output().expect("wait for land");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(output.status.success(), "land failed: {stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_no_squash_refused_when_project_requires_squash() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fs::write(&fixture.squash_option, "always").expect("set fake squash option");
+
+    let output = fixture
+        .start_land_with_args(&["land", "--all", "--json", "--no-clean", "--no-squash"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert!(!output.status.success(), "land must refuse: {stdout}");
+    assert!(
+        format!("{stdout}{stderr}").contains("requires squashing"),
+        "stdout={stdout} stderr={stderr}"
+    );
+    assert!(!fixture.queued.exists(), "no MR may be queued");
+    assert!(!fixture.merged.exists(), "no MR may be merged");
 }
 
 #[cfg(unix)]

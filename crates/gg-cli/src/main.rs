@@ -361,6 +361,10 @@ enum Commands {
         /// Don't rebase and force-push remaining branches after each merge (avoids re-triggering CI; best with --no-squash)
         #[arg(long = "no-rebase")]
         no_rebase: bool,
+
+        /// After each merge, rebase remaining branches only if the merged commit was rewritten (squashed/rebased) or the next PR/MR can't merge as-is
+        #[arg(long = "rebase-if-needed", conflicts_with = "no_rebase")]
+        rebase_if_needed: bool,
     },
 
     /// Clean up merged stacks
@@ -762,6 +766,7 @@ fn main() {
             no_clean,
             admin,
             no_rebase,
+            rebase_if_needed,
         }) => {
             if jsonl {
                 streaming_command = Some("land");
@@ -796,6 +801,7 @@ fn main() {
                     until,
                     admin,
                     no_rebase,
+                    rebase_if_needed,
                 }),
                 json || jsonl,
                 jsonl,

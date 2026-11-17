@@ -254,6 +254,7 @@ gg clean
 | `gg land --all --wait` | Wait and merge all PRs/MRs in sequence |
 | `gg land --no-squash` | Merge using merge commit instead of squash |
 | `gg land --no-rebase` | Skip rebasing remaining branches after each merge (avoids CI re-runs) |
+| `gg land --rebase-if-needed` | Rebase remaining branches after a merge only if the merged commit was rewritten or the next PR/MR can't merge as-is |
 | `gg land --auto-merge` | *(GitLab only)* Queue MR auto-merge ("merge when pipeline succeeds") instead of merging immediately |
 | `gg land --until <target>` | Land only up to a specific commit (by position, GG-ID, or SHA) |
 | `gg land --clean` | Automatically clean up stack after landing all PRs/MRs |

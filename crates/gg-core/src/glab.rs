@@ -34,6 +34,15 @@ pub struct MrInfo {
     pub mergeable: bool,
     pub changes_requested: bool,
     pub detailed_merge_status: Option<String>,
+    /// GitLab's raw `has_conflicts` flag.
+    pub has_conflicts: bool,
+    /// Whether the MR is set to squash on merge.
+    pub squash: bool,
+    /// Whether GitLab has auto-merge set (`merge_when_pipeline_succeeds`).
+    /// GitLab reports MRs queued on a merge train through the same flag.
+    pub auto_merge: bool,
+    /// The MR's current head commit SHA (`sha`).
+    pub head_sha: Option<String>,
 }
 
 /// The fields needed to display an MR in the review inbox.
@@ -57,6 +66,10 @@ struct GlabMrJson {
     draft: Option<bool>,
     work_in_progress: Option<bool>,
     detailed_merge_status: Option<String>,
+    has_conflicts: Option<bool>,
+    squash: Option<bool>,
+    merge_when_pipeline_succeeds: Option<bool>,
+    sha: Option<String>,
     head_pipeline: Option<GlabPipelineJson>,
 }
 
@@ -335,7 +348,11 @@ pub fn view_mr(mr_number: u64) -> Result<MrInfo> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mr_json: GlabMrJson = serde_json::from_str(&stdout)
+    parse_mr_info(&stdout)
+}
+
+fn parse_mr_info(stdout: &str) -> Result<MrInfo> {
+    let mr_json: GlabMrJson = serde_json::from_str(stdout)
         .map_err(|e| GgError::GlabError(format!("Failed to parse MR JSON: {}", e)))?;
 
     let draft = mr_json.draft.unwrap_or(false) || mr_json.work_in_progress.unwrap_or(false);
@@ -360,6 +377,10 @@ pub fn view_mr(mr_number: u64) -> Result<MrInfo> {
         mergeable,
         changes_requested: false, // GitLab doesn't expose this directly
         detailed_merge_status: mr_json.detailed_merge_status,
+        has_conflicts: mr_json.has_conflicts.unwrap_or(false),
+        squash: mr_json.squash.unwrap_or(false),
+        auto_merge: mr_json.merge_when_pipeline_succeeds.unwrap_or(false),
+        head_sha: mr_json.sha,
     })
 }
 
@@ -549,8 +570,45 @@ pub fn update_mr_title(mr_number: u64, title: &str) -> Result<()> {
     Ok(())
 }
 
+/// Turn off the MR's squash flag when it is set.
+///
+/// GitLab only applies a truthy `squash` param when merging or queueing an MR,
+/// so `squash=false` on those endpoints leaves an MR created with the project's
+/// `default_on` squash option squashing anyway. Updating the MR itself does
+/// apply `false`.
+fn ensure_mr_squash_disabled(mr_number: u64) -> Result<()> {
+    if !view_mr(mr_number)?.squash {
+        return Ok(());
+    }
+
+    let output = Command::new("glab")
+        .args([
+            "api",
+            "--method",
+            "PUT",
+            &format!("projects/:id/merge_requests/{}", mr_number),
+            "-f",
+            "squash=false",
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GgError::GlabError(format!(
+            "Failed to disable squash for MR !{}: {}",
+            mr_number, stderr
+        )));
+    }
+
+    Ok(())
+}
+
 /// Merge an MR
 pub fn merge_mr(mr_number: u64, squash: bool, delete_branch: bool) -> Result<()> {
+    if !squash {
+        ensure_mr_squash_disabled(mr_number)?;
+    }
+
     let mr_num_str = mr_number.to_string();
     let mut args = vec!["mr", "merge", &mr_num_str, "--yes"];
 
@@ -589,6 +647,10 @@ pub fn auto_merge_mr_when_pipeline_succeeds(
     squash: bool,
     delete_branch: bool,
 ) -> Result<AutoMergeResult> {
+    if !squash {
+        ensure_mr_squash_disabled(mr_number)?;
+    }
+
     let output = Command::new("glab")
         .args([
             "api",
@@ -700,6 +762,16 @@ pub enum MergeTrainStatus {
     Unknown,
 }
 
+impl MergeTrainStatus {
+    /// Whether the MR is still on the train waiting to merge.
+    pub fn is_active(&self) -> bool {
+        matches!(
+            self,
+            MergeTrainStatus::Stale | MergeTrainStatus::Fresh | MergeTrainStatus::Merging
+        )
+    }
+}
+
 /// Merge train information for an MR
 #[derive(Debug, Clone)]
 pub struct MergeTrainInfo {
@@ -782,32 +854,48 @@ fn list_open_mrs(branch_flag: &str, branch: &str) -> Result<Vec<u64>> {
     Ok(mrs.into_iter().map(|mr| mr.iid).collect())
 }
 
-/// Check if merge trains are enabled for the current project
-/// Returns true if merge trains are enabled, false otherwise
-/// Uses caching to avoid repeated API calls (stored in memory)
-pub fn check_merge_trains_enabled() -> Result<bool> {
-    // Use glab api to check project settings
+/// Project merge settings that affect how gg lands MRs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectMergeSettings {
+    /// Whether merge trains are enabled.
+    pub merge_trains_enabled: bool,
+    /// GitLab `squash_option`: `never`, `always`, `default_on`, or `default_off`.
+    pub squash_option: Option<String>,
+}
+
+/// Read the current project's merge settings with one `glab api projects/:id` call.
+///
+/// A failed call or unparsable response yields the defaults (no merge trains,
+/// unknown squash option).
+pub fn get_project_merge_settings() -> Result<ProjectMergeSettings> {
     // Note: We don't use --jq flag as it's not available in all glab versions
     let output = Command::new("glab")
         .args(["api", "projects/:id"])
         .output()?;
 
     if !output.status.success() {
-        // If the call fails, assume merge trains are not enabled
-        return Ok(false);
+        return Ok(ProjectMergeSettings::default());
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_project_merge_settings(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
 
-    // Parse JSON and extract .merge_trains_enabled field (defaults to false)
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&stdout) {
-        return Ok(json
+fn parse_project_merge_settings(stdout: &str) -> ProjectMergeSettings {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(stdout) else {
+        return ProjectMergeSettings::default();
+    };
+    ProjectMergeSettings {
+        merge_trains_enabled: json
             .get("merge_trains_enabled")
             .and_then(|v| v.as_bool())
-            .unwrap_or(false));
+            .unwrap_or(false),
+        squash_option: json
+            .get("squash_option")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
     }
-
-    Ok(false)
 }
 
 /// Add an MR to the merge train once its checks pass.
@@ -824,6 +912,10 @@ pub fn check_merge_trains_enabled() -> Result<bool> {
 /// - `Ok(AutoMergeResult::AlreadyQueued)` if already in the merge train (HTTP 409)
 /// - `Err(...)` for other errors
 pub fn add_to_merge_train(mr_number: u64, squash: bool) -> Result<AutoMergeResult> {
+    if !squash {
+        ensure_mr_squash_disabled(mr_number)?;
+    }
+
     let output = Command::new("glab")
         .args([
             "api",
@@ -1529,6 +1621,17 @@ mod tests {
     }
 
     #[test]
+    fn merge_train_status_is_active_only_while_on_the_train() {
+        assert!(MergeTrainStatus::Stale.is_active());
+        assert!(MergeTrainStatus::Fresh.is_active());
+        assert!(MergeTrainStatus::Merging.is_active());
+        assert!(!MergeTrainStatus::Idle.is_active());
+        assert!(!MergeTrainStatus::Merged.is_active());
+        assert!(!MergeTrainStatus::SkipMerged.is_active());
+        assert!(!MergeTrainStatus::Unknown.is_active());
+    }
+
+    #[test]
     fn test_merge_train_info_unknown_for_api_or_status_errors() {
         let info = MergeTrainInfo {
             status: MergeTrainStatus::Unknown,
@@ -1937,6 +2040,77 @@ mod tests {
         assert_eq!(
             parsed.detailed_merge_status.as_deref(),
             Some("ci_still_running")
+        );
+    }
+
+    #[test]
+    fn mr_info_parses_auto_merge_squash_and_conflicts() {
+        let info = parse_mr_info(
+            r#"{
+                "iid": 10644,
+                "title": "Queued MR",
+                "state": "opened",
+                "web_url": "https://gitlab.com/group/project/-/merge_requests/10644",
+                "detailed_merge_status": "mergeable",
+                "has_conflicts": true,
+                "squash": true,
+                "merge_when_pipeline_succeeds": true,
+                "sha": "1111111111111111111111111111111111111111"
+            }"#,
+        )
+        .unwrap();
+
+        assert!(info.auto_merge);
+        assert!(info.squash);
+        assert!(info.has_conflicts);
+        assert_eq!(
+            info.head_sha.as_deref(),
+            Some("1111111111111111111111111111111111111111")
+        );
+    }
+
+    #[test]
+    fn mr_info_defaults_missing_auto_merge_squash_and_conflicts_to_false() {
+        let info = parse_mr_info(
+            r#"{
+                "iid": 10643,
+                "title": "Plain MR",
+                "state": "opened",
+                "web_url": "https://gitlab.com/group/project/-/merge_requests/10643",
+                "merge_when_pipeline_succeeds": false
+            }"#,
+        )
+        .unwrap();
+
+        assert!(!info.auto_merge);
+        assert!(!info.squash);
+        assert!(!info.has_conflicts);
+        assert!(info.head_sha.is_none());
+    }
+
+    #[test]
+    fn project_merge_settings_reads_merge_trains_and_squash_option() {
+        let settings = parse_project_merge_settings(
+            r#"{"merge_trains_enabled": true, "squash_option": "default_on", "merge_method": "merge"}"#,
+        );
+        assert_eq!(
+            settings,
+            ProjectMergeSettings {
+                merge_trains_enabled: true,
+                squash_option: Some("default_on".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn project_merge_settings_default_when_unparsable_or_missing() {
+        assert_eq!(
+            parse_project_merge_settings("not json"),
+            ProjectMergeSettings::default()
+        );
+        assert_eq!(
+            parse_project_merge_settings("{}"),
+            ProjectMergeSettings::default()
         );
     }
 

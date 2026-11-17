@@ -2369,6 +2369,9 @@ mod tests {
             mergeable: true,
             changes_requested: false,
             detailed_merge_status: None,
+            auto_merge: false,
+            head_sha: None,
+            base_mergeability: crate::provider::BaseMergeability::Unknown,
         };
 
         assert_eq!(
@@ -2390,6 +2393,9 @@ mod tests {
             mergeable: true,
             changes_requested: false,
             detailed_merge_status: None,
+            auto_merge: false,
+            head_sha: None,
+            base_mergeability: crate::provider::BaseMergeability::Unknown,
         };
         let unknown = crate::provider::PrInfo {
             head_branch: None,
@@ -2573,6 +2579,7 @@ mod tests {
             position: 1,
             in_merge_train: false,
             merge_train_position: None,
+            auto_merge: false,
             changes_requested: false,
             mergeable: false,
         }

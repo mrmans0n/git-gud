@@ -83,6 +83,7 @@ fn build_log_response(stack: &Stack) -> LogResponse {
             is_current: current_pos_1based == Some(entry.position),
             in_merge_train: entry.in_merge_train,
             merge_train_position: entry.merge_train_position,
+            auto_merge: entry.auto_merge,
         })
         .collect();
 
@@ -281,6 +282,7 @@ mod tests {
             position,
             in_merge_train: false,
             merge_train_position: None,
+            auto_merge: false,
         }
     }
 

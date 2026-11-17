@@ -46,6 +46,12 @@ gg ls --remote --json
 gg ls --json --no-refresh
 ```
 
+## Queued merges in JSON output
+
+Each stack entry in `gg ls --json` has an `auto_merge` boolean. It is `true` when the forge already has a merge queued for that entry: GitHub auto-merge is enabled, or a GitLab MR is set to auto-merge or sits on a merge train. Pushing to such a branch makes GitLab cancel the queued merge, so automation should avoid rebasing or syncing the stack while an open entry reports `auto_merge: true`.
+
+`auto_merge` comes from the provider refresh. With `--no-refresh` it is always `false`, like the other provider-backed fields.
+
 ## Un-integrated commits at HEAD
 
 `gg ls` is read-only — it never mutates the stack. When you navigate to a mid-stack commit with `gg mv` and make a `git commit` (or `git commit --amend`) there, HEAD becomes detached with a commit that isn't part of the stack yet. `gg ls` detects this and shows a callout instead of silently losing the commit:

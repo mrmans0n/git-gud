@@ -52,6 +52,9 @@ pub struct StackEntry {
     pub in_merge_train: bool,
     /// Position in merge train if applicable
     pub merge_train_position: Option<usize>,
+    /// Whether the forge has a merge queued for this PR/MR (GitHub auto-merge,
+    /// GitLab auto-merge or merge train)
+    pub auto_merge: bool,
 }
 
 impl StackEntry {
@@ -72,6 +75,7 @@ impl StackEntry {
             position,
             in_merge_train: false,
             merge_train_position: None,
+            auto_merge: false,
         }
     }
 
@@ -326,6 +330,7 @@ impl Stack {
                         entry.approved = info.approved;
                         entry.changes_requested = info.changes_requested;
                         entry.mergeable = info.mergeable;
+                        entry.auto_merge = info.auto_merge;
                     }
                     Err(_) => {
                         // PR/MR might have been deleted
@@ -348,6 +353,9 @@ impl Stack {
                     use crate::glab::MergeTrainStatus;
                     entry.in_merge_train = !matches!(train_info.status, MergeTrainStatus::Idle);
                     entry.merge_train_position = train_info.position;
+                    // Only a car still on the train is a queued merge; the
+                    // per-MR endpoint also returns finished (merged/skipped) cars.
+                    entry.auto_merge |= train_info.status.is_active();
                 }
             }
         }
@@ -660,6 +668,7 @@ mod tests {
             position: pos,
             in_merge_train: false,
             merge_train_position: None,
+            auto_merge: false,
         }
     }
 

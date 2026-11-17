@@ -58,7 +58,8 @@ my-feature (3 commits, base: main)
         "ci_status": "success",
         "is_current": false,
         "in_merge_train": false,
-        "merge_train_position": null
+        "merge_train_position": null,
+        "auto_merge": false
       }
     ]
   }

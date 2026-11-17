@@ -357,6 +357,10 @@ enum Commands {
         /// (GitHub only) Use admin privileges to bypass branch protection approval requirements
         #[arg(long)]
         admin: bool,
+
+        /// Don't rebase and force-push remaining branches after each merge (avoids re-triggering CI; best with --no-squash)
+        #[arg(long = "no-rebase")]
+        no_rebase: bool,
     },
 
     /// Clean up merged stacks
@@ -757,6 +761,7 @@ fn main() {
             clean,
             no_clean,
             admin,
+            no_rebase,
         }) => {
             if jsonl {
                 streaming_command = Some("land");
@@ -790,6 +795,7 @@ fn main() {
                     auto_merge_flag: auto_merge,
                     until,
                     admin,
+                    no_rebase,
                 }),
                 json || jsonl,
                 jsonl,

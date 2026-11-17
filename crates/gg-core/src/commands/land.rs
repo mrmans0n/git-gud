@@ -522,6 +522,8 @@ pub struct LandOptions {
     pub auto_merge_flag: bool,
     pub until: Option<String>,
     pub admin: bool,
+    /// Skip rebasing remaining branches after each merge (avoids re-triggering CI)
+    pub no_rebase: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -666,6 +668,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
         auto_merge_flag,
         until,
         admin,
+        no_rebase,
     } = opts;
     let structured = json || jsonl;
     let repo = git::open_repo()?;
@@ -1348,22 +1351,24 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             structured,
                         ));
                         if land_multiple {
-                            let current_index = stack
-                                .entries
-                                .iter()
-                                .position(|e| e.mr_number == Some(pr_num))
-                                .unwrap_or(0);
-                            match rebase_remaining_branches(
-                                &repo,
-                                &stack,
-                                &provider,
-                                current_index,
-                                structured,
-                            ) {
-                                Ok(rebase_warnings) => warnings.extend(rebase_warnings),
-                                Err(e) => {
-                                    land_error = Some(e.to_string());
-                                    break 'landing_loop;
+                            if !no_rebase {
+                                let current_index = stack
+                                    .entries
+                                    .iter()
+                                    .position(|e| e.mr_number == Some(pr_num))
+                                    .unwrap_or(0);
+                                match rebase_remaining_branches(
+                                    &repo,
+                                    &stack,
+                                    &provider,
+                                    current_index,
+                                    structured,
+                                ) {
+                                    Ok(rebase_warnings) => warnings.extend(rebase_warnings),
+                                    Err(e) => {
+                                        land_error = Some(e.to_string());
+                                        break 'landing_loop;
+                                    }
                                 }
                             }
                             stack = Stack::load(&repo, &config)?;
@@ -1498,22 +1503,24 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         structured,
                     ));
                     if land_multiple {
-                        let current_index = stack
-                            .entries
-                            .iter()
-                            .position(|e| e.mr_number == Some(pr_num))
-                            .unwrap_or(0);
-                        match rebase_remaining_branches(
-                            &repo,
-                            &stack,
-                            &provider,
-                            current_index,
-                            structured,
-                        ) {
-                            Ok(rebase_warnings) => warnings.extend(rebase_warnings),
-                            Err(e) => {
-                                land_error = Some(e.to_string());
-                                break 'landing_loop;
+                        if !no_rebase {
+                            let current_index = stack
+                                .entries
+                                .iter()
+                                .position(|e| e.mr_number == Some(pr_num))
+                                .unwrap_or(0);
+                            match rebase_remaining_branches(
+                                &repo,
+                                &stack,
+                                &provider,
+                                current_index,
+                                structured,
+                            ) {
+                                Ok(rebase_warnings) => warnings.extend(rebase_warnings),
+                                Err(e) => {
+                                    land_error = Some(e.to_string());
+                                    break 'landing_loop;
+                                }
                             }
                         }
                         stack = Stack::load(&repo, &config)?;

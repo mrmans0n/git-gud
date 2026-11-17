@@ -11,6 +11,7 @@ gg land [OPTIONS]
 - `-a, --all`: Land all approved entries in sequence
 - `--auto-merge`: *(GitLab only)* Request auto-merge instead of immediate merge
 - `--no-squash`: Disable squash merge (squash is default)
+- `--no-rebase`: Don't rebase and force-push the remaining stack branches after each merge. Avoids re-triggering CI on every remaining PR/MR; intended for `--no-squash`, where original commit SHAs stay reachable from the base branch
 - `-w, --wait`: Wait for CI and approvals before merging
 - `-u, --until <UNTIL>`: Land up to a target entry (position, GG-ID, SHA)
 - `-c, --clean`: Clean stack automatically after landing all

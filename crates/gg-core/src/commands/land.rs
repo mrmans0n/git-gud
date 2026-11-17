@@ -522,6 +522,8 @@ pub struct LandOptions {
     pub auto_merge_flag: bool,
     pub until: Option<String>,
     pub admin: bool,
+    /// Skip rebasing remaining branches after each merge (avoids re-triggering CI)
+    pub no_rebase: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -666,6 +668,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
         auto_merge_flag,
         until,
         admin,
+        no_rebase,
     } = opts;
     let structured = json || jsonl;
     let repo = git::open_repo()?;
@@ -1347,7 +1350,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             land_multiple,
                             structured,
                         ));
-                        if land_multiple {
+                        if land_multiple && !no_rebase {
                             let current_index = stack
                                 .entries
                                 .iter()
@@ -1497,7 +1500,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         land_multiple,
                         structured,
                     ));
-                    if land_multiple {
+                    if land_multiple && !no_rebase {
                         let current_index = stack
                             .entries
                             .iter()

@@ -852,6 +852,57 @@ fn test_land_jsonl_reports_retarget_failure_warning() {
 
 #[cfg(unix)]
 #[test]
+fn test_land_no_rebase_skips_downstream_branch_rebase() {
+    let fixture = WaitingLandFixture::new();
+    fixture.add_second_entry();
+    fixture.release_ci();
+    fixture.fail_downstream_push();
+    run_git(
+        &fixture.repo_path,
+        &["branch", "testuser/land-wait--c-2222222"],
+    );
+
+    let output = fixture
+        .start_land_with_args(&[
+            "land",
+            "--all",
+            "--jsonl",
+            "--admin",
+            "--no-clean",
+            "--no-rebase",
+        ])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(output.status.success(), "land failed: {stderr}");
+
+    let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
+        .expect("parse summary event");
+    assert_eq!(summary["event"], "summary");
+    assert!(
+        !summary["warnings"]
+            .as_array()
+            .expect("warnings must be an array")
+            .iter()
+            .any(|warning| warning
+                .as_str()
+                .is_some_and(|warning| warning.contains("Failed to push"))),
+        "--no-rebase must not push downstream branches: {summary}"
+    );
+}
+
+#[test]
+fn test_gg_land_help_has_no_rebase() {
+    let (_temp_dir, repo_path) = create_test_repo();
+    let (success, stdout, _stderr) = run_gg(&repo_path, &["land", "--help"]);
+
+    assert!(success);
+    assert!(stdout.contains("--no-rebase"));
+}
+
+#[cfg(unix)]
+#[test]
 fn test_land_jsonl_reports_downstream_push_failure_warning() {
     let fixture = WaitingLandFixture::new();
     fixture.add_second_entry();

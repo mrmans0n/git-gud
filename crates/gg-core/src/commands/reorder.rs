@@ -452,6 +452,7 @@ mod tests {
             position: pos,
             in_merge_train: false,
             merge_train_position: None,
+            auto_merge: false,
         };
         Stack {
             name: "test".to_string(),

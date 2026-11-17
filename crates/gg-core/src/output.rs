@@ -145,6 +145,9 @@ pub struct StackEntryJson {
     pub is_current: bool,
     pub in_merge_train: bool,
     pub merge_train_position: Option<usize>,
+    /// Whether the forge has a merge queued for this entry (GitHub auto-merge,
+    /// GitLab auto-merge or merge train). False when unknown or no PR/MR.
+    pub auto_merge: bool,
 }
 
 #[derive(Serialize)]

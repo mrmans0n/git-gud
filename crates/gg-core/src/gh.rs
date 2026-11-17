@@ -30,6 +30,14 @@ pub struct PrInfo {
     pub approved: bool,
     pub mergeable: bool,
     pub changes_requested: bool,
+    /// Raw `mergeable` value: `MERGEABLE`, `CONFLICTING`, or `UNKNOWN`.
+    pub mergeable_status: Option<String>,
+    /// Raw `mergeStateStatus` value (e.g. `CLEAN`, `BEHIND`, `DIRTY`, `UNKNOWN`).
+    pub merge_state_status: Option<String>,
+    /// Whether auto-merge is enabled (`autoMergeRequest` is non-null).
+    pub auto_merge: bool,
+    /// The PR's head commit SHA (`headRefOid`).
+    pub head_sha: Option<String>,
 }
 
 /// The fields needed to display a PR in the review inbox.
@@ -53,9 +61,12 @@ struct GhPrJson {
     state: String,
     url: String,
     head_ref_name: Option<String>,
+    head_ref_oid: Option<String>,
     #[serde(default)]
     is_draft: bool,
     mergeable: Option<String>,
+    merge_state_status: Option<String>,
+    auto_merge_request: Option<serde_json::Value>,
     #[serde(default)]
     reviews: Vec<GhReview>,
     review_decision: Option<String>,
@@ -207,7 +218,7 @@ pub fn view_pr(pr_number: u64) -> Result<PrInfo> {
             "view",
             &pr_number.to_string(),
             "--json",
-            "number,title,state,url,headRefName,isDraft,mergeable,reviews,reviewDecision",
+            "number,title,state,url,headRefName,headRefOid,isDraft,mergeable,mergeStateStatus,autoMergeRequest,reviews,reviewDecision",
         ])
         .output()?;
 
@@ -219,8 +230,11 @@ pub fn view_pr(pr_number: u64) -> Result<PrInfo> {
         )));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let pr_json: GhPrJson = serde_json::from_str(&stdout)
+    parse_pr_info(&output.stdout)
+}
+
+fn parse_pr_info(bytes: &[u8]) -> Result<PrInfo> {
+    let pr_json: GhPrJson = serde_json::from_slice(bytes)
         .map_err(|e| GgError::Other(format!("Failed to parse PR JSON: {}", e)))?;
 
     let state = match pr_json.state.to_uppercase().as_str() {
@@ -245,6 +259,10 @@ pub fn view_pr(pr_number: u64) -> Result<PrInfo> {
         approved,
         mergeable,
         changes_requested,
+        mergeable_status: pr_json.mergeable,
+        merge_state_status: pr_json.merge_state_status,
+        auto_merge: pr_json.auto_merge_request.is_some(),
+        head_sha: pr_json.head_ref_oid,
     })
 }
 
@@ -818,6 +836,10 @@ mod tests {
             approved: true,
             mergeable: true,
             changes_requested: false,
+            mergeable_status: Some("MERGEABLE".to_string()),
+            merge_state_status: Some("CLEAN".to_string()),
+            auto_merge: false,
+            head_sha: None,
         };
         assert_eq!(info.number, 42);
         assert_eq!(info.title, "Test PR");
@@ -851,6 +873,59 @@ mod tests {
         assert_eq!(parsed.mergeable, Some("MERGEABLE".to_string()));
         assert_eq!(parsed.reviews.len(), 1);
         assert_eq!(parsed.reviews[0].state, "APPROVED");
+    }
+
+    #[test]
+    fn pr_info_parses_auto_merge_request_and_merge_state() {
+        let info = parse_pr_info(
+            br#"{
+                "number": 7,
+                "title": "Queued PR",
+                "state": "OPEN",
+                "url": "https://github.com/owner/repo/pull/7",
+                "mergeable": "CONFLICTING",
+                "mergeStateStatus": "DIRTY",
+                "headRefOid": "2222222222222222222222222222222222222222",
+                "autoMergeRequest": {"mergeMethod": "MERGE", "enabledAt": "2026-11-17T10:00:00Z"}
+            }"#,
+        )
+        .unwrap();
+
+        assert!(info.auto_merge);
+        assert_eq!(info.mergeable_status.as_deref(), Some("CONFLICTING"));
+        assert_eq!(info.merge_state_status.as_deref(), Some("DIRTY"));
+        assert_eq!(
+            info.head_sha.as_deref(),
+            Some("2222222222222222222222222222222222222222")
+        );
+    }
+
+    #[test]
+    fn pr_info_treats_null_or_missing_auto_merge_request_as_off() {
+        let null_request = parse_pr_info(
+            br#"{
+                "number": 8,
+                "title": "Plain PR",
+                "state": "OPEN",
+                "url": "https://github.com/owner/repo/pull/8",
+                "autoMergeRequest": null
+            }"#,
+        )
+        .unwrap();
+        let missing_request = parse_pr_info(
+            br#"{
+                "number": 9,
+                "title": "Older gh",
+                "state": "OPEN",
+                "url": "https://github.com/owner/repo/pull/9"
+            }"#,
+        )
+        .unwrap();
+
+        assert!(!null_request.auto_merge);
+        assert!(!missing_request.auto_merge);
+        assert!(missing_request.merge_state_status.is_none());
+        assert!(missing_request.head_sha.is_none());
     }
 
     #[test]

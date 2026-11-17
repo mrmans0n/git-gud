@@ -10,8 +10,9 @@ gg land [OPTIONS]
 
 - `-a, --all`: Land all approved entries in sequence
 - `--auto-merge`: *(GitLab only)* Request auto-merge instead of immediate merge
-- `--no-squash`: Disable squash merge (squash is default)
+- `--no-squash`: Disable squash merge (squash is default). On GitLab, gg also turns off the MR's own squash setting before merging or queueing it, and refuses up front when the project requires squashing
 - `--no-rebase`: Don't rebase and force-push the remaining stack branches after each merge. Avoids re-triggering CI on every remaining PR/MR; intended for `--no-squash`, where original commit SHAs stay reachable from the base branch
+- `--rebase-if-needed`: After each merge, rebase the remaining branches only when needed (see [Rebasing remaining branches](#rebasing-remaining-branches)). Conflicts with `--no-rebase`
 - `-w, --wait`: Wait for CI and approvals before merging
 - `-u, --until <UNTIL>`: Land up to a target entry (position, GG-ID, SHA)
 - `-c, --clean`: Clean stack automatically after landing all
@@ -34,6 +35,9 @@ gg land --until 2
 
 # GitLab auto-merge queue
 gg land --all --auto-merge
+
+# Land with merge commits; rebase remaining branches only when needed
+gg land --all --wait --no-squash --rebase-if-needed
 
 # JSON output for automation
 gg land --all --json
@@ -67,13 +71,30 @@ After landing an entry, `gg land` automatically retargets the next MR in the sta
 
 This applies to both GitHub PRs and GitLab MRs. No manual retargeting in the provider UI is needed after landing.
 
+## Rebasing remaining branches
+
+When you land several entries (`--all` or `--until`), `gg land` by default rebases every remaining branch onto the updated base and force-pushes it after each merge. That keeps squash merges working, but every force-push re-runs CI on every remaining PR/MR.
+
+With `--rebase-if-needed`, gg checks two things after each merge and skips the rebase when both hold:
+
+1. The landed commit itself is reachable from the freshly fetched `origin/<base>`, so it landed through a merge commit rather than as a squashed or rebased copy.
+2. The forge reports that the next PR/MR, already retargeted to the base, can merge as-is. On GitHub that means `mergeable` is not `CONFLICTING` and `mergeStateStatus` is not `DIRTY` or `BEHIND`. On GitLab it means no conflicts and a `detailed_merge_status` other than `conflict` or `need_rebase`.
+
+Forges compute mergeability in the background after a retarget, so gg polls for up to a minute. If the answer is still unknown, or either check fails, gg rebases exactly as it does by default. Only the next entry is checked: the entries above it target its branch, and that branch stays untouched when it isn't rebased.
+
+`--no-rebase` skips the rebase unconditionally. Prefer `--rebase-if-needed` unless you know the base branch keeps original commits.
+
 ## Merge Trains (GitLab)
 
 When merge trains are enabled on the target branch, `gg land` adds MRs to the merge train instead of merging directly. It uses GitLab's auto-merge: if the MR pipeline is still pending or running, GitLab marks the MR "set to be added to the merge train" and adds it once the pipeline passes. You don't have to wait for CI before queueing, and the MR still joins the train if `gg` exits. The squash setting (`--no-squash` to disable) is sent with the request.
 
+GitLab only applies a squash flag that is true when queueing or merging, so an MR created while the project's squash option is "Encourage" (`default_on`) would still be squashed. With `--no-squash`, gg therefore turns off the MR's squash setting first. If the project's squash option is "Require" (`always`), `gg land --no-squash` fails before touching any MR.
+
 **Approval is always required** before an MR can enter the merge train queue — even with `--all`. If using `--wait`, the command will show "Waiting for approval..." until a reviewer approves the MR. A pipeline that has already failed or been canceled stops the command instead of queueing.
 
 After queueing, GitLab can take time to report the MR in the merge train listing. With `--wait`, `gg` keeps polling until the configured `land_wait_timeout_minutes` instead of failing after a short not-found window. It still stops promptly if the MR is closed, GitLab reports it was skipped from the train, the MR pipeline fails before the MR joins the train, or repeated API errors occur.
+
+GitLab cancels auto-merge when the MR's source branch is pushed, and it does not add the MR back by itself. gg records the MR's head commit when it queues the MR. When `--wait` sees the MR still open, off the train, and no longer set to auto-merge, it compares heads. If the head moved, a push cancelled the merge: gg queues the MR again with the same squash choice, records the new head, reports this in a `wait` event with `status: "warning"`, and keeps polling. If the head did not move, the train pipeline failed or someone cancelled auto-merge by hand, so gg stops waiting with an error instead of queueing the MR again.
 
 ## CI Failure Details
 

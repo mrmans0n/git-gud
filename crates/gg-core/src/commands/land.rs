@@ -18,7 +18,7 @@ use crate::output::{
     print_json, LandResponse, LandResultJson, LandStreamingEvent, LandStreamingResponse,
     LandedEntryJson, StreamingJson, OUTPUT_VERSION,
 };
-use crate::provider::{CiStatus, PrState, Provider};
+use crate::provider::{BaseMergeability, CiStatus, PrState, Provider};
 use crate::stack::{resolve_target, Stack, StackEntry};
 
 /// Format elapsed duration as human-readable string (e.g., "2m15s", "45s")
@@ -124,6 +124,13 @@ const PR_INFO_RETRY_DELAY_SECS: u64 = 3;
 /// train is being recalculated). Treating Idle as a hard error is too
 /// aggressive and can fail healthy `gg land --wait --all` flows.
 const IDLE_STILL_WAITING_POLLS: u32 = 6;
+
+/// How long `--rebase-if-needed` waits for the forge to compute whether the
+/// next PR/MR merges as-is after it was retargeted.
+const MERGEABILITY_WAIT_SECS: u64 = 60;
+
+/// Polling interval while waiting for the forge to compute mergeability.
+const MERGEABILITY_POLL_INTERVAL_SECS: u64 = 5;
 
 fn emit_land_event(streamer: Option<&mut StreamingJson>, event: LandStreamingEvent) {
     if let Some(streamer) = streamer {
@@ -322,12 +329,220 @@ fn cleanup_after_merge(
     warnings
 }
 
-/// Rebase remaining PR branches onto the base branch after a merge
+/// Fetch the latest base branch from origin.
+fn fetch_remote_base(repo: &git2::Repository, base: &str, json: bool) -> Result<()> {
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| GgError::Other("Repository has no working directory".to_string()))?;
+
+    if !json {
+        println!("{}", style(format!("  Fetching origin/{}...", base)).dim());
+    }
+
+    let fetch_result = std::process::Command::new("git")
+        .arg("fetch")
+        .arg("origin")
+        .arg(base)
+        .current_dir(workdir)
+        .output()
+        .map_err(|e| GgError::Other(format!("Failed to fetch: {}", e)))?;
+
+    if !fetch_result.status.success() {
+        let stderr = String::from_utf8_lossy(&fetch_result.stderr);
+        return Err(GgError::Other(format!(
+            "Failed to fetch origin/{}: {}",
+            base, stderr
+        )));
+    }
+
+    Ok(())
+}
+
+/// The commit that was pushed for `entry`: its entry branch tip when the
+/// branch exists locally, the stack commit otherwise.
+fn landed_commit(repo: &git2::Repository, stack: &Stack, entry: &StackEntry) -> git2::Oid {
+    stack
+        .entry_branch_name(entry)
+        .and_then(|b| repo.revparse_single(&b).ok())
+        .map(|o| o.id())
+        .unwrap_or(entry.oid)
+}
+
+/// Whether `commit` is reachable from the fetched `origin/<base>`, i.e. it
+/// landed as-is (merge commit) rather than as a squashed or rebased copy.
+fn commit_on_remote_base(repo: &git2::Repository, base: &str, commit: git2::Oid) -> bool {
+    let Ok(base_oid) = repo
+        .revparse_single(&format!("refs/remotes/origin/{}", base))
+        .map(|o| o.id())
+    else {
+        return false;
+    };
+    base_oid == commit || repo.graph_descendant_of(base_oid, commit).unwrap_or(false)
+}
+
+/// How `gg land` treats the remaining stack branches after each merge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemainingRebase {
+    /// Rebase and force-push every remaining branch (default).
+    Always,
+    /// Rebase only when the landed commit was rewritten or the next PR/MR
+    /// cannot merge as-is (`--rebase-if-needed`).
+    IfNeeded,
+    /// Never rebase (`--no-rebase`).
+    Never,
+}
+
+impl RemainingRebase {
+    fn from_flags(no_rebase: bool, rebase_if_needed: bool) -> Self {
+        if no_rebase {
+            RemainingRebase::Never
+        } else if rebase_if_needed {
+            RemainingRebase::IfNeeded
+        } else {
+            RemainingRebase::Always
+        }
+    }
+}
+
+/// `--rebase-if-needed` decision: the remaining branches can stay as they are
+/// only when the landed commit itself reached the base branch (not a squashed
+/// copy) and the forge reports the next PR/MR merges as-is. Upper entries
+/// target the next entry's branch, which stays untouched, so only the next
+/// entry needs checking.
+fn remaining_branches_need_rebase(
+    landed_commit_on_base: bool,
+    next_entry: BaseMergeability,
+) -> bool {
+    !(landed_commit_on_base && next_entry == BaseMergeability::MergesAsIs)
+}
+
+/// Poll `fetch` until the forge has computed mergeability or `timeout`
+/// elapses. Fetch errors count as `Unknown` and keep polling.
+fn poll_base_mergeability(
+    mut fetch: impl FnMut() -> Result<BaseMergeability>,
+    timeout: Duration,
+    interval: Duration,
+    interrupted: Option<&Arc<AtomicBool>>,
+) -> Result<BaseMergeability> {
+    let start = Instant::now();
+    loop {
+        let mergeability = fetch().unwrap_or(BaseMergeability::Unknown);
+        if mergeability != BaseMergeability::Unknown || start.elapsed() >= timeout {
+            return Ok(mergeability);
+        }
+        interruptible_sleep(interval, interrupted, None)?;
+    }
+}
+
+/// Refuse `--no-squash` up front when the project forces squashing.
+fn no_squash_refusal(squash: bool, squash_option: Option<&str>) -> Option<String> {
+    (!squash && squash_option == Some("always")).then(|| {
+        "This GitLab project requires squashing (squash option \"Require\"), so --no-squash cannot land merge commits. Drop --no-squash or change the project's squash setting."
+            .to_string()
+    })
+}
+
+/// What a merge-train wait does about an MR GitLab is not tracking anymore.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MergeTrainDropAction {
+    /// The MR is still queued (or merged/closed); keep polling.
+    KeepWaiting,
+    /// A push moved the source branch, which made GitLab cancel auto-merge.
+    /// Press "Set to auto-merge" again.
+    Requeue,
+    /// Auto-merge was cancelled without a new push: the train pipeline failed
+    /// or someone cancelled it by hand. Stop instead of queueing again.
+    Stop,
+}
+
+/// Decide how to handle an open MR that is off the merge train (`Idle`) with
+/// auto-merge no longer set. `queued_head_sha` is the MR head when gg last
+/// queued it; `head_sha` is the current head.
+fn merge_train_drop_action(
+    state: &PrState,
+    train_status: &crate::glab::MergeTrainStatus,
+    auto_merge: bool,
+    queued_head_sha: Option<&str>,
+    head_sha: Option<&str>,
+) -> MergeTrainDropAction {
+    if *state != PrState::Open || *train_status != crate::glab::MergeTrainStatus::Idle || auto_merge
+    {
+        return MergeTrainDropAction::KeepWaiting;
+    }
+    match (queued_head_sha, head_sha) {
+        (Some(queued), Some(current)) if queued != current => MergeTrainDropAction::Requeue,
+        _ => MergeTrainDropAction::Stop,
+    }
+}
+
+/// After merging the entry with `pr_num`, rebase the remaining branches
+/// according to `policy`.
+#[allow(clippy::too_many_arguments)]
+fn rebase_remaining_after_merge(
+    repo: &git2::Repository,
+    stack: &Stack,
+    provider: &Provider,
+    pr_num: u64,
+    policy: RemainingRebase,
+    interrupted: Option<&Arc<AtomicBool>>,
+    json: bool,
+) -> Result<Vec<String>> {
+    if policy == RemainingRebase::Never {
+        return Ok(Vec::new());
+    }
+    let current_index = stack
+        .entries
+        .iter()
+        .position(|e| e.mr_number == Some(pr_num))
+        .unwrap_or(0);
+
+    fetch_remote_base(repo, &stack.base, json)?;
+
+    if policy == RemainingRebase::IfNeeded {
+        let landed = &stack.entries[current_index];
+        let landed_on_base =
+            commit_on_remote_base(repo, &stack.base, landed_commit(repo, stack, landed));
+        let next_entry = match stack
+            .entries
+            .get(current_index + 1)
+            .and_then(|e| e.mr_number)
+        {
+            Some(next_pr) if landed_on_base => poll_base_mergeability(
+                || provider.get_pr_info(next_pr).map(|i| i.base_mergeability),
+                Duration::from_secs(MERGEABILITY_WAIT_SECS),
+                Duration::from_secs(MERGEABILITY_POLL_INTERVAL_SECS),
+                interrupted,
+            )?,
+            _ => BaseMergeability::Unknown,
+        };
+        if !remaining_branches_need_rebase(landed_on_base, next_entry) {
+            if !json {
+                println!(
+                    "{}",
+                    style(format!(
+                        "  {} {}{} landed as-is and the next {} merges cleanly; not rebasing remaining branches",
+                        provider.pr_label(),
+                        provider.pr_number_prefix(),
+                        pr_num,
+                        provider.pr_label()
+                    ))
+                    .dim()
+                );
+            }
+            return Ok(Vec::new());
+        }
+    }
+
+    rebase_remaining_branches(repo, stack, provider, current_index, json)
+}
+
+/// Rebase remaining PR branches onto the fetched base branch after a merge
 ///
 /// This is needed for stacked PRs: after squash-merging PR #1, PR #2's branch
 /// still contains the old commit (different SHA), causing merge conflicts.
 /// We need to rebase each remaining PR branch onto the updated base to reflect
-/// the new squashed commit and avoid conflicts.
+/// the new squashed commit and avoid conflicts. The caller fetches
+/// `origin/<base>` first.
 fn rebase_remaining_branches(
     repo: &git2::Repository,
     stack: &Stack,
@@ -339,30 +554,6 @@ fn rebase_remaining_branches(
     let workdir = repo
         .workdir()
         .ok_or_else(|| GgError::Other("Repository has no working directory".to_string()))?;
-
-    // Fetch the latest base branch
-    if !json {
-        println!(
-            "{}",
-            style(format!("  Fetching origin/{}...", stack.base)).dim()
-        );
-    }
-
-    let fetch_result = std::process::Command::new("git")
-        .arg("fetch")
-        .arg("origin")
-        .arg(&stack.base)
-        .current_dir(workdir)
-        .output()
-        .map_err(|e| GgError::Other(format!("Failed to fetch: {}", e)))?;
-
-    if !fetch_result.status.success() {
-        let stderr = String::from_utf8_lossy(&fetch_result.stderr);
-        return Err(GgError::Other(format!(
-            "Failed to fetch origin/{}: {}",
-            stack.base, stderr
-        )));
-    }
 
     // Save current branch
     let current_branch = if let Ok(head) = repo.head() {
@@ -378,13 +569,7 @@ fn rebase_remaining_branches(
     let rebase_target = format!("origin/{}", stack.base);
     // Only replay commits above the landed one; replaying the landed commit
     // itself conflicts with its squashed copy on the base branch.
-    let landed = &stack.entries[start_index];
-    let upstream = stack
-        .entry_branch_name(landed)
-        .and_then(|b| repo.revparse_single(&b).ok())
-        .map(|o| o.id())
-        .unwrap_or(landed.oid)
-        .to_string();
+    let upstream = landed_commit(repo, stack, &stack.entries[start_index]).to_string();
 
     let result = (|| -> Result<()> {
         for entry in stack.entries.iter().skip(start_index + 1) {
@@ -524,6 +709,9 @@ pub struct LandOptions {
     pub admin: bool,
     /// Skip rebasing remaining branches after each merge (avoids re-triggering CI)
     pub no_rebase: bool,
+    /// Skip rebasing remaining branches after a merge when the landed commit
+    /// reached the base as-is and the next PR/MR merges cleanly
+    pub rebase_if_needed: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -669,7 +857,9 @@ pub fn run(opts: LandOptions) -> Result<()> {
         until,
         admin,
         no_rebase,
+        rebase_if_needed,
     } = opts;
+    let remaining_rebase = RemainingRebase::from_flags(no_rebase, rebase_if_needed);
     let structured = json || jsonl;
     let repo = git::open_repo()?;
     let git_dir = repo.commondir();
@@ -697,7 +887,11 @@ pub fn run(opts: LandOptions) -> Result<()> {
     let auto_merge_on_land =
         provider == Provider::GitLab && (auto_merge_flag || config.get_gitlab_auto_merge_on_land());
 
-    let merge_trains_enabled = provider.check_merge_trains_enabled().unwrap_or(false);
+    let merge_settings = provider.get_project_merge_settings().unwrap_or_default();
+    if let Some(error) = no_squash_refusal(squash, merge_settings.squash_option.as_deref()) {
+        return Err(GgError::Other(error));
+    }
+    let merge_trains_enabled = merge_settings.merge_trains_enabled;
     if merge_trains_enabled && !structured {
         println!(
             "{}",
@@ -945,6 +1139,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                                 entry.approved = info.approved;
                                 entry.changes_requested = info.changes_requested;
                                 entry.mergeable = info.mergeable;
+                                entry.auto_merge = info.auto_merge;
                                 continue 'landing_loop;
                             }
                             Err(e) => e,
@@ -1259,6 +1454,16 @@ pub fn run(opts: LandOptions) -> Result<()> {
         }
 
         if merge_trains_enabled {
+            // The head GitLab queues; a later change means a push cancelled
+            // auto-merge (see `merge_train_drop_action`).
+            let queued_head_sha = if wait {
+                provider
+                    .get_pr_info(pr_num)
+                    .ok()
+                    .and_then(|info| info.head_sha)
+            } else {
+                None
+            };
             match provider.add_to_merge_train(pr_num, squash) {
                 Ok(result) => {
                     // Queueing a PR/MR on the merge train is a remote state
@@ -1308,6 +1513,8 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             timeout_minutes,
                             interrupted.as_ref(),
                             &stack.base,
+                            squash,
+                            queued_head_sha,
                             structured,
                             streamer.as_mut(),
                         );
@@ -1351,24 +1558,19 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             structured,
                         ));
                         if land_multiple {
-                            if !no_rebase {
-                                let current_index = stack
-                                    .entries
-                                    .iter()
-                                    .position(|e| e.mr_number == Some(pr_num))
-                                    .unwrap_or(0);
-                                match rebase_remaining_branches(
-                                    &repo,
-                                    &stack,
-                                    &provider,
-                                    current_index,
-                                    structured,
-                                ) {
-                                    Ok(rebase_warnings) => warnings.extend(rebase_warnings),
-                                    Err(e) => {
-                                        land_error = Some(e.to_string());
-                                        break 'landing_loop;
-                                    }
+                            match rebase_remaining_after_merge(
+                                &repo,
+                                &stack,
+                                &provider,
+                                pr_num,
+                                remaining_rebase,
+                                interrupted.as_ref(),
+                                structured,
+                            ) {
+                                Ok(rebase_warnings) => warnings.extend(rebase_warnings),
+                                Err(e) => {
+                                    land_error = Some(e.to_string());
+                                    break 'landing_loop;
                                 }
                             }
                             stack = Stack::load(&repo, &config)?;
@@ -1503,24 +1705,19 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         structured,
                     ));
                     if land_multiple {
-                        if !no_rebase {
-                            let current_index = stack
-                                .entries
-                                .iter()
-                                .position(|e| e.mr_number == Some(pr_num))
-                                .unwrap_or(0);
-                            match rebase_remaining_branches(
-                                &repo,
-                                &stack,
-                                &provider,
-                                current_index,
-                                structured,
-                            ) {
-                                Ok(rebase_warnings) => warnings.extend(rebase_warnings),
-                                Err(e) => {
-                                    land_error = Some(e.to_string());
-                                    break 'landing_loop;
-                                }
+                        match rebase_remaining_after_merge(
+                            &repo,
+                            &stack,
+                            &provider,
+                            pr_num,
+                            remaining_rebase,
+                            interrupted.as_ref(),
+                            structured,
+                        ) {
+                            Ok(rebase_warnings) => warnings.extend(rebase_warnings),
+                            Err(e) => {
+                                land_error = Some(e.to_string());
+                                break 'landing_loop;
                             }
                         }
                         stack = Stack::load(&repo, &config)?;
@@ -2139,6 +2336,8 @@ fn wait_for_merge_train_completion(
     timeout_minutes: u64,
     interrupted: Option<&Arc<AtomicBool>>,
     target_branch: &str,
+    squash: bool,
+    mut queued_head_sha: Option<String>,
     json: bool,
     mut streamer: Option<&mut StreamingJson>,
 ) -> Result<()> {
@@ -2249,6 +2448,9 @@ fn wait_for_merge_train_completion(
                 continue;
             }
         };
+        if queued_head_sha.is_none() {
+            queued_head_sha = pr_info.head_sha.clone();
+        }
         if pr_info.state == PrState::Merged {
             emit_land_event(
                 streamer.as_deref_mut(),
@@ -2401,6 +2603,62 @@ fn wait_for_merge_train_completion(
                                             .to_string();
                                     }
                                     _ => {}
+                                }
+                            }
+                        }
+                        // GitLab cancels auto-merge when the source branch is
+                        // pushed and never adds the MR back on its own, so
+                        // queue it again. Without a new push the train pipeline
+                        // failed or someone cancelled it: stop.
+                        if terminal_result.is_none() {
+                            match merge_train_drop_action(
+                                &pr_info.state,
+                                &train_info.status,
+                                pr_info.auto_merge,
+                                queued_head_sha.as_deref(),
+                                pr_info.head_sha.as_deref(),
+                            ) {
+                                MergeTrainDropAction::KeepWaiting => {}
+                                MergeTrainDropAction::Stop => {
+                                    let msg = format!(
+                                        "GitLab removed {} {}{} from the merge train (auto-merge was cancelled without a new push, e.g. a failed train pipeline or a manual cancel); gg stopped waiting",
+                                        provider.pr_label(),
+                                        provider.pr_number_prefix(),
+                                        pr_num
+                                    );
+                                    heartbeat_error = Some(msg.clone());
+                                    terminal_result = Some(Err(GgError::Other(msg)));
+                                }
+                                MergeTrainDropAction::Requeue => {
+                                    match provider.add_to_merge_train(pr_num, squash) {
+                                        Ok(_) => {
+                                            queued_head_sha = pr_info.head_sha.clone();
+                                            idle_count = 0;
+                                            let msg = format!(
+                                                "GitLab cancelled auto-merge for {} {}{} after a push to its source branch; re-queued it for the merge train",
+                                                provider.pr_label(),
+                                                provider.pr_number_prefix(),
+                                                pr_num
+                                            );
+                                            new_state = msg.clone();
+                                            heartbeat_error = Some(msg);
+                                        }
+                                        Err(e) => {
+                                            api_calls_succeeded = false;
+                                            consecutive_errors += 1;
+                                            let msg = format!(
+                                                "Failed to re-queue {} {}{} for the merge train: {}",
+                                                provider.pr_label(),
+                                                provider.pr_number_prefix(),
+                                                pr_num,
+                                                e
+                                            );
+                                            heartbeat_error = Some(msg.clone());
+                                            if consecutive_errors >= MAX_CONSECUTIVE_API_ERRORS {
+                                                terminal_result = Some(Err(GgError::Other(msg)));
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -2588,6 +2846,7 @@ mod tests {
                 position,
                 in_merge_train: false,
                 merge_train_position: None,
+                auto_merge: false,
             }
         }
 
@@ -2627,6 +2886,7 @@ mod tests {
                 position: 1,
                 in_merge_train: false,
                 merge_train_position: None,
+                auto_merge: false,
             },
             StackEntry {
                 oid: git2::Oid::ZERO_SHA1,
@@ -2643,6 +2903,7 @@ mod tests {
                 position: 2,
                 in_merge_train: false,
                 merge_train_position: None,
+                auto_merge: false,
             },
         ];
 
@@ -2670,6 +2931,7 @@ mod tests {
                 position,
                 in_merge_train: false,
                 merge_train_position: None,
+                auto_merge: false,
             }
         }
 
@@ -2920,6 +3182,7 @@ mod tests {
             position: pos,
             in_merge_train: false,
             merge_train_position: None,
+            auto_merge: false,
         };
         let stack = Stack {
             name: "s".to_string(),
@@ -2939,6 +3202,7 @@ mod tests {
         let (_temp, work, stack) = landed_stack_fixture("g", "g\n");
 
         let repo = git2::Repository::open(&work).unwrap();
+        fetch_remote_base(&repo, &stack.base, true).unwrap();
         rebase_remaining_branches(&repo, &stack, &Provider::GitLab, 0, true).unwrap();
 
         assert_eq!(git(&work, &["branch", "--show-current"]), "u/s");
@@ -2962,6 +3226,7 @@ mod tests {
         let before = git(&work, &["rev-parse", "u/s--c-2222222"]);
 
         let repo = git2::Repository::open(&work).unwrap();
+        fetch_remote_base(&repo, &stack.base, true).unwrap();
         let err = rebase_remaining_branches(&repo, &stack, &Provider::GitLab, 0, true)
             .unwrap_err()
             .to_string();
@@ -2972,6 +3237,270 @@ mod tests {
         assert_eq!(git(&work, &["rev-parse", "u/s--c-2222222"]), before);
         assert!(!work.join(".git/rebase-merge").exists());
         assert!(git(&work, &["status", "--porcelain"]).is_empty());
+    }
+
+    #[test]
+    fn squashed_landed_commit_is_not_on_remote_base() {
+        let (_temp, work, stack) = landed_stack_fixture("g", "g\n");
+
+        let repo = git2::Repository::open(&work).unwrap();
+        fetch_remote_base(&repo, &stack.base, true).unwrap();
+
+        let landed = landed_commit(&repo, &stack, &stack.entries[0]);
+        assert!(!commit_on_remote_base(&repo, &stack.base, landed));
+    }
+
+    #[test]
+    fn merged_landed_commit_is_on_remote_base() {
+        let temp = tempfile::tempdir().unwrap();
+        let work = temp.path().join("work");
+        git(temp.path(), &["init", "--bare", "-b", "main", "origin.git"]);
+        git(temp.path(), &["clone", "origin.git", "work"]);
+        git(&work, &["config", "user.email", "t@t"]);
+        git(&work, &["config", "user.name", "t"]);
+        git(&work, &["checkout", "-b", "main"]);
+        std::fs::write(work.join("f"), "one\n").unwrap();
+        git(&work, &["add", "."]);
+        git(&work, &["commit", "-m", "base"]);
+        git(&work, &["push", "origin", "main"]);
+        git(&work, &["checkout", "-b", "u/s--c-1111111"]);
+        std::fs::write(work.join("g"), "g\n").unwrap();
+        git(&work, &["add", "."]);
+        git(&work, &["commit", "-m", "c1"]);
+        let c1 = git(&work, &["rev-parse", "HEAD"]);
+        git(&work, &["push", "origin", "u/s--c-1111111"]);
+
+        // Another clone lands c1 with a merge commit, as the forge would.
+        let land = temp.path().join("land");
+        git(temp.path(), &["clone", "origin.git", "land"]);
+        git(&land, &["config", "user.email", "t@t"]);
+        git(&land, &["config", "user.name", "t"]);
+        git(
+            &land,
+            &[
+                "merge",
+                "--no-ff",
+                "-m",
+                "Merge c1",
+                "origin/u/s--c-1111111",
+            ],
+        );
+        git(&land, &["push", "origin", "main"]);
+
+        let repo = git2::Repository::open(&work).unwrap();
+        assert!(!commit_on_remote_base(
+            &repo,
+            "main",
+            git2::Oid::from_str(&c1).unwrap()
+        ));
+        fetch_remote_base(&repo, "main", true).unwrap();
+        assert!(commit_on_remote_base(
+            &repo,
+            "main",
+            git2::Oid::from_str(&c1).unwrap()
+        ));
+    }
+
+    #[test]
+    fn remaining_rebase_skipped_only_when_landed_as_is_and_next_merges_cleanly() {
+        assert!(!remaining_branches_need_rebase(
+            true,
+            BaseMergeability::MergesAsIs
+        ));
+    }
+
+    #[test]
+    fn remaining_rebase_needed_when_landed_commit_was_squashed() {
+        assert!(remaining_branches_need_rebase(
+            false,
+            BaseMergeability::MergesAsIs
+        ));
+    }
+
+    #[test]
+    fn remaining_rebase_needed_when_next_entry_conflicts_or_is_behind() {
+        assert!(remaining_branches_need_rebase(
+            true,
+            BaseMergeability::NeedsRebase
+        ));
+    }
+
+    #[test]
+    fn remaining_rebase_needed_when_next_entry_mergeability_unknown() {
+        assert!(remaining_branches_need_rebase(
+            true,
+            BaseMergeability::Unknown
+        ));
+        assert!(remaining_branches_need_rebase(
+            false,
+            BaseMergeability::Unknown
+        ));
+    }
+
+    #[test]
+    fn remaining_rebase_policy_from_flags() {
+        assert_eq!(
+            RemainingRebase::from_flags(false, false),
+            RemainingRebase::Always
+        );
+        assert_eq!(
+            RemainingRebase::from_flags(false, true),
+            RemainingRebase::IfNeeded
+        );
+        assert_eq!(
+            RemainingRebase::from_flags(true, false),
+            RemainingRebase::Never
+        );
+    }
+
+    #[test]
+    fn poll_base_mergeability_waits_until_computed() {
+        let mut responses = vec![
+            Ok(BaseMergeability::Unknown),
+            Err(GgError::Other("transient".to_string())),
+            Ok(BaseMergeability::MergesAsIs),
+        ]
+        .into_iter();
+        let mut calls = 0;
+        let result = poll_base_mergeability(
+            || {
+                calls += 1;
+                responses.next().unwrap()
+            },
+            Duration::from_secs(60),
+            Duration::ZERO,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(result, BaseMergeability::MergesAsIs);
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn poll_base_mergeability_gives_up_as_unknown_after_timeout() {
+        let result = poll_base_mergeability(
+            || Ok(BaseMergeability::Unknown),
+            Duration::ZERO,
+            Duration::ZERO,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(result, BaseMergeability::Unknown);
+    }
+
+    #[test]
+    fn poll_base_mergeability_stops_when_interrupted() {
+        let interrupted = Arc::new(AtomicBool::new(true));
+        let result = poll_base_mergeability(
+            || Ok(BaseMergeability::Unknown),
+            Duration::from_secs(60),
+            Duration::from_millis(1),
+            Some(&interrupted),
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn no_squash_refused_when_project_always_squashes() {
+        let error = no_squash_refusal(false, Some("always")).unwrap();
+        assert!(error.contains("--no-squash"), "{error}");
+    }
+
+    #[test]
+    fn no_squash_allowed_for_other_squash_options() {
+        assert_eq!(no_squash_refusal(true, Some("always")), None);
+        for option in ["never", "default_on", "default_off"] {
+            assert_eq!(no_squash_refusal(false, Some(option)), None, "{option}");
+        }
+        assert_eq!(no_squash_refusal(false, None), None);
+    }
+
+    #[test]
+    fn merge_train_requeued_when_auto_merge_cancelled_by_a_push() {
+        use crate::glab::MergeTrainStatus;
+        assert_eq!(
+            merge_train_drop_action(
+                &PrState::Open,
+                &MergeTrainStatus::Idle,
+                false,
+                Some("aaa"),
+                Some("bbb")
+            ),
+            MergeTrainDropAction::Requeue
+        );
+    }
+
+    #[test]
+    fn merge_train_wait_stops_when_auto_merge_cancelled_without_a_push() {
+        use crate::glab::MergeTrainStatus;
+        for (queued, current) in [
+            (Some("aaa"), Some("aaa")),
+            (None, Some("aaa")),
+            (Some("aaa"), None),
+            (None, None),
+        ] {
+            assert_eq!(
+                merge_train_drop_action(
+                    &PrState::Open,
+                    &MergeTrainStatus::Idle,
+                    false,
+                    queued,
+                    current
+                ),
+                MergeTrainDropAction::Stop,
+                "{queued:?} -> {current:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn merge_train_keeps_waiting_while_auto_merge_set() {
+        use crate::glab::MergeTrainStatus;
+        assert_eq!(
+            merge_train_drop_action(
+                &PrState::Open,
+                &MergeTrainStatus::Idle,
+                true,
+                Some("aaa"),
+                Some("bbb")
+            ),
+            MergeTrainDropAction::KeepWaiting
+        );
+    }
+
+    #[test]
+    fn merge_train_keeps_waiting_when_merged_closed_or_on_train() {
+        use crate::glab::MergeTrainStatus;
+        for state in [PrState::Merged, PrState::Closed, PrState::Draft] {
+            assert_eq!(
+                merge_train_drop_action(
+                    &state,
+                    &MergeTrainStatus::Idle,
+                    false,
+                    Some("aaa"),
+                    Some("bbb")
+                ),
+                MergeTrainDropAction::KeepWaiting,
+                "{state:?}"
+            );
+        }
+        for status in [
+            MergeTrainStatus::Fresh,
+            MergeTrainStatus::Stale,
+            MergeTrainStatus::Merging,
+            MergeTrainStatus::Merged,
+            MergeTrainStatus::SkipMerged,
+            MergeTrainStatus::Unknown,
+        ] {
+            assert_eq!(
+                merge_train_drop_action(&PrState::Open, &status, false, Some("aaa"), Some("bbb")),
+                MergeTrainDropAction::KeepWaiting,
+                "{status:?}"
+            );
+        }
     }
 
     #[test]
@@ -3587,6 +4116,7 @@ mod tests {
             position: 1,
             in_merge_train: false,
             merge_train_position: None,
+            auto_merge: false,
         };
 
         // Verify it's detected as unsynced
@@ -3608,6 +4138,7 @@ mod tests {
             position: 2,
             in_merge_train: false,
             merge_train_position: None,
+            auto_merge: false,
         };
 
         // Verify it's detected as synced
@@ -3647,6 +4178,7 @@ mod tests {
                 position: 1,
                 in_merge_train: false,
                 merge_train_position: None,
+                auto_merge: false,
             },
             StackEntry {
                 oid: git2::Oid::ZERO_SHA1,
@@ -3663,6 +4195,7 @@ mod tests {
                 position: 2,
                 in_merge_train: false,
                 merge_train_position: None,
+                auto_merge: false,
             },
             StackEntry {
                 oid: git2::Oid::ZERO_SHA1,
@@ -3679,6 +4212,7 @@ mod tests {
                 position: 3,
                 in_merge_train: false,
                 merge_train_position: None,
+                auto_merge: false,
             },
             StackEntry {
                 oid: git2::Oid::ZERO_SHA1,
@@ -3695,6 +4229,7 @@ mod tests {
                 position: 4,
                 in_merge_train: false,
                 merge_train_position: None,
+                auto_merge: false,
             },
         ];
 

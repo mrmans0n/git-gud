@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `gg land --rebase-if-needed` skips rebasing and force-pushing the remaining stack branches after a merge when the landed commit reached the base branch unchanged and the next PR/MR still merges cleanly, and rebases as before otherwise.
+- `gg ls --json` and `gg log --json` stack entries include `auto_merge`, which is true when GitHub auto-merge is enabled or a GitLab MR is set to auto-merge or is on a merge train.
+
+### Fixed
+- `gg land --no-squash` on GitLab turns off the MR's squash setting before merging or queueing it, so MRs created with the project's "Encourage" squash option land as merge commits. It now fails up front when the project requires squashing.
+- `gg land --wait` re-queues a GitLab MR on the merge train when a push to its source branch made GitLab cancel auto-merge, instead of polling until the timeout. If auto-merge was cancelled without a new push (failed train pipeline or a manual cancel), the wait stops with an error.
+
 ## [0.10.8] - 2026-11-17
 
 ### Added

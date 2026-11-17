@@ -57,6 +57,18 @@ pub enum CiStatus {
     Unknown,
 }
 
+/// Whether the forge reports that a PR/MR can merge into its target as-is,
+/// without rebasing its source branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BaseMergeability {
+    /// The source branch merges cleanly as it is.
+    MergesAsIs,
+    /// The forge reports conflicts or requires the branch to be rebased/updated.
+    NeedsRebase,
+    /// The forge is still computing mergeability, or did not report it.
+    Unknown,
+}
+
 /// Provider-neutral fields needed to display a PR or MR in the review inbox.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InboxSnapshot {
@@ -82,6 +94,12 @@ pub struct PrInfo {
     pub mergeable: bool,
     pub changes_requested: bool,
     pub detailed_merge_status: Option<String>,
+    /// Whether the forge has a merge queued for this PR/MR (GitHub auto-merge,
+    /// GitLab auto-merge or merge train).
+    pub auto_merge: bool,
+    /// Head commit SHA of the PR/MR source branch, when the forge reports it.
+    pub head_sha: Option<String>,
+    pub base_mergeability: BaseMergeability,
 }
 
 /// Result of creating a PR/MR
@@ -220,6 +238,12 @@ impl Provider {
                     mergeable: info.mergeable,
                     changes_requested: info.changes_requested,
                     detailed_merge_status: None,
+                    auto_merge: info.auto_merge,
+                    head_sha: info.head_sha,
+                    base_mergeability: github_base_mergeability(
+                        info.mergeable_status.as_deref(),
+                        info.merge_state_status.as_deref(),
+                    ),
                 })
             }
             Provider::GitLab => {
@@ -234,7 +258,13 @@ impl Provider {
                     approved: info.approved,
                     mergeable: info.mergeable,
                     changes_requested: info.changes_requested,
+                    base_mergeability: gitlab_base_mergeability(
+                        info.detailed_merge_status.as_deref(),
+                        info.has_conflicts,
+                    ),
                     detailed_merge_status: info.detailed_merge_status,
+                    auto_merge: info.auto_merge,
+                    head_sha: info.head_sha,
                 })
             }
         }
@@ -453,12 +483,12 @@ impl Provider {
         }
     }
 
-    /// Check if merge trains are enabled (GitLab only)
-    /// Returns false for GitHub (not supported)
-    pub fn check_merge_trains_enabled(&self) -> Result<bool> {
+    /// Read project merge settings (GitLab only).
+    /// Returns the defaults for GitHub (no merge trains, no squash option).
+    pub fn get_project_merge_settings(&self) -> Result<glab::ProjectMergeSettings> {
         match self {
-            Provider::GitHub => Ok(false),
-            Provider::GitLab => glab::check_merge_trains_enabled(),
+            Provider::GitHub => Ok(glab::ProjectMergeSettings::default()),
+            Provider::GitLab => glab::get_project_merge_settings(),
         }
     }
 
@@ -502,6 +532,49 @@ impl Provider {
 }
 
 // Conversion helpers
+
+/// Classify GitHub's `mergeable` and `mergeStateStatus` values.
+fn github_base_mergeability(
+    mergeable: Option<&str>,
+    merge_state_status: Option<&str>,
+) -> BaseMergeability {
+    let mergeable = mergeable.map(str::to_ascii_uppercase);
+    let merge_state_status = merge_state_status.map(str::to_ascii_uppercase);
+    if mergeable.as_deref() == Some("CONFLICTING")
+        || matches!(merge_state_status.as_deref(), Some("DIRTY" | "BEHIND"))
+    {
+        return BaseMergeability::NeedsRebase;
+    }
+    match (mergeable.as_deref(), merge_state_status.as_deref()) {
+        (Some("MERGEABLE"), Some(state)) if state != "UNKNOWN" => BaseMergeability::MergesAsIs,
+        _ => BaseMergeability::Unknown,
+    }
+}
+
+/// Classify GitLab's `detailed_merge_status` and `has_conflicts` values.
+///
+/// While GitLab is still computing (`checking`, `unchecked`, `preparing`,
+/// `approvals_syncing`, or no status) a stale `has_conflicts` is not trusted.
+/// Blockers unrelated to the branch contents (approvals, pipelines,
+/// discussions) still mean the branch itself merges as-is.
+fn gitlab_base_mergeability(
+    detailed_merge_status: Option<&str>,
+    has_conflicts: bool,
+) -> BaseMergeability {
+    let Some(status) = detailed_merge_status.map(|s| s.trim().to_ascii_lowercase()) else {
+        return BaseMergeability::Unknown;
+    };
+    match status.as_str() {
+        "checking" | "unchecked" | "preparing" | "approvals_syncing" | "" => {
+            BaseMergeability::Unknown
+        }
+        "conflict" | "need_rebase" | "cannot_be_merged" | "cannot_be_merged_recheck" => {
+            BaseMergeability::NeedsRebase
+        }
+        _ if has_conflicts => BaseMergeability::NeedsRebase,
+        _ => BaseMergeability::MergesAsIs,
+    }
+}
 
 fn convert_gh_state(state: GhPrState) -> PrState {
     match state {
@@ -670,6 +743,9 @@ mod tests {
             mergeable: true,
             changes_requested: false,
             detailed_merge_status: None,
+            auto_merge: false,
+            head_sha: None,
+            base_mergeability: BaseMergeability::MergesAsIs,
         };
         assert_eq!(info.number, 42);
         assert_eq!(info.title, "Test PR");
@@ -678,6 +754,99 @@ mod tests {
         assert!(info.approved);
         assert!(info.mergeable);
         assert!(!info.draft);
+    }
+
+    #[test]
+    fn github_mergeability_merges_as_is_when_mergeable_and_state_known() {
+        for state in ["CLEAN", "BLOCKED", "UNSTABLE", "HAS_HOOKS"] {
+            assert_eq!(
+                github_base_mergeability(Some("MERGEABLE"), Some(state)),
+                BaseMergeability::MergesAsIs,
+                "{state}"
+            );
+        }
+    }
+
+    #[test]
+    fn github_mergeability_needs_rebase_on_conflict_dirty_or_behind() {
+        assert_eq!(
+            github_base_mergeability(Some("CONFLICTING"), Some("BLOCKED")),
+            BaseMergeability::NeedsRebase
+        );
+        assert_eq!(
+            github_base_mergeability(Some("MERGEABLE"), Some("BEHIND")),
+            BaseMergeability::NeedsRebase
+        );
+        assert_eq!(
+            github_base_mergeability(Some("UNKNOWN"), Some("DIRTY")),
+            BaseMergeability::NeedsRebase
+        );
+    }
+
+    #[test]
+    fn github_mergeability_unknown_while_computing() {
+        assert_eq!(
+            github_base_mergeability(Some("UNKNOWN"), Some("UNKNOWN")),
+            BaseMergeability::Unknown
+        );
+        assert_eq!(
+            github_base_mergeability(Some("MERGEABLE"), Some("UNKNOWN")),
+            BaseMergeability::Unknown
+        );
+        assert_eq!(
+            github_base_mergeability(Some("MERGEABLE"), None),
+            BaseMergeability::Unknown
+        );
+        assert_eq!(
+            github_base_mergeability(None, None),
+            BaseMergeability::Unknown
+        );
+    }
+
+    #[test]
+    fn gitlab_mergeability_merges_as_is_for_non_branch_blockers() {
+        for status in [
+            "mergeable",
+            "not_approved",
+            "ci_still_running",
+            "ci_must_pass",
+        ] {
+            assert_eq!(
+                gitlab_base_mergeability(Some(status), false),
+                BaseMergeability::MergesAsIs,
+                "{status}"
+            );
+        }
+    }
+
+    #[test]
+    fn gitlab_mergeability_needs_rebase_on_conflict_or_need_rebase() {
+        for status in ["conflict", "need_rebase", "cannot_be_merged"] {
+            assert_eq!(
+                gitlab_base_mergeability(Some(status), false),
+                BaseMergeability::NeedsRebase,
+                "{status}"
+            );
+        }
+        assert_eq!(
+            gitlab_base_mergeability(Some("mergeable"), true),
+            BaseMergeability::NeedsRebase
+        );
+    }
+
+    #[test]
+    fn gitlab_mergeability_unknown_while_checking() {
+        for status in ["checking", "unchecked", "preparing", "approvals_syncing"] {
+            assert_eq!(
+                gitlab_base_mergeability(Some(status), true),
+                BaseMergeability::Unknown,
+                "{status}"
+            );
+        }
+        assert_eq!(
+            gitlab_base_mergeability(None, false),
+            BaseMergeability::Unknown
+        );
     }
 
     #[test]

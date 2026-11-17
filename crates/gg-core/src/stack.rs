@@ -353,7 +353,9 @@ impl Stack {
                     use crate::glab::MergeTrainStatus;
                     entry.in_merge_train = !matches!(train_info.status, MergeTrainStatus::Idle);
                     entry.merge_train_position = train_info.position;
-                    entry.auto_merge |= entry.in_merge_train;
+                    // Only a car still on the train is a queued merge; the
+                    // per-MR endpoint also returns finished (merged/skipped) cars.
+                    entry.auto_merge |= train_info.status.is_active();
                 }
             }
         }

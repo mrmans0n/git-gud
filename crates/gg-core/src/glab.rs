@@ -762,6 +762,16 @@ pub enum MergeTrainStatus {
     Unknown,
 }
 
+impl MergeTrainStatus {
+    /// Whether the MR is still on the train waiting to merge.
+    pub fn is_active(&self) -> bool {
+        matches!(
+            self,
+            MergeTrainStatus::Stale | MergeTrainStatus::Fresh | MergeTrainStatus::Merging
+        )
+    }
+}
+
 /// Merge train information for an MR
 #[derive(Debug, Clone)]
 pub struct MergeTrainInfo {
@@ -1608,6 +1618,17 @@ mod tests {
         assert_eq!(info.status, MergeTrainStatus::Idle);
         assert_eq!(info.position, None);
         assert!(!info.pipeline_running);
+    }
+
+    #[test]
+    fn merge_train_status_is_active_only_while_on_the_train() {
+        assert!(MergeTrainStatus::Stale.is_active());
+        assert!(MergeTrainStatus::Fresh.is_active());
+        assert!(MergeTrainStatus::Merging.is_active());
+        assert!(!MergeTrainStatus::Idle.is_active());
+        assert!(!MergeTrainStatus::Merged.is_active());
+        assert!(!MergeTrainStatus::SkipMerged.is_active());
+        assert!(!MergeTrainStatus::Unknown.is_active());
     }
 
     #[test]

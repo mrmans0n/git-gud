@@ -19,6 +19,11 @@
   untracked files or explicit approval to include those exact files, fetch the
   current base, reject targets already in `origin/<base>`, and refresh mapped
   PR/MR state so merged or closed targets are not rewritten.
+- Before any sync, or a rebase that will be synced, refresh with
+  `gg ls --refresh --json` and stop when any open entry reports
+  `auto_merge: true`. Pushing cancels a queued GitLab merge or merge-train add,
+  and may drop auto-merge on other forges. Ask the user to wait for the merge
+  or cancel auto-merge first.
 
 ## Procedure
 
@@ -74,9 +79,9 @@
 
 ## Stop conditions
 
-Stop on lost publishing authority, unrelated dirty state, failed lint,
-conflicts, authentication failure, immutable auto-rebase, or terminal sync
-failure.
+Stop on lost publishing authority, unrelated dirty state, a queued merge on an
+open entry, failed lint, conflicts, authentication failure, immutable
+auto-rebase, or terminal sync failure.
 
 ## Verification
 

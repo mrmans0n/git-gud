@@ -1350,23 +1350,25 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             land_multiple,
                             structured,
                         ));
-                        if land_multiple && !no_rebase {
-                            let current_index = stack
-                                .entries
-                                .iter()
-                                .position(|e| e.mr_number == Some(pr_num))
-                                .unwrap_or(0);
-                            match rebase_remaining_branches(
-                                &repo,
-                                &stack,
-                                &provider,
-                                current_index,
-                                structured,
-                            ) {
-                                Ok(rebase_warnings) => warnings.extend(rebase_warnings),
-                                Err(e) => {
-                                    land_error = Some(e.to_string());
-                                    break 'landing_loop;
+                        if land_multiple {
+                            if !no_rebase {
+                                let current_index = stack
+                                    .entries
+                                    .iter()
+                                    .position(|e| e.mr_number == Some(pr_num))
+                                    .unwrap_or(0);
+                                match rebase_remaining_branches(
+                                    &repo,
+                                    &stack,
+                                    &provider,
+                                    current_index,
+                                    structured,
+                                ) {
+                                    Ok(rebase_warnings) => warnings.extend(rebase_warnings),
+                                    Err(e) => {
+                                        land_error = Some(e.to_string());
+                                        break 'landing_loop;
+                                    }
                                 }
                             }
                             stack = Stack::load(&repo, &config)?;
@@ -1500,23 +1502,25 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         land_multiple,
                         structured,
                     ));
-                    if land_multiple && !no_rebase {
-                        let current_index = stack
-                            .entries
-                            .iter()
-                            .position(|e| e.mr_number == Some(pr_num))
-                            .unwrap_or(0);
-                        match rebase_remaining_branches(
-                            &repo,
-                            &stack,
-                            &provider,
-                            current_index,
-                            structured,
-                        ) {
-                            Ok(rebase_warnings) => warnings.extend(rebase_warnings),
-                            Err(e) => {
-                                land_error = Some(e.to_string());
-                                break 'landing_loop;
+                    if land_multiple {
+                        if !no_rebase {
+                            let current_index = stack
+                                .entries
+                                .iter()
+                                .position(|e| e.mr_number == Some(pr_num))
+                                .unwrap_or(0);
+                            match rebase_remaining_branches(
+                                &repo,
+                                &stack,
+                                &provider,
+                                current_index,
+                                structured,
+                            ) {
+                                Ok(rebase_warnings) => warnings.extend(rebase_warnings),
+                                Err(e) => {
+                                    land_error = Some(e.to_string());
+                                    break 'landing_loop;
+                                }
                             }
                         }
                         stack = Stack::load(&repo, &config)?;

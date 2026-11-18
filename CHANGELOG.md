@@ -7,13 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.9] - 2026-11-18
+
 ### Added
 - `gg land --rebase-if-needed` skips rebasing and force-pushing the remaining stack branches after a merge when the landed commit reached the base branch unchanged and the next PR/MR still merges cleanly, and rebases as before otherwise.
 - `gg ls --json` and `gg log --json` stack entries include `auto_merge`, which is true when GitHub auto-merge is enabled or a GitLab MR is set to auto-merge or is on a merge train.
 
 ### Fixed
-- `gg land --no-squash` on GitLab turns off the MR's squash setting before merging or queueing it, so MRs created with the project's "Encourage" squash option land as merge commits. It now fails up front when the project requires squashing.
-- `gg land --wait` re-queues a GitLab MR on the merge train when a push to its source branch made GitLab cancel auto-merge, instead of polling until the timeout. If auto-merge was cancelled without a new push (failed train pipeline or a manual cancel), the wait stops with an error.
+- GitLab landing now honors `--no-squash`, fails closed when the project squash policy is unavailable, invalid, unknown, or requires squashing, and re-queues merge-train MRs only after a source-branch update. Manual or pipeline cancellations stop the wait instead of timing out (#488).
+- `gg land` now persists remote mutation uncertainty before GitLab setting and landing requests, and saves cleanup and operation state before terminal JSONL events, preserving accurate records when a response or output consumer disconnects.
+
+### Changed
+- Updated the locked `rmcp` dependency to 3.11.0 (#489).
 
 ## [0.10.8] - 2026-11-17
 
@@ -627,7 +632,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.10.8...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.10.9...HEAD
+[0.10.9]: https://github.com/mrmans0n/git-gud/compare/v0.10.8...v0.10.9
 [0.10.8]: https://github.com/mrmans0n/git-gud/compare/v0.10.7...v0.10.8
 [0.10.7]: https://github.com/mrmans0n/git-gud/compare/v0.10.6...v0.10.7
 [0.10.6]: https://github.com/mrmans0n/git-gud/compare/v0.10.5...v0.10.6

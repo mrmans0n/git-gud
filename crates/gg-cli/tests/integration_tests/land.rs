@@ -149,10 +149,33 @@ if [ "$1" = "api" ] && [ "$2" = "--method" ] && [ "$3" = "PUT" ] && [ "$4" = "pr
   exit 0
 fi
 
+is_landing_request=false
 if [ "$1" = "api" ] && [ "$2" = "-X" ] && [ "$3" = "POST" ]; then
+  is_landing_request=true
+fi
+if [ "$1" = "api" ] && [ "$2" = "--method" ] && [ "$3" = "PUT" ] && [ "$4" = "projects/:id/merge_requests/41/merge" ]; then
+  is_landing_request=true
+fi
+if [ "$is_landing_request" = "true" ]; then
   landing_request_mode=ok
   if [ -f "$GG_FAKE_LANDING_REQUEST_FAIL" ]; then
     landing_request_mode=$(cat "$GG_FAKE_LANDING_REQUEST_FAIL")
+  fi
+  if [ "$landing_request_mode" = "block-fail" ] || [ "$landing_request_mode" = "block-success" ]; then
+    touch "$GG_FAKE_LANDING_REQUEST_FAIL.started"
+    wait_count=0
+    while [ ! -f "$GG_FAKE_LANDING_REQUEST_FAIL.release" ] && [ "$wait_count" -lt 400 ]; do
+      sleep 0.05
+      wait_count=$((wait_count + 1))
+    done
+    if [ ! -f "$GG_FAKE_LANDING_REQUEST_FAIL.release" ]; then
+      echo "timed out waiting to release landing request" >&2
+      exit 1
+    fi
+  fi
+  if [ "$landing_request_mode" = "block-fail" ]; then
+    echo "landing request failed" >&2
+    exit 1
   fi
   if [ "$landing_request_mode" = "fail" ]; then
     echo "landing request failed" >&2
@@ -169,17 +192,35 @@ fi
 if [ "$1" = "api" ]; then
   case "$2" in
     projects/:id/merge_requests/*/approvals)
-      echo '{"approved":true}'
+      if [ -f "$GG_FAKE_UNAPPROVED" ]; then echo '{"approved":false}'; else echo '{"approved":true}'; fi
       exit 0
       ;;
     projects/:id/merge_trains/merge_requests/*)
-      if [ -f "$GG_FAKE_MERGED" ]; then
-        echo '{"merge_request":{"iid":41},"status":"merged","pipeline":{"status":"success"}}'
+      train_mr="${2##*/}"
+      if [ -f "$GG_FAKE_TRAIN_MERGED" ] && [ "$train_mr" = "41" ]; then
+        train_merged_mode=$(cat "$GG_FAKE_TRAIN_MERGED")
+        if [ "$train_merged_mode" = "block" ]; then
+          touch "$GG_FAKE_TRAIN_MERGED.started"
+          wait_count=0
+          while [ ! -f "$GG_FAKE_TRAIN_MERGED.release" ] && [ "$wait_count" -lt 400 ]; do
+            sleep 0.05
+            wait_count=$((wait_count + 1))
+          done
+          if [ ! -f "$GG_FAKE_TRAIN_MERGED.release" ]; then
+            echo "timed out waiting to release merge-train status" >&2
+            exit 1
+          fi
+        fi
+        printf '{"merge_request":{"iid":%s},"status":"merged","pipeline":{"status":"success"}}\n' "$train_mr"
         exit 0
       fi
-      if [ -f "$GG_FAKE_QUEUED" ] && [ "$ci" = success ]; then
+      if [ -f "$GG_FAKE_MERGED" ] && { [ "$train_mr" = "41" ] || { [ -f "$GG_FAKE_QUEUED" ] && grep -q "merge_requests/$train_mr" "$GG_FAKE_QUEUED"; }; }; then
+        printf '{"merge_request":{"iid":%s},"status":"merged","pipeline":{"status":"success"}}\n' "$train_mr"
+        exit 0
+      fi
+      if [ -f "$GG_FAKE_QUEUED" ] && grep -q "merge_requests/$train_mr" "$GG_FAKE_QUEUED" && [ "$ci" = success ]; then
         touch "$GG_FAKE_POLLED"
-        echo '{"merge_request":{"iid":41},"status":"fresh","pipeline":{"status":"success"}}'
+        printf '{"merge_request":{"iid":%s},"status":"fresh","pipeline":{"status":"success"}}\n' "$train_mr"
         exit 0
       fi
       echo "404 Not Found" >&2
@@ -191,7 +232,7 @@ if [ "$1" = "api" ]; then
         exit 0
       fi
       touch "$GG_FAKE_POLLED"
-      if [ -f "$GG_FAKE_MERGED" ]; then
+      if [ -f "$GG_FAKE_MERGED" ] || [ -f "$GG_FAKE_TRAIN_MERGED" ]; then
         echo '[]'
       else
         echo '[{"merge_request":{"iid":41},"status":"fresh","pipeline":{"status":"success"}}]'
@@ -199,7 +240,7 @@ if [ "$1" = "api" ]; then
       exit 0
       ;;
     projects/:id/merge_trains/*scope=complete*)
-      if [ -f "$GG_FAKE_MERGED" ]; then
+      if [ -f "$GG_FAKE_MERGED" ] || [ -f "$GG_FAKE_TRAIN_MERGED" ]; then
         echo '[{"merge_request":{"iid":41},"status":"merged","pipeline":{"status":"success"}}]'
       else
         echo '[]'
@@ -210,17 +251,53 @@ if [ "$1" = "api" ]; then
 fi
 
 if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
-  if [ -f "$GG_FAKE_MERGED" ]; then state=merged; else state=opened; fi
+  num="${3:-41}"
+  if [ "$num" = "42" ]; then
+    state=opened
+    iid=42
+    title="Second entry"
+    source_branch="testuser/land-wait/c-2222222"
+    sha=2222222222222222222222222222222222222222
+  else
+    if [ -f "$GG_FAKE_MERGED" ]; then state=merged; else state=opened; fi
+    iid=41
+    title="Land entry"
+    source_branch="testuser/land-wait/c-1111111"
+    # A push to the source branch moves the first MR head.
+    if [ -f "$GG_FAKE_HEAD_MOVED" ]; then sha=2222222222222222222222222222222222222222; else sha=1111111111111111111111111111111111111111; fi
+  fi
   # GitLab reports queued MRs (auto-merge or merge train) through this flag.
   if [ -f "$GG_FAKE_QUEUED" ] && [ ! -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; then auto=true; else auto=false; fi
   if [ -f "$GG_FAKE_MR_SQUASH" ]; then squash=true; else squash=false; fi
-  # A push to the source branch moves the MR head.
-  if [ -f "$GG_FAKE_HEAD_MOVED" ]; then sha=2222222222222222222222222222222222222222; else sha=1111111111111111111111111111111111111111; fi
-  printf '{"iid":41,"title":"Land entry","state":"%s","web_url":"https://gitlab.example/test/repo/-/merge_requests/41","source_branch":"testuser/land-wait/c-1111111","sha":"%s","draft":false,"work_in_progress":false,"detailed_merge_status":"mergeable","has_conflicts":false,"squash":%s,"merge_when_pipeline_succeeds":%s,"head_pipeline":{"status":"%s"}}\n' "$state" "$sha" "$squash" "$auto" "$ci"
+  printf '{"iid":%s,"title":"%s","state":"%s","web_url":"https://gitlab.example/test/repo/-/merge_requests/%s","source_branch":"%s","sha":"%s","draft":false,"work_in_progress":false,"detailed_merge_status":"mergeable","has_conflicts":false,"squash":%s,"merge_when_pipeline_succeeds":%s,"head_pipeline":{"status":"%s"}}\n' "$iid" "$title" "$state" "$iid" "$source_branch" "$sha" "$squash" "$auto" "$ci"
+  exit 0
+fi
+
+if [ "$1" = "mr" ] && [ "$2" = "update" ]; then
   exit 0
 fi
 
 if [ "$1" = "mr" ] && [ "$2" = "merge" ]; then
+  landing_request_mode=ok
+  if [ -f "$GG_FAKE_LANDING_REQUEST_FAIL" ]; then
+    landing_request_mode=$(cat "$GG_FAKE_LANDING_REQUEST_FAIL")
+  fi
+  if [ "$landing_request_mode" = "block-fail" ] || [ "$landing_request_mode" = "block-success" ]; then
+    touch "$GG_FAKE_LANDING_REQUEST_FAIL.started"
+    wait_count=0
+    while [ ! -f "$GG_FAKE_LANDING_REQUEST_FAIL.release" ] && [ "$wait_count" -lt 400 ]; do
+      sleep 0.05
+      wait_count=$((wait_count + 1))
+    done
+    if [ ! -f "$GG_FAKE_LANDING_REQUEST_FAIL.release" ]; then
+      echo "timed out waiting to release landing request" >&2
+      exit 1
+    fi
+  fi
+  if [ "$landing_request_mode" = "block-fail" ] || [ "$landing_request_mode" = "fail" ]; then
+    echo "landing request failed" >&2
+    exit 1
+  fi
   touch "$GG_FAKE_MERGED"
   touch "$GG_FAKE_MERGED.glab"
   exit 0
@@ -252,6 +329,7 @@ struct WaitingLandFixture {
     ci_calls: std::path::PathBuf,
     regress: std::path::PathBuf,
     merge_trains: std::path::PathBuf,
+    train_merged: std::path::PathBuf,
     merge_settings_fail: std::path::PathBuf,
     landing_request_fail: std::path::PathBuf,
     auth_network_fail: std::path::PathBuf,
@@ -324,6 +402,7 @@ impl WaitingLandFixture {
         let ci_calls = repo_path.join("fake-ci-calls");
         let regress = repo_path.join("fake-regress");
         let merge_trains = repo_path.join("fake-merge-trains");
+        let train_merged = repo_path.join("fake-train-merged");
         let merge_settings_fail = repo_path.join("fake-merge-settings-fail");
         let landing_request_fail = repo_path.join("fake-landing-request-fail");
         let auth_network_fail = repo_path.join("fake-auth-network-fail");
@@ -357,6 +436,7 @@ impl WaitingLandFixture {
             ci_calls,
             regress,
             merge_trains,
+            train_merged,
             merge_settings_fail,
             landing_request_fail,
             auth_network_fail,
@@ -395,6 +475,7 @@ impl WaitingLandFixture {
             .env("GG_FAKE_CI_CALLS", &self.ci_calls)
             .env("GG_FAKE_REGRESS", &self.regress)
             .env("GG_FAKE_MERGE_TRAINS", &self.merge_trains)
+            .env("GG_FAKE_TRAIN_MERGED", &self.train_merged)
             .env("GG_FAKE_MERGE_SETTINGS_FAIL", &self.merge_settings_fail)
             .env("GG_FAKE_LANDING_REQUEST_FAIL", &self.landing_request_fail)
             .env("GG_FAKE_AUTH_NETWORK_FAIL", &self.auth_network_fail)
@@ -446,6 +527,18 @@ impl WaitingLandFixture {
             &self.repo_path,
             &["commit", "-m", "Second entry\n\nGG-ID: c-2222222"],
         );
+        run_git(
+            &self.repo_path,
+            &["branch", "testuser/land-wait--c-2222222", "HEAD"],
+        );
+        run_git(
+            &self.repo_path,
+            &[
+                "push",
+                "origin",
+                "testuser/land-wait--c-2222222:testuser/land-wait--c-2222222",
+            ],
+        );
 
         let config_path = self.repo_path.join(".git/gg/config.json");
         let mut config: Value =
@@ -486,6 +579,10 @@ impl WaitingLandFixture {
         fs::write(&self.merge_trains, "enabled\n").expect("enable fake merge trains");
     }
 
+    fn complete_merge_train_status(&self) {
+        fs::write(&self.train_merged, "merged\n").expect("complete fake merge train status");
+    }
+
     fn fail_gitlab_merge_settings_lookup(&self) {
         fs::write(&self.merge_settings_fail, "fail\n").expect("fail fake merge settings lookup");
     }
@@ -501,6 +598,28 @@ impl WaitingLandFixture {
 
     fn fail_gitlab_landing_request(&self) {
         fs::write(&self.landing_request_fail, "fail\n").expect("fail fake landing request");
+    }
+
+    fn block_then_fail_gitlab_landing_request(&self) {
+        fs::write(&self.landing_request_fail, "block-fail\n")
+            .expect("block then fail fake landing request");
+    }
+
+    fn block_then_succeed_gitlab_landing_request(&self) {
+        fs::write(&self.landing_request_fail, "block-success\n")
+            .expect("block then succeed fake landing request");
+    }
+
+    fn landing_request_started(&self) -> std::path::PathBuf {
+        std::path::PathBuf::from(format!("{}.started", self.landing_request_fail.display()))
+    }
+
+    fn release_landing_request(&self) {
+        fs::write(
+            format!("{}.release", self.landing_request_fail.display()),
+            "release\n",
+        )
+        .expect("release fake landing request");
     }
 
     fn fail_gitlab_squash_update_response(&self) {
@@ -583,6 +702,34 @@ fn land_operation_records(repo_path: &Path) -> Vec<Value> {
         })
         .filter(|record: &Value| record["kind"] == "land")
         .collect()
+}
+
+#[cfg(unix)]
+fn disconnect_jsonl_after_landing_request_started(
+    fixture: &WaitingLandFixture,
+    args: &[&str],
+) -> std::process::Output {
+    let mut land = fixture.start_land_with_args(args);
+    let stdout = land.stdout.take().expect("capture land stdout");
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    reader.read_line(&mut line).expect("read land start event");
+    let start: Value = serde_json::from_str(line.trim()).expect("parse land start event");
+    assert_eq!(start["event"], "start");
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let request_started = fixture.landing_request_started();
+    while !request_started.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    if !request_started.exists() {
+        let _ = land.kill();
+        panic!("final landing request never started");
+    }
+
+    drop(reader);
+    fixture.release_landing_request();
+    land.wait_with_output().expect("wait for land")
 }
 
 #[cfg(unix)]
@@ -972,10 +1119,6 @@ fn test_land_no_rebase_skips_downstream_branch_rebase() {
     fixture.add_second_entry();
     fixture.release_ci();
     fixture.fail_downstream_push();
-    run_git(
-        &fixture.repo_path,
-        &["branch", "testuser/land-wait--c-2222222"],
-    );
 
     let output = fixture
         .start_land_with_args(&[
@@ -1045,10 +1188,6 @@ fn test_land_jsonl_reports_downstream_push_failure_warning() {
     fixture.add_second_entry();
     fixture.release_ci();
     fixture.fail_downstream_push();
-    run_git(
-        &fixture.repo_path,
-        &["branch", "testuser/land-wait--c-2222222"],
-    );
 
     let output = fixture
         .start_land_with_args(&["land", "--all", "--jsonl", "--admin", "--no-clean"])
@@ -1321,6 +1460,70 @@ fn test_land_gitlab_merge_train_wait_queues_auto_merge_before_pipeline_passes() 
 
 #[cfg(unix)]
 #[test]
+fn test_land_gitlab_merge_train_wait_all_persists_cleanup_between_entries() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.add_second_entry();
+    fixture.set_glab_pipeline_status("running");
+
+    let land = fixture.start_land_with_args(&["land", "--all", "--wait", "--jsonl", "--no-clean"]);
+    fixture.wait_until_queued();
+    fs::write(&fixture.merged, "merged\n").expect("complete fake merge train");
+
+    let output = land.wait_with_output().expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(output.status.success(), "land failed: {stderr}");
+    let second_request = fixture.queued_request();
+    assert!(
+        second_request.contains("merge_trains/merge_requests/42"),
+        "the continuation must submit a landing request for the second MR: {second_request}\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    let config: Value = serde_json::from_slice(
+        &fs::read(fixture.repo_path.join(".git/gg/config.json")).expect("read persisted config"),
+    )
+    .expect("parse persisted config");
+    assert!(
+        config["stacks"]["land-wait"]["mrs"]
+            .get("c-1111111")
+            .is_none(),
+        "first merged MR mapping must be persisted before continuing: {config}"
+    );
+    assert!(
+        config["stacks"]["land-wait"]["mrs"]
+            .get("c-2222222")
+            .is_none(),
+        "second merged MR mapping must be removed after its own landing: {config}"
+    );
+
+    let events: Vec<Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("parse JSONL event"))
+        .collect();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["event"] == "entry" && event["action"] == "merged")
+            .count(),
+        2,
+        "both merge-train landings must emit a merged entry: {stdout}"
+    );
+
+    let records = land_operation_records(&fixture.repo_path);
+    assert!(
+        records.len() >= 2,
+        "expected multiple operation segments: {records:?}"
+    );
+    assert!(
+        records.iter().all(|record| record["status"] == "committed"),
+        "all continuation segments must be finalized: {records:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn test_land_gitlab_merge_train_wait_stops_when_pipeline_fails_before_joining_train() {
     let fixture = WaitingLandFixture::new();
     fixture.use_gitlab_provider();
@@ -1492,6 +1695,190 @@ fn test_land_gitlab_no_squash_records_remote_touch_when_landing_request_fails() 
 }
 
 #[cfg(unix)]
+fn assert_failed_landing_attempt_is_committed(fixture: &WaitingLandFixture, args: &[&str]) {
+    let output = fixture
+        .start_land_with_args(args)
+        .wait_with_output()
+        .expect("wait for land");
+    assert!(
+        output.status.success(),
+        "structured land must report failure in its payload"
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let result: Value = serde_json::from_str(&stdout).expect("parse land JSON");
+    assert!(
+        result["land"]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("landing request failed")),
+        "the structured response must report the failed landing request: {result}"
+    );
+    assert!(
+        !fixture.queued.exists(),
+        "a failed landing request must not create the success marker"
+    );
+    assert!(
+        !std::path::PathBuf::from(format!("{}.glab", fixture.merged.display())).exists(),
+        "a failed direct merge must not create the GitLab merge-success marker"
+    );
+    let records = land_operation_records(&fixture.repo_path);
+    assert_eq!(records.len(), 1, "expected one land operation: {records:?}");
+    assert_eq!(records[0]["status"], "committed");
+    assert_eq!(records[0]["touched_remote"], true);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_merge_train_failure_records_remote_uncertainty_before_attempt() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.fail_gitlab_landing_request();
+    assert_failed_landing_attempt_is_committed(&fixture, &["land", "--json", "--no-clean"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_auto_merge_failure_records_remote_uncertainty_before_attempt() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.fail_gitlab_landing_request();
+    assert_failed_landing_attempt_is_committed(
+        &fixture,
+        &["land", "--json", "--auto-merge", "--no-clean"],
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_direct_merge_failure_records_remote_uncertainty_before_attempt() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.fail_gitlab_landing_request();
+    assert_failed_landing_attempt_is_committed(&fixture, &["land", "--json", "--no-clean"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_jsonl_disconnect_after_squash_update_finalizes_failed_landing() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fs::write(&fixture.squash_option, "default_on").expect("set fake squash option");
+    fs::write(&fixture.mr_squash, "on\n").expect("enable fake MR squash");
+    fixture.block_then_fail_gitlab_landing_request();
+
+    let mut land = fixture.start_land_with_args(&["land", "--jsonl", "--no-clean", "--no-squash"]);
+    let stdout = land.stdout.take().expect("capture land stdout");
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    reader.read_line(&mut line).expect("read land start event");
+    let start: Value = serde_json::from_str(line.trim()).expect("parse land start event");
+    assert_eq!(start["event"], "start");
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let request_started = fixture.landing_request_started();
+    while !request_started.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        request_started.exists(),
+        "final landing request never started after disabling squash"
+    );
+    assert!(
+        fixture.squash_disabled.exists(),
+        "land never disabled squash before the final request"
+    );
+    drop(reader);
+    fixture.release_landing_request();
+
+    let output = land.wait_with_output().expect("wait for land");
+    assert!(
+        !output.status.success(),
+        "land must fail when the landing request and JSONL consumer fail"
+    );
+    assert!(!fixture.queued.exists(), "final landing request must fail");
+
+    let records = land_operation_records(&fixture.repo_path);
+    assert_eq!(records.len(), 1, "expected one land operation: {records:?}");
+    assert_eq!(
+        records[0]["status"], "committed",
+        "the operation must be finalized before streaming the landing error: {}",
+        records[0]
+    );
+    assert_eq!(records[0]["touched_remote"], true);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_jsonl_disconnect_after_successful_merge_train_queue_finalizes_operation() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.block_then_succeed_gitlab_landing_request();
+
+    let output = disconnect_jsonl_after_landing_request_started(
+        &fixture,
+        &["land", "--jsonl", "--no-clean"],
+    );
+    assert!(!output.status.success(), "disconnected JSONL must fail");
+    assert!(
+        fixture.queued.exists(),
+        "MR must be queued before streaming"
+    );
+
+    let records = land_operation_records(&fixture.repo_path);
+    assert_eq!(records.len(), 1, "expected one land operation: {records:?}");
+    assert_eq!(records[0]["status"], "committed");
+    assert_eq!(records[0]["touched_remote"], true);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_jsonl_disconnect_after_successful_auto_merge_queue_finalizes_operation() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.block_then_succeed_gitlab_landing_request();
+
+    let output = disconnect_jsonl_after_landing_request_started(
+        &fixture,
+        &["land", "--jsonl", "--auto-merge", "--no-clean"],
+    );
+    assert!(!output.status.success(), "disconnected JSONL must fail");
+    assert!(
+        fixture.queued.exists(),
+        "MR must be queued before streaming"
+    );
+
+    let records = land_operation_records(&fixture.repo_path);
+    assert_eq!(records.len(), 1, "expected one land operation: {records:?}");
+    assert_eq!(records[0]["status"], "committed");
+    assert_eq!(records[0]["touched_remote"], true);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_jsonl_disconnect_after_successful_direct_merge_finalizes_operation() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.block_then_succeed_gitlab_landing_request();
+
+    let output = disconnect_jsonl_after_landing_request_started(
+        &fixture,
+        &["land", "--jsonl", "--no-clean"],
+    );
+    assert!(!output.status.success(), "disconnected JSONL must fail");
+    assert!(
+        fixture.merged.with_extension("glab").exists(),
+        "MR must be merged before streaming"
+    );
+
+    let records = land_operation_records(&fixture.repo_path);
+    assert_eq!(records.len(), 1, "expected one land operation: {records:?}");
+    assert_eq!(records[0]["status"], "committed");
+    assert_eq!(records[0]["touched_remote"], true);
+}
+
+#[cfg(unix)]
 #[test]
 fn test_land_gitlab_no_squash_records_remote_uncertainty_before_update() {
     let fixture = WaitingLandFixture::new();
@@ -1518,9 +1905,200 @@ fn test_land_gitlab_no_squash_records_remote_uncertainty_before_update() {
     let records = land_operation_records(&fixture.repo_path);
     assert_eq!(records.len(), 1, "expected one land operation: {records:?}");
     assert_eq!(
+        records[0]["status"], "committed",
+        "an ambiguous squash-update outcome must be finalized: {}",
+        records[0]
+    );
+    assert_eq!(
         records[0]["touched_remote"], true,
         "an ambiguous squash-update outcome must be persisted before the request: {}",
         records[0]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_readiness_merged_reports_entry_without_requeueing() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.complete_merge_train_status();
+
+    let output = fixture
+        .start_land_with_args(&["land", "--wait", "--jsonl", "--no-clean"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(output.status.success(), "land failed: {stderr}");
+    assert!(
+        !fixture.queued.exists(),
+        "merged MR must not be queued again"
+    );
+
+    let events: Vec<Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("parse JSONL event"))
+        .collect();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["event"] == "entry" && event["action"] == "merged")
+            .count(),
+        1,
+        "expected exactly one merged entry: {stdout}"
+    );
+    let summary = events.last().expect("summary event");
+    assert_eq!(summary["event"], "summary");
+    assert_eq!(summary["remaining"], 0);
+    assert!(summary["error"].is_null(), "{summary}");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_jsonl_disconnect_after_readiness_observes_merged_train_finalizes_cleanup() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.set_glab_pipeline_status("running");
+    fs::write(&fixture.unapproved, "unapproved\n").expect("hold readiness before merged status");
+
+    let mut land = fixture.start_land_with_args(&["land", "--wait", "--jsonl", "--no-clean"]);
+    let stdout = land.stdout.take().expect("capture land stdout");
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    reader.read_line(&mut line).expect("read land start event");
+    let start: Value = serde_json::from_str(line.trim()).expect("parse land start event");
+    assert_eq!(start["event"], "start");
+    line.clear();
+    reader
+        .read_line(&mut line)
+        .expect("read initial readiness wait event");
+    let wait: Value = serde_json::from_str(line.trim()).expect("parse readiness wait event");
+    assert_eq!(wait["event"], "wait");
+    assert_eq!(wait["phase"], "readiness");
+
+    fs::write(&fixture.train_merged, "block\n").expect("block fake merged-train status");
+    let status_started =
+        std::path::PathBuf::from(format!("{}.started", fixture.train_merged.display()));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !status_started.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        status_started.exists(),
+        "land never started the terminal merge-train status request"
+    );
+    drop(reader);
+    fs::write(
+        format!("{}.release", fixture.train_merged.display()),
+        "release\n",
+    )
+    .expect("release fake merged-train status");
+
+    let output = land.wait_with_output().expect("wait for land");
+    assert!(
+        !output.status.success(),
+        "terminal merged entry must observe the disconnected JSONL consumer"
+    );
+    assert!(
+        !fixture.queued.exists(),
+        "an MR already merged through the train must not be queued again"
+    );
+
+    let config: Value = serde_json::from_slice(
+        &fs::read(fixture.repo_path.join(".git/gg/config.json")).expect("read persisted config"),
+    )
+    .expect("parse persisted config");
+    assert!(
+        config["stacks"]["land-wait"]["mrs"]
+            .get("c-1111111")
+            .is_none(),
+        "merged MR mapping must be persisted before the terminal event: {config}"
+    );
+
+    let records = land_operation_records(&fixture.repo_path);
+    assert!(
+        !records.is_empty(),
+        "expected cleanup operations: {records:?}"
+    );
+    assert!(
+        records.iter().all(|record| record["status"] == "committed"),
+        "all cleanup operations must be finalized: {records:?}"
+    );
+    assert!(
+        records
+            .iter()
+            .all(|record| record["touched_remote"] == true),
+        "all cleanup operations must retain remote-touch metadata: {records:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_jsonl_disconnect_after_merge_train_merge_finalizes_cleanup() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.set_glab_pipeline_status("running");
+
+    let mut land =
+        fixture.start_land_with_args(&["land", "--all", "--wait", "--jsonl", "--no-clean"]);
+    let stdout = land.stdout.take().expect("capture land stdout");
+    let mut reader = BufReader::new(stdout);
+    let mut saw_queued = false;
+    loop {
+        let mut line = String::new();
+        assert!(
+            reader.read_line(&mut line).expect("read JSONL event") > 0,
+            "land exited before entering merge-train wait"
+        );
+        let event: Value = serde_json::from_str(line.trim()).expect("parse JSONL event");
+        if event["event"] == "entry"
+            && matches!(event["action"].as_str(), Some("queued" | "already_queued"))
+        {
+            saw_queued = true;
+        }
+        if saw_queued && event["event"] == "wait" && event["phase"] == "merge_train" {
+            break;
+        }
+    }
+
+    fixture.complete_merge_train_status();
+    drop(reader);
+
+    let output = land.wait_with_output().expect("wait for land");
+    assert!(
+        !output.status.success(),
+        "terminal merged event must observe the disconnected JSONL consumer"
+    );
+
+    let config: Value = serde_json::from_slice(
+        &fs::read(fixture.repo_path.join(".git/gg/config.json")).expect("read persisted config"),
+    )
+    .expect("parse persisted config");
+    assert!(
+        config["stacks"]["land-wait"]["mrs"]
+            .get("c-1111111")
+            .is_none(),
+        "merged MR mapping must be persisted before the terminal event: {config}"
+    );
+
+    let records = land_operation_records(&fixture.repo_path);
+    assert_eq!(
+        records.len(),
+        2,
+        "expected queue and cleanup operations: {records:?}"
+    );
+    assert!(
+        records.iter().all(|record| record["status"] == "committed"),
+        "both operation segments must be finalized: {records:?}"
+    );
+    assert!(
+        records
+            .iter()
+            .all(|record| record["touched_remote"] == true),
+        "both operation segments must retain remote-touch metadata: {records:?}"
     );
 }
 

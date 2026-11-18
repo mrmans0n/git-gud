@@ -778,6 +778,12 @@ fn pr_is_still_ready(
     (skip_approval && !merge_trains_enabled) || provider.check_pr_approved(pr_num).unwrap_or(false)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WaitForReadyOutcome {
+    Ready,
+    Merged,
+}
+
 fn begin_land_segment(
     repo: &git2::Repository,
     config: &Config,
@@ -810,6 +816,18 @@ fn finish_land_segment(
         std::mem::take(remote_effects),
         std::mem::take(touched_remote),
     )
+}
+
+fn mark_land_remote_attempt(
+    guard: &mut Option<crate::operations::OperationGuard>,
+    touched_remote: &mut bool,
+) -> Result<()> {
+    guard
+        .as_mut()
+        .expect("land segment guard")
+        .mark_touched_remote_before_attempt()?;
+    *touched_remote = true;
+    Ok(())
 }
 
 fn single_land_total_entries(entries: &[StackEntry]) -> usize {
@@ -1348,24 +1366,119 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         )?);
                         config = Config::load_with_global(git_dir)?;
                         stack = Stack::load(&repo, &config)?;
-                        if let Err(e) = wait_result {
-                            record_landed_entry(
-                                &mut landed_entries,
-                                &mut streamer,
-                                LandedEntryJson {
-                                    position: entry.position,
-                                    sha: entry.short_sha.clone(),
-                                    title: entry.title.clone(),
-                                    gg_id: gg_id.clone(),
-                                    pr_number: pr_num,
-                                    action: "error".to_string(),
-                                    error: Some(e.to_string()),
-                                },
-                            );
-                            land_error = Some(e.to_string());
+                        let wait_outcome = match wait_result {
+                            Ok(outcome) => outcome,
+                            Err(e) => {
+                                record_landed_entry(
+                                    &mut landed_entries,
+                                    &mut streamer,
+                                    LandedEntryJson {
+                                        position: entry.position,
+                                        sha: entry.short_sha.clone(),
+                                        title: entry.title.clone(),
+                                        gg_id: gg_id.clone(),
+                                        pr_number: pr_num,
+                                        action: "error".to_string(),
+                                        error: Some(e.to_string()),
+                                    },
+                                );
+                                land_error = Some(e.to_string());
+                                break 'landing_loop;
+                            }
+                        };
+                        if let Some(error) = stack_changed_while_waiting(&expected_stack, &stack) {
+                            if wait_outcome == WaitForReadyOutcome::Merged {
+                                guard = Some(begin_land_segment(&repo, &config, &args)?);
+                                touched_remote = true;
+                                guard
+                                    .as_mut()
+                                    .expect("land segment guard")
+                                    .mark_touched_remote();
+                                config.save(git_dir)?;
+                                finish_land_segment(
+                                    &repo,
+                                    &config,
+                                    &mut guard,
+                                    &mut remote_effects,
+                                    &mut touched_remote,
+                                )?;
+                                record_landed_entry(
+                                    &mut landed_entries,
+                                    &mut streamer,
+                                    LandedEntryJson {
+                                        position: entry.position,
+                                        sha: entry.short_sha.clone(),
+                                        title: entry.title.clone(),
+                                        gg_id: gg_id.clone(),
+                                        pr_number: pr_num,
+                                        action: "merged".to_string(),
+                                        error: None,
+                                    },
+                                );
+                            } else {
+                                record_landed_entry(
+                                    &mut landed_entries,
+                                    &mut streamer,
+                                    LandedEntryJson {
+                                        position: entry.position,
+                                        sha: entry.short_sha.clone(),
+                                        title: entry.title.clone(),
+                                        gg_id: gg_id.clone(),
+                                        pr_number: pr_num,
+                                        action: "error".to_string(),
+                                        error: Some(error.clone()),
+                                    },
+                                );
+                            }
+                            land_error = Some(error);
                             break 'landing_loop;
                         }
-                        if let Some(error) = stack_changed_while_waiting(&expected_stack, &stack) {
+                        if wait_outcome == WaitForReadyOutcome::Merged {
+                            guard = Some(begin_land_segment(&repo, &config, &args)?);
+                            touched_remote = true;
+                            guard
+                                .as_mut()
+                                .expect("land segment guard")
+                                .mark_touched_remote();
+                            landed_count += 1;
+                            warnings.extend(cleanup_after_merge(
+                                &mut config,
+                                &stack,
+                                &provider,
+                                &gg_id,
+                                pr_num,
+                                land_multiple,
+                                structured,
+                            ));
+                            if land_multiple {
+                                match rebase_remaining_after_merge(
+                                    &repo,
+                                    &stack,
+                                    &provider,
+                                    pr_num,
+                                    remaining_rebase,
+                                    interrupted.as_ref(),
+                                    structured,
+                                ) {
+                                    Ok(rebase_warnings) => warnings.extend(rebase_warnings),
+                                    Err(e) => {
+                                        land_error = Some(e.to_string());
+                                        break 'landing_loop;
+                                    }
+                                }
+                                stack = Stack::load(&repo, &config)?;
+                                if !stack.is_empty() {
+                                    stack.refresh_mr_info(&provider)?;
+                                }
+                            }
+                            config.save(git_dir)?;
+                            finish_land_segment(
+                                &repo,
+                                &config,
+                                &mut guard,
+                                &mut remote_effects,
+                                &mut touched_remote,
+                            )?;
                             record_landed_entry(
                                 &mut landed_entries,
                                 &mut streamer,
@@ -1375,11 +1488,13 @@ pub fn run(opts: LandOptions) -> Result<()> {
                                     title: entry.title.clone(),
                                     gg_id: gg_id.clone(),
                                     pr_number: pr_num,
-                                    action: "error".to_string(),
-                                    error: Some(error.clone()),
+                                    action: "merged".to_string(),
+                                    error: None,
                                 },
                             );
-                            land_error = Some(error);
+                            if land_multiple {
+                                continue 'landing_loop;
+                            }
                             break 'landing_loop;
                         }
                         if pr_is_still_ready(&provider, pr_num, skip_approval, merge_trains_enabled)
@@ -1469,14 +1584,26 @@ pub fn run(opts: LandOptions) -> Result<()> {
             }
         }
 
+        if guard.is_none() {
+            guard = Some(begin_land_segment(&repo, &config, &args)?);
+        }
+
         if !squash {
-            let _ = provider.prepare_no_squash(pr_num, || {
-                touched_remote = true;
-                guard
-                    .as_mut()
-                    .expect("land segment guard")
-                    .mark_touched_remote_before_attempt()
-            })?;
+            if let Err(error) = provider.prepare_no_squash(pr_num, || {
+                mark_land_remote_attempt(&mut guard, &mut touched_remote)
+            }) {
+                if touched_remote {
+                    config.save(git_dir)?;
+                    finish_land_segment(
+                        &repo,
+                        &config,
+                        &mut guard,
+                        &mut remote_effects,
+                        &mut touched_remote,
+                    )?;
+                }
+                return Err(error);
+            }
         }
 
         if merge_trains_enabled {
@@ -1490,6 +1617,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
             } else {
                 None
             };
+            mark_land_remote_attempt(&mut guard, &mut touched_remote)?;
             match provider.add_to_merge_train(pr_num, squash) {
                 Ok(result) => {
                     // Queueing a PR/MR on the merge train is a remote state
@@ -1507,6 +1635,14 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         AutoMergeResult::Queued => "queued",
                         AutoMergeResult::AlreadyQueued => "already_queued",
                     };
+                    config.save(git_dir)?;
+                    finish_land_segment(
+                        &repo,
+                        &config,
+                        &mut guard,
+                        &mut remote_effects,
+                        &mut touched_remote,
+                    )?;
                     record_landed_entry(
                         &mut landed_entries,
                         &mut streamer,
@@ -1522,14 +1658,6 @@ pub fn run(opts: LandOptions) -> Result<()> {
                     );
                     if wait {
                         let expected_stack = LandStackFingerprint::from(&stack);
-                        finish_land_segment(
-                            &repo,
-                            &config,
-                            &mut guard,
-                            &mut remote_effects,
-                            &mut touched_remote,
-                        )?;
-                        config.save(git_dir)?;
                         drop(lock.take());
                         let timeout_minutes = config.get_land_wait_timeout_minutes();
                         let wait_result = wait_for_merge_train_completion(
@@ -1544,14 +1672,6 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             structured,
                             streamer.as_mut(),
                         );
-                        if wait_result.is_ok() {
-                            mark_landed_entry_merged(
-                                &mut landed_entries,
-                                streamer.as_mut(),
-                                entry.position,
-                                pr_num,
-                            );
-                        }
                         lock = Some(git::acquire_operation_lock_silent(
                             &repo, "land", structured,
                         )?);
@@ -1562,6 +1682,26 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             break 'landing_loop;
                         }
                         if let Some(error) = stack_changed_while_waiting(&expected_stack, &stack) {
+                            guard = Some(begin_land_segment(&repo, &config, &args)?);
+                            touched_remote = true;
+                            guard
+                                .as_mut()
+                                .expect("land segment guard")
+                                .mark_touched_remote();
+                            config.save(git_dir)?;
+                            finish_land_segment(
+                                &repo,
+                                &config,
+                                &mut guard,
+                                &mut remote_effects,
+                                &mut touched_remote,
+                            )?;
+                            mark_landed_entry_merged(
+                                &mut landed_entries,
+                                streamer.as_mut(),
+                                entry.position,
+                                pr_num,
+                            );
                             land_error = Some(error);
                             break 'landing_loop;
                         }
@@ -1604,11 +1744,33 @@ pub fn run(opts: LandOptions) -> Result<()> {
                                 stack.refresh_mr_info(&provider)?;
                             }
                         }
+                        config.save(git_dir)?;
+                        finish_land_segment(
+                            &repo,
+                            &config,
+                            &mut guard,
+                            &mut remote_effects,
+                            &mut touched_remote,
+                        )?;
+                        mark_landed_entry_merged(
+                            &mut landed_entries,
+                            streamer.as_mut(),
+                            entry.position,
+                            pr_num,
+                        );
                     } else {
                         break 'landing_loop;
                     }
                 }
                 Err(e) => {
+                    config.save(git_dir)?;
+                    finish_land_segment(
+                        &repo,
+                        &config,
+                        &mut guard,
+                        &mut remote_effects,
+                        &mut touched_remote,
+                    )?;
                     record_landed_entry(
                         &mut landed_entries,
                         &mut streamer,
@@ -1627,6 +1789,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 }
             }
         } else if auto_merge_on_land {
+            mark_land_remote_attempt(&mut guard, &mut touched_remote)?;
             match provider.auto_merge_pr_when_pipeline_succeeds(pr_num, squash, false) {
                 Ok(AutoMergeResult::Queued) => {
                     // Queuing for auto-merge mutates remote state even though
@@ -1638,6 +1801,14 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         .as_mut()
                         .expect("land segment guard")
                         .mark_touched_remote();
+                    config.save(git_dir)?;
+                    finish_land_segment(
+                        &repo,
+                        &config,
+                        &mut guard,
+                        &mut remote_effects,
+                        &mut touched_remote,
+                    )?;
                     record_landed_entry(
                         &mut landed_entries,
                         &mut streamer,
@@ -1652,20 +1823,38 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         },
                     );
                 }
-                Ok(AutoMergeResult::AlreadyQueued) => record_landed_entry(
-                    &mut landed_entries,
-                    &mut streamer,
-                    LandedEntryJson {
-                        position: entry.position,
-                        sha: entry.short_sha.clone(),
-                        title: entry.title.clone(),
-                        gg_id: gg_id.clone(),
-                        pr_number: pr_num,
-                        action: "already_queued".to_string(),
-                        error: None,
-                    },
-                ),
+                Ok(AutoMergeResult::AlreadyQueued) => {
+                    config.save(git_dir)?;
+                    finish_land_segment(
+                        &repo,
+                        &config,
+                        &mut guard,
+                        &mut remote_effects,
+                        &mut touched_remote,
+                    )?;
+                    record_landed_entry(
+                        &mut landed_entries,
+                        &mut streamer,
+                        LandedEntryJson {
+                            position: entry.position,
+                            sha: entry.short_sha.clone(),
+                            title: entry.title.clone(),
+                            gg_id: gg_id.clone(),
+                            pr_number: pr_num,
+                            action: "already_queued".to_string(),
+                            error: None,
+                        },
+                    );
+                }
                 Err(e) => {
+                    config.save(git_dir)?;
+                    finish_land_segment(
+                        &repo,
+                        &config,
+                        &mut guard,
+                        &mut remote_effects,
+                        &mut touched_remote,
+                    )?;
                     record_landed_entry(
                         &mut landed_entries,
                         &mut streamer,
@@ -1688,6 +1877,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 eprintln!("⚠ Merging with admin override — bypassing approval requirements");
             }
             let merge_admin = admin && !(structured && provider == Provider::GitLab);
+            mark_land_remote_attempt(&mut guard, &mut touched_remote)?;
             match provider.merge_pr(pr_num, squash, false, merge_admin) {
                 Ok(()) => {
                     // Record the merge as a remote effect. Fetch the URL if we
@@ -1707,19 +1897,6 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         .expect("land segment guard")
                         .record_remote_effect(effect);
 
-                    record_landed_entry(
-                        &mut landed_entries,
-                        &mut streamer,
-                        LandedEntryJson {
-                            position: entry.position,
-                            sha: entry.short_sha.clone(),
-                            title: entry.title.clone(),
-                            gg_id: gg_id.clone(),
-                            pr_number: pr_num,
-                            action: "merged".to_string(),
-                            error: None,
-                        },
-                    );
                     landed_count += 1;
                     warnings.extend(cleanup_after_merge(
                         &mut config,
@@ -1751,8 +1928,37 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             stack.refresh_mr_info(&provider)?;
                         }
                     }
+                    config.save(git_dir)?;
+                    finish_land_segment(
+                        &repo,
+                        &config,
+                        &mut guard,
+                        &mut remote_effects,
+                        &mut touched_remote,
+                    )?;
+                    record_landed_entry(
+                        &mut landed_entries,
+                        &mut streamer,
+                        LandedEntryJson {
+                            position: entry.position,
+                            sha: entry.short_sha.clone(),
+                            title: entry.title.clone(),
+                            gg_id: gg_id.clone(),
+                            pr_number: pr_num,
+                            action: "merged".to_string(),
+                            error: None,
+                        },
+                    );
                 }
                 Err(e) => {
+                    config.save(git_dir)?;
+                    finish_land_segment(
+                        &repo,
+                        &config,
+                        &mut guard,
+                        &mut remote_effects,
+                        &mut touched_remote,
+                    )?;
                     record_landed_entry(
                         &mut landed_entries,
                         &mut streamer,
@@ -1777,6 +1983,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
         }
         if wait {
             let expected_stack = LandStackFingerprint::from(&stack);
+            config.save(git_dir)?;
             finish_land_segment(
                 &repo,
                 &config,
@@ -1784,7 +1991,6 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 &mut remote_effects,
                 &mut touched_remote,
             )?;
-            config.save(git_dir)?;
             drop(lock.take());
             let sleep_result =
                 interruptible_sleep(Duration::from_secs(2), interrupted.as_ref(), None);
@@ -1970,7 +2176,7 @@ fn wait_for_pr_ready(
     mut streamer: Option<&mut StreamingJson>,
     poll: &mut u64,
     merge_trains_enabled: bool,
-) -> Result<()> {
+) -> Result<WaitForReadyOutcome> {
     let timeout = Duration::from_secs(timeout_minutes * 60);
     let poll_interval = Duration::from_secs(POLL_INTERVAL_SECS);
     let mut consecutive_errors: u32 = 0;
@@ -2035,22 +2241,6 @@ fn wait_for_pr_ready(
                     pipeline_running = Some(train_info.pipeline_running);
                     match train_info.status {
                         MergeTrainStatus::Merged => {
-                            emit_land_event(
-                                streamer.as_deref_mut(),
-                                LandStreamingEvent::Wait {
-                                    position,
-                                    pr_number: pr_num,
-                                    phase: "readiness".to_string(),
-                                    poll: *poll,
-                                    elapsed_seconds: start_time.elapsed().as_secs(),
-                                    ci_status: None,
-                                    approved: None,
-                                    merge_train_status,
-                                    merge_train_position,
-                                    pipeline_running,
-                                    error: None,
-                                },
-                            );
                             if let Some(ref spinner) = current_spinner {
                                 finish_spinner(
                                     spinner,
@@ -2063,7 +2253,7 @@ fn wait_for_pr_ready(
                                     state_start_time,
                                 );
                             }
-                            return Ok(());
+                            return Ok(WaitForReadyOutcome::Merged);
                         }
                         MergeTrainStatus::Merging => {
                             new_state = "Merge train: merging now...".to_string();
@@ -2326,7 +2516,7 @@ fn wait_for_pr_ready(
                     state_start_time,
                 );
             }
-            return Ok(());
+            return Ok(WaitForReadyOutcome::Ready);
         }
 
         // Update spinner if state changed
@@ -2478,22 +2668,6 @@ fn wait_for_merge_train_completion(
             queued_head_sha = pr_info.head_sha.clone();
         }
         if pr_info.state == PrState::Merged {
-            emit_land_event(
-                streamer.as_deref_mut(),
-                LandStreamingEvent::Wait {
-                    position,
-                    pr_number: pr_num,
-                    phase: "merge_train".to_string(),
-                    poll,
-                    elapsed_seconds: start_time.elapsed().as_secs(),
-                    ci_status: None,
-                    approved: None,
-                    merge_train_status: None,
-                    merge_train_position: None,
-                    pipeline_running: None,
-                    error: None,
-                },
-            );
             if let Some(ref spinner) = current_spinner {
                 finish_spinner(
                     spinner,
@@ -2750,6 +2924,22 @@ fn wait_for_merge_train_completion(
             consecutive_errors = 0;
         }
 
+        if terminal_result.as_ref().is_some_and(Result::is_ok) {
+            if let Some(ref spinner) = current_spinner {
+                finish_spinner(
+                    spinner,
+                    &format!(
+                        "{} {}{} merged via merge train",
+                        provider.pr_label(),
+                        provider.pr_number_prefix(),
+                        pr_num
+                    ),
+                    state_start_time,
+                );
+            }
+            return Ok(());
+        }
+
         emit_land_event(
             streamer.as_deref_mut(),
             LandStreamingEvent::Wait {
@@ -2767,30 +2957,11 @@ fn wait_for_merge_train_completion(
             },
         );
 
-        if let Some(result) = terminal_result {
-            match result {
-                Ok(()) => {
-                    if let Some(ref spinner) = current_spinner {
-                        finish_spinner(
-                            spinner,
-                            &format!(
-                                "{} {}{} merged via merge train",
-                                provider.pr_label(),
-                                provider.pr_number_prefix(),
-                                pr_num
-                            ),
-                            state_start_time,
-                        );
-                    }
-                    return Ok(());
-                }
-                Err(error) => {
-                    if let Some(ref spinner) = current_spinner {
-                        spinner.finish_and_clear();
-                    }
-                    return Err(error);
-                }
+        if let Some(Err(error)) = terminal_result {
+            if let Some(ref spinner) = current_spinner {
+                spinner.finish_and_clear();
             }
+            return Err(error);
         }
 
         // Update spinner if state changed

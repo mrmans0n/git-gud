@@ -911,6 +911,64 @@ fn parse_project_merge_settings(stdout: &str) -> Result<ProjectMergeSettings> {
     })
 }
 
+/// Start required CI if GitLab reports that the MR has no head pipeline.
+/// Return the source SHA observed before queueing for cancellation detection.
+pub(crate) fn prepare_mr_pipeline_for_train(
+    mr_number: u64,
+    target_branch: &str,
+    before_mutation: impl FnOnce() -> Result<()>,
+) -> Result<Option<String>> {
+    #[derive(Deserialize)]
+    struct MergeRequest {
+        sha: Option<String>,
+        state: String,
+        draft: Option<bool>,
+        work_in_progress: Option<bool>,
+        target_branch: String,
+        detailed_merge_status: Option<String>,
+        #[serde(rename = "head_pipeline", default, deserialize_with = "is_null")]
+        missing_head_pipeline: bool,
+    }
+
+    fn is_null<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<bool, D::Error> {
+        Ok(Option::<serde::de::IgnoredAny>::deserialize(deserializer)?.is_none())
+    }
+
+    // Use the raw API response: an omitted head_pipeline can mean it is
+    // hidden by permissions, not that GitLab needs a new pipeline.
+    let endpoint = format!("projects/:id/merge_requests/{mr_number}");
+    let output = Command::new("glab").args(["api", &endpoint]).output()?;
+    if !output.status.success() {
+        return Err(GgError::GlabError(format!(
+            "Failed to view MR !{mr_number}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let mr: MergeRequest = serde_json::from_slice(&output.stdout)
+        .map_err(|e| GgError::GlabError(format!("Failed to parse MR !{mr_number}: {e}")))?;
+    if mr.state == "opened"
+        && !mr.draft.unwrap_or(false)
+        && !mr.work_in_progress.unwrap_or(false)
+        && mr.target_branch == target_branch
+        && mr.detailed_merge_status.as_deref() == Some("ci_must_pass")
+        && mr.missing_head_pipeline
+    {
+        before_mutation()?;
+        let output = Command::new("glab")
+            .args(["api", "-X", "POST", &format!("{endpoint}/pipelines")])
+            .output()?;
+        if !output.status.success() {
+            return Err(GgError::GlabError(format!(
+                "Failed to start the required pipeline for MR !{mr_number}: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+    }
+    Ok(mr.sha)
+}
+
 /// Add an MR to the merge train once its checks pass.
 ///
 /// Sends `auto_merge=true`, so GitLab adds the MR immediately when its pipeline

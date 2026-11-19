@@ -88,6 +88,8 @@ Forges compute mergeability in the background after a retarget, so gg polls for 
 
 When merge trains are enabled on the target branch, `gg land` adds MRs to the merge train instead of merging directly. It uses GitLab's auto-merge: if the MR pipeline is still pending or running, GitLab marks the MR "set to be added to the merge train" and adds it once the pipeline passes. You don't have to wait for CI before queueing, and the MR still joins the train if `gg` exits. The squash setting (`--no-squash` to disable) is sent with the request.
 
+After a preceding MR merges, GitLab can retarget the next MR without starting a new pipeline. With `--wait`, if GitLab reports that the next MR needs CI and has no head pipeline, `gg` starts the MR pipeline before requesting auto-merge. An existing pipeline is left alone. If GitLab rejects the pipeline request, `gg` reports the error instead of waiting for CI that never started.
+
 GitLab only applies a squash flag that is true when queueing or merging, so an MR created while the project's squash option is "Encourage" (`default_on`) would still be squashed. With `--no-squash`, gg therefore turns off the MR's squash setting first. If the project's squash option is "Require" (`always`), `gg land --no-squash` fails before touching any MR.
 
 **Approval is always required** before an MR can enter the merge train queue — even with `--all`. If using `--wait`, the command will show "Waiting for approval..." until a reviewer approves the MR. A pipeline that has already failed or been canceled stops the command instead of queueing.

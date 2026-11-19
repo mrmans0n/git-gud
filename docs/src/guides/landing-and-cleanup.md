@@ -39,6 +39,8 @@ By default, landing several entries rebases and force-pushes the remaining branc
 gg land --all --wait --no-squash --rebase-if-needed
 ```
 
+On GitLab projects with merge trains, `--wait` starts a required MR pipeline if retargeting leaves the next MR without one. You don't need to push a new commit or click **Run pipeline**.
+
 `--no-rebase` skips the rebase without checking. Use it only when you know the base branch keeps original commits.
 
 GitLab auto-merge queue:

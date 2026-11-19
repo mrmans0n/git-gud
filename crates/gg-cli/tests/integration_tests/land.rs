@@ -109,6 +109,8 @@ fi
 # MR pipeline status; with auto-merge the MR joins the train only once it passes.
 ci=success
 if [ -f "$GG_FAKE_GLAB_CI" ]; then ci=$(cat "$GG_FAKE_GLAB_CI"); fi
+retarget_pipeline=
+if [ -f "$GG_FAKE_RETARGET_PIPELINE" ]; then retarget_pipeline=$(cat "$GG_FAKE_RETARGET_PIPELINE"); fi
 
 if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
   if [ -f "$GG_FAKE_AUTH_NETWORK_FAIL" ]; then
@@ -149,6 +151,20 @@ if [ "$1" = "api" ] && [ "$2" = "--method" ] && [ "$3" = "PUT" ] && [ "$4" = "pr
   exit 0
 fi
 
+if [ "$1" = "api" ] && [ "$2" = "-X" ] && [ "$3" = "POST" ] && [ "$4" = "projects/:id/merge_requests/42/pipelines" ]; then
+  if [ "$retarget_pipeline" = "rejected" ]; then
+    echo "Pipeline filtered out by workflow rules" >&2
+    exit 1
+  fi
+  if [ "$retarget_pipeline" != "missing" ] || [ ! -f "$GG_FAKE_MERGED" ] || [ -f "$GG_FAKE_RETARGET_PIPELINE.started" ]; then
+    echo "unexpected pipeline creation" >&2
+    exit 1
+  fi
+  touch "$GG_FAKE_RETARGET_PIPELINE.started"
+  echo '{"id":4242,"status":"pending"}'
+  exit 0
+fi
+
 is_landing_request=false
 if [ "$1" = "api" ] && [ "$2" = "-X" ] && [ "$3" = "POST" ]; then
   is_landing_request=true
@@ -157,6 +173,21 @@ if [ "$1" = "api" ] && [ "$2" = "--method" ] && [ "$3" = "PUT" ] && [ "$4" = "pr
   is_landing_request=true
 fi
 if [ "$is_landing_request" = "true" ]; then
+  if [ -n "$retarget_pipeline" ]; then
+    case "$4" in
+      projects/:id/merge_trains/merge_requests/41)
+        merge=$(git commit-tree 'HEAD~1^{tree}' -p HEAD~2 -p HEAD~1 -m 'Merge MR !41')
+        git push --quiet "$(git remote get-url origin)" "$merge:refs/heads/main"
+        touch "$GG_FAKE_MERGED"
+        ;;
+      projects/:id/merge_trains/merge_requests/42)
+        if [ "$retarget_pipeline" != "running" ] && [ ! -f "$GG_FAKE_RETARGET_PIPELINE.started" ]; then
+          echo "MR !42 still needs a pipeline for the new target" >&2
+          exit 1
+        fi
+        ;;
+    esac
+  fi
   landing_request_mode=ok
   if [ -f "$GG_FAKE_LANDING_REQUEST_FAIL" ]; then
     landing_request_mode=$(cat "$GG_FAKE_LANDING_REQUEST_FAIL")
@@ -247,17 +278,35 @@ if [ "$1" = "api" ]; then
       fi
       exit 0
       ;;
+    projects/:id/merge_requests/41|projects/:id/merge_requests/42)
+      set -- mr view "${2##*/}" --output json
+      ;;
   esac
 fi
 
 if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
   num="${3:-41}"
+  target_branch=main
+  detailed_merge_status=mergeable
+  head_pipeline="{\"status\":\"$ci\"}"
   if [ "$num" = "42" ]; then
     state=opened
     iid=42
     title="Second entry"
     source_branch="testuser/land-wait/c-2222222"
     sha=2222222222222222222222222222222222222222
+    if [ -n "$retarget_pipeline" ]; then
+      if [ ! -f "$GG_FAKE_MERGED" ]; then
+        target_branch="testuser/land-wait/c-1111111"
+      elif [ -f "$GG_FAKE_RETARGET_PIPELINE.started" ]; then
+        head_pipeline='{"id":4242,"status":"pending"}'
+      elif [ "$retarget_pipeline" = "running" ]; then
+        head_pipeline='{"id":4241,"status":"running"}'
+      else
+        detailed_merge_status=ci_must_pass
+        head_pipeline=null
+      fi
+    fi
   else
     if [ -f "$GG_FAKE_MERGED" ]; then state=merged; else state=opened; fi
     iid=41
@@ -269,7 +318,7 @@ if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
   # GitLab reports queued MRs (auto-merge or merge train) through this flag.
   if [ -f "$GG_FAKE_QUEUED" ] && [ ! -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; then auto=true; else auto=false; fi
   if [ -f "$GG_FAKE_MR_SQUASH" ]; then squash=true; else squash=false; fi
-  printf '{"iid":%s,"title":"%s","state":"%s","web_url":"https://gitlab.example/test/repo/-/merge_requests/%s","source_branch":"%s","sha":"%s","draft":false,"work_in_progress":false,"detailed_merge_status":"mergeable","has_conflicts":false,"squash":%s,"merge_when_pipeline_succeeds":%s,"head_pipeline":{"status":"%s"}}\n' "$iid" "$title" "$state" "$iid" "$source_branch" "$sha" "$squash" "$auto" "$ci"
+  printf '{"iid":%s,"title":"%s","state":"%s","web_url":"https://gitlab.example/test/repo/-/merge_requests/%s","source_branch":"%s","target_branch":"%s","sha":"%s","draft":false,"work_in_progress":false,"detailed_merge_status":"%s","has_conflicts":false,"squash":%s,"merge_when_pipeline_succeeds":%s,"head_pipeline":%s}\n' "$iid" "$title" "$state" "$iid" "$source_branch" "$target_branch" "$sha" "$detailed_merge_status" "$squash" "$auto" "$head_pipeline"
   exit 0
 fi
 
@@ -481,6 +530,10 @@ impl WaitingLandFixture {
             .env("GG_FAKE_AUTH_NETWORK_FAIL", &self.auth_network_fail)
             .env("GG_FAKE_QUEUED", &self.queued)
             .env("GG_FAKE_RETARGET_FAIL", &self.retarget_fail)
+            .env(
+                "GG_FAKE_RETARGET_PIPELINE",
+                self.repo_path.join("fake-retarget-pipeline"),
+            )
             .env("GG_FAKE_CLEAN_PROVIDER_FAIL", &self.clean_provider_fail)
             .env("GG_FAKE_PR_VIEW_CALLS", &self.pr_view_calls)
             .env("GG_FAKE_GLAB_CI", &self.glab_ci)
@@ -1520,6 +1573,59 @@ fn test_land_gitlab_merge_train_wait_all_persists_cleanup_between_entries() {
         records.iter().all(|record| record["status"] == "committed"),
         "all continuation segments must be finalized: {records:?}"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_starts_missing_pipeline_after_retarget_without_rebasing() {
+    for pipeline in ["missing", "running", "rejected"] {
+        let fixture = WaitingLandFixture::new();
+        fixture.use_gitlab_provider();
+        fixture.enable_gitlab_merge_trains();
+        fixture.add_second_entry();
+        fs::write(fixture.repo_path.join("fake-retarget-pipeline"), pipeline)
+            .expect("set pipeline behavior after the retarget");
+        let (ok, original_head) = run_git(&fixture.repo_path, &["rev-parse", "HEAD"]);
+        assert!(ok);
+
+        let output = fixture
+            .start_land_with_args(&[
+                "land",
+                "--until",
+                "2",
+                "--wait",
+                "--jsonl",
+                "--no-clean",
+                "--no-squash",
+                "--rebase-if-needed",
+            ])
+            .wait_with_output()
+            .expect("wait for land");
+        let stdout = String::from_utf8(output.stdout).expect("land stdout");
+        let stderr = String::from_utf8(output.stderr).expect("land stderr");
+        let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
+            .expect("parse summary event");
+        if pipeline == "rejected" {
+            assert!(
+                summary["error"]
+                    .as_str()
+                    .is_some_and(|error| error.contains("Pipeline filtered out by workflow rules")),
+                "{summary}"
+            );
+            assert_eq!(summary["landed"][0]["action"], "merged", "{summary}");
+            assert_eq!(summary["landed"][1]["action"], "error", "{summary}");
+        } else {
+            assert!(output.status.success(), "{pipeline}: {summary}\n{stderr}");
+            assert_eq!(summary["landed"][1]["pr_number"], 42, "{summary}");
+            assert_eq!(summary["landed"][1]["action"], "merged", "{summary}");
+        }
+        let (ok, downstream_head) = run_git(
+            &fixture.repo_path,
+            &["rev-parse", "testuser/land-wait--c-2222222"],
+        );
+        assert!(ok);
+        assert_eq!(downstream_head, original_head, "downstream MR was rebased");
+    }
 }
 
 #[cfg(unix)]

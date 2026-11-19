@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `gg land --wait` starts a missing required GitLab MR pipeline before queueing auto-merge. This keeps a retargeted stack entry moving when landing without a rebase.
+
 ## [0.10.9] - 2026-11-18
 
 ### Added

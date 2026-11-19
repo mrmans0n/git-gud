@@ -1609,16 +1609,18 @@ pub fn run(opts: LandOptions) -> Result<()> {
         if merge_trains_enabled {
             // The head GitLab queues; a later change means a push cancelled
             // auto-merge (see `merge_train_drop_action`).
-            let queued_head_sha = if wait {
-                provider
-                    .get_pr_info(pr_num)
-                    .ok()
-                    .and_then(|info| info.head_sha)
-            } else {
-                None
-            };
-            mark_land_remote_attempt(&mut guard, &mut touched_remote)?;
-            match provider.add_to_merge_train(pr_num, squash) {
+            let mut queued_head_sha = None;
+            let queue_result = (|| {
+                if wait {
+                    queued_head_sha =
+                        crate::glab::prepare_mr_pipeline_for_train(pr_num, &stack.base, || {
+                            mark_land_remote_attempt(&mut guard, &mut touched_remote)
+                        })?;
+                }
+                mark_land_remote_attempt(&mut guard, &mut touched_remote)?;
+                provider.add_to_merge_train(pr_num, squash)
+            })();
+            match queue_result {
                 Ok(result) => {
                     // Queueing a PR/MR on the merge train is a remote state
                     // mutation even when the PR was already queued — the

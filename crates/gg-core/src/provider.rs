@@ -497,11 +497,12 @@ impl Provider {
     pub fn prepare_no_squash(
         &self,
         number: u64,
+        target_branch: &str,
         before_mutation: impl FnOnce() -> Result<()>,
     ) -> Result<bool> {
         match self {
             Provider::GitHub => Ok(false),
-            Provider::GitLab => glab::prepare_mr_no_squash(number, before_mutation),
+            Provider::GitLab => glab::prepare_mr_no_squash(number, target_branch, before_mutation),
         }
     }
 

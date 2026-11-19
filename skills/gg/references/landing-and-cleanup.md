@@ -61,6 +61,11 @@
   enabled merge-train path can make ordinary `gg land` queue a later merge, and
   the CLI has no disable flag for those inherited modes. Obtain separate
   explicit approval for GitLab auto-merge or merge-train queueing, or stop.
+  Treat unavailable, malformed, or unrecognized project merge-train settings
+  and missing MR state fields as unknown. Immediately before each remote MR
+  mutation, revalidate an explicit open, non-draft state and expected target
+  branch. Stop and inspect the values directly in GitLab rather than inferring
+  a safe default.
 
 ## Procedure
 

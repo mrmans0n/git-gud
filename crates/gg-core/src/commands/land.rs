@@ -818,6 +818,55 @@ fn finish_land_segment(
     )
 }
 
+fn ensure_land_segment(
+    repo: &git2::Repository,
+    config: &Config,
+    args: &[String],
+    guard: &mut Option<crate::operations::OperationGuard>,
+) -> Result<()> {
+    if guard.is_none() {
+        *guard = Some(begin_land_segment(repo, config, args)?);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn requeue_merge_train_with_operation(
+    repo: &git2::Repository,
+    args: &[String],
+    expected_stack: &LandStackFingerprint,
+    provider: &Provider,
+    pr_num: u64,
+    target_branch: &str,
+    squash: bool,
+    structured: bool,
+) -> Result<AutoMergeResult> {
+    let _lock = git::acquire_operation_lock_silent(repo, "land", structured)?;
+    let git_dir = repo.commondir();
+    let config = Config::load_with_global(git_dir)?;
+    let current_stack = Stack::load(repo, &config)?;
+    if let Some(error) = stack_changed_while_waiting(expected_stack, &current_stack) {
+        return Err(GgError::Other(error));
+    }
+    crate::glab::validate_mr_before_landing(pr_num, target_branch)?;
+
+    let mut guard = None;
+    let mut remote_effects = Vec::new();
+    let mut touched_remote = false;
+    ensure_land_segment(repo, &config, args, &mut guard)?;
+    mark_land_remote_attempt(&mut guard, &mut touched_remote)?;
+    let result = provider.add_to_merge_train(pr_num, squash);
+    config.save(git_dir)?;
+    finish_land_segment(
+        repo,
+        &config,
+        &mut guard,
+        &mut remote_effects,
+        &mut touched_remote,
+    )?;
+    result
+}
+
 fn mark_land_remote_attempt(
     guard: &mut Option<crate::operations::OperationGuard>,
     touched_remote: &mut bool,
@@ -896,10 +945,14 @@ pub fn run(opts: LandOptions) -> Result<()> {
         &repo, "land", structured,
     )?);
     let mut config = Config::load_with_global(git_dir)?;
-    let mut guard = if wait {
-        None
-    } else {
+    let provider = Provider::detect(&repo)?;
+    // Preserve the established eager operation segment for non-wait GitHub
+    // landing. GitLab starts a segment only once a validated mutation is about
+    // to run, so provider/pre-mutation failures cannot strand a pending record.
+    let mut guard = if !wait && provider == Provider::GitHub {
         Some(begin_land_segment(&repo, &config, &args)?)
+    } else {
+        None
     };
 
     // Remote effects collected during landing. A successful merge adds a
@@ -908,18 +961,13 @@ pub fn run(opts: LandOptions) -> Result<()> {
     let mut remote_effects: Vec<RemoteEffect> = Vec::new();
     let mut touched_remote = false;
 
-    let provider = Provider::detect(&repo)?;
     provider.check_installed()?;
     provider.check_auth_with_silent(structured)?;
 
     let auto_merge_on_land =
         provider == Provider::GitLab && (auto_merge_flag || config.get_gitlab_auto_merge_on_land());
 
-    let merge_settings = match provider.get_project_merge_settings() {
-        Ok(settings) => settings,
-        Err(error) if provider == Provider::GitLab && !squash => return Err(error),
-        Err(_) => Default::default(),
-    };
+    let merge_settings = provider.get_project_merge_settings()?;
     if provider == Provider::GitLab {
         if let Some(error) = no_squash_refusal(squash, merge_settings.squash_option.as_deref()) {
             return Err(GgError::Other(error));
@@ -1499,7 +1547,9 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         }
                         if pr_is_still_ready(&provider, pr_num, skip_approval, merge_trains_enabled)
                         {
-                            guard = Some(begin_land_segment(&repo, &config, &args)?);
+                            if provider == Provider::GitHub {
+                                guard = Some(begin_land_segment(&repo, &config, &args)?);
+                            }
                             break;
                         }
                     }
@@ -1584,15 +1634,16 @@ pub fn run(opts: LandOptions) -> Result<()> {
             }
         }
 
-        if guard.is_none() {
-            guard = Some(begin_land_segment(&repo, &config, &args)?);
+        if provider == Provider::GitLab {
+            crate::glab::validate_mr_before_landing(pr_num, &stack.base)?;
         }
 
         if !squash {
-            if let Err(error) = provider.prepare_no_squash(pr_num, || {
+            if let Err(error) = provider.prepare_no_squash(pr_num, &stack.base, || {
+                ensure_land_segment(&repo, &config, &args, &mut guard)?;
                 mark_land_remote_attempt(&mut guard, &mut touched_remote)
             }) {
-                if touched_remote {
+                if guard.is_some() {
                     config.save(git_dir)?;
                     finish_land_segment(
                         &repo,
@@ -1614,9 +1665,14 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 if wait {
                     queued_head_sha =
                         crate::glab::prepare_mr_pipeline_for_train(pr_num, &stack.base, || {
+                            ensure_land_segment(&repo, &config, &args, &mut guard)?;
                             mark_land_remote_attempt(&mut guard, &mut touched_remote)
                         })?;
                 }
+                if provider == Provider::GitLab {
+                    crate::glab::validate_mr_before_landing(pr_num, &stack.base)?;
+                }
+                ensure_land_segment(&repo, &config, &args, &mut guard)?;
                 mark_land_remote_attempt(&mut guard, &mut touched_remote)?;
                 provider.add_to_merge_train(pr_num, squash)
             })();
@@ -1663,6 +1719,9 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         drop(lock.take());
                         let timeout_minutes = config.get_land_wait_timeout_minutes();
                         let wait_result = wait_for_merge_train_completion(
+                            &repo,
+                            &args,
+                            &expected_stack,
                             &provider,
                             entry.position,
                             pr_num,
@@ -1791,8 +1850,15 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 }
             }
         } else if auto_merge_on_land {
-            mark_land_remote_attempt(&mut guard, &mut touched_remote)?;
-            match provider.auto_merge_pr_when_pipeline_succeeds(pr_num, squash, false) {
+            let auto_merge_result = (|| {
+                if provider == Provider::GitLab {
+                    crate::glab::validate_mr_before_landing(pr_num, &stack.base)?;
+                }
+                ensure_land_segment(&repo, &config, &args, &mut guard)?;
+                mark_land_remote_attempt(&mut guard, &mut touched_remote)?;
+                provider.auto_merge_pr_when_pipeline_succeeds(pr_num, squash, false)
+            })();
+            match auto_merge_result {
                 Ok(AutoMergeResult::Queued) => {
                     // Queuing for auto-merge mutates remote state even though
                     // the MR is not merged yet; mark the op as having touched
@@ -1879,8 +1945,15 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 eprintln!("⚠ Merging with admin override — bypassing approval requirements");
             }
             let merge_admin = admin && !(structured && provider == Provider::GitLab);
-            mark_land_remote_attempt(&mut guard, &mut touched_remote)?;
-            match provider.merge_pr(pr_num, squash, false, merge_admin) {
+            let merge_result = (|| {
+                if provider == Provider::GitLab {
+                    crate::glab::validate_mr_before_landing(pr_num, &stack.base)?;
+                }
+                ensure_land_segment(&repo, &config, &args, &mut guard)?;
+                mark_land_remote_attempt(&mut guard, &mut touched_remote)?;
+                provider.merge_pr(pr_num, squash, false, merge_admin)
+            })();
+            match merge_result {
                 Ok(()) => {
                     // Record the merge as a remote effect. Fetch the URL if we
                     // can; fall back to empty string if the info call fails.
@@ -2548,6 +2621,9 @@ fn wait_for_pr_ready(
 /// Polls the merge train status until the MR is fully merged
 #[allow(clippy::too_many_arguments)]
 fn wait_for_merge_train_completion(
+    repo: &git2::Repository,
+    args: &[String],
+    expected_stack: &LandStackFingerprint,
     provider: &Provider,
     position: usize,
     pr_num: u64,
@@ -2832,7 +2908,16 @@ fn wait_for_merge_train_completion(
                                     terminal_result = Some(Err(GgError::Other(msg)));
                                 }
                                 MergeTrainDropAction::Requeue => {
-                                    match provider.add_to_merge_train(pr_num, squash) {
+                                    match requeue_merge_train_with_operation(
+                                        repo,
+                                        args,
+                                        expected_stack,
+                                        provider,
+                                        pr_num,
+                                        target_branch,
+                                        squash,
+                                        json,
+                                    ) {
                                         Ok(_) => {
                                             queued_head_sha = pr_info.head_sha.clone();
                                             idle_count = 0;
@@ -2847,7 +2932,6 @@ fn wait_for_merge_train_completion(
                                         }
                                         Err(e) => {
                                             api_calls_succeeded = false;
-                                            consecutive_errors += 1;
                                             let msg = format!(
                                                 "Failed to re-queue {} {}{} for the merge train: {}",
                                                 provider.pr_label(),
@@ -2855,10 +2939,11 @@ fn wait_for_merge_train_completion(
                                                 pr_num,
                                                 e
                                             );
+                                            // A failed mutation response is remotely ambiguous.
+                                            // Never retry it automatically; the operation record
+                                            // is already durable and non-undoable.
                                             heartbeat_error = Some(msg.clone());
-                                            if consecutive_errors >= MAX_CONSECUTIVE_API_ERRORS {
-                                                terminal_result = Some(Err(GgError::Other(msg)));
-                                            }
+                                            terminal_result = Some(Err(GgError::Other(msg)));
                                         }
                                     }
                                 }

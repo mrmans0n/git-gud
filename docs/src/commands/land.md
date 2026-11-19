@@ -90,6 +90,8 @@ When merge trains are enabled on the target branch, `gg land` adds MRs to the me
 
 After a preceding MR merges, GitLab can retarget the next MR without starting a new pipeline. With `--wait`, if GitLab reports that the next MR needs CI and has no head pipeline, `gg` starts the MR pipeline before requesting auto-merge. An existing pipeline is left alone. If GitLab rejects the pipeline request, `gg` reports the error instead of waiting for CI that never started.
 
+Before processing a GitLab stack, `gg land` reads the project's merge-train setting and stops without mutating the remote if that setting is unavailable or malformed. Immediately before every MR squash update, merge, queue, or pipeline request, it re-reads the MR through the GitLab API and requires an explicit open, non-draft state with the expected target branch.
+
 GitLab only applies a squash flag that is true when queueing or merging, so an MR created while the project's squash option is "Encourage" (`default_on`) would still be squashed. With `--no-squash`, gg therefore turns off the MR's squash setting first. If the project's squash option is "Require" (`always`), `gg land --no-squash` fails before touching any MR.
 
 **Approval is always required** before an MR can enter the merge train queue — even with `--all`. If using `--wait`, the command will show "Waiting for approval..." until a reviewer approves the MR. A pipeline that has already failed or been canceled stops the command instead of queueing.

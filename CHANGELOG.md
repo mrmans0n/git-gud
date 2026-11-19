@@ -7,8 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.10] - 2026-11-19
+
+### Changed
+
+- Updated `regex` to 1.13.2 (#490) and `ctrlc` to 3.5.3 (#491)
+
 ### Fixed
-- `gg land --wait` starts a missing required GitLab MR pipeline before queueing auto-merge. This keeps a retargeted stack entry moving when landing without a rebase.
+- GitLab landing starts a missing required MR pipeline before queueing auto-merge, fails closed when project merge-train settings cannot be read, and revalidates that each MR is open, non-draft, and still targets the stack base before every remote mutation (#492).
 
 ## [0.10.9] - 2026-11-18
 
@@ -635,7 +641,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release with core stacked diffs functionality
 
-[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.10.9...HEAD
+[Unreleased]: https://github.com/mrmans0n/git-gud/compare/v0.10.10...HEAD
+[0.10.10]: https://github.com/mrmans0n/git-gud/compare/v0.10.9...v0.10.10
 [0.10.9]: https://github.com/mrmans0n/git-gud/compare/v0.10.8...v0.10.9
 [0.10.8]: https://github.com/mrmans0n/git-gud/compare/v0.10.7...v0.10.8
 [0.10.7]: https://github.com/mrmans0n/git-gud/compare/v0.10.6...v0.10.7

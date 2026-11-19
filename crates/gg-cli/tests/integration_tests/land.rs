@@ -111,6 +111,7 @@ ci=success
 if [ -f "$GG_FAKE_GLAB_CI" ]; then ci=$(cat "$GG_FAKE_GLAB_CI"); fi
 retarget_pipeline=
 if [ -f "$GG_FAKE_RETARGET_PIPELINE" ]; then retarget_pipeline=$(cat "$GG_FAKE_RETARGET_PIPELINE"); fi
+raw_api=false
 
 if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
   if [ -f "$GG_FAKE_AUTH_NETWORK_FAIL" ]; then
@@ -128,7 +129,7 @@ if [ "$1" = "api" ] && [ "$2" = "projects/:id" ]; then
       exit 0
     fi
     if [ "$merge_settings_mode" = "missing" ]; then
-      echo '{}'
+      echo '{"merge_trains_enabled":false}'
       exit 0
     fi
     echo "project settings unavailable" >&2
@@ -156,7 +157,19 @@ if [ "$1" = "api" ] && [ "$2" = "-X" ] && [ "$3" = "POST" ] && [ "$4" = "project
     echo "Pipeline filtered out by workflow rules" >&2
     exit 1
   fi
-  if [ "$retarget_pipeline" != "missing" ] || [ ! -f "$GG_FAKE_MERGED" ] || [ -f "$GG_FAKE_RETARGET_PIPELINE.started" ]; then
+  if [ "$retarget_pipeline" = "applied-response-block-fail" ]; then
+    touch "$GG_FAKE_RETARGET_PIPELINE.started"
+    touch "$GG_FAKE_LANDING_REQUEST_FAIL.started"
+    while [ ! -f "$GG_FAKE_LANDING_REQUEST_FAIL.release" ]; do sleep 0.05; done
+    echo "connection lost after pipeline creation" >&2
+    exit 1
+  fi
+  if [ "$retarget_pipeline" = "applied-response-fail" ]; then
+    touch "$GG_FAKE_RETARGET_PIPELINE.started"
+    echo "connection lost after pipeline creation" >&2
+    exit 1
+  fi
+  if { [ "$retarget_pipeline" != "missing" ] && [ "$retarget_pipeline" != "missing-after-pipeline" ] && [ "$retarget_pipeline" != "missing-draft" ] && [ "$retarget_pipeline" != "missing-work-in-progress" ]; } || [ ! -f "$GG_FAKE_MERGED" ] || [ -f "$GG_FAKE_RETARGET_PIPELINE.started" ]; then
     echo "unexpected pipeline creation" >&2
     exit 1
   fi
@@ -192,7 +205,10 @@ if [ "$is_landing_request" = "true" ]; then
   if [ -f "$GG_FAKE_LANDING_REQUEST_FAIL" ]; then
     landing_request_mode=$(cat "$GG_FAKE_LANDING_REQUEST_FAIL")
   fi
-  if [ "$landing_request_mode" = "block-fail" ] || [ "$landing_request_mode" = "block-success" ]; then
+  if [ -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; then
+    printf 'attempt\n' >> "$GG_FAKE_LANDING_REQUEST_FAIL.attempts"
+  fi
+  if [ "$landing_request_mode" = "block-fail" ] || [ "$landing_request_mode" = "block-success" ] || { { [ "$landing_request_mode" = "block-requeue-success" ] || [ "$landing_request_mode" = "block-requeue-fail" ]; } && [ -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; } || { [ "$landing_request_mode" = "block-second-fail" ] && [ "$4" = "projects/:id/merge_trains/merge_requests/42" ]; } || { [ "$landing_request_mode" = "block-second-success" ] && [ "$4" = "projects/:id/merge_trains/merge_requests/42" ]; }; then
     touch "$GG_FAKE_LANDING_REQUEST_FAIL.started"
     wait_count=0
     while [ ! -f "$GG_FAKE_LANDING_REQUEST_FAIL.release" ] && [ "$wait_count" -lt 400 ]; do
@@ -204,8 +220,12 @@ if [ "$is_landing_request" = "true" ]; then
       exit 1
     fi
   fi
-  if [ "$landing_request_mode" = "block-fail" ]; then
+  if [ "$landing_request_mode" = "block-fail" ] || { [ "$landing_request_mode" = "block-requeue-fail" ] && [ -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; } || { [ "$landing_request_mode" = "block-second-fail" ] && [ "$4" = "projects/:id/merge_trains/merge_requests/42" ]; }; then
     echo "landing request failed" >&2
+    exit 1
+  fi
+  if [ "$landing_request_mode" = "fail-second" ] && [ "$4" = "projects/:id/merge_trains/merge_requests/42" ]; then
+    echo "second landing request failed" >&2
     exit 1
   fi
   if [ "$landing_request_mode" = "fail" ]; then
@@ -221,6 +241,10 @@ if [ "$is_landing_request" = "true" ]; then
 fi
 
 if [ "$1" = "api" ]; then
+  if [ "$2" = "projects/:id/merge_requests/42" ] && [ "$retarget_pipeline" = "lookup-fail" ]; then
+    echo "MR lookup failed" >&2
+    exit 1
+  fi
   case "$2" in
     projects/:id/merge_requests/*/approvals)
       if [ -f "$GG_FAKE_UNAPPROVED" ]; then echo '{"approved":false}'; else echo '{"approved":true}'; fi
@@ -279,6 +303,7 @@ if [ "$1" = "api" ]; then
       exit 0
       ;;
     projects/:id/merge_requests/41|projects/:id/merge_requests/42)
+      raw_api=true
       set -- mr view "${2##*/}" --output json
       ;;
   esac
@@ -318,6 +343,39 @@ if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
   # GitLab reports queued MRs (auto-merge or merge train) through this flag.
   if [ -f "$GG_FAKE_QUEUED" ] && [ ! -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; then auto=true; else auto=false; fi
   if [ -f "$GG_FAKE_MR_SQUASH" ]; then squash=true; else squash=false; fi
+  if [ "$raw_api" = "true" ] && [ "$retarget_pipeline" = "malformed-squash-view" ]; then
+    if [ -f "$GG_FAKE_RETARGET_PIPELINE.raw-seen" ]; then
+      echo 'not json'
+      exit 0
+    fi
+    touch "$GG_FAKE_RETARGET_PIPELINE.raw-seen"
+  fi
+  if [ "$raw_api" = "true" ] && [ "$retarget_pipeline" = "closed-on-landing" ]; then
+    state=closed
+  fi
+  if [ "$raw_api" = "true" ] && [ "$retarget_pipeline" = "target-mismatch-on-landing" ]; then
+    target_branch=other-base
+  fi
+  if [ "$raw_api" = "true" ] && { [ "$retarget_pipeline" = "draft-on-landing" ] || { [ "$retarget_pipeline" = "draft-on-requeue" ] && [ -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; }; }; then
+    printf '{"iid":%s,"title":"%s","state":"%s","web_url":"https://gitlab.example/test/repo/-/merge_requests/%s","source_branch":"%s","target_branch":"%s","sha":"%s","draft":true,"work_in_progress":false,"detailed_merge_status":"%s","has_conflicts":false,"squash":%s,"merge_when_pipeline_succeeds":%s,"head_pipeline":%s}\n' "$iid" "$title" "$state" "$iid" "$source_branch" "$target_branch" "$sha" "$detailed_merge_status" "$squash" "$auto" "$head_pipeline"
+    exit 0
+  fi
+  if [ "$raw_api" = "true" ] && [ "$retarget_pipeline" = "malformed-draft-on-landing" ]; then
+    printf '{"iid":%s,"title":"%s","state":"%s","web_url":"https://gitlab.example/test/repo/-/merge_requests/%s","source_branch":"%s","target_branch":"%s","sha":"%s","draft":"unknown","work_in_progress":false,"detailed_merge_status":"%s","has_conflicts":false,"squash":%s,"merge_when_pipeline_succeeds":%s,"head_pipeline":%s}\n' "$iid" "$title" "$state" "$iid" "$source_branch" "$target_branch" "$sha" "$detailed_merge_status" "$squash" "$auto" "$head_pipeline"
+    exit 0
+  fi
+  if [ "$raw_api" = "true" ] && { [ "$retarget_pipeline" = "missing-draft-on-landing" ] || { [ "$retarget_pipeline" = "missing-after-pipeline" ] && [ -f "$GG_FAKE_RETARGET_PIPELINE.started" ]; } || { [ "$retarget_pipeline" = "missing-after-squash" ] && [ -f "$GG_FAKE_SQUASH_DISABLED" ]; }; }; then
+    printf '{"iid":%s,"title":"%s","state":"%s","web_url":"https://gitlab.example/test/repo/-/merge_requests/%s","source_branch":"%s","target_branch":"%s","sha":"%s","work_in_progress":false,"detailed_merge_status":"%s","has_conflicts":false,"squash":%s,"merge_when_pipeline_succeeds":%s,"head_pipeline":%s}\n' "$iid" "$title" "$state" "$iid" "$source_branch" "$target_branch" "$sha" "$detailed_merge_status" "$squash" "$auto" "$head_pipeline"
+    exit 0
+  fi
+  if [ "$num" = "42" ] && [ "$retarget_pipeline" = "missing-draft" ]; then
+    printf '{"iid":%s,"title":"%s","state":"%s","web_url":"https://gitlab.example/test/repo/-/merge_requests/%s","source_branch":"%s","target_branch":"%s","sha":"%s","work_in_progress":false,"detailed_merge_status":"%s","has_conflicts":false,"squash":%s,"merge_when_pipeline_succeeds":%s,"head_pipeline":%s}\n' "$iid" "$title" "$state" "$iid" "$source_branch" "$target_branch" "$sha" "$detailed_merge_status" "$squash" "$auto" "$head_pipeline"
+    exit 0
+  fi
+  if [ "$num" = "42" ] && [ "$retarget_pipeline" = "missing-work-in-progress" ]; then
+    printf '{"iid":%s,"title":"%s","state":"%s","web_url":"https://gitlab.example/test/repo/-/merge_requests/%s","source_branch":"%s","target_branch":"%s","sha":"%s","draft":false,"detailed_merge_status":"%s","has_conflicts":false,"squash":%s,"merge_when_pipeline_succeeds":%s,"head_pipeline":%s}\n' "$iid" "$title" "$state" "$iid" "$source_branch" "$target_branch" "$sha" "$detailed_merge_status" "$squash" "$auto" "$head_pipeline"
+    exit 0
+  fi
   printf '{"iid":%s,"title":"%s","state":"%s","web_url":"https://gitlab.example/test/repo/-/merge_requests/%s","source_branch":"%s","target_branch":"%s","sha":"%s","draft":false,"work_in_progress":false,"detailed_merge_status":"%s","has_conflicts":false,"squash":%s,"merge_when_pipeline_succeeds":%s,"head_pipeline":%s}\n' "$iid" "$title" "$state" "$iid" "$source_branch" "$target_branch" "$sha" "$detailed_merge_status" "$squash" "$auto" "$head_pipeline"
   exit 0
 fi
@@ -653,6 +711,15 @@ impl WaitingLandFixture {
         fs::write(&self.landing_request_fail, "fail\n").expect("fail fake landing request");
     }
 
+    fn block_second_gitlab_landing_request(&self, succeeds: bool) {
+        let mode = if succeeds {
+            "block-second-success\n"
+        } else {
+            "block-second-fail\n"
+        };
+        fs::write(&self.landing_request_fail, mode).expect("block second fake landing request");
+    }
+
     fn block_then_fail_gitlab_landing_request(&self) {
         fs::write(&self.landing_request_fail, "block-fail\n")
             .expect("block then fail fake landing request");
@@ -739,8 +806,10 @@ exec /usr/bin/git "$@"
 
 #[cfg(unix)]
 fn land_operation_records(repo_path: &Path) -> Vec<Value> {
-    fs::read_dir(repo_path.join(".git/gg/operations"))
-        .expect("read operation records")
+    let Ok(entries) = fs::read_dir(repo_path.join(".git/gg/operations")) else {
+        return Vec::new();
+    };
+    let mut records: Vec<Value> = entries
         .filter_map(|entry| entry.ok())
         .filter(|entry| {
             entry
@@ -754,7 +823,9 @@ fn land_operation_records(repo_path: &Path) -> Vec<Value> {
                 .expect("parse operation record")
         })
         .filter(|record: &Value| record["kind"] == "land")
-        .collect()
+        .collect();
+    records.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
+    records
 }
 
 #[cfg(unix)]
@@ -770,7 +841,7 @@ fn disconnect_jsonl_after_landing_request_started(
     let start: Value = serde_json::from_str(line.trim()).expect("parse land start event");
     assert_eq!(start["event"], "start");
 
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let request_started = fixture.landing_request_started();
     while !request_started.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(25));
@@ -783,6 +854,94 @@ fn disconnect_jsonl_after_landing_request_started(
     drop(reader);
     fixture.release_landing_request();
     land.wait_with_output().expect("wait for land")
+}
+
+#[cfg(unix)]
+fn disconnect_jsonl_and_capture_pending_landing(
+    fixture: &WaitingLandFixture,
+    args: &[&str],
+) -> (std::process::Output, String) {
+    let mut land = fixture.start_land_with_args(args);
+    let stdout = land.stdout.take().expect("capture land stdout");
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    reader.read_line(&mut line).expect("read land start event");
+    let start: Value = serde_json::from_str(line.trim()).expect("parse land start event");
+    assert_eq!(start["event"], "start");
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let request_started = fixture.landing_request_started();
+    while !request_started.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    if !request_started.exists() {
+        let _ = land.kill();
+        panic!("final landing request never started");
+    }
+
+    let pending: Vec<Value> = land_operation_records(&fixture.repo_path)
+        .into_iter()
+        .filter(|record| record["status"] == "pending")
+        .collect();
+    assert_eq!(
+        pending.len(),
+        1,
+        "the blocked request must own one pending operation: {pending:?}"
+    );
+    let operation_id = pending[0]["id"]
+        .as_str()
+        .expect("pending operation id")
+        .to_string();
+    assert_eq!(
+        pending[0]["touched_remote"], true,
+        "remote uncertainty must be persisted before the blocked request"
+    );
+
+    drop(reader);
+    fixture.release_landing_request();
+    let output = land.wait_with_output().expect("wait for land");
+    (output, operation_id)
+}
+
+#[cfg(unix)]
+fn run_blocked_landing_and_capture_pending(
+    fixture: &WaitingLandFixture,
+    args: &[&str],
+) -> (std::process::Output, String) {
+    let mut land = fixture.start_land_with_args(args);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let request_started = fixture.landing_request_started();
+    while !request_started.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    if !request_started.exists() {
+        let _ = land.kill();
+        let output = land.wait_with_output().expect("collect timed-out land");
+        panic!(
+            "landing request never started: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let pending: Vec<Value> = land_operation_records(&fixture.repo_path)
+        .into_iter()
+        .filter(|record| record["status"] == "pending")
+        .collect();
+    assert_eq!(
+        pending.len(),
+        1,
+        "expected one pending segment: {pending:?}"
+    );
+    let operation_id = pending[0]["id"]
+        .as_str()
+        .expect("pending operation id")
+        .to_string();
+    assert_eq!(pending[0]["touched_remote"], true);
+
+    fixture.release_landing_request();
+    let output = land.wait_with_output().expect("wait for land");
+    (output, operation_id)
 }
 
 #[cfg(unix)]
@@ -1630,6 +1789,646 @@ fn test_land_gitlab_starts_missing_pipeline_after_retarget_without_rebasing() {
 
 #[cfg(unix)]
 #[test]
+fn test_land_gitlab_refuses_unknown_draft_state_before_starting_pipeline() {
+    for pipeline in ["missing-draft", "missing-work-in-progress"] {
+        let fixture = WaitingLandFixture::new();
+        fixture.use_gitlab_provider();
+        fixture.enable_gitlab_merge_trains();
+        fixture.add_second_entry();
+        let pipeline_state = fixture.repo_path.join("fake-retarget-pipeline");
+        fs::write(&pipeline_state, pipeline).expect("set incomplete MR response");
+
+        let output = fixture
+            .start_land_with_args(&[
+                "land",
+                "--until",
+                "2",
+                "--wait",
+                "--jsonl",
+                "--no-clean",
+                "--no-squash",
+                "--rebase-if-needed",
+            ])
+            .wait_with_output()
+            .expect("wait for land");
+        let stdout = String::from_utf8(output.stdout).expect("land stdout");
+        let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
+            .expect("parse summary event");
+        let started = std::path::PathBuf::from(format!("{}.started", pipeline_state.display()));
+
+        assert_eq!(summary["status"], "error", "{pipeline}: {summary}");
+        assert!(
+            summary["error"]
+                .as_str()
+                .or_else(|| summary["message"].as_str())
+                .is_some_and(|error| error.contains("Failed to parse MR !42")),
+            "{pipeline}: {summary}"
+        );
+        assert!(
+            !started.exists(),
+            "{pipeline}: pipeline must not be started"
+        );
+        assert!(
+            !fixture.queued_request().contains("merge_requests/42"),
+            "{pipeline}: MR !42 must not be queued"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_revalidates_draft_state_before_every_remote_mutation_path() {
+    for mode in ["direct", "merge-train", "no-squash"] {
+        let fixture = WaitingLandFixture::new();
+        fixture.use_gitlab_provider();
+        let landing_state = fixture.repo_path.join("fake-retarget-pipeline");
+        fs::write(&landing_state, "missing-draft-on-landing")
+            .expect("omit draft state during the final pre-mutation lookup");
+
+        if mode == "merge-train" {
+            fixture.enable_gitlab_merge_trains();
+        }
+        if mode == "no-squash" {
+            fs::write(&fixture.squash_option, "default_on").expect("set fake squash option");
+            fs::write(&fixture.mr_squash, "on\n").expect("enable fake MR squash");
+        }
+        let args = if mode == "no-squash" {
+            vec!["land", "--json", "--no-clean", "--no-squash"]
+        } else {
+            vec!["land", "--json", "--no-clean"]
+        };
+
+        let output = fixture
+            .start_land_with_args(&args)
+            .wait_with_output()
+            .expect("wait for land");
+        let stdout = String::from_utf8(output.stdout).expect("land stdout");
+        let stderr = String::from_utf8(output.stderr).expect("land stderr");
+
+        assert!(!output.status.success(), "{mode}: {stdout}");
+        assert!(
+            format!("{stdout}{stderr}").contains("missing field `draft`"),
+            "{mode}: the failure must report unknown draft state: stdout={stdout} stderr={stderr}"
+        );
+        assert!(!fixture.queued.exists(), "{mode}: MR must not be queued");
+        assert!(!fixture.merged.exists(), "{mode}: MR must not be merged");
+        assert!(
+            !fixture.squash_disabled.exists(),
+            "{mode}: MR squash must not be changed"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_rejects_unsafe_state_transitions_before_remote_mutation() {
+    for (mode, expected_error) in [
+        ("draft-on-landing", "draft or work in progress"),
+        ("closed-on-landing", "is not open"),
+        ("target-mismatch-on-landing", "targets 'other-base'"),
+    ] {
+        let fixture = WaitingLandFixture::new();
+        fixture.use_gitlab_provider();
+        fs::write(fixture.repo_path.join("fake-retarget-pipeline"), mode)
+            .expect("change MR state during final pre-mutation lookup");
+
+        let output = fixture
+            .start_land_with_args(&["land", "--json", "--no-clean"])
+            .wait_with_output()
+            .expect("wait for land");
+        let stdout = String::from_utf8(output.stdout).expect("land stdout");
+        let stderr = String::from_utf8(output.stderr).expect("land stderr");
+
+        assert!(!output.status.success(), "{mode}: {stdout}");
+        assert!(
+            format!("{stdout}{stderr}").contains(expected_error),
+            "{mode}: stdout={stdout} stderr={stderr}"
+        );
+        assert!(!fixture.queued.exists(), "{mode}: MR must not be queued");
+        assert!(!fixture.merged.exists(), "{mode}: MR must not be merged");
+        assert!(
+            !fixture.squash_disabled.exists(),
+            "{mode}: MR squash must not be changed"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_auto_merge_rejects_unknown_or_unsafe_state_before_mutation() {
+    for (mode, expected_error) in [
+        ("draft-on-landing", "draft or work in progress"),
+        ("closed-on-landing", "is not open"),
+        ("target-mismatch-on-landing", "targets 'other-base'"),
+        ("missing-draft-on-landing", "missing field `draft`"),
+        ("malformed-draft-on-landing", "invalid type"),
+    ] {
+        let fixture = WaitingLandFixture::new();
+        fixture.use_gitlab_provider();
+        fs::write(fixture.repo_path.join("fake-retarget-pipeline"), mode)
+            .expect("change MR state during final pre-mutation lookup");
+
+        let output = fixture
+            .start_land_with_args(&["land", "--json", "--auto-merge", "--no-clean"])
+            .wait_with_output()
+            .expect("wait for land");
+        let stdout = String::from_utf8(output.stdout).expect("land stdout");
+        let stderr = String::from_utf8(output.stderr).expect("land stderr");
+
+        assert!(!output.status.success(), "{mode}: {stdout}");
+        assert!(
+            format!("{stdout}{stderr}").contains(expected_error),
+            "{mode}: stdout={stdout} stderr={stderr}"
+        );
+        assert!(!fixture.queued.exists(), "{mode}: MR must not be queued");
+        assert!(
+            land_operation_records(&fixture.repo_path).is_empty(),
+            "{mode}: validation failure must not create an operation"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_wait_validation_failure_leaves_no_pending_operation() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fs::write(
+        fixture.repo_path.join("fake-retarget-pipeline"),
+        "missing-draft-on-landing",
+    )
+    .expect("omit draft during the authoritative post-readiness lookup");
+
+    let output = fixture
+        .start_land_with_args(&["land", "--wait", "--jsonl", "--no-clean"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("land stdout");
+    assert!(
+        stdout.contains("missing field `draft`"),
+        "validation failure must be reported: {stdout}"
+    );
+    assert!(!fixture.queued.exists(), "MR must not be queued");
+    assert!(
+        land_operation_records(&fixture.repo_path).is_empty(),
+        "post-readiness validation failure must not create a pending operation"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_no_squash_view_failure_leaves_no_pending_operation() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fs::write(&fixture.squash_option, "default_on").expect("set fake squash option");
+    fs::write(&fixture.mr_squash, "on\n").expect("enable fake MR squash");
+    fs::write(
+        fixture.repo_path.join("fake-retarget-pipeline"),
+        "malformed-squash-view",
+    )
+    .expect("malform the permissive squash-state lookup");
+
+    let output = fixture
+        .start_land_with_args(&["land", "--json", "--no-clean", "--no-squash"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("land stdout");
+    let stderr = String::from_utf8(output.stderr).expect("land stderr");
+
+    let summary: Value = serde_json::from_str(stdout.trim()).expect("land summary");
+    assert!(
+        summary["land"]["error"]
+            .as_str()
+            .or_else(|| summary["error"].as_str())
+            .is_some_and(|error| error.contains("Failed to parse MR !41")),
+        "{summary}"
+    );
+    assert!(format!("{stdout}{stderr}").contains("Failed to parse MR !41"));
+    assert!(!fixture.squash_disabled.exists());
+    assert!(!fixture.queued.exists());
+    assert!(land_operation_records(&fixture.repo_path).is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_requeue_revalidates_state_and_creates_no_pending_operation() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.set_glab_pipeline_status("running");
+
+    let land = fixture.start_land_with_args(&["land", "--all", "--wait", "--jsonl", "--no-clean"]);
+    fixture.wait_until_queued();
+    fs::write(
+        fixture.repo_path.join("fake-retarget-pipeline"),
+        "draft-on-requeue",
+    )
+    .expect("make the MR draft before requeue");
+    fs::write(&fixture.head_moved, "moved\n").expect("move fake MR head");
+    fs::write(&fixture.auto_merge_dropped, "dropped\n").expect("drop fake auto-merge");
+
+    let output = land.wait_with_output().expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("land stdout");
+    let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
+        .expect("parse summary event");
+    assert_eq!(summary["event"], "summary");
+    assert!(
+        summary["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("draft or work in progress")),
+        "{summary}"
+    );
+    assert!(!fixture.requeued.exists(), "unsafe MR must not be requeued");
+    let records = land_operation_records(&fixture.repo_path);
+    assert_eq!(
+        records.len(),
+        1,
+        "only the initial queue may be recorded: {records:?}"
+    );
+    assert_eq!(records[0]["status"], "committed");
+    assert_eq!(records[0]["touched_remote"], true);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_ambiguous_requeue_is_finalized_and_not_retried() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.set_glab_pipeline_status("running");
+    fs::write(&fixture.landing_request_fail, "block-requeue-fail\n")
+        .expect("block and fail the requeue request");
+
+    let land = fixture.start_land_with_args(&["land", "--all", "--wait", "--jsonl", "--no-clean"]);
+    fixture.wait_until_queued();
+    fs::write(&fixture.head_moved, "moved\n").expect("move fake MR head");
+    fs::write(&fixture.auto_merge_dropped, "dropped\n").expect("drop fake auto-merge");
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let request_started = fixture.landing_request_started();
+    while !request_started.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(request_started.exists(), "requeue request never started");
+    let pending: Vec<Value> = land_operation_records(&fixture.repo_path)
+        .into_iter()
+        .filter(|record| record["status"] == "pending")
+        .collect();
+    assert_eq!(
+        pending.len(),
+        1,
+        "expected exact pending requeue: {pending:?}"
+    );
+    let operation_id = pending[0]["id"]
+        .as_str()
+        .expect("pending requeue operation id")
+        .to_string();
+    assert_eq!(pending[0]["touched_remote"], true);
+
+    fixture.release_landing_request();
+    let output = land.wait_with_output().expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("land stdout");
+    let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
+        .expect("parse summary event");
+    assert!(
+        summary["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("landing request failed")),
+        "{summary}"
+    );
+    assert!(
+        !fixture.requeued.exists(),
+        "failed requeue must not look successful"
+    );
+    let attempts = fs::read_to_string(format!(
+        "{}.attempts",
+        fixture.landing_request_fail.display()
+    ))
+    .expect("read requeue attempt count");
+    assert_eq!(attempts.lines().count(), 1, "mutation must not be retried");
+
+    let records = land_operation_records(&fixture.repo_path);
+    let record = records
+        .iter()
+        .find(|record| record["id"].as_str() == Some(operation_id.as_str()))
+        .expect("same requeue operation after failure");
+    assert_eq!(record["status"], "committed");
+    assert_eq!(record["touched_remote"], true);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_revalidates_between_consecutive_remote_mutations() {
+    let pipeline_fixture = WaitingLandFixture::new();
+    pipeline_fixture.use_gitlab_provider();
+    pipeline_fixture.enable_gitlab_merge_trains();
+    pipeline_fixture.add_second_entry();
+    fs::write(
+        pipeline_fixture.repo_path.join("fake-retarget-pipeline"),
+        "missing-after-pipeline",
+    )
+    .expect("drop draft state after pipeline creation");
+
+    let pipeline_output = pipeline_fixture
+        .start_land_with_args(&[
+            "land",
+            "--until",
+            "2",
+            "--wait",
+            "--json",
+            "--no-clean",
+            "--no-squash",
+            "--rebase-if-needed",
+        ])
+        .wait_with_output()
+        .expect("wait for pipeline landing");
+    let pipeline_stdout = String::from_utf8(pipeline_output.stdout).expect("land stdout");
+    let pipeline_stderr = String::from_utf8(pipeline_output.stderr).expect("land stderr");
+    let pipeline_summary: Value =
+        serde_json::from_str(pipeline_stdout.trim()).expect("pipeline landing summary");
+    assert!(
+        pipeline_summary["land"]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("missing field `draft`")),
+        "{pipeline_summary}"
+    );
+    assert!(
+        format!("{pipeline_stdout}{pipeline_stderr}").contains("missing field `draft`"),
+        "pipeline path must report the unsafe state: stdout={pipeline_stdout} stderr={pipeline_stderr}"
+    );
+    assert!(
+        std::path::PathBuf::from(format!(
+            "{}.started",
+            pipeline_fixture
+                .repo_path
+                .join("fake-retarget-pipeline")
+                .display()
+        ))
+        .exists(),
+        "the pipeline mutation must happen before the state transition"
+    );
+    assert!(
+        !pipeline_fixture
+            .queued_request()
+            .contains("merge_requests/42"),
+        "MR !42 must not be queued after the state transition"
+    );
+
+    let squash_fixture = WaitingLandFixture::new();
+    squash_fixture.use_gitlab_provider();
+    fs::write(&squash_fixture.squash_option, "default_on").expect("set fake squash option");
+    fs::write(&squash_fixture.mr_squash, "on\n").expect("enable fake MR squash");
+    fs::write(
+        squash_fixture.repo_path.join("fake-retarget-pipeline"),
+        "missing-after-squash",
+    )
+    .expect("drop draft state after squash update");
+
+    let squash_output = squash_fixture
+        .start_land_with_args(&["land", "--json", "--no-clean", "--no-squash"])
+        .wait_with_output()
+        .expect("wait for direct landing");
+    let squash_stdout = String::from_utf8(squash_output.stdout).expect("land stdout");
+    let squash_stderr = String::from_utf8(squash_output.stderr).expect("land stderr");
+    let squash_summary: Value =
+        serde_json::from_str(squash_stdout.trim()).expect("direct landing summary");
+    assert!(
+        squash_summary["land"]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("missing field `draft`")),
+        "{squash_summary}"
+    );
+    assert!(squash_fixture.squash_disabled.exists());
+    assert!(
+        !squash_fixture.merged.exists(),
+        "MR must not be merged after the state transition"
+    );
+    assert!(
+        format!("{squash_stdout}{squash_stderr}").contains("missing field `draft`"),
+        "direct path must report the unsafe state: stdout={squash_stdout} stderr={squash_stderr}"
+    );
+    let records = land_operation_records(&squash_fixture.repo_path);
+    assert_eq!(records.len(), 1, "expected the squash segment: {records:?}");
+    assert_eq!(records[0]["status"], "committed");
+    assert_eq!(records[0]["touched_remote"], true);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_refuses_failed_mr_lookup_before_remote_mutation() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.add_second_entry();
+    let pipeline_state = fixture.repo_path.join("fake-retarget-pipeline");
+    fs::write(&pipeline_state, "lookup-fail").expect("fail MR lookup after retargeting");
+
+    let output = fixture
+        .start_land_with_args(&[
+            "land",
+            "--until",
+            "2",
+            "--wait",
+            "--jsonl",
+            "--no-clean",
+            "--no-squash",
+            "--rebase-if-needed",
+        ])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("land stdout");
+    let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
+        .expect("parse summary event");
+
+    assert_eq!(summary["status"], "error", "{summary}");
+    assert!(
+        summary["error"]
+            .as_str()
+            .or_else(|| summary["message"].as_str())
+            .is_some_and(|error| error.contains("MR lookup failed")),
+        "{summary}"
+    );
+    assert!(
+        !std::path::PathBuf::from(format!("{}.started", pipeline_state.display())).exists(),
+        "the pipeline must not be started when MR lookup fails"
+    );
+    assert!(
+        !fixture.queued_request().contains("merge_requests/42"),
+        "MR !42 must not be queued when its lookup fails"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_records_remote_uncertainty_when_pipeline_response_is_lost() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.add_second_entry();
+    let pipeline_state = fixture.repo_path.join("fake-retarget-pipeline");
+    fs::write(&pipeline_state, "applied-response-block-fail")
+        .expect("fail response after applying pipeline creation");
+
+    let (output, operation_id) = run_blocked_landing_and_capture_pending(
+        &fixture,
+        &[
+            "land",
+            "--until",
+            "2",
+            "--wait",
+            "--jsonl",
+            "--no-clean",
+            "--no-squash",
+            "--rebase-if-needed",
+        ],
+    );
+    let stdout = String::from_utf8(output.stdout).expect("land stdout");
+    let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
+        .expect("parse summary event");
+
+    assert_eq!(summary["status"], "error", "{summary}");
+    assert!(
+        summary["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("connection lost after pipeline creation")),
+        "{summary}"
+    );
+    assert!(
+        std::path::PathBuf::from(format!("{}.started", pipeline_state.display())).exists(),
+        "the fake provider must apply the pipeline mutation before losing the response"
+    );
+    assert!(
+        !fixture.queued_request().contains("merge_requests/42"),
+        "MR !42 must not be queued after an ambiguous pipeline response"
+    );
+    let records = land_operation_records(&fixture.repo_path);
+    let pipeline_record = records
+        .iter()
+        .find(|record| record["id"].as_str() == Some(operation_id.as_str()))
+        .expect("same ambiguous pipeline operation");
+    assert_eq!(
+        pipeline_record["status"], "committed",
+        "the ambiguous pipeline segment must be finalized: {pipeline_record}"
+    );
+    assert_eq!(
+        pipeline_record["touched_remote"], true,
+        "the ambiguous pipeline response must remain non-undoable: {pipeline_record}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_finalizes_pipeline_mutation_when_queue_request_fails() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.add_second_entry();
+    let pipeline_state = fixture.repo_path.join("fake-retarget-pipeline");
+    fs::write(&pipeline_state, "missing").expect("require a pipeline after retargeting");
+    fixture.block_second_gitlab_landing_request(false);
+
+    let (output, operation_id) = run_blocked_landing_and_capture_pending(
+        &fixture,
+        &[
+            "land",
+            "--until",
+            "2",
+            "--wait",
+            "--jsonl",
+            "--no-clean",
+            "--no-squash",
+            "--rebase-if-needed",
+        ],
+    );
+    let stdout = String::from_utf8(output.stdout).expect("land stdout");
+    let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
+        .expect("parse summary event");
+
+    assert_eq!(summary["status"], "error", "{summary}");
+    assert!(
+        summary["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("landing request failed")),
+        "{summary}"
+    );
+    assert!(
+        std::path::PathBuf::from(format!("{}.started", pipeline_state.display())).exists(),
+        "the pipeline must be created before the final queue request"
+    );
+    assert!(
+        !fixture.queued_request().contains("merge_requests/42"),
+        "MR !42 must not have a successful queue marker"
+    );
+    let records = land_operation_records(&fixture.repo_path);
+    let pipeline_record = records
+        .iter()
+        .find(|record| record["id"].as_str() == Some(operation_id.as_str()))
+        .expect("same pipeline and queue operation");
+    assert_eq!(
+        pipeline_record["status"], "committed",
+        "the failed queue segment must be finalized: {pipeline_record}"
+    );
+    assert_eq!(
+        pipeline_record["touched_remote"], true,
+        "the successful pipeline mutation must remain non-undoable: {pipeline_record}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_jsonl_disconnect_after_pipeline_creation_finalizes_remote_state() {
+    for succeeds in [true, false] {
+        let fixture = WaitingLandFixture::new();
+        fixture.use_gitlab_provider();
+        fixture.enable_gitlab_merge_trains();
+        fixture.add_second_entry();
+        let pipeline_state = fixture.repo_path.join("fake-retarget-pipeline");
+        fs::write(&pipeline_state, "missing").expect("require a pipeline after retargeting");
+        fixture.block_second_gitlab_landing_request(succeeds);
+
+        let (output, operation_id) = disconnect_jsonl_and_capture_pending_landing(
+            &fixture,
+            &[
+                "land",
+                "--until",
+                "2",
+                "--wait",
+                "--jsonl",
+                "--no-clean",
+                "--no-squash",
+                "--rebase-if-needed",
+            ],
+        );
+
+        assert!(!output.status.success(), "disconnected JSONL must fail");
+        assert!(
+            std::path::PathBuf::from(format!("{}.started", pipeline_state.display())).exists(),
+            "the pipeline transition must occur before disconnecting"
+        );
+        assert_eq!(
+            fixture.queued_request().contains("merge_requests/42"),
+            succeeds,
+            "the final queue marker must match the provider result"
+        );
+        let records = land_operation_records(&fixture.repo_path);
+        let record = records
+            .iter()
+            .find(|record| record["id"] == operation_id)
+            .expect("same operation after stream disconnect");
+        assert_eq!(
+            record["status"], "committed",
+            "the exact blocked segment must be finalized before streaming: {record}"
+        );
+        assert_eq!(
+            record["touched_remote"], true,
+            "the exact blocked segment must remain non-undoable: {record}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn test_land_gitlab_merge_train_wait_stops_when_pipeline_fails_before_joining_train() {
     let fixture = WaitingLandFixture::new();
     fixture.use_gitlab_provider();
@@ -1881,7 +2680,7 @@ fn test_land_jsonl_disconnect_after_squash_update_finalizes_failed_landing() {
     let start: Value = serde_json::from_str(line.trim()).expect("parse land start event");
     assert_eq!(start["event"], "start");
 
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let request_started = fixture.landing_request_started();
     while !request_started.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(25));
@@ -2215,6 +3014,8 @@ fn test_land_jsonl_disconnect_after_merge_train_requeue_finalizes_operation() {
     fixture.use_gitlab_provider();
     fixture.enable_gitlab_merge_trains();
     fixture.set_glab_pipeline_status("running");
+    fs::write(&fixture.landing_request_fail, "block-requeue-success\n")
+        .expect("block the requeue request");
 
     let original_branch = run_git(&fixture.repo_path, &["branch", "--show-current"]).1;
     let original_head = run_git(&fixture.repo_path, &["rev-parse", "HEAD"]).1;
@@ -2239,10 +3040,42 @@ fn test_land_jsonl_disconnect_after_merge_train_requeue_finalizes_operation() {
     assert_eq!(start["event"], "start");
 
     fixture.wait_until_queued();
+    let initial_operation_ids: Vec<String> = land_operation_records(&fixture.repo_path)
+        .iter()
+        .map(|record| record["id"].as_str().expect("operation id").to_string())
+        .collect();
+    assert_eq!(
+        initial_operation_ids.len(),
+        1,
+        "initial queue must have exactly one finalized segment"
+    );
     fs::write(&fixture.head_moved, "moved\n").expect("move fake MR head");
     fs::write(&fixture.auto_merge_dropped, "dropped\n").expect("drop fake auto-merge");
 
     let deadline = Instant::now() + Duration::from_secs(60);
+    let request_started = fixture.landing_request_started();
+    while !request_started.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(request_started.exists(), "requeue request never started");
+    let pending: Vec<Value> = land_operation_records(&fixture.repo_path)
+        .into_iter()
+        .filter(|record| record["status"] == "pending")
+        .collect();
+    assert_eq!(
+        pending.len(),
+        1,
+        "expected exact pending requeue: {pending:?}"
+    );
+    let requeue_operation_id = pending[0]["id"]
+        .as_str()
+        .expect("pending requeue operation id")
+        .to_string();
+    assert_eq!(
+        pending[0]["touched_remote"], true,
+        "uncertainty must be durable before the requeue request"
+    );
+    fixture.release_landing_request();
     while !fixture.requeued.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -2287,13 +3120,16 @@ fn test_land_jsonl_disconnect_after_merge_train_requeue_finalizes_operation() {
     );
 
     let records = land_operation_records(&fixture.repo_path);
-    assert_eq!(records.len(), 1, "expected one land operation: {records:?}");
+    let requeue_record = records
+        .iter()
+        .find(|record| record["id"].as_str() == Some(requeue_operation_id.as_str()))
+        .expect("same requeue operation after disconnect");
     assert_eq!(
-        records[0]["status"], "committed",
-        "the operation must be finalized before the broken-pipe failure returns: {}",
-        records[0]
+        requeue_record["status"], "committed",
+        "the requeue operation must be finalized before the broken-pipe failure returns: {}",
+        requeue_record
     );
-    assert_eq!(records[0]["touched_remote"], true);
+    assert_eq!(requeue_record["touched_remote"], true);
 }
 
 #[cfg(unix)]
@@ -2322,6 +3158,33 @@ fn test_land_gitlab_no_squash_refused_when_project_requires_squash() {
 
 #[cfg(unix)]
 #[test]
+fn test_land_gitlab_refuses_when_project_settings_cannot_be_read() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.fail_gitlab_merge_settings_lookup();
+
+    let output = fixture
+        .start_land_with_args(&["land", "--json", "--no-clean"])
+        .wait_with_output()
+        .expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert!(!output.status.success(), "land must fail closed: {stdout}");
+    assert!(
+        format!("{stdout}{stderr}").contains("project merge settings"),
+        "error should explain that GitLab project merge settings could not be read: stdout={stdout} stderr={stderr}"
+    );
+    assert!(!fixture.queued.exists(), "MR must not be queued");
+    assert!(!fixture.merged.exists(), "MR must not be merged");
+    assert!(
+        land_operation_records(&fixture.repo_path).is_empty(),
+        "provider preflight failure must not leave a pending operation"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn test_land_gitlab_no_squash_refuses_when_project_settings_cannot_be_read() {
     let fixture = WaitingLandFixture::new();
     fixture.use_gitlab_provider();
@@ -2345,6 +3208,10 @@ fn test_land_gitlab_no_squash_refuses_when_project_settings_cannot_be_read() {
     );
     assert!(!fixture.queued.exists(), "MR must not be queued");
     assert!(!fixture.merged.exists(), "MR must not be merged");
+    assert!(
+        land_operation_records(&fixture.repo_path).is_empty(),
+        "provider preflight failure must not leave a pending operation"
+    );
 }
 
 #[cfg(unix)]

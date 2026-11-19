@@ -578,9 +578,12 @@ pub fn update_mr_title(mr_number: u64, title: &str) -> Result<()> {
 /// apply `false`.
 fn ensure_mr_squash_disabled(
     mr_number: u64,
+    target_branch: &str,
     before_mutation: impl FnOnce() -> Result<()>,
 ) -> Result<bool> {
-    if !view_mr(mr_number)?.squash {
+    let mr = read_landing_merge_request(mr_number)?;
+    validate_landing_merge_request(mr_number, target_branch, &mr)?;
+    if !mr.squash {
         return Ok(false);
     }
 
@@ -611,17 +614,14 @@ fn ensure_mr_squash_disabled(
 /// was changed remotely.
 pub fn prepare_mr_no_squash(
     mr_number: u64,
+    target_branch: &str,
     before_mutation: impl FnOnce() -> Result<()>,
 ) -> Result<bool> {
-    ensure_mr_squash_disabled(mr_number, before_mutation)
+    ensure_mr_squash_disabled(mr_number, target_branch, before_mutation)
 }
 
 /// Merge an MR
 pub fn merge_mr(mr_number: u64, squash: bool, delete_branch: bool) -> Result<()> {
-    if !squash {
-        let _ = ensure_mr_squash_disabled(mr_number, || Ok(()))?;
-    }
-
     let mr_num_str = mr_number.to_string();
     let mut args = vec!["mr", "merge", &mr_num_str, "--yes"];
 
@@ -660,10 +660,6 @@ pub fn auto_merge_mr_when_pipeline_succeeds(
     squash: bool,
     delete_branch: bool,
 ) -> Result<AutoMergeResult> {
-    if !squash {
-        let _ = ensure_mr_squash_disabled(mr_number, || Ok(()))?;
-    }
-
     let output = Command::new("glab")
         .args([
             "api",
@@ -899,16 +895,89 @@ fn parse_project_merge_settings(stdout: &str) -> Result<ProjectMergeSettings> {
             "Failed to parse GitLab project merge settings: {error}"
         ))
     })?;
+    let merge_trains_enabled = json
+        .get("merge_trains_enabled")
+        .and_then(|value| value.as_bool())
+        .ok_or_else(|| {
+            GgError::GlabError(
+                "GitLab project merge settings omitted a boolean merge_trains_enabled value"
+                    .to_string(),
+            )
+        })?;
     Ok(ProjectMergeSettings {
-        merge_trains_enabled: json
-            .get("merge_trains_enabled")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
+        merge_trains_enabled,
         squash_option: json
             .get("squash_option")
             .and_then(|v| v.as_str())
             .map(str::to_string),
     })
+}
+
+#[derive(Deserialize)]
+struct LandingMergeRequest {
+    sha: Option<String>,
+    state: String,
+    draft: bool,
+    work_in_progress: bool,
+    target_branch: String,
+    squash: bool,
+    detailed_merge_status: Option<String>,
+    #[serde(
+        rename = "head_pipeline",
+        default,
+        deserialize_with = "deserialize_is_null"
+    )]
+    missing_head_pipeline: bool,
+}
+
+fn deserialize_is_null<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<bool, D::Error> {
+    Ok(Option::<serde::de::IgnoredAny>::deserialize(deserializer)?.is_none())
+}
+
+fn read_landing_merge_request(mr_number: u64) -> Result<LandingMergeRequest> {
+    let endpoint = format!("projects/:id/merge_requests/{mr_number}");
+    let output = Command::new("glab").args(["api", &endpoint]).output()?;
+    if !output.status.success() {
+        return Err(GgError::GlabError(format!(
+            "Failed to view MR !{mr_number}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| GgError::GlabError(format!("Failed to parse MR !{mr_number}: {error}")))
+}
+
+fn validate_landing_merge_request(
+    mr_number: u64,
+    target_branch: &str,
+    mr: &LandingMergeRequest,
+) -> Result<()> {
+    if mr.state != "opened" {
+        return Err(GgError::GlabError(format!(
+            "MR !{mr_number} is not open (state: {})",
+            mr.state
+        )));
+    }
+    if mr.draft || mr.work_in_progress {
+        return Err(GgError::GlabError(format!(
+            "MR !{mr_number} is a draft or work in progress"
+        )));
+    }
+    if mr.target_branch != target_branch {
+        return Err(GgError::GlabError(format!(
+            "MR !{mr_number} targets '{}' instead of '{target_branch}'",
+            mr.target_branch
+        )));
+    }
+    Ok(())
+}
+
+/// Re-read the GitLab MR state immediately before any landing mutation.
+pub(crate) fn validate_mr_before_landing(mr_number: u64, target_branch: &str) -> Result<()> {
+    let mr = read_landing_merge_request(mr_number)?;
+    validate_landing_merge_request(mr_number, target_branch, &mr)
 }
 
 /// Start required CI if GitLab reports that the MR has no head pipeline.
@@ -918,46 +987,15 @@ pub(crate) fn prepare_mr_pipeline_for_train(
     target_branch: &str,
     before_mutation: impl FnOnce() -> Result<()>,
 ) -> Result<Option<String>> {
-    #[derive(Deserialize)]
-    struct MergeRequest {
-        sha: Option<String>,
-        state: String,
-        draft: Option<bool>,
-        work_in_progress: Option<bool>,
-        target_branch: String,
-        detailed_merge_status: Option<String>,
-        #[serde(rename = "head_pipeline", default, deserialize_with = "is_null")]
-        missing_head_pipeline: bool,
-    }
-
-    fn is_null<'de, D: serde::Deserializer<'de>>(
-        deserializer: D,
-    ) -> std::result::Result<bool, D::Error> {
-        Ok(Option::<serde::de::IgnoredAny>::deserialize(deserializer)?.is_none())
-    }
-
     // Use the raw API response: an omitted head_pipeline can mean it is
     // hidden by permissions, not that GitLab needs a new pipeline.
-    let endpoint = format!("projects/:id/merge_requests/{mr_number}");
-    let output = Command::new("glab").args(["api", &endpoint]).output()?;
-    if !output.status.success() {
-        return Err(GgError::GlabError(format!(
-            "Failed to view MR !{mr_number}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    let mr: MergeRequest = serde_json::from_slice(&output.stdout)
-        .map_err(|e| GgError::GlabError(format!("Failed to parse MR !{mr_number}: {e}")))?;
-    if mr.state == "opened"
-        && !mr.draft.unwrap_or(false)
-        && !mr.work_in_progress.unwrap_or(false)
-        && mr.target_branch == target_branch
-        && mr.detailed_merge_status.as_deref() == Some("ci_must_pass")
-        && mr.missing_head_pipeline
-    {
+    let mr = read_landing_merge_request(mr_number)?;
+    validate_landing_merge_request(mr_number, target_branch, &mr)?;
+    if mr.detailed_merge_status.as_deref() == Some("ci_must_pass") && mr.missing_head_pipeline {
         before_mutation()?;
+        let endpoint = format!("projects/:id/merge_requests/{mr_number}/pipelines");
         let output = Command::new("glab")
-            .args(["api", "-X", "POST", &format!("{endpoint}/pipelines")])
+            .args(["api", "-X", "POST", &endpoint])
             .output()?;
         if !output.status.success() {
             return Err(GgError::GlabError(format!(
@@ -983,10 +1021,6 @@ pub(crate) fn prepare_mr_pipeline_for_train(
 /// - `Ok(AutoMergeResult::AlreadyQueued)` if already in the merge train (HTTP 409)
 /// - `Err(...)` for other errors
 pub fn add_to_merge_train(mr_number: u64, squash: bool) -> Result<AutoMergeResult> {
-    if !squash {
-        let _ = ensure_mr_squash_disabled(mr_number, || Ok(()))?;
-    }
-
     let output = Command::new("glab")
         .args([
             "api",
@@ -2175,12 +2209,10 @@ mod tests {
     }
 
     #[test]
-    fn project_merge_settings_rejects_unparsable_output() {
+    fn project_merge_settings_rejects_unparsable_or_unknown_output() {
         assert!(parse_project_merge_settings("not json").is_err());
-        assert_eq!(
-            parse_project_merge_settings("{}").unwrap(),
-            ProjectMergeSettings::default()
-        );
+        assert!(parse_project_merge_settings("{}").is_err());
+        assert!(parse_project_merge_settings(r#"{"merge_trains_enabled":"unknown"}"#).is_err());
     }
 
     #[test]

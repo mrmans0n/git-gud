@@ -545,13 +545,14 @@ fn run_on_commits(
                     // doesn't need a global move_branch_to_head call that
                     // would be unsafe after an early break on `stop_on_error`
                     // (see Bug #4).
-                    if i + 1 < end_pos {
-                        // Commits remain in the run range above this one:
-                        // rebase them onto the amended commit. The rebase
-                        // leaves the branch at the new replayed tip
-                        // automatically.
+                    if i + 1 < entries.len() {
+                        // Commits remain in the stack above this one: rebase
+                        // all of them (not just those in the run range, or
+                        // commits above `--until` would be dropped from the
+                        // branch) onto the amended commit. The rebase leaves
+                        // the branch at the new replayed tip automatically.
                         let new_commit_oid = new_head;
-                        let old_tip_oid = entries[end_pos - 1].oid;
+                        let old_tip_oid = entries[entries.len() - 1].oid;
 
                         let new_commit = new_commit_oid.to_string();
                         let old_commit = entry.oid.to_string();
@@ -582,7 +583,7 @@ fn run_on_commits(
 
                         entries = refresh_stack_entries(repo, &base_branch, None)?;
                     } else {
-                        // Last commit in the run range was amended — no
+                        // Last commit in the stack was amended — no
                         // rebase needed, but the branch still points at the
                         // pre-amend tip while HEAD is detached at the new
                         // commit. Explicitly forward the branch so the
@@ -702,18 +703,10 @@ fn run_on_commits(
     if let Some(branch) = original_branch {
         git::checkout_branch(repo, &branch)?;
         if had_changes && !options.json {
-            if end_pos < stack.len() {
-                println!(
-                    "{}",
-                    style("Changes were made. Run `gg rebase` to update remaining commits, then `gg sync`.")
-                        .dim()
-                );
-            } else {
-                println!(
-                    "{}",
-                    style("Changes were made. Review with `gg ls` and sync with `gg sync`.").dim()
-                );
-            }
+            println!(
+                "{}",
+                style("Changes were made. Review with `gg ls` and sync with `gg sync`.").dim()
+            );
         }
     } else if !had_changes {
         let commit = repo.find_commit(original_head)?;

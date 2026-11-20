@@ -331,13 +331,85 @@ fn test_lint_until_restores_branch_after_changes() {
         "Should return to stack branch after lint --until changes"
     );
 
-    // Verify the output mentions rebase for remaining commits
-    let combined = format!("{}{}", stdout, stderr);
-    assert!(
-        combined.contains("rebase") || combined.contains("remaining"),
-        "Should mention rebase for remaining commits when using --until: {}",
-        combined
+    // Commits above --until must stay on the branch, rebased onto the linted ones
+    let (_, log) = run_git(&repo_path, &["log", "--format=%s", "-4"]);
+    let subjects: Vec<&str> = log.lines().collect();
+    assert_eq!(
+        subjects,
+        vec![
+            "Third commit",
+            "Second commit",
+            "First commit",
+            "Add lint script"
+        ],
+        "lint --until must not drop commits above the range"
     );
+    let (_, file1) = run_git(&repo_path, &["show", "HEAD:file1.txt"]);
+    assert!(file1.contains("linted"), "Lint fix should be in the stack");
+    let (_, file3) = run_git(&repo_path, &["show", "HEAD:file3.txt"]);
+    assert!(
+        !file3.contains("linted"),
+        "Commit above --until must not be linted"
+    );
+}
+
+#[test]
+fn test_lint_until_keeps_commits_when_last_in_range_amended() {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    // Lint only touches file2.txt, so only the 2nd commit (the last in range) is amended
+    fs::write(
+        repo_path.join("lint.sh"),
+        "#!/bin/sh\n[ -f file2.txt ] && echo linted >> file2.txt\nexit 0\n",
+    )
+    .expect("Failed to write lint script");
+    Command::new("chmod")
+        .args(["+x", "lint.sh"])
+        .current_dir(&repo_path)
+        .output()
+        .expect("Failed to chmod lint script");
+    run_git(&repo_path, &["add", "lint.sh"]);
+    run_git(&repo_path, &["commit", "-m", "Add lint script"]);
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","lint":["./lint.sh"]}}"#,
+    )
+    .expect("Failed to write config");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "lint-until-last"]);
+    assert!(success, "Failed to create stack: {}", stderr);
+
+    for (n, name) in [(1, "First"), (2, "Second"), (3, "Third")] {
+        fs::write(
+            repo_path.join(format!("file{n}.txt")),
+            format!("content{n}\n"),
+        )
+        .expect("Failed to write file");
+        run_git(&repo_path, &["add", "."]);
+        run_git(
+            &repo_path,
+            &[
+                "commit",
+                "-m",
+                &format!("{name} commit\n\nGG-ID: c-last00{n}"),
+            ],
+        );
+    }
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["lint", "--until", "2"]);
+    assert!(success, "Lint should succeed: {} {}", stdout, stderr);
+
+    let (_, log) = run_git(&repo_path, &["log", "--format=%s", "-3"]);
+    assert_eq!(
+        log.lines().collect::<Vec<_>>(),
+        vec!["Third commit", "Second commit", "First commit"],
+        "lint --until must not drop commits above the range"
+    );
+    let (_, file2) = run_git(&repo_path, &["show", "HEAD~1:file2.txt"]);
+    assert!(file2.contains("linted"), "Lint fix should be in commit 2");
 }
 
 #[test]

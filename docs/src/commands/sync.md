@@ -18,6 +18,7 @@ gg sync [OPTIONS]
 - `--rebase-if-needed`: After a parent lands, keep published branches at their existing SHAs when the next PR/MR can merge into the fetched base. Conflicts with `--no-rebase-check`.
 - `--no-verify`: Skip the pre-push hook for pushes performed by this sync (forwards `git push --no-verify`). Opt-in per invocation; does not affect other hooks.
 - `-u, --until <UNTIL>`: Sync up to target commit (position, GG-ID, or SHA)
+  Lint fixes and order-preserving rebases keep the selected entry in scope even before it has a GG-ID. If a rebase drops entries and sync cannot identify the target, it stops rather than publishing a different commit.
 - `--json`: Output structured JSON for automation (suppresses human/progress output)
 - `--jsonl`: Output streaming NDJSON for automation (one JSON event per line, flushed after each; see Streaming Events below)
 

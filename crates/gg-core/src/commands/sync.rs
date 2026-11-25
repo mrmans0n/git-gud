@@ -667,15 +667,17 @@ pub fn run(
         Ok(())
     };
 
+    let end_position =
+        |stack: &Stack| sync_end_position(stack, selected, skipped, initial_stack.len());
     let mut stack = Stack::load(&repo, &config)?;
-    let mut end_pos = sync_end_position(&stack, selected, skipped)?;
+    let mut end_pos = end_position(&stack)?;
     if landed.is_some() && !rebased_before_sync && end_pos > 0 {
         after_land::check_preserved_metadata(&repo, &stack)?;
     }
     lint_before_sync(&stack, end_pos)?;
     if run_lint {
         stack = Stack::load(&repo, &config)?;
-        end_pos = sync_end_position(&stack, selected, skipped)?;
+        end_pos = end_position(&stack)?;
     }
     let mut retargeted_pr = None;
     if let (Some(base), Some(prefix)) = (conditional_base, &landed) {
@@ -700,11 +702,11 @@ pub fn run(
                 after_land::rebase_survivors(&repo, &stack, &provider, base, 0)?;
                 rebased_before_sync = true;
                 stack = Stack::load(&repo, &config)?;
-                end_pos = sync_end_position(&stack, selected, skipped)?;
+                end_pos = end_position(&stack)?;
                 lint_before_sync(&stack, end_pos)?;
                 if run_lint {
                     stack = Stack::load(&repo, &config)?;
-                    end_pos = sync_end_position(&stack, selected, skipped)?;
+                    end_pos = end_position(&stack)?;
                 }
             }
         }
@@ -1926,6 +1928,7 @@ fn sync_end_position(
     stack: &Stack,
     selected: Option<&crate::stack::StackEntry>,
     skipped: usize,
+    initial_len: usize,
 ) -> Result<usize> {
     let Some(selected) = selected else {
         return Ok(stack.len());
@@ -1938,6 +1941,11 @@ fn sync_end_position(
     });
     match (matches.next(), matches.next()) {
         (Some(entry), None) => Ok(entry.position),
+        // Lint and rebase preserve order, but can change every untagged SHA.
+        // Only use the original position if no other entry was dropped.
+        (None, None) if selected.gg_id.is_none() && stack.len() == initial_len - skipped => {
+            Ok(selected.position - skipped)
+        }
         _ => Err(GgError::Other(format!(
             "Cannot identify --until entry {} after updating the stack; inspect `gg ls` and retry.",
             selected.short_sha

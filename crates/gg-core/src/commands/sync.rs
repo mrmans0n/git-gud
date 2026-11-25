@@ -1,5 +1,7 @@
 //! `gg sync` - Sync stack with remote provider (push branches and create/update PRs/MRs)
 
+mod after_land;
+
 use console::style;
 use dialoguer::Confirm;
 use git2::Repository;
@@ -74,13 +76,14 @@ fn suspend_sync_progress<R>(progress_bar: &ProgressBar, action: impl FnOnce() ->
     progress_bar.suspend(action)
 }
 
-/// Format and display a push error with helpful context
+/// Apply the configured threshold and prompt to ordinary behind-base stacks.
 fn maybe_rebase_if_base_is_behind(
     repo: &Repository,
     config: &Config,
     base_branch: &str,
     json: bool,
     jsonl: bool,
+    rebase: impl FnOnce() -> Result<()>,
 ) -> Result<bool> {
     let threshold = config.get_sync_behind_threshold();
     if threshold == 0 {
@@ -118,7 +121,7 @@ fn maybe_rebase_if_base_is_behind(
         // Internal auto-rebase during sync: the user hasn't been asked to
         // --force, so respect the immutability guard rather than silently
         // bypassing it.
-        match crate::commands::rebase::run_with_repo(repo, None, json || jsonl, false) {
+        match rebase() {
             Ok(()) => return Ok(true),
             Err(GgError::ImmutableTargets(msg)) => {
                 return Err(GgError::ImmutableTargetsDuringSync(msg));
@@ -148,7 +151,7 @@ fn maybe_rebase_if_base_is_behind(
         .unwrap_or(true);
 
     if should_rebase {
-        match crate::commands::rebase::run_with_repo(repo, None, json || jsonl, false) {
+        match rebase() {
             Ok(()) => return Ok(true),
             Err(GgError::ImmutableTargets(msg)) => {
                 return Err(GgError::ImmutableTargetsDuringSync(msg));
@@ -424,6 +427,7 @@ pub fn run(
     json: bool,
     jsonl: bool,
     no_rebase_check: bool,
+    rebase_if_needed: bool,
     force: bool,
     update_descriptions: bool,
     update_title: bool,
@@ -466,6 +470,21 @@ pub fn run(
 
     // Load stack early to validate --until
     let initial_stack = Stack::load(&repo, &config)?;
+    // Keep the caller's target identity from the stack they could see before
+    // fetching. Do not interpret a position a second time on a shorter stack.
+    let selected = until
+        .as_deref()
+        .map(|target| resolve_target(&initial_stack, target))
+        .transpose()?
+        .map(|pos| &initial_stack.entries[pos - 1]);
+    let conditional_base = if rebase_if_needed {
+        git::fetch_and_prune()?;
+        let oid = repo.refname_to_id(&format!("refs/remotes/origin/{}", initial_stack.base))?;
+        git::validate_sync_base(&repo, &initial_stack, oid)?;
+        Some(oid)
+    } else {
+        None
+    };
     let mut warnings: Vec<String> = initial_stack
         .prefix_mismatch(&config)
         .map(|mismatch| mismatch.warning_message())
@@ -533,29 +552,40 @@ pub fn run(
         return Ok(());
     }
 
-    // Validate --until parameter early (before provider checks and network calls)
-    let lint_end_pos = if let Some(ref target) = until {
-        Some(resolve_target(&initial_stack, target)?)
-    } else {
-        None
-    };
-
     // Detect and check provider
     let provider = Provider::detect(&repo)?;
     provider.check_installed()?;
     provider.check_auth()?;
 
-    // Fetch from remote to ensure we have up-to-date refs
-    git::fetch_and_prune()?;
-
+    if conditional_base.is_none() {
+        git::fetch_and_prune()?;
+    }
+    let landed = conditional_base
+        .map(|base| after_land::landed_prefix(&repo, &initial_stack, &provider, base))
+        .transpose()?
+        .flatten();
+    let skipped = landed.as_ref().map_or(0, |p| p.len);
     let mut rebased_before_sync = false;
-    if !no_rebase_check {
+    if let (Some(base), Some(prefix)) = (conditional_base, &landed) {
+        if prefix.rewritten {
+            after_land::rebase_survivors(&repo, &initial_stack, &provider, base, prefix.len)?;
+            rebased_before_sync = true;
+        } else {
+            git::record_sync_base(&repo, &initial_stack, base)?;
+        }
+    } else if !no_rebase_check {
         rebased_before_sync = maybe_rebase_if_base_is_behind(
             &repo,
             &config,
-            initial_stack.base.as_str(),
+            &initial_stack.base,
             json,
             jsonl,
+            || match conditional_base {
+                Some(base) => {
+                    after_land::rebase_survivors(&repo, &initial_stack, &provider, base, 0)
+                }
+                None => crate::commands::rebase::run_with_repo(&repo, None, json || jsonl, false),
+            },
         )?;
     }
 
@@ -566,30 +596,19 @@ pub fn run(
     };
     let mut streamer = streamer;
 
-    // Capture restore snapshot after optional pre-sync rebase. If lint fails,
-    // we restore to this post-rebase state rather than silently undoing rebase.
-    let sync_start_branch = git::current_branch_name(&repo);
-    let sync_start_head = repo.head()?.peel_to_commit()?.id();
-
     let mut start_emitted = false;
-
-    // Run lint ONCE if requested (before GG-ID addition loop)
-    if run_lint {
-        // Reload stack to get post-rebase state. After rebase, landed commits
-        // are dropped so initial_stack.len() may be stale.
-        let current_stack = Stack::load(&repo, &config)?;
-        // Clamp lint_end_pos to current stack size. If --until was specified but
-        // rebase dropped commits (making the original position invalid), use the
-        // new stack size instead of failing.
-        let end_pos = lint_end_pos
-            .map(|pos| pos.min(current_stack.len()))
-            .unwrap_or(current_stack.len());
+    let mut lint_before_sync = |current_stack: &Stack, end_pos: usize| -> Result<()> {
+        if !run_lint || end_pos == 0 {
+            return Ok(());
+        }
+        let sync_start_branch = git::current_branch_name(&repo);
+        let sync_start_head = repo.head()?.peel_to_commit()?.id();
         if !json && !jsonl {
             println!("{}", console::style("Running lint before sync...").dim());
         }
         // Emit Start before lint so streaming clients know the stack and
         // entry count up front instead of waiting for lint to finish.
-        if let Some(s) = streamer.as_mut() {
+        if let Some(s) = streamer.as_mut().filter(|_| !start_emitted) {
             s.emit(&SyncStreamingResponse {
                 version: OUTPUT_VERSION,
                 command: "sync".to_string(),
@@ -645,11 +664,53 @@ pub fn run(
         if !json && !jsonl {
             println!();
         }
-    }
+        Ok(())
+    };
 
     let mut stack = Stack::load(&repo, &config)?;
+    let mut end_pos = sync_end_position(&stack, selected, skipped)?;
+    if landed.is_some() && !rebased_before_sync && end_pos > 0 {
+        after_land::check_preserved_metadata(&repo, &stack)?;
+    }
+    lint_before_sync(&stack, end_pos)?;
+    if run_lint {
+        stack = Stack::load(&repo, &config)?;
+        end_pos = sync_end_position(&stack, selected, skipped)?;
+    }
+    let mut retargeted_pr = None;
+    if let (Some(base), Some(prefix)) = (conditional_base, &landed) {
+        if !prefix.rewritten && end_pos > 0 {
+            let first = &initial_stack.entries[skipped];
+            let needs_rebase = after_land::needs_rebase(
+                &repo,
+                &stack,
+                first,
+                prefix.previous_target.as_deref(),
+                &provider,
+                || {
+                    guard.mark_touched_remote_before_attempt()?;
+                    touched_remote = true;
+                    retargeted_pr = first.mr_number;
+                    Ok(())
+                },
+            )?;
+            if needs_rebase || stack.entries[0].oid != first.oid {
+                // Lint may have amended commits. Replay the current survivors,
+                // then lint the exact commits that will be published.
+                after_land::rebase_survivors(&repo, &stack, &provider, base, 0)?;
+                rebased_before_sync = true;
+                stack = Stack::load(&repo, &config)?;
+                end_pos = sync_end_position(&stack, selected, skipped)?;
+                lint_before_sync(&stack, end_pos)?;
+                if run_lint {
+                    stack = Stack::load(&repo, &config)?;
+                    end_pos = sync_end_position(&stack, selected, skipped)?;
+                }
+            }
+        }
+    }
 
-    if stack.is_empty() {
+    if end_pos == 0 {
         let warnings_before_prune = warnings.len();
         prune_stale_remote_entry_branches_for_operation(
             &repo,
@@ -705,11 +766,6 @@ pub fn run(
         return Ok(());
     }
 
-    // Re-validate --until against potentially updated stack
-    if let Some(ref target) = until {
-        resolve_target(&stack, target)?;
-    }
-
     if !json && !jsonl {
         println!("{}", style("Normalizing GG metadata...").dim());
     }
@@ -718,18 +774,8 @@ pub fn run(
     let metadata_counts = git::normalize_stack_metadata(&repo, &stack)?;
     stack = Stack::load(&repo, &config)?;
 
-    // Determine sync range based on --until flag
-    let sync_until = if let Some(ref target) = until {
-        Some(resolve_target(&stack, target)?)
-    } else {
-        None
-    };
-
-    let entries_to_sync = if let Some(end_pos) = sync_until {
-        &stack.entries[..end_pos]
-    } else {
-        &stack.entries[..]
-    };
+    // Metadata normalization and lint amendments preserve entry order.
+    let entries_to_sync = &stack.entries[..end_pos];
 
     // Load optional PR template
     let pr_template = template::load_template(git_dir);
@@ -816,12 +862,12 @@ pub fn run(
 
         pb.set_message(format!("Processing {}...", entry.short_sha));
 
-        // Create/update the remote branch for this commit
-        create_entry_branch(&repo, &stack, entry, &entry_branch)?;
-
         // Check if remote branch exists and has the same OID as local
         let remote_oid = git::get_remote_branch_oid(&repo, &entry_branch);
         let needs_push = remote_oid != Some(entry.oid);
+        if needs_push || !rebase_if_needed {
+            create_entry_branch(&repo, &stack, entry, &entry_branch)?;
+        }
 
         // Only push if the remote is different or doesn't exist
         if needs_push {
@@ -1136,7 +1182,13 @@ pub fn run(
                         }
                     }
                 } else {
-                    if update_title {
+                    let mut review_changed = retargeted_pr == Some(pr_num);
+                    if update_title
+                        && (!rebase_if_needed
+                            || pr_info.as_ref().is_none_or(|info| info.title != title))
+                    {
+                        guard.mark_touched_remote_before_attempt()?;
+                        touched_remote = true;
                         if let Err(e) = provider.update_pr_title(pr_num, &title) {
                             if !json && !jsonl {
                                 pb.println(format!(
@@ -1151,6 +1203,8 @@ pub fn run(
                             if entry_error.is_none() {
                                 entry_error = Some(format!("Could not update title: {e}"));
                             }
+                        } else {
+                            review_changed = true;
                         }
                     }
 
@@ -1187,7 +1241,11 @@ pub fn run(
                                         String::new()
                                     }
                                 };
-                                if !new_body.is_empty() {
+                                if !new_body.is_empty()
+                                    && (!rebase_if_needed || new_body != remote_body)
+                                {
+                                    guard.mark_touched_remote_before_attempt()?;
+                                    touched_remote = true;
                                     if let Err(e) =
                                         provider.update_pr_description(pr_num, &new_body)
                                     {
@@ -1205,6 +1263,8 @@ pub fn run(
                                             entry_error =
                                                 Some(format!("Could not update description: {e}"));
                                         }
+                                    } else {
+                                        review_changed = true;
                                     }
                                 }
                             }
@@ -1227,37 +1287,37 @@ pub fn run(
                         }
                     }
 
-                    // Update PR/MR base if needed. A successful `update_pr_base`
-                    // call mutates remote state — even if the new base matches
-                    // what the API already had, we've made a request that the
-                    // provider treats as an authoritative update. Mark
-                    // `touched_remote` so `gg undo` refuses to replay this sync
-                    // locally (there's no safe local inverse for a remote base
-                    // change).
-                    match provider.update_pr_base(pr_num, &target_branch) {
-                        Ok(()) => {
-                            touched_remote = true;
-                            guard.mark_touched_remote();
-                        }
-                        Err(e) => {
-                            // Native GitHub stack reconciliation must reflect
-                            // the ordinary PR base chain. If the provider
-                            // rejects that base update, skip the later native
-                            // stack mutation rather than linking a topology
-                            // `gg sync` did not actually establish.
-                            pr_state_unresolved = true;
-                            if !json && !jsonl {
-                                pb.println(format!(
-                                    "{} Could not update {} {}{}: {}",
-                                    style("Warning:").yellow(),
-                                    provider.pr_label(),
-                                    provider.pr_number_prefix(),
-                                    pr_num,
-                                    e
-                                ));
+                    let base_changed = pr_info
+                        .as_ref()
+                        .and_then(|info| info.base_branch.as_deref())
+                        != Some(target_branch.as_str());
+                    if !rebase_if_needed || base_changed {
+                        guard.mark_touched_remote_before_attempt()?;
+                        touched_remote = true;
+                        match provider.update_pr_base(pr_num, &target_branch) {
+                            Ok(()) => {
+                                review_changed |= base_changed;
                             }
-                            if entry_error.is_none() {
-                                entry_error = Some(format!("Could not update base: {e}"));
+                            Err(e) => {
+                                // Native GitHub stack reconciliation must reflect
+                                // the ordinary PR base chain. If the provider
+                                // rejects that base update, skip the later native
+                                // stack mutation rather than linking a topology
+                                // `gg sync` did not actually establish.
+                                pr_state_unresolved = true;
+                                if !json && !jsonl {
+                                    pb.println(format!(
+                                        "{} Could not update {} {}{}: {}",
+                                        style("Warning:").yellow(),
+                                        provider.pr_label(),
+                                        provider.pr_number_prefix(),
+                                        pr_num,
+                                        e
+                                    ));
+                                }
+                                if entry_error.is_none() {
+                                    entry_error = Some(format!("Could not update base: {e}"));
+                                }
                             }
                         }
                     }
@@ -1279,7 +1339,10 @@ pub fn run(
                             pr_num
                         ));
                     }
-                    if needs_push || update_descriptions || update_title {
+                    if needs_push
+                        || review_changed
+                        || (!rebase_if_needed && (update_descriptions || update_title))
+                    {
                         action = "updated".to_string();
                     }
                     if let Some(s) = streamer.as_mut() {
@@ -1859,6 +1922,29 @@ pub fn run(
     Ok(())
 }
 
+fn sync_end_position(
+    stack: &Stack,
+    selected: Option<&crate::stack::StackEntry>,
+    skipped: usize,
+) -> Result<usize> {
+    let Some(selected) = selected else {
+        return Ok(stack.len());
+    };
+    if selected.position <= skipped || stack.is_empty() {
+        return Ok(0);
+    }
+    let mut matches = stack.entries.iter().filter(|entry| {
+        entry.oid == selected.oid || (selected.gg_id.is_some() && entry.gg_id == selected.gg_id)
+    });
+    match (matches.next(), matches.next()) {
+        (Some(entry), None) => Ok(entry.position),
+        _ => Err(GgError::Other(format!(
+            "Cannot identify --until entry {} after updating the stack; inspect `gg ls` and retry.",
+            selected.short_sha
+        ))),
+    }
+}
+
 fn restore_sync_start_position(
     repo: &Repository,
     start_branch: Option<&str>,
@@ -2364,6 +2450,8 @@ mod tests {
             state: crate::provider::PrState::Open,
             url: "https://example.com/pr/428".to_string(),
             head_branch: Some("testuser/old-stack--c-8b999da".to_string()),
+            base_branch: None,
+            merge_sha: None,
             draft: false,
             approved: false,
             mergeable: true,
@@ -2388,6 +2476,8 @@ mod tests {
             state: crate::provider::PrState::Open,
             url: "https://example.com/pr/428".to_string(),
             head_branch: Some("testuser/new-stack--c-8b999da".to_string()),
+            base_branch: None,
+            merge_sha: None,
             draft: false,
             approved: false,
             mergeable: true,

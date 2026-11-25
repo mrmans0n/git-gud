@@ -26,6 +26,8 @@ pub struct PrInfo {
     pub state: PrState,
     pub url: String,
     pub head_branch: Option<String>,
+    pub base_branch: Option<String>,
+    pub merge_sha: Option<String>,
     pub draft: bool,
     pub approved: bool,
     pub mergeable: bool,
@@ -62,6 +64,8 @@ struct GhPrJson {
     url: String,
     head_ref_name: Option<String>,
     head_ref_oid: Option<String>,
+    base_ref_name: Option<String>,
+    merge_commit: Option<GhMergeCommit>,
     #[serde(default)]
     is_draft: bool,
     mergeable: Option<String>,
@@ -72,6 +76,11 @@ struct GhPrJson {
     review_decision: Option<String>,
     #[serde(default)]
     status_check_rollup: Vec<GhStatusCheck>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhMergeCommit {
+    oid: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -218,7 +227,7 @@ pub fn view_pr(pr_number: u64) -> Result<PrInfo> {
             "view",
             &pr_number.to_string(),
             "--json",
-            "number,title,state,url,headRefName,headRefOid,isDraft,mergeable,mergeStateStatus,autoMergeRequest,reviews,reviewDecision",
+            "number,title,state,url,headRefName,headRefOid,isDraft,mergeable,mergeStateStatus,autoMergeRequest,reviews,reviewDecision,baseRefName,mergeCommit",
         ])
         .output()?;
 
@@ -255,6 +264,8 @@ fn parse_pr_info(bytes: &[u8]) -> Result<PrInfo> {
         state,
         url: pr_json.url,
         head_branch: pr_json.head_ref_name,
+        base_branch: pr_json.base_ref_name,
+        merge_sha: pr_json.merge_commit.map(|commit| commit.oid),
         draft: pr_json.is_draft,
         approved,
         mergeable,
@@ -832,6 +843,8 @@ mod tests {
             state: PrState::Open,
             url: "https://github.com/test/repo/pull/42".to_string(),
             head_branch: Some("user/stack--c-abc1234".to_string()),
+            base_branch: None,
+            merge_sha: None,
             draft: false,
             approved: true,
             mergeable: true,

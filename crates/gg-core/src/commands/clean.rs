@@ -168,14 +168,15 @@ fn reconcile_pending_deletions(
     record_remote_effect: &mut dyn FnMut(Option<RemoteEffect>) -> Result<()>,
 ) -> Result<()> {
     let branch_name = git::format_stack_branch(username, stack_name);
-    let current_branches = if let Ok(stack_ref) = repo.revparse_single(&branch_name) {
+    let stack_tip = repo.refname_to_id(&format!("refs/heads/{branch_name}"));
+    let current_branches = if let Ok(tip) = stack_tip {
         let base = config
             .get_base_for_stack(stack_name)
             .map(str::to_owned)
             .or_else(|| git::find_base_branch(repo).ok())
             .ok_or(GgError::NoBaseBranch)?;
         let mut branches = HashSet::new();
-        for oid in git::get_stack_commit_oids_from_tip(repo, &base, stack_ref.id())? {
+        for oid in git::get_stack_commit_oids_from_tip(repo, &base, Some(&branch_name), tip)? {
             if let Some(entry_id) = git::get_gg_id(&repo.find_commit(oid)?) {
                 branches.insert(git::format_entry_branch(username, stack_name, &entry_id));
             }

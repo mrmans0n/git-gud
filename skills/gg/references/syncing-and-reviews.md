@@ -27,9 +27,12 @@
 
 ## Procedure
 
-1. If the fetched remote base is not an ancestor of the stack tip after the
-   explicit fetch, run ordinary `gg rebase`. On
-   `ImmutableTargets`, stop and ask before `gg rebase --force`.
+1. When a bottom entry landed and the installed sync help lists
+   `--rebase-if-needed`, use that option instead of rebasing first. It checks
+   the fetched base and the newly targeted review before deciding to rewrite.
+   It does not authorize landing. Otherwise, if the fetched remote base is
+   not an ancestor of the stack tip, use ordinary `gg rebase`. Stop on
+   `ImmutableTargets`; do not infer permission to force.
 2. Respect repository lint and draft configuration unless the user specifies
    an override. Complete the metadata-normalization preflight before every
    `gg sync`. If lint will run, also complete the amend-mode safety preflight.

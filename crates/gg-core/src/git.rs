@@ -3,6 +3,7 @@
 //! Provides utilities for repository discovery, branch management,
 //! commit traversal, and rebase operations.
 
+use std::borrow::Cow;
 use std::fs::{self, File};
 use std::process::Command;
 use std::time::Duration;
@@ -453,6 +454,54 @@ pub fn require_clean_working_directory(repo: &Repository) -> Result<()> {
     Ok(())
 }
 
+// Hash the base name so names like "release" and "release/v2" can coexist
+// as loose refs, even when the user switches between those bases.
+fn sync_base_ref(stack_branch: &str, base_branch: &str) -> Result<String> {
+    let key = Oid::hash_object(git2::ObjectType::Blob, base_branch.as_bytes())?;
+    Ok(format!("refs/gg/sync-bases/{stack_branch}/{key}"))
+}
+
+/// Remember the freshly confirmed remote base without moving a local branch.
+pub(crate) fn record_sync_base(
+    repo: &Repository,
+    stack: &crate::stack::Stack,
+    base_oid: Oid,
+) -> Result<()> {
+    let name = sync_base_ref(&stack.branch_name(), &stack.base)?;
+    repo.reference(&name, base_oid, true, "gg: record confirmed sync base")?;
+    Ok(())
+}
+
+pub(crate) fn sync_base_oid(
+    repo: &Repository,
+    stack_branch: &str,
+    base_branch: &str,
+) -> Result<Option<Oid>> {
+    match repo.refname_to_id(&sync_base_ref(stack_branch, base_branch)?) {
+        Ok(oid) => Ok(Some(oid)),
+        Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// A force-push can invalidate a previously confirmed landed prefix.
+pub(crate) fn validate_sync_base(
+    repo: &Repository,
+    stack: &crate::stack::Stack,
+    fresh_base: Oid,
+) -> Result<()> {
+    let branch = stack.branch_name();
+    if let Some(previous) = sync_base_oid(repo, &branch, &stack.base)? {
+        if previous != fresh_base && !repo.graph_descendant_of(fresh_base, previous)? {
+            return Err(GgError::Other(format!(
+                "Fetched base '{}' no longer contains the confirmed sync base {previous} for stack '{branch}'. Inspect the rewritten base before syncing.",
+                stack.base
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Get all commits between base and stack tip (in order from base to tip)
 /// Returns commit OIDs rather than Commit objects to avoid lifetime issues
 /// If `stack_branch` is provided, use that branch instead of HEAD (for detached HEAD mode)
@@ -461,34 +510,58 @@ pub fn get_stack_commit_oids(
     base_branch: &str,
     stack_branch: Option<&str>,
 ) -> Result<Vec<Oid>> {
-    // Get the tip of the stack - either from a branch or from HEAD
-    let tip_oid = if let Some(branch) = stack_branch {
-        let branch_ref = format!("refs/heads/{}", branch);
-        repo.revparse_single(&branch_ref)?.id()
+    if let Some(branch) = stack_branch {
+        let tip = repo.refname_to_id(&format!("refs/heads/{branch}"))?;
+        get_stack_commit_oids_from_tip(repo, base_branch, Some(branch), tip)
     } else {
-        repo.head()?.peel_to_commit()?.id()
-    };
+        let head = repo.head()?;
+        let detached_stack;
+        let branch = if head.is_branch() {
+            Some(head.shorthand()?)
+        } else {
+            detached_stack = crate::stack::read_current_stack(repo.path());
+            detached_stack.as_deref()
+        };
+        get_stack_commit_oids_from_tip(repo, base_branch, branch, head.peel_to_commit()?.id())
+    }
+}
 
-    get_stack_commit_oids_from_tip(repo, base_branch, tip_oid)
+pub(crate) fn configured_base_oid(repo: &Repository, base_branch: &str) -> Result<Oid> {
+    repo.revparse_single(base_branch)
+        .or_else(|_| repo.revparse_single(&format!("origin/{base_branch}")))
+        .map(|base| base.id())
+        .map_err(|_| GgError::NoBaseBranch)
+}
+
+/// Exclude commits reachable from either the local base or the last confirmed sync base.
+pub(crate) fn stack_revwalk<'repo>(
+    repo: &'repo Repository,
+    base_branch: &str,
+    stack_branch: Option<&str>,
+    tip_oid: Oid,
+) -> Result<git2::Revwalk<'repo>> {
+    let base_oid = configured_base_oid(repo, base_branch)?;
+
+    let mut revwalk = repo.revwalk()?;
+    revwalk.set_sorting(Sort::TOPOLOGICAL | Sort::REVERSE)?;
+    revwalk.push(tip_oid)?;
+    revwalk.hide(base_oid)?;
+    if let Some(branch) = stack_branch {
+        if let Some(confirmed) = sync_base_oid(repo, branch, base_branch)? {
+            revwalk.hide(confirmed)?;
+        }
+    }
+    Ok(revwalk)
 }
 
 /// Get and validate all stack commits between a base branch and a specific tip.
 pub(crate) fn get_stack_commit_oids_from_tip(
     repo: &Repository,
     base_branch: &str,
+    stack_branch: Option<&str>,
     tip_oid: Oid,
 ) -> Result<Vec<Oid>> {
-    let base_ref = repo
-        .revparse_single(base_branch)
-        .or_else(|_| repo.revparse_single(&format!("origin/{}", base_branch)))
-        .map_err(|_| GgError::NoBaseBranch)?;
-
-    let base_oid = base_ref.id();
-
-    let mut revwalk = repo.revwalk()?;
-    revwalk.set_sorting(Sort::TOPOLOGICAL | Sort::REVERSE)?;
-    revwalk.push(tip_oid)?;
-    revwalk.hide(base_oid)?;
+    let revwalk = stack_revwalk(repo, base_branch, stack_branch, tip_oid)?;
 
     let mut oids = Vec::new();
     for oid_result in revwalk {
@@ -627,51 +700,65 @@ pub fn normalize_stack_metadata(
     };
 
     let mut rewritten_oids = std::collections::HashMap::<Oid, Oid>::new();
-    let mut previous_gg_id: Option<String> = None;
+    let sync_base = sync_base_oid(repo, &stack.branch_name(), &stack.base)?;
+    let mut previous_gg_id = stack
+        .landed_parent_gg_id(repo, sync_base)?
+        .map(Cow::Borrowed);
     let mut counts = MetadataRewriteCounts::default();
     let mut tip_oid: Option<Oid> = None;
 
     for entry in &stack.entries {
         let original_commit = repo.find_commit(entry.oid)?;
         let original_message = original_commit.message().unwrap_or("");
-        let current_gg_id = get_gg_id(&original_commit);
-        let effective_gg_id = current_gg_id.clone().unwrap_or_else(generate_gg_id);
+        let effective_gg_id = entry
+            .gg_id
+            .as_deref()
+            .map_or_else(|| Cow::Owned(generate_gg_id()), Cow::Borrowed);
 
-        let (new_message, id_added, parent_updated, parent_removed) =
-            normalize_gg_metadata_in_message(
+        // Changing spacing or case in already valid trailers would republish
+        // a different commit after sync kept this entry on its original parent.
+        let new_message = if sync_base.is_some()
+            && entry.gg_id.is_some()
+            && entry.gg_parent.as_deref() == previous_gg_id.as_deref()
+            && original_message
+                .lines()
+                .filter(|line| {
+                    line.trim_start()
+                        .get(..GG_PARENT_PREFIX.len())
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(GG_PARENT_PREFIX))
+                })
+                .count()
+                == usize::from(previous_gg_id.is_some())
+        {
+            Cow::Borrowed(original_message)
+        } else {
+            let (message, added, updated, removed) = normalize_gg_metadata_in_message(
                 original_message,
                 &effective_gg_id,
                 previous_gg_id.as_deref(),
             );
-        if id_added {
-            counts.gg_ids_added += 1;
-        }
-        if parent_updated {
-            counts.gg_parents_updated += 1;
-        }
-        if parent_removed {
-            counts.gg_parents_removed += 1;
-        }
+            counts.gg_ids_added += usize::from(added);
+            counts.gg_parents_updated += usize::from(updated);
+            counts.gg_parents_removed += usize::from(removed);
+            Cow::Owned(message)
+        };
 
-        let mut parent_oids: Vec<Oid> = original_commit.parent_ids().collect();
-        if let Some(first_parent) = parent_oids.first_mut() {
-            if let Some(rewritten_parent) = rewritten_oids.get(first_parent) {
-                *first_parent = *rewritten_parent;
-            }
-        }
-
-        let parent_changed = original_commit
-            .parent_id(0)
-            .ok()
-            .zip(parent_oids.first().copied())
-            .is_some_and(|(old_parent, new_parent)| old_parent != new_parent);
-
-        let new_oid = if new_message != original_message || parent_changed {
-            let parents: Result<Vec<_>> = parent_oids
-                .iter()
-                .map(|oid| repo.find_commit(*oid).map_err(GgError::Git))
-                .collect();
-            let parents = parents?;
+        let rewritten_parent = original_commit
+            .parent_ids()
+            .next()
+            .and_then(|parent| rewritten_oids.get(&parent).copied());
+        let new_oid = if new_message != original_message || rewritten_parent.is_some() {
+            let parents = original_commit
+                .parent_ids()
+                .enumerate()
+                .map(|(i, oid)| {
+                    repo.find_commit(if i == 0 {
+                        rewritten_parent.unwrap_or(oid)
+                    } else {
+                        oid
+                    })
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()?;
             let parent_refs: Vec<&Commit> = parents.iter().collect();
 
             repo.commit(
@@ -686,9 +773,15 @@ pub fn normalize_stack_metadata(
             original_commit.id()
         };
 
-        rewritten_oids.insert(original_commit.id(), new_oid);
+        if new_oid != entry.oid {
+            rewritten_oids.insert(entry.oid, new_oid);
+        }
         previous_gg_id = Some(effective_gg_id);
         tip_oid = Some(new_oid);
+    }
+
+    if tip_oid == stack.last().map(|entry| entry.oid) {
+        return Ok(counts);
     }
 
     let target_refname = {
@@ -1597,6 +1690,119 @@ mod tests {
         assert!(!result.contains("GG-ID"));
         assert!(result.contains("Add feature"));
         assert!(result.contains("Some description"));
+    }
+
+    fn child_commit(repo: &Repository, parent: Oid, message: &str) -> Oid {
+        let parent = repo.find_commit(parent).unwrap();
+        let tree = parent.tree().unwrap();
+        let signature = repo.signature().unwrap();
+        repo.commit(None, &signature, &signature, message, &tree, &[&parent])
+            .unwrap()
+    }
+
+    #[test]
+    fn confirmed_base_hides_only_this_stacks_landed_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo_with_commit(dir.path(), "main");
+        let config = crate::config::Config::default();
+        let repo = Repository::open(dir.path()).unwrap();
+        let root = repo.refname_to_id("refs/heads/main").unwrap();
+        let a = child_commit(&repo, root, "A\n\nGG-ID: c-1111111\n");
+        let b = child_commit(&repo, a, "B\n\nGG-ID: c-2222222\nGG-Parent: c-1111111\n");
+        let c = child_commit(&repo, b, "C\n\nGG-ID: c-3333333\nGG-Parent: c-2222222\n");
+        let confirmed = child_commit(&repo, a, "Unrelated upstream change");
+        let newer = child_commit(&repo, confirmed, "Later upstream change");
+        for branch in ["me/topic", "other/topic"] {
+            repo.branch(branch, &repo.find_commit(c).unwrap(), false)
+                .unwrap();
+        }
+        repo.branch("release/v2", &repo.find_commit(root).unwrap(), false)
+            .unwrap();
+        repo.set_head("refs/heads/me/topic").unwrap();
+        let stack = Stack::load(&repo, &config).unwrap();
+        assert_eq!(stack.len(), 3);
+        validate_sync_base(&repo, &stack, confirmed).unwrap();
+        record_sync_base(&repo, &stack, confirmed).unwrap();
+        drop(repo);
+
+        let repo = Repository::open(dir.path()).unwrap();
+        let entries = |base, branch| get_stack_commit_oids(&repo, base, Some(branch)).unwrap();
+        assert_eq!(entries("main", "me/topic"), [b, c]);
+        assert_eq!(entries("main", "other/topic"), [a, b, c]);
+        assert_eq!(entries("release/v2", "me/topic"), [a, b, c]);
+        validate_sync_base(&repo, &stack, confirmed).unwrap();
+        validate_sync_base(&repo, &stack, newer).unwrap();
+        assert!(validate_sync_base(&repo, &stack, a).is_err());
+        assert!(validate_sync_base(&repo, &stack, c).is_err());
+
+        crate::stack::save_current_stack(repo.path(), "me/topic").unwrap();
+        repo.set_head_detached(b).unwrap();
+        assert_eq!(get_stack_commit_oids(&repo, "main", None).unwrap(), [b]);
+        let detached = Stack::load(&repo, &config).unwrap();
+        assert_eq!(detached.len(), 2);
+        assert_eq!(detached.current_position, Some(0));
+        repo.set_head("refs/heads/me/topic").unwrap();
+
+        for _ in 0..2 {
+            let survivors = Stack::load(&repo, &config).unwrap();
+            assert_eq!(survivors.rewrite_base_oid(&repo).unwrap(), a);
+            let parents: Vec<_> = survivors
+                .entries_with_expected_parents(&repo)
+                .unwrap()
+                .map(|(_, parent)| parent)
+                .collect();
+            assert_eq!(parents, [Some("c-1111111"), Some("c-2222222")]);
+            assert_eq!(
+                normalize_stack_metadata(&repo, &survivors).unwrap(),
+                MetadataRewriteCounts::default()
+            );
+            assert_eq!(repo.refname_to_id("refs/heads/me/topic").unwrap(), c);
+            assert_eq!(repo.refname_to_id("refs/heads/main").unwrap(), root);
+        }
+
+        // The confirmed ref supplements rather than replaces the local base.
+        repo.reference("refs/heads/main", b, true, "advance local main")
+            .unwrap();
+        assert_eq!(entries("main", "me/topic"), [c]);
+        let survivors = Stack::load(&repo, &config).unwrap();
+        assert_eq!(survivors.rewrite_base_oid(&repo).unwrap(), b);
+        assert_eq!(
+            survivors
+                .landed_parent_gg_id(&repo, Some(confirmed))
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn confirmed_base_does_not_invent_or_trust_a_wrong_parent_trailer() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo_with_commit(dir.path(), "main");
+        let config = crate::config::Config::default();
+        let repo = Repository::open(dir.path()).unwrap();
+        let root = repo.refname_to_id("refs/heads/main").unwrap();
+        let a = child_commit(&repo, root, "A\n\nGG-ID: c-1111111");
+        for (message, removed) in [
+            ("B\n\nGG-ID: c-2222222\n", 0),
+            ("B\n\nGG-ID: c-2222222\nGG-Parent: c-9999999\n", 1),
+        ] {
+            let b = child_commit(&repo, a, message);
+            repo.reference("refs/heads/me/topic", b, true, "set survivor")
+                .unwrap();
+            repo.set_head("refs/heads/me/topic").unwrap();
+            let stack = Stack::load(&repo, &config).unwrap();
+            record_sync_base(&repo, &stack, a).unwrap();
+            let survivors = Stack::load(&repo, &config).unwrap();
+            assert_eq!(survivors.first().unwrap().oid, b);
+            let counts = normalize_stack_metadata(&repo, &survivors).unwrap();
+            assert_eq!(counts.gg_parents_removed, removed);
+            let tip = repo.head().unwrap().peel_to_commit().unwrap();
+            assert_eq!(get_gg_parent(&tip), None);
+            assert_eq!(tip.parent_id(0).unwrap(), a);
+            if removed == 0 {
+                assert_eq!(tip.id(), b);
+            }
+        }
     }
 
     #[test]

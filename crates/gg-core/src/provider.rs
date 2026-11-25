@@ -89,6 +89,8 @@ pub struct PrInfo {
     pub state: PrState,
     pub url: String,
     pub head_branch: Option<String>,
+    pub base_branch: Option<String>,
+    pub merge_sha: Option<String>,
     pub draft: bool,
     pub approved: bool,
     pub mergeable: bool,
@@ -233,6 +235,8 @@ impl Provider {
                     state: convert_gh_state(info.state),
                     url: info.url,
                     head_branch: info.head_branch,
+                    base_branch: info.base_branch,
+                    merge_sha: info.merge_sha,
                     draft: info.draft,
                     approved: info.approved,
                     mergeable: info.mergeable,
@@ -254,6 +258,8 @@ impl Provider {
                     state: convert_glab_state(info.state),
                     url: info.web_url,
                     head_branch: info.head_branch,
+                    base_branch: info.base_branch,
+                    merge_sha: info.merge_sha,
                     draft: info.draft,
                     approved: info.approved,
                     mergeable: info.mergeable,
@@ -560,7 +566,9 @@ fn github_base_mergeability(
         return BaseMergeability::NeedsRebase;
     }
     match (mergeable.as_deref(), merge_state_status.as_deref()) {
-        (Some("MERGEABLE"), Some(state)) if state != "UNKNOWN" => BaseMergeability::MergesAsIs,
+        (Some("MERGEABLE"), Some("CLEAN" | "BLOCKED" | "UNSTABLE" | "HAS_HOOKS" | "DRAFT")) => {
+            BaseMergeability::MergesAsIs
+        }
         _ => BaseMergeability::Unknown,
     }
 }
@@ -586,7 +594,19 @@ fn gitlab_base_mergeability(
             BaseMergeability::NeedsRebase
         }
         _ if has_conflicts => BaseMergeability::NeedsRebase,
-        _ => BaseMergeability::MergesAsIs,
+        "mergeable"
+        | "not_approved"
+        | "ci_still_running"
+        | "ci_must_pass"
+        | "discussions_not_resolved"
+        | "draft_status"
+        | "external_status_checks"
+        | "jira_association_missing"
+        | "merge_time"
+        | "requested_changes"
+        | "security_policy_violations"
+        | "status_checks_must_pass" => BaseMergeability::MergesAsIs,
+        _ => BaseMergeability::Unknown,
     }
 }
 
@@ -752,6 +772,8 @@ mod tests {
             state: PrState::Open,
             url: "https://example.com/pr/42".to_string(),
             head_branch: Some("user/stack--c-abc1234".to_string()),
+            base_branch: None,
+            merge_sha: None,
             draft: false,
             approved: true,
             mergeable: true,
@@ -799,6 +821,10 @@ mod tests {
 
     #[test]
     fn github_mergeability_unknown_while_computing() {
+        assert_eq!(
+            github_base_mergeability(Some("MERGEABLE"), Some("UNRECOGNIZED")),
+            BaseMergeability::Unknown
+        );
         assert_eq!(
             github_base_mergeability(Some("UNKNOWN"), Some("UNKNOWN")),
             BaseMergeability::Unknown
@@ -850,6 +876,10 @@ mod tests {
 
     #[test]
     fn gitlab_mergeability_unknown_while_checking() {
+        assert_eq!(
+            gitlab_base_mergeability(Some("unrecognized"), false),
+            BaseMergeability::Unknown
+        );
         for status in ["checking", "unchecked", "preparing", "approvals_syncing"] {
             assert_eq!(
                 gitlab_base_mergeability(Some(status), true),

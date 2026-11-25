@@ -125,6 +125,10 @@ enum Commands {
         #[arg(long)]
         no_rebase_check: bool,
 
+        /// Keep remaining commits unchanged when their parent landed and the next review merges cleanly
+        #[arg(long, conflicts_with = "no_rebase_check")]
+        rebase_if_needed: bool,
+
         /// Force push even if remote is ahead
         #[arg(short, long)]
         force: bool,
@@ -620,6 +624,7 @@ fn main() {
             json,
             jsonl,
             no_rebase_check,
+            rebase_if_needed,
             force,
             update_descriptions,
             update_title,
@@ -655,6 +660,7 @@ fn main() {
                     json,
                     jsonl,
                     no_rebase_check,
+                    rebase_if_needed,
                     force,
                     update_descriptions,
                     update_title,

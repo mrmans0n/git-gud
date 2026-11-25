@@ -130,16 +130,9 @@ pub fn run(options: ReconcileOptions) -> Result<()> {
 
     // Phase 1: Find commits needing metadata normalization (GG-ID / GG-Parent)
     let commits_needing_ids: Vec<CommitInfo> = stack
-        .entries
-        .iter()
-        .filter(|e| {
-            e.gg_id.is_none()
-                || stack
-                    .expected_parent_gg_id(e.position)
-                    .map(|p| Some(p) != e.gg_parent.as_deref())
-                    .unwrap_or(e.gg_parent.is_some())
-        })
-        .map(|e| CommitInfo {
+        .entries_with_expected_parents(&repo)?
+        .filter(|(entry, parent)| entry.gg_id.is_none() || *parent != entry.gg_parent.as_deref())
+        .map(|(e, _)| CommitInfo {
             short_sha: e.short_sha.clone(),
             title: e.title.clone(),
         })

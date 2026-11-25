@@ -11,6 +11,10 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+#[cfg(unix)]
+#[path = "sync_if_needed.rs"]
+mod if_needed;
+
 fn checked_git(repo: &Path, args: &[&str]) -> String {
     let (success, output) = run_git(repo, args);
     assert!(success, "git {args:?} failed: {output}");

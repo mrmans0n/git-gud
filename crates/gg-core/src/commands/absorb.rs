@@ -122,7 +122,7 @@ pub fn run(options: AbsorbOptions) -> Result<()> {
 
     // Determine the base reference for absorb
     // We want to absorb into commits between base and HEAD
-    let base_ref = stack.base.clone();
+    let base_ref = stack.rewrite_base_oid(&repo)?.to_string();
 
     if options.dry_run {
         println!(

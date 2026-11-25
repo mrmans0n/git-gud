@@ -345,9 +345,7 @@ fn get_order_from_editor(stack: &Stack) -> Result<Option<Vec<String>>> {
 /// Perform the actual reorder via git rebase
 fn perform_reorder(repo: &git2::Repository, stack: &Stack, new_order: &[String]) -> Result<()> {
     // First, start a rebase
-    let base_ref = repo
-        .revparse_single(&stack.base)
-        .or_else(|_| repo.revparse_single(&format!("origin/{}", stack.base)))?;
+    let base_oid = stack.rewrite_base_oid(repo)?;
 
     // Build the rebase todo
     let mut rebase_todo = String::new();
@@ -388,7 +386,7 @@ fn perform_reorder(repo: &git2::Repository, stack: &Stack, new_order: &[String])
     // Run the rebase
     let output = std::process::Command::new("git")
         .env("GIT_SEQUENCE_EDITOR", script_file.to_str().unwrap())
-        .args(["rebase", "-i", &base_ref.id().to_string()])
+        .args(["rebase", "-i", &base_oid.to_string()])
         .output()?;
 
     // Clean up temp files

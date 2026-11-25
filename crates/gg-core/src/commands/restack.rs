@@ -63,10 +63,14 @@ impl RestackPlan {
     ///
     /// If `from_position` is provided, only entries at or above that position are checked;
     /// entries below are marked `Ok` unconditionally.
-    pub fn build(stack: &Stack, from_position: Option<usize>) -> Result<Self> {
+    pub fn build(
+        repo: &git2::Repository,
+        stack: &Stack,
+        from_position: Option<usize>,
+    ) -> Result<Self> {
         let mut steps = Vec::with_capacity(stack.entries.len());
 
-        for entry in &stack.entries {
+        for (entry, expected) in stack.entries_with_expected_parents(repo)? {
             let gg_id = entry.gg_id.as_deref().ok_or_else(|| {
                 GgError::Other(format!(
                     "Commit #{} ({}) is missing a GG-ID. Run `gg reconcile` first.",
@@ -74,9 +78,7 @@ impl RestackPlan {
                 ))
             })?;
 
-            let expected = stack
-                .expected_parent_gg_id(entry.position)
-                .map(String::from);
+            let expected = expected.map(String::from);
             let current = entry.gg_parent.clone();
 
             let below_from = from_position.is_some_and(|from_pos| entry.position < from_pos);
@@ -366,7 +368,7 @@ pub fn run(options: RestackOptions) -> Result<()> {
     };
 
     // Build plan
-    let plan = RestackPlan::build(&stack, from_position)?;
+    let plan = RestackPlan::build(&repo, &stack, from_position)?;
 
     let stack_name = stack.name.clone();
     let total = stack.entries.len();
@@ -465,25 +467,13 @@ pub fn run(options: RestackOptions) -> Result<()> {
 
     // Execute: single git rebase -i
     // Determine base ref for the rebase
-    let base_oid = if let Some(from_pos) = from_position {
-        if from_pos <= 1 {
-            // --from 1 is equivalent to full restack
-            let base_ref = repo
-                .revparse_single(&stack.base)
-                .or_else(|_| repo.revparse_single(&format!("origin/{}", stack.base)))?;
-            base_ref.id()
-        } else {
-            // Use the commit at from_pos - 1 as the base
-            let base_entry = stack
-                .get_entry_by_position(from_pos - 1)
-                .ok_or_else(|| GgError::Other(format!("Position {} out of range", from_pos - 1)))?;
-            base_entry.oid
-        }
+    let base_oid = if let Some(from_pos) = from_position.filter(|&pos| pos > 1) {
+        stack
+            .get_entry_by_position(from_pos - 1)
+            .ok_or_else(|| GgError::Other(format!("Position {} out of range", from_pos - 1)))?
+            .oid
     } else {
-        let base_ref = repo
-            .revparse_single(&stack.base)
-            .or_else(|_| repo.revparse_single(&format!("origin/{}", stack.base)))?;
-        base_ref.id()
+        stack.rewrite_base_oid(&repo)?
     };
 
     // Build rebase todo: pick all entries from the rebase start point upward

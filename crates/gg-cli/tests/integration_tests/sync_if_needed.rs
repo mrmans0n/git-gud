@@ -1,5 +1,8 @@
-use super::{checked_git, write_remote_prune_config};
-use crate::helpers::{create_test_repo_with_remote, run_gg_with_env};
+use super::{
+    checked_git, operation_record, operation_record_ids, run_gg_bounded_with_env,
+    write_remote_prune_config,
+};
+use crate::helpers::create_test_repo_with_remote;
 use serde_json::{json, Value};
 use std::ffi::OsString;
 use std::fs;
@@ -14,6 +17,7 @@ const IDS: [&str; 3] = ["c-1111111", "c-2222222", "c-3333333"];
 const GH: &str = r#"#!/bin/sh
 set -eu
 dir=$(dirname "$0")
+printf '%s\n' "$*" >> "$dir/requests"
 case "$1 ${2:-}" in
   '--version ') echo 'gh version 2.0.0';;
   'auth status') exit 0;;
@@ -24,6 +28,14 @@ case "$1 ${2:-}" in
     done;;
   'pr edit')
     [ "$4" = --base ] || exit 1
+    pending=
+    for record in "$TEST_GIT_DIR"/gg/operations/*.json; do
+      grep -q '"status": "pending"' "$record" || continue
+      [ -z "$pending" ] || { echo 'multiple pending operations' >&2; exit 1; }
+      pending=$(basename "$record" .json)
+    done
+    [ -n "$pending" ] || { echo 'missing pending operation' >&2; exit 1; }
+    printf '%s\n' "$pending" > "$dir/retarget-operation-id"
     echo "edit $3 $5" >> "$dir/events"
     [ "${EVIDENCE:-}" = stale-target ] || echo "$5" > "$dir/base$3";;
   'pr view')
@@ -154,12 +166,14 @@ impl Stack {
     }
 
     fn gg(&self, args: &[&str], on_main: &str, evidence: &str) -> (bool, String, String) {
-        run_gg_with_env(
+        let git_dir = self.repo.join(".git");
+        run_gg_bounded_with_env(
             &self.repo,
             args,
             &[
                 ("PATH", self.path.as_os_str()),
                 ("TEST_ORIGIN", self.remote.as_os_str()),
+                ("TEST_GIT_DIR", git_dir.as_os_str()),
                 ("ON_MAIN", on_main.as_ref()),
                 ("EVIDENCE", evidence.as_ref()),
             ],
@@ -207,6 +221,67 @@ impl Stack {
                 .lines()
                 .any(|line| line == format!("view 2 main {verdict}")),
             "{events}"
+        );
+    }
+
+    fn retarget_operation_id(&self) -> String {
+        fs::read_to_string(self.bin.join("retarget-operation-id"))
+            .expect("retarget must capture its operation id")
+            .trim()
+            .to_string()
+    }
+
+    fn advance_origin_with_survivor_conflict(&self) {
+        let checkout = self.repo.join("../base-checkout");
+        checked_git(&checkout, &["fetch", "origin"]);
+        checked_git(&checkout, &["merge", "--ff-only", "origin/main"]);
+        fs::write(checkout.join(IDS[1]), "conflicting upstream version").unwrap();
+        checked_git(&checkout, &["add", IDS[1]]);
+        checked_git(&checkout, &["commit", "-m", "Conflict with survivor"]);
+        checked_git(&checkout, &["push", "origin", "main"]);
+        fs::write(self.bin.join("base2"), "main").unwrap();
+    }
+
+    fn assert_provider_requests(&self, required_ordered: &[&str], expected_mutations: &[&str]) {
+        let requests = fs::read_to_string(self.bin.join("requests")).unwrap();
+        let requests = requests
+            .lines()
+            .map(|request| {
+                if request.starts_with("pr view ") {
+                    request
+                        .split_whitespace()
+                        .take(3)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                } else {
+                    request.to_string()
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut required = required_ordered.iter();
+        let mut next = required.next();
+        for request in &requests {
+            if next.is_some_and(|required| request == required) {
+                next = required.next();
+            }
+        }
+        assert!(
+            next.is_none(),
+            "required provider request order {required_ordered:?} was not present in {requests:?}"
+        );
+        let mutations = requests
+            .iter()
+            .filter(|request| {
+                request.as_str() != "--version"
+                    && request.as_str() != "auth status"
+                    && !request.starts_with("pr view ")
+                    && !request.starts_with("pr list ")
+            })
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            mutations, expected_mutations,
+            "unexpected provider mutation sequence in {requests:?}"
         );
     }
 }
@@ -302,6 +377,334 @@ fn refuses_unknown_mergeability_or_mismatched_evidence_without_rewriting() {
         assert!(!ok, "accepted {verdict}/{evidence}: {out}\n{err}");
         stack.assert_untouched();
     }
+}
+
+#[test]
+fn sync_rebase_conflict_continue_finalizes_exact_pending_operation() {
+    let stack = Stack::landed(false, false);
+    stack.advance_origin_with_survivor_conflict();
+    let operations_before = operation_record_ids(&stack.repo);
+
+    let (ok, out, err) = stack.gg(
+        &["sync", "--rebase-if-needed", "--until", "2", "--no-verify"],
+        "CONFLICTING",
+        "",
+    );
+
+    assert!(!ok, "conflicting sync unexpectedly succeeded: {out}\n{err}");
+    assert!(format!("{out}{err}").to_lowercase().contains("conflict"));
+    let new_ids = operation_record_ids(&stack.repo)
+        .difference(&operations_before)
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(new_ids.len(), 1, "conflict must use one sync operation");
+    let operation_id = new_ids.into_iter().next().unwrap();
+    let record = operation_record(&stack.repo, &operation_id);
+    assert_eq!(record["kind"], "sync", "{record}");
+    assert_eq!(record["status"], "pending", "{record}");
+    let marker_path = stack.repo.join(".git/gg/interrupted-rebase-operation.json");
+    let marker: Value = serde_json::from_slice(&fs::read(&marker_path).unwrap()).unwrap();
+    assert_eq!(marker["operation_id"], operation_id);
+
+    fs::write(stack.repo.join(IDS[1]), IDS[1]).unwrap();
+    checked_git(&stack.repo, &["add", IDS[1]]);
+    checked_git(&stack.repo, &["config", "core.editor", "true"]);
+    let (ok, out, err) = stack.gg(&["continue"], "CONFLICTING", "");
+    assert!(ok, "gg continue failed: {out}\n{err}");
+
+    assert_eq!(
+        operation_record_ids(&stack.repo)
+            .difference(&operations_before)
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>(),
+        [operation_id.clone()].into_iter().collect(),
+        "continue must not create a second operation"
+    );
+    let record = operation_record(&stack.repo, &operation_id);
+    assert_eq!(record["status"], "committed", "{record}");
+    assert!(!marker_path.exists(), "continue must clear the marker");
+}
+
+#[test]
+fn sync_rebase_conflict_abort_clears_exact_marker_and_restores_stack() {
+    let stack = Stack::landed(false, false);
+    stack.advance_origin_with_survivor_conflict();
+    let operations_before = operation_record_ids(&stack.repo);
+
+    let (ok, out, err) = stack.gg(
+        &["sync", "--rebase-if-needed", "--until", "2", "--no-verify"],
+        "CONFLICTING",
+        "",
+    );
+    assert!(!ok, "conflicting sync unexpectedly succeeded: {out}\n{err}");
+
+    let new_ids = operation_record_ids(&stack.repo)
+        .difference(&operations_before)
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(new_ids.len(), 1, "conflict must use one sync operation");
+    let operation_id = new_ids.into_iter().next().unwrap();
+    let marker_path = stack.repo.join(".git/gg/interrupted-rebase-operation.json");
+    let marker: Value = serde_json::from_slice(&fs::read(&marker_path).unwrap()).unwrap();
+    assert_eq!(marker["operation_id"], operation_id);
+
+    let (ok, out, err) = stack.gg(&["abort"], "CONFLICTING", "");
+    assert!(ok, "gg abort failed: {out}\n{err}");
+
+    assert!(!marker_path.exists(), "abort must clear the marker");
+    assert!(!stack.repo.join(".git/rebase-merge").exists());
+    assert!(!stack.repo.join(".git/rebase-apply").exists());
+    assert_eq!(
+        checked_git(&stack.repo, &["rev-parse", "HEAD"]),
+        stack.commits[2],
+        "abort must restore the pre-rebase stack tip"
+    );
+    assert_eq!(
+        operation_record_ids(&stack.repo)
+            .difference(&operations_before)
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>(),
+        [operation_id.clone()].into_iter().collect(),
+        "abort must not create or discard a different operation"
+    );
+    let record = operation_record(&stack.repo, &operation_id);
+    assert_eq!(record["kind"], "sync", "{record}");
+    assert_eq!(
+        record["status"], "pending",
+        "the existing abort contract leaves the rolled-back record for stale-pending recovery"
+    );
+}
+
+#[test]
+fn sync_rebase_conflict_surfaces_marker_failure_with_conflict_context() {
+    let stack = Stack::landed(false, false);
+    stack.advance_origin_with_survivor_conflict();
+    let operations_before = operation_record_ids(&stack.repo);
+    let marker_tmp = stack
+        .repo
+        .join(".git/gg/interrupted-rebase-operation.json.tmp");
+    fs::create_dir(&marker_tmp).unwrap();
+
+    let (ok, out, err) = stack.gg(
+        &["sync", "--rebase-if-needed", "--until", "2", "--no-verify"],
+        "CONFLICTING",
+        "",
+    );
+
+    assert!(!ok, "conflicting sync unexpectedly succeeded: {out}\n{err}");
+    let error = format!("{out}{err}");
+    assert!(error.to_lowercase().contains("conflict"), "{error}");
+    assert!(
+        error.contains("failed to remember interrupted sync operation"),
+        "{error}"
+    );
+    let new_ids = operation_record_ids(&stack.repo)
+        .difference(&operations_before)
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        new_ids.len(),
+        1,
+        "marker failure must not duplicate the operation"
+    );
+    let operation_id = new_ids.into_iter().next().unwrap();
+    let record = operation_record(&stack.repo, &operation_id);
+    assert_eq!(record["kind"], "sync", "{record}");
+    assert_eq!(record["status"], "pending", "{record}");
+    assert!(
+        !stack
+            .repo
+            .join(".git/gg/interrupted-rebase-operation.json")
+            .exists(),
+        "failed marker write must not fabricate a usable marker"
+    );
+
+    fs::remove_dir(marker_tmp).unwrap();
+    checked_git(&stack.repo, &["rebase", "--abort"]);
+}
+
+#[test]
+fn completed_retarget_segment_is_finalized_before_later_validation_error() {
+    let stack = Stack::landed(false, false);
+    let operations_before = operation_record_ids(&stack.repo);
+
+    let (ok, out, err) = stack.gg(
+        &["sync", "--rebase-if-needed", "--until", "2", "--no-verify"],
+        "MERGEABLE",
+        "stale-target",
+    );
+
+    assert!(!ok, "stale retarget unexpectedly succeeded: {out}\n{err}");
+    assert!(format!("{out}{err}").contains("does not report main as its target"));
+    let retarget_id = stack.retarget_operation_id();
+    let new_ids = operation_record_ids(&stack.repo)
+        .difference(&operations_before)
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(new_ids, [retarget_id.clone()].into_iter().collect());
+    let record = operation_record(&stack.repo, &retarget_id);
+    assert_eq!(record["status"], "committed", "{record}");
+    assert_eq!(record["touched_remote"], true, "{record}");
+    stack.assert_provider_requests(
+        &[
+            "--version",
+            "auth status",
+            "pr view 2",
+            "pr view 2",
+            "pr edit 2 --base main",
+            "pr view 2",
+        ],
+        &["pr edit 2 --base main"],
+    );
+}
+
+#[test]
+fn no_retarget_keeps_rebase_and_lint_in_original_segment() {
+    let stack = Stack::landed(false, false);
+    fs::write(stack.bin.join("base2"), "main").unwrap();
+    let lint = stack.bin.join("lint-with-operation-id");
+    executable(
+        &lint,
+        r#"#!/bin/sh
+set -eu
+dir=$(dirname "$0")
+pending=
+for record in "$TEST_GIT_DIR"/gg/operations/*.json; do
+  grep -q '"status": "pending"' "$record" || continue
+  [ -z "$pending" ] || { echo 'multiple pending operations' >&2; exit 1; }
+  pending=$(basename "$record" .json)
+done
+[ -n "$pending" ] || { echo 'missing pending operation' >&2; exit 1; }
+printf '%s\n' "$pending" >> "$dir/lint-operation-ids"
+"#,
+    );
+    let config_path = stack.repo.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["defaults"]["lint"] = json!([lint.to_string_lossy()]);
+    fs::write(config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+    let operations_before = operation_record_ids(&stack.repo);
+
+    let (ok, out, err) = stack.gg(
+        &[
+            "sync",
+            "--rebase-if-needed",
+            "--until",
+            "2",
+            "--lint",
+            "--no-verify",
+        ],
+        "CONFLICTING",
+        "",
+    );
+
+    assert!(ok, "sync failed without retargeting: {out}\n{err}");
+    assert!(
+        !stack.bin.join("retarget-operation-id").exists(),
+        "the already-correct target must not be retargeted"
+    );
+    let lint_ids = fs::read_to_string(stack.bin.join("lint-operation-ids"))
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(lint_ids.len(), 2, "one lint request per phase expected");
+    assert_eq!(
+        lint_ids[1], lint_ids[0],
+        "ordinary rebase/lint work must remain in the preparatory segment"
+    );
+    let operation_id = lint_ids[0].clone();
+    let new_ids = operation_record_ids(&stack.repo)
+        .difference(&operations_before)
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(new_ids, [operation_id.clone()].into_iter().collect());
+    let record = operation_record(&stack.repo, &operation_id);
+    assert_eq!(record["status"], "committed", "{record}");
+}
+
+#[test]
+fn successor_segment_is_finalized_when_following_lint_fails() {
+    let stack = Stack::landed(false, false);
+    let lint = stack.bin.join("lint-by-segment");
+    executable(
+        &lint,
+        r#"#!/bin/sh
+set -eu
+dir=$(dirname "$0")
+pending=
+for record in "$TEST_GIT_DIR"/gg/operations/*.json; do
+  grep -q '"status": "pending"' "$record" || continue
+  [ -z "$pending" ] || { echo 'multiple pending operations' >&2; exit 1; }
+  pending=$(basename "$record" .json)
+done
+[ -n "$pending" ] || { echo 'missing pending operation' >&2; exit 1; }
+printf '%s\n' "$pending" >> "$dir/lint-operation-ids"
+[ "$(wc -l < "$dir/lint-operation-ids")" -lt 2 ]
+"#,
+    );
+    let config_path = stack.repo.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["defaults"]["lint"] = json!([lint.to_string_lossy()]);
+    fs::write(config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+    let operations_before = operation_record_ids(&stack.repo);
+
+    let (ok, out, err) = stack.gg(
+        &[
+            "sync",
+            "--rebase-if-needed",
+            "--until",
+            "2",
+            "--lint",
+            "--no-verify",
+        ],
+        "CONFLICTING",
+        "",
+    );
+
+    assert!(!ok, "second lint unexpectedly succeeded: {out}\n{err}");
+    assert!(format!("{out}{err}").contains("Lint failed"));
+    let lint_ids = fs::read_to_string(stack.bin.join("lint-operation-ids"))
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(lint_ids.len(), 2, "one lint request per phase expected");
+    let retarget_id = stack.retarget_operation_id();
+    assert_eq!(lint_ids[0], retarget_id);
+    assert_ne!(lint_ids[1], retarget_id, "later mutation needs a successor");
+    let new_ids = operation_record_ids(&stack.repo)
+        .difference(&operations_before)
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        new_ids,
+        lint_ids.iter().cloned().collect(),
+        "every opened sync segment must be captured"
+    );
+    for id in &lint_ids {
+        let record = operation_record(&stack.repo, id);
+        assert_eq!(record["status"], "committed", "segment {id}: {record}");
+    }
+    assert_eq!(
+        operation_record(&stack.repo, &retarget_id)["touched_remote"],
+        true
+    );
+    let successor = operation_record(&stack.repo, &lint_ids[1]);
+    assert_eq!(successor["touched_remote"], false, "{successor}");
+    assert_eq!(successor["remote_effects"], json!([]), "{successor}");
+    stack.assert_provider_requests(
+        &[
+            "--version",
+            "auth status",
+            "pr view 2",
+            "pr view 2",
+            "pr edit 2 --base main",
+            "pr view 2",
+            "pr view 2",
+            "pr view 3",
+        ],
+        &["pr edit 2 --base main"],
+    );
 }
 
 #[test]

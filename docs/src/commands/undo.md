@@ -28,9 +28,19 @@ long-running conflict) are never pruned.
 Every mutating `gg` command (`sc`, `drop`, `split`, `unstack`, `rebase`, `reorder`,
 `absorb`, `reconcile`, `checkout`, `mv`/`first`/`last`/`prev`/`next`,
 `clean`, `sync`, `land`, and `run --amend`) now snapshots the refs it
-will touch before mutating and finalises the record on success. `gg
-undo` replays the `refs_before` snapshot of the target record, moving
+will touch before mutating and finalises the record on success. `gg undo`
+replays the `refs_before` snapshot of the target record, moving
 refs back to where they were.
+
+One command invocation can own more than one operation record when a completed
+remote mutation must be separated from later work. In particular,
+`gg sync --rebase-if-needed` finalizes a successful review retarget before it
+opens a successor segment for replay, lint, or publication. Run
+`gg undo --list --json` and inspect all records that match the invocation before
+choosing an ID. Do not infer the target from timestamps or assume the newest
+record represents the earlier remote mutation. The remote-touched retarget
+segment refuses local undo, while a later local-only successor can be targeted
+separately if its ref snapshot is still current.
 
 If one of those operations pauses on a rebase conflict, resolving the
 conflict and running `gg continue` finalises the original operation

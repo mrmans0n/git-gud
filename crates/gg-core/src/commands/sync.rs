@@ -16,7 +16,7 @@ use crate::github_stacks::{
     reconcile_with_gh_before_mutation, GithubStackAction, GithubStackReason, GithubStackSyncResult,
 };
 use crate::managed_body;
-use crate::operations::{OperationGuard, OperationKind, RemoteEffect, SnapshotScope};
+use crate::operations::{self, OperationGuard, OperationKind, RemoteEffect, SnapshotScope};
 use crate::output::{
     print_json, StreamingJson, SyncEntryResultJson, SyncMetadataJson, SyncResponse, SyncResultJson,
     SyncStreamingEvent, SyncStreamingResponse, OUTPUT_VERSION,
@@ -33,6 +33,126 @@ struct NavEntrySnapshot {
     pr_state: stack_nav::PrEntryState,
     /// Index into `json_entries` so we can attach the nav action result.
     json_index: usize,
+}
+
+struct SyncSegment {
+    guard: Option<OperationGuard>,
+    remote_effects: Vec<RemoteEffect>,
+    touched_remote: bool,
+}
+
+impl SyncSegment {
+    fn new() -> Self {
+        Self {
+            guard: None,
+            remote_effects: Vec::new(),
+            touched_remote: false,
+        }
+    }
+
+    fn ensure_started(&mut self, repo: &Repository, config: &Config) -> Result<()> {
+        if self.guard.is_none() {
+            self.guard = Some(git::begin_recorded_op(
+                repo,
+                config,
+                OperationKind::Sync,
+                std::env::args().skip(1).collect(),
+                None,
+                SnapshotScope::AllUserBranches,
+            )?);
+        }
+        Ok(())
+    }
+
+    fn guard_mut(&mut self) -> &mut OperationGuard {
+        self.guard.as_mut().expect("sync segment must be started")
+    }
+
+    fn mark_remote_before_attempt(&mut self) -> Result<()> {
+        self.guard_mut().mark_touched_remote_before_attempt()?;
+        self.touched_remote = true;
+        Ok(())
+    }
+
+    fn mark_remote(&mut self) {
+        self.guard_mut().mark_touched_remote();
+        self.touched_remote = true;
+    }
+
+    fn record_remote_effect(&mut self, effect: RemoteEffect) {
+        self.guard_mut().record_remote_effect(effect.clone());
+        self.remote_effects.push(effect);
+        self.touched_remote = true;
+    }
+
+    fn record_remote_effect_durable(&mut self, effect: RemoteEffect) -> Result<()> {
+        self.guard_mut()
+            .record_remote_effect_durable(effect.clone())?;
+        self.remote_effects.push(effect);
+        self.touched_remote = true;
+        Ok(())
+    }
+
+    fn finish(&mut self, repo: &Repository, config: &Config) -> Result<()> {
+        let Some(guard) = self.guard.take() else {
+            return Ok(());
+        };
+        guard.finalize_with_scope(
+            repo,
+            config,
+            SnapshotScope::AllUserBranches,
+            std::mem::take(&mut self.remote_effects),
+            std::mem::take(&mut self.touched_remote),
+        )
+    }
+
+    fn finish_result<T>(
+        &mut self,
+        repo: &Repository,
+        config: &Config,
+        result: Result<T>,
+    ) -> Result<T> {
+        match (result, self.finish(repo, config)) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Err(error), Err(finalize_error)) => Err(GgError::Other(format!(
+                "{error}; additionally failed to finalize sync operation: {finalize_error}"
+            ))),
+        }
+    }
+
+    fn finish_on_error<T, E>(
+        &mut self,
+        repo: &Repository,
+        config: &Config,
+        result: std::result::Result<T, E>,
+    ) -> Result<T>
+    where
+        E: Into<GgError>,
+    {
+        match result {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                let error = error.into();
+                if matches!(error, GgError::RebaseConflict) || git::is_rebase_in_progress(repo) {
+                    let guard = self.guard.as_ref().expect(
+                        "an interrupted sync rebase must belong to the active sync operation",
+                    );
+                    if let Err(marker_error) =
+                        operations::remember_interrupted_rebase_operation(repo, guard.id())
+                    {
+                        return Err(GgError::Other(format!(
+                            "{error}; additionally failed to remember interrupted sync operation {}: {marker_error}",
+                            guard.id()
+                        )));
+                    }
+                    Err(error)
+                } else {
+                    self.finish_result(repo, config, Err(error))
+                }
+            }
+        }
+    }
 }
 
 fn github_stack_preflight_skip(
@@ -381,6 +501,18 @@ fn print_prune_deferrals(deferrals: &[String]) {
     }
 }
 
+fn has_pending_remote_entry_deletion(config: &Config, stack: &Stack) -> bool {
+    config.pending_remote_branch_deletions.iter().any(|intent| {
+        matches!(
+            git::parse_entry_branch(&intent.branch),
+            Some((ref user, ref name, ref entry_id))
+                if user == &stack.username
+                    && name == &stack.name
+                    && git::normalize_gg_id(entry_id).is_some()
+        )
+    })
+}
+
 /// Prune remote branches of dropped entries, appending deferrals to `warnings`.
 #[allow(clippy::too_many_arguments)]
 fn prune_stale_remote_entry_branches_for_operation(
@@ -388,9 +520,7 @@ fn prune_stale_remote_entry_branches_for_operation(
     provider: Option<&Provider>,
     stack: &Stack,
     config: &mut Config,
-    guard: &mut OperationGuard,
-    remote_effects: &mut Vec<RemoteEffect>,
-    touched_remote: &mut bool,
+    segment: &mut SyncSegment,
     warnings: &mut Vec<String>,
 ) -> Result<()> {
     let current_branches = stack
@@ -406,13 +536,10 @@ fn prune_stale_remote_entry_branches_for_operation(
         &current_branches,
         config,
         |effect| {
-            *touched_remote = true;
             if let Some(effect) = effect {
-                remote_effects.push(effect.clone());
-                guard.record_remote_effect(effect);
-                Ok(())
+                segment.record_remote_effect_durable(effect)
             } else {
-                guard.mark_touched_remote_before_attempt()
+                segment.mark_remote_before_attempt()
             }
         },
     )?;
@@ -439,26 +566,14 @@ pub fn run(
     let git_dir = repo.commondir();
     git::signal_sync_test_before_lock()?;
     let _lock = git::acquire_operation_lock(&repo, "sync")?;
+    if git::is_rebase_in_progress(&repo) {
+        return Err(GgError::Other(
+            "A rebase is in progress. Run `gg continue` to continue or `gg abort` to cancel."
+                .to_string(),
+        ));
+    }
     git::wait_for_sync_test_release()?;
     let mut config = Config::load_with_global(git_dir)?;
-
-    // Config is authoritative only after the operation lock is held. Record
-    // the operation from that same locked snapshot before mutating anything.
-    let mut guard = git::begin_recorded_op(
-        &repo,
-        &config,
-        OperationKind::Sync,
-        std::env::args().skip(1).collect(),
-        None,
-        SnapshotScope::AllUserBranches,
-    )?;
-
-    // Remote effects are persisted incrementally via `guard.record_remote_effect`
-    // / `guard.mark_touched_remote` so a mid-loop failure leaves an accurate
-    // trail (design §4.4). These locals mirror what has been recorded so the
-    // success-path finalize can replay the same values without a disk read.
-    let mut remote_effects: Vec<RemoteEffect> = Vec::new();
-    let mut touched_remote = false;
 
     // Apply config defaults to CLI flags:
     // - draft: CLI flag OR config setting (either one enables drafts)
@@ -468,7 +583,8 @@ pub fn run(
     let update_descriptions = update_descriptions || config.get_sync_update_descriptions();
     let update_title = update_title || config.get_sync_update_title();
 
-    // Load stack early to validate --until
+    // Load stack early to validate --until and decide whether sync can remain a
+    // provider-free no-op.
     let initial_stack = Stack::load(&repo, &config)?;
     // Keep the caller's target identity from the stack they could see before
     // fetching. Do not interpret a position a second time on a shorter stack.
@@ -477,14 +593,19 @@ pub fn run(
         .map(|target| resolve_target(&initial_stack, target))
         .transpose()?
         .map(|pos| &initial_stack.entries[pos - 1]);
-    let conditional_base = if rebase_if_needed {
-        git::fetch_and_prune()?;
-        let oid = repo.refname_to_id(&format!("refs/remotes/origin/{}", initial_stack.base))?;
-        git::validate_sync_base(&repo, &initial_stack, oid)?;
-        Some(oid)
+    let has_pending_deletion = has_pending_remote_entry_deletion(&config, &initial_stack);
+    let provider = if initial_stack.is_empty() && !has_pending_deletion {
+        Provider::detect(&repo).ok()
     } else {
-        None
+        let provider = Provider::detect(&repo)?;
+        provider.check_installed()?;
+        provider.check_auth()?;
+        Some(provider)
     };
+    let mut segment = SyncSegment::new();
+    if !initial_stack.is_empty() || has_pending_deletion {
+        segment.ensure_started(&repo, &config)?;
+    }
     let mut warnings: Vec<String> = initial_stack
         .prefix_mismatch(&config)
         .map(|mismatch| mismatch.warning_message())
@@ -497,16 +618,19 @@ pub fn run(
     }
     if initial_stack.is_empty() {
         let warnings_before_prune = warnings.len();
-        prune_stale_remote_entry_branches_for_operation(
-            &repo,
-            Provider::detect(&repo).ok().as_ref(),
-            &initial_stack,
-            &mut config,
-            &mut guard,
-            &mut remote_effects,
-            &mut touched_remote,
-            &mut warnings,
-        )?;
+        if has_pending_deletion {
+            if let Err(error) = prune_stale_remote_entry_branches_for_operation(
+                &repo,
+                provider.as_ref(),
+                &initial_stack,
+                &mut config,
+                &mut segment,
+                &mut warnings,
+            ) {
+                return segment.finish_result(&repo, &config, Err(error));
+            }
+        }
+        segment.finish(&repo, &config)?;
         if !json && !jsonl {
             print_prune_deferrals(&warnings[warnings_before_prune..]);
         }
@@ -542,50 +666,87 @@ pub fn run(
                 },
             });
         }
-        guard.finalize_with_scope(
-            &repo,
-            &config,
-            SnapshotScope::AllUserBranches,
-            remote_effects,
-            touched_remote,
-        )?;
         return Ok(());
     }
 
-    // Detect and check provider
-    let provider = Provider::detect(&repo)?;
-    provider.check_installed()?;
-    provider.check_auth()?;
+    let provider = provider.expect("non-empty sync has a provider");
+    let conditional_base = if rebase_if_needed {
+        segment.finish_on_error(&repo, &config, git::fetch_and_prune())?;
+        let oid = segment.finish_on_error(
+            &repo,
+            &config,
+            repo.refname_to_id(&format!("refs/remotes/origin/{}", initial_stack.base)),
+        )?;
+        segment.finish_on_error(
+            &repo,
+            &config,
+            git::validate_sync_base(&repo, &initial_stack, oid),
+        )?;
+        Some(oid)
+    } else {
+        None
+    };
 
     if conditional_base.is_none() {
-        git::fetch_and_prune()?;
+        segment.finish_on_error(&repo, &config, git::fetch_and_prune())?;
     }
-    let landed = conditional_base
-        .map(|base| after_land::landed_prefix(&repo, &initial_stack, &provider, base))
-        .transpose()?
+    let landed = segment
+        .finish_on_error(
+            &repo,
+            &config,
+            conditional_base
+                .map(|base| after_land::landed_prefix(&repo, &initial_stack, &provider, base))
+                .transpose(),
+        )?
         .flatten();
     let skipped = landed.as_ref().map_or(0, |p| p.len);
     let mut rebased_before_sync = false;
     if let (Some(base), Some(prefix)) = (conditional_base, &landed) {
         if prefix.rewritten {
-            after_land::rebase_survivors(&repo, &initial_stack, &provider, base, prefix.len)?;
+            segment.finish_on_error(
+                &repo,
+                &config,
+                after_land::rebase_survivors(
+                    &repo,
+                    &initial_stack,
+                    &provider,
+                    base,
+                    prefix.len,
+                    || Ok(()),
+                ),
+            )?;
             rebased_before_sync = true;
         } else {
-            git::record_sync_base(&repo, &initial_stack, base)?;
+            segment.finish_on_error(
+                &repo,
+                &config,
+                git::record_sync_base(&repo, &initial_stack, base),
+            )?;
         }
     } else if !no_rebase_check {
-        rebased_before_sync = maybe_rebase_if_base_is_behind(
+        rebased_before_sync = segment.finish_on_error(
             &repo,
             &config,
-            &initial_stack.base,
-            json,
-            jsonl,
-            || match conditional_base {
-                Some(base) => {
-                    after_land::rebase_survivors(&repo, &initial_stack, &provider, base, 0)
-                }
-                None => crate::commands::rebase::run_with_repo(&repo, None, json || jsonl, false),
-            },
+            maybe_rebase_if_base_is_behind(
+                &repo,
+                &config,
+                &initial_stack.base,
+                json,
+                jsonl,
+                || match conditional_base {
+                    Some(base) => after_land::rebase_survivors(
+                        &repo,
+                        &initial_stack,
+                        &provider,
+                        base,
+                        0,
+                        || Ok(()),
+                    ),
+                    None => {
+                        crate::commands::rebase::run_with_repo(&repo, None, json || jsonl, false)
+                    }
+                },
+            ),
         )?;
     }
 
@@ -669,44 +830,90 @@ pub fn run(
 
     let end_position =
         |stack: &Stack| sync_end_position(stack, selected, skipped, initial_stack.len());
-    let mut stack = Stack::load(&repo, &config)?;
-    let mut end_pos = end_position(&stack)?;
+    let (mut stack, mut end_pos) = segment.finish_on_error(
+        &repo,
+        &config,
+        Stack::load(&repo, &config).and_then(|stack| {
+            let end_pos = end_position(&stack)?;
+            Ok((stack, end_pos))
+        }),
+    )?;
     if landed.is_some() && !rebased_before_sync && end_pos > 0 {
-        after_land::check_preserved_metadata(&repo, &stack)?;
+        segment.finish_on_error(
+            &repo,
+            &config,
+            after_land::check_preserved_metadata(&repo, &stack),
+        )?;
     }
-    lint_before_sync(&stack, end_pos)?;
+    if let Err(error) = lint_before_sync(&stack, end_pos) {
+        return segment.finish_on_error(&repo, &config, Err(error));
+    }
     if run_lint {
-        stack = Stack::load(&repo, &config)?;
-        end_pos = end_position(&stack)?;
+        (stack, end_pos) = segment.finish_on_error(
+            &repo,
+            &config,
+            Stack::load(&repo, &config).and_then(|stack| {
+                let end_pos = end_position(&stack)?;
+                Ok((stack, end_pos))
+            }),
+        )?;
     }
     let mut retargeted_pr = None;
+    let mut retarget_started = false;
     if let (Some(base), Some(prefix)) = (conditional_base, &landed) {
         if !prefix.rewritten && end_pos > 0 {
             let first = &initial_stack.entries[skipped];
-            let needs_rebase = after_land::needs_rebase(
+            let needs_rebase_result = after_land::needs_rebase(
                 &repo,
                 &stack,
                 first,
                 prefix.previous_target.as_deref(),
                 &provider,
                 || {
-                    guard.mark_touched_remote_before_attempt()?;
-                    touched_remote = true;
+                    segment.mark_remote_before_attempt()?;
+                    retarget_started = true;
                     retargeted_pr = first.mr_number;
                     Ok(())
                 },
-            )?;
+            );
+            let needs_rebase = match needs_rebase_result {
+                Ok(needs_rebase) => {
+                    if retarget_started {
+                        segment.finish(&repo, &config)?;
+                    }
+                    needs_rebase
+                }
+                Err(error) => return segment.finish_result(&repo, &config, Err(error)),
+            };
             if needs_rebase || stack.entries[0].oid != first.oid {
                 // Lint may have amended commits. Replay the current survivors,
                 // then lint the exact commits that will be published.
-                after_land::rebase_survivors(&repo, &stack, &provider, base, 0)?;
+                let replay =
+                    after_land::rebase_survivors(&repo, &stack, &provider, base, 0, || {
+                        segment.ensure_started(&repo, &config)
+                    });
+                segment.finish_on_error(&repo, &config, replay)?;
                 rebased_before_sync = true;
-                stack = Stack::load(&repo, &config)?;
-                end_pos = end_position(&stack)?;
-                lint_before_sync(&stack, end_pos)?;
+                (stack, end_pos) = segment.finish_on_error(
+                    &repo,
+                    &config,
+                    Stack::load(&repo, &config).and_then(|stack| {
+                        let end_pos = end_position(&stack)?;
+                        Ok((stack, end_pos))
+                    }),
+                )?;
+                if let Err(error) = lint_before_sync(&stack, end_pos) {
+                    return segment.finish_on_error(&repo, &config, Err(error));
+                }
                 if run_lint {
-                    stack = Stack::load(&repo, &config)?;
-                    end_pos = end_position(&stack)?;
+                    (stack, end_pos) = segment.finish_on_error(
+                        &repo,
+                        &config,
+                        Stack::load(&repo, &config).and_then(|stack| {
+                            let end_pos = end_position(&stack)?;
+                            Ok((stack, end_pos))
+                        }),
+                    )?;
                 }
             }
         }
@@ -714,16 +921,20 @@ pub fn run(
 
     if end_pos == 0 {
         let warnings_before_prune = warnings.len();
-        prune_stale_remote_entry_branches_for_operation(
-            &repo,
-            Some(&provider),
-            &stack,
-            &mut config,
-            &mut guard,
-            &mut remote_effects,
-            &mut touched_remote,
-            &mut warnings,
-        )?;
+        if has_pending_remote_entry_deletion(&config, &stack) {
+            segment.ensure_started(&repo, &config)?;
+            if let Err(error) = prune_stale_remote_entry_branches_for_operation(
+                &repo,
+                Some(&provider),
+                &stack,
+                &mut config,
+                &mut segment,
+                &mut warnings,
+            ) {
+                return segment.finish_result(&repo, &config, Err(error));
+            }
+        }
+        segment.finish(&repo, &config)?;
         if !json && !jsonl {
             print_prune_deferrals(&warnings[warnings_before_prune..]);
         }
@@ -758,23 +969,18 @@ pub fn run(
                 },
             });
         }
-        guard.finalize_with_scope(
-            &repo,
-            &config,
-            SnapshotScope::AllUserBranches,
-            remote_effects,
-            touched_remote,
-        )?;
         return Ok(());
     }
 
+    segment.ensure_started(&repo, &config)?;
     if !json && !jsonl {
         println!("{}", style("Normalizing GG metadata...").dim());
     }
     // Intentional: sync always enforces GG-ID / GG-Parent invariants for the
     // stack so branch/PR mappings stay stable, even if auto_add_gg_ids is false.
-    let metadata_counts = git::normalize_stack_metadata(&repo, &stack)?;
-    stack = Stack::load(&repo, &config)?;
+    let metadata_counts =
+        segment.finish_on_error(&repo, &config, git::normalize_stack_metadata(&repo, &stack))?;
+    stack = segment.finish_on_error(&repo, &config, Stack::load(&repo, &config))?;
 
     // Metadata normalization and lint amendments preserve entry order.
     let entries_to_sync = &stack.entries[..end_pos];
@@ -820,7 +1026,7 @@ pub fn run(
     for (i, entry) in entries_to_sync.iter().enumerate() {
         let gg_id = entry.gg_id.as_ref().unwrap();
         let entry_branch = stack.entry_branch_name(entry).unwrap();
-        let commit = repo.find_commit(entry.oid)?;
+        let commit = segment.finish_on_error(&repo, &config, repo.find_commit(entry.oid))?;
         let raw_title = strip_gg_id_from_message(&entry.title);
 
         if let Some(s) = streamer.as_mut() {
@@ -868,7 +1074,11 @@ pub fn run(
         let remote_oid = git::get_remote_branch_oid(&repo, &entry_branch);
         let needs_push = remote_oid != Some(entry.oid);
         if needs_push || !rebase_if_needed {
-            create_entry_branch(&repo, &stack, entry, &entry_branch)?;
+            segment.finish_on_error(
+                &repo,
+                &config,
+                create_entry_branch(&repo, &stack, entry, &entry_branch),
+            )?;
         }
 
         // Only push if the remote is different or doesn't exist
@@ -887,6 +1097,8 @@ pub fn run(
             // Push the branch (always force-push with lease because rebases change commit SHAs)
             // This is safe because each entry branch is owned by this stack
             // If --force is passed, use hard force as an escape hatch
+            let checkpoint = segment.mark_remote_before_attempt();
+            segment.finish_on_error(&repo, &config, checkpoint)?;
             let push_result = git::push_branch_with_confirmation(
                 &entry_branch,
                 true,
@@ -933,7 +1145,7 @@ pub fn run(
                 }
 
                 format_push_error(&e, &entry_branch);
-                return Err(e);
+                return segment.finish_result(&repo, &config, Err(e));
             }
 
             if let Some(s) = streamer.as_mut() {
@@ -956,9 +1168,7 @@ pub fn run(
                 branch: entry_branch.clone(),
                 force,
             };
-            remote_effects.push(effect.clone());
-            touched_remote = true;
-            guard.record_remote_effect(effect);
+            segment.record_remote_effect(effect);
         }
 
         // Determine target branch for MR — uses walk-back to skip merged predecessors.
@@ -1075,9 +1285,7 @@ pub fn run(
                                 number: result.number,
                                 url: result.url.clone(),
                             };
-                            remote_effects.push(created_effect.clone());
-                            touched_remote = true;
-                            guard.record_remote_effect(created_effect);
+                            segment.record_remote_effect(created_effect);
 
                             let close_comment = replacement_closing_comment(
                                 &provider,
@@ -1104,8 +1312,7 @@ pub fn run(
                                     ));
                                 }
                             } else {
-                                touched_remote = true;
-                                guard.mark_touched_remote();
+                                segment.mark_remote();
                             }
 
                             match provider.close_pr(pr_num) {
@@ -1117,9 +1324,7 @@ pub fn run(
                                             .map(|info| info.url.clone())
                                             .unwrap_or_default(),
                                     };
-                                    remote_effects.push(closed_effect.clone());
-                                    touched_remote = true;
-                                    guard.record_remote_effect(closed_effect);
+                                    segment.record_remote_effect(closed_effect);
                                 }
                                 Err(e) => {
                                     if !json && !jsonl {
@@ -1189,8 +1394,8 @@ pub fn run(
                         && (!rebase_if_needed
                             || pr_info.as_ref().is_none_or(|info| info.title != title))
                     {
-                        guard.mark_touched_remote_before_attempt()?;
-                        touched_remote = true;
+                        let checkpoint = segment.mark_remote_before_attempt();
+                        segment.finish_on_error(&repo, &config, checkpoint)?;
                         if let Err(e) = provider.update_pr_title(pr_num, &title) {
                             if !json && !jsonl {
                                 pb.println(format!(
@@ -1246,8 +1451,8 @@ pub fn run(
                                 if !new_body.is_empty()
                                     && (!rebase_if_needed || new_body != remote_body)
                                 {
-                                    guard.mark_touched_remote_before_attempt()?;
-                                    touched_remote = true;
+                                    let checkpoint = segment.mark_remote_before_attempt();
+                                    segment.finish_on_error(&repo, &config, checkpoint)?;
                                     if let Err(e) =
                                         provider.update_pr_description(pr_num, &new_body)
                                     {
@@ -1294,8 +1499,8 @@ pub fn run(
                         .and_then(|info| info.base_branch.as_deref())
                         != Some(target_branch.as_str());
                     if !rebase_if_needed || base_changed {
-                        guard.mark_touched_remote_before_attempt()?;
-                        touched_remote = true;
+                        let checkpoint = segment.mark_remote_before_attempt();
+                        segment.finish_on_error(&repo, &config, checkpoint)?;
                         match provider.update_pr_base(pr_num, &target_branch) {
                             Ok(()) => {
                                 review_changed |= base_changed;
@@ -1404,9 +1609,7 @@ pub fn run(
                             number: result.number,
                             url: result.url.clone(),
                         };
-                        remote_effects.push(effect.clone());
-                        touched_remote = true;
-                        guard.record_remote_effect(effect);
+                        segment.record_remote_effect(effect);
 
                         if !json && !jsonl {
                             let draft_label = if entry_draft { " (draft)" } else { "" };
@@ -1516,15 +1719,13 @@ pub fn run(
             Some(&provider),
             &stack,
             &mut config,
-            &mut guard,
-            &mut remote_effects,
-            &mut touched_remote,
+            &mut segment,
             &mut warnings,
         )
     };
     if let Err(error) = prune_result {
         pb.finish_and_clear();
-        return Err(error);
+        return segment.finish_result(&repo, &config, Err(error));
     }
 
     if !json && !jsonl {
@@ -1566,14 +1767,10 @@ pub fn run(
                     mode,
                     &stack.base,
                     &active_pr_numbers,
-                    || {
-                        touched_remote = true;
-                        guard.mark_touched_remote();
-                    },
+                    || segment.mark_remote(),
                 );
                 if outcome.mutation_attempted {
-                    touched_remote = true;
-                    guard.mark_touched_remote();
+                    segment.mark_remote();
                 }
                 outcome.result
             };
@@ -1865,7 +2062,10 @@ pub fn run(
     } // end nav-comment reconcile
 
     // Save updated config
-    config.save(git_dir)?;
+    if let Err(error) = config.save(git_dir) {
+        return segment.finish_result(&repo, &config, Err(error));
+    }
+    segment.finish(&repo, &config)?;
 
     if json {
         print_json(&SyncResponse {
@@ -1912,14 +2112,6 @@ pub fn run(
             entries_to_sync.len()
         );
     }
-
-    guard.finalize_with_scope(
-        &repo,
-        &config,
-        SnapshotScope::AllUserBranches,
-        remote_effects,
-        touched_remote,
-    )?;
 
     Ok(())
 }
@@ -2120,15 +2312,17 @@ mod tests {
         build_pr_payload, clean_title, compute_target_branch, description_with_replacement_note,
         ensure_draft_prefix_for_gitlab, github_stack_preflight_skip, is_wip_or_draft_prefix,
         mismatched_pr_head_branch, replacement_closing_comment, suspend_sync_progress,
-        sync_progress_bar,
+        sync_progress_bar, SyncSegment,
     };
-    use crate::config::GithubStacksIntegration;
+    use crate::config::{Config, GithubStacksIntegration};
     use crate::git;
     use crate::github_stacks::{GithubStackReason, GithubStackSyncResult};
+    use crate::operations::{OperationRecord, OperationStatus, RemoteEffect};
     use crate::output::{
         SyncEntryResultJson, SyncMetadataJson, SyncResponse, SyncResultJson, OUTPUT_VERSION,
     };
     use indicatif::{ProgressDrawTarget, TermLike};
+    use std::fs;
     use std::io;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -2138,6 +2332,46 @@ mod tests {
     #[derive(Debug)]
     struct FlushCountingTerm {
         flush_count: Arc<AtomicUsize>,
+    }
+
+    #[test]
+    fn failed_prune_checkpoint_cannot_be_committed_from_segment_memory() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(temp.path()).unwrap();
+        let config = Config::default();
+        let mut segment = SyncSegment::new();
+        segment.ensure_started(&repo, &config).unwrap();
+        let operation_id = segment.guard_mut().id().to_string();
+        let blocked_tmp = repo
+            .path()
+            .join("gg/operations")
+            .join(format!("{operation_id}.json.tmp"));
+        fs::create_dir(&blocked_tmp).unwrap();
+
+        let result = segment.record_remote_effect_durable(RemoteEffect::BranchDeleted {
+            remote: "origin".to_string(),
+            branch: "testuser/stack--c-1111111".to_string(),
+            prior_oid: Some("1111111111111111111111111111111111111111".to_string()),
+        });
+        assert!(result.is_err(), "blocked checkpoint unexpectedly succeeded");
+
+        fs::remove_dir(blocked_tmp).unwrap();
+        segment.finish(&repo, &config).unwrap();
+        let record: OperationRecord = serde_json::from_slice(
+            &fs::read(
+                repo.path()
+                    .join("gg/operations")
+                    .join(format!("{operation_id}.json")),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(record.status, OperationStatus::Committed);
+        assert!(
+            record.remote_effects.is_empty(),
+            "a failed durable checkpoint leaked into finalization"
+        );
+        assert!(!record.touched_remote);
     }
 
     impl TermLike for FlushCountingTerm {

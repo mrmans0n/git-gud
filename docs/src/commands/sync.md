@@ -32,6 +32,19 @@ Use `gg sync --rebase-if-needed` to publish the rest of a stack without restarti
 
 If a mapped parent was squashed, sync checks that the forge's merge result reached the base and that the original source matches the local entry. It rebases just the survivors in that case, or if the new target requires a rebase. A new entry without a published review has no mergeability verdict, so sync rebases it before publishing. If the review, source, or merge result cannot be verified, sync stops rather than guessing. A target edit can already have succeeded when this happens. Inspect the review and retry.
 
+A sync that edits that target records and finalizes the remote retarget as one
+operation segment before it starts any later replay, lint, or publication work.
+Those later mutations use a successor segment, so one `gg sync` invocation can
+produce more than one operation ID. This keeps a completed remote mutation from
+being hidden inside a later local failure. For recovery, inspect every matching
+record with `gg undo --list --json` instead of assuming one invocation has one
+record or selecting by newest timestamp. A remote-touched segment refuses local
+undo; a later local-only successor may be undoable when its recorded refs still
+match. If a rebase is paused, confirm the exact `operation_id` reported by
+`gg ls --json`, then run the argument-free `gg continue` or `gg abort`; those
+commands recover the operation named by the saved marker. Pass an operation ID
+explicitly only when targeting a completed record with `gg undo <operation_id>`.
+
 `--until` still names the entry from before the fetch, not a different entry that inherited its position. Lint skips landed entries. If the retarget requires a rebase, `--lint` checks the rebased commits again before pushing. Lint that changes files can still amend commits. Later `gg ls` commands use the confirmed base for this stack without moving your local base branch or checking it out in another worktree. When no parent has landed, the ordinary behind-base threshold and auto-rebase setting still apply.
 
 Before pushing, `gg sync` normalizes `GG-ID` and `GG-Parent` metadata for the stack. It keeps a surviving entry's existing `GG-Parent` when it identifies the actual Git parent on the confirmed base. `--rebase-if-needed` stops if unrelated trailer repairs would rewrite an otherwise unchanged published branch.

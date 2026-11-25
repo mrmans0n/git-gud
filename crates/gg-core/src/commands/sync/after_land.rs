@@ -232,6 +232,7 @@ pub(super) fn rebase_survivors(
     provider: &Provider,
     base: Oid,
     skip: usize,
+    before_mutation: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
     if git::current_branch_name(repo).as_deref() != Some(&stack.branch_name()) {
         return Err(GgError::Other(
@@ -257,6 +258,7 @@ pub(super) fn rebase_survivors(
     } else {
         stack.entries[skip - 1].oid
     };
+    before_mutation()?;
     // A successful replay can put merge commits from origin/<base> in our
     // history. Discovery (including `gg continue` after a conflict) must
     // exclude those commits even if refs/heads/<base> is still stale.

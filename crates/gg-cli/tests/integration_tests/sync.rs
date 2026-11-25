@@ -3,13 +3,19 @@ use crate::helpers::{
 };
 
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use nix::{
+    sys::signal::{kill, Signal},
+    unistd::Pid,
+};
+#[cfg(unix)]
+use std::os::unix::{fs::PermissionsExt, process::CommandExt};
 
 #[cfg(unix)]
 #[path = "sync_if_needed.rs"]
@@ -21,6 +27,50 @@ fn checked_git(repo: &Path, args: &[&str]) -> String {
     output.trim().to_string()
 }
 
+fn operation_record_ids(repo_path: &Path) -> BTreeSet<String> {
+    let operations_dir = repo_path.join(".git/gg/operations");
+    let Ok(entries) = fs::read_dir(operations_dir) else {
+        return BTreeSet::new();
+    };
+    entries
+        .filter_map(|entry| {
+            let entry = entry.expect("read operation record");
+            if !entry
+                .file_type()
+                .expect("read operation record file type")
+                .is_file()
+            {
+                return None;
+            }
+            entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.strip_suffix(".json"))
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+fn operation_record(repo_path: &Path, id: &str) -> Value {
+    serde_json::from_slice(
+        &fs::read(
+            repo_path
+                .join(".git/gg/operations")
+                .join(format!("{id}.json")),
+        )
+        .expect("read exact operation record"),
+    )
+    .expect("parse exact operation record")
+}
+
+#[cfg(unix)]
+fn write_executable(path: &Path, contents: &str) {
+    fs::write(path, contents).expect("write executable");
+    let mut permissions = fs::metadata(path).expect("stat executable").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).expect("make executable");
+}
+
 fn install_fake_gh(repo_path: &Path) -> std::ffi::OsString {
     let fake_bin = repo_path.join("fake-bin");
     fs::create_dir_all(&fake_bin).expect("Failed to create fake bin dir");
@@ -28,6 +78,10 @@ fn install_fake_gh(repo_path: &Path) -> std::ffi::OsString {
         fake_bin.join("gh"),
         r#"#!/bin/sh
 set -eu
+
+if [ -n "${GG_TEST_GH_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "$GG_TEST_GH_LOG"
+fi
 
 if [ "$1" = "--version" ]; then
   echo "gh version 2.0.0"
@@ -142,6 +196,203 @@ fn wait_for_file(path: &Path) {
     }
 }
 
+fn run_gg_bounded_with_env(
+    repo_path: &Path,
+    args: &[&str],
+    envs: &[(&str, &std::ffi::OsStr)],
+) -> (bool, String, String) {
+    run_gg_bounded_with_env_and_timeout(repo_path, args, envs, Duration::from_secs(30), None)
+}
+
+#[cfg(unix)]
+fn signal_process_group(process_group: u32, signal: Signal) {
+    let process_group = i32::try_from(process_group).expect("process group fits pid_t");
+    let _ = kill(Pid::from_raw(-process_group), signal);
+}
+
+fn stop_bounded_process(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let process_group = child.id();
+        signal_process_group(process_group, Signal::SIGTERM);
+        std::thread::sleep(Duration::from_secs(2));
+        signal_process_group(process_group, Signal::SIGKILL);
+    }
+    #[cfg(not(unix))]
+    let _ = child.kill();
+    child.wait().expect("reap stopped gg process");
+}
+
+fn run_gg_bounded_with_env_and_timeout(
+    repo_path: &Path,
+    args: &[&str],
+    envs: &[(&str, &std::ffi::OsStr)],
+    timeout: Duration,
+    readiness_path: Option<&Path>,
+) -> (bool, String, String) {
+    let test_home = repo_path.join(".git/test-home");
+    let output_dir = repo_path.join(".git/gg-test-output");
+    fs::create_dir_all(&test_home).expect("create bounded process home directory");
+    fs::create_dir_all(&output_dir).expect("create bounded process output directory");
+    let stdout_path = output_dir.join("stdout");
+    let stderr_path = output_dir.join("stderr");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_gg"));
+    command
+        .args(args)
+        .current_dir(repo_path)
+        .env("HOME", test_home)
+        .stdout(Stdio::from(
+            fs::File::create(&stdout_path).expect("create bounded stdout file"),
+        ))
+        .stderr(Stdio::from(
+            fs::File::create(&stderr_path).expect("create bounded stderr file"),
+        ));
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut child = command.spawn().expect("spawn bounded gg process");
+    if let Some(readiness_path) = readiness_path {
+        let setup_timeout = Duration::from_secs(10);
+        let setup_deadline = Instant::now() + setup_timeout;
+        while !readiness_path.exists() {
+            if Instant::now() >= setup_deadline {
+                stop_bounded_process(&mut child);
+                panic!(
+                    "gg setup timed out after {setup_timeout:?} waiting for {}\nstdout:\n{}\nstderr:\n{}",
+                    readiness_path.display(),
+                    fs::read_to_string(&stdout_path).expect("read setup-timeout stdout"),
+                    fs::read_to_string(&stderr_path).expect("read setup-timeout stderr")
+                );
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("poll bounded gg process") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            stop_bounded_process(&mut child);
+            panic!(
+                "gg timed out after {timeout:?}\nstdout:\n{}\nstderr:\n{}",
+                fs::read_to_string(&stdout_path).expect("read timed-out stdout"),
+                fs::read_to_string(&stderr_path).expect("read timed-out stderr")
+            );
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    (
+        status.success(),
+        fs::read_to_string(stdout_path).expect("read bounded stdout"),
+        fs::read_to_string(stderr_path).expect("read bounded stderr"),
+    )
+}
+
+#[test]
+fn operation_record_ids_accepts_only_regular_json_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo_path = temp.path();
+    let operations = repo_path.join(".git/gg/operations");
+    fs::create_dir_all(&operations).unwrap();
+    fs::write(operations.join("op-valid.json"), "{}").unwrap();
+    fs::write(operations.join("op-temp.json.tmp"), "{}").unwrap();
+    fs::write(operations.join("op-upper.JSON"), "{}").unwrap();
+    fs::write(operations.join("op-no-suffix"), "{}").unwrap();
+    fs::create_dir(operations.join("op-directory.json")).unwrap();
+
+    assert_eq!(
+        operation_record_ids(repo_path),
+        ["op-valid".to_string()].into_iter().collect()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn bounded_test_command_timeout_waits_for_readiness_and_stops_process_group() {
+    let (_temp, repo_path, _remote) = create_test_repo_with_remote();
+    write_remote_prune_config(&repo_path);
+    let (ok, out, err) = run_gg(&repo_path, &["co", "timeout-tree"]);
+    assert!(ok, "checkout failed: {out}\n{err}");
+    fs::write(repo_path.join("entry"), "entry").unwrap();
+    checked_git(&repo_path, &["add", "entry"]);
+    checked_git(&repo_path, &["commit", "-m", "Entry"]);
+
+    let fake_bin = repo_path.join(".git/timeout-bin");
+    fs::create_dir(&fake_bin).unwrap();
+    write_executable(
+        &fake_bin.join("timeout-child"),
+        r#"#!/bin/sh
+set -eu
+: > "$GG_TEST_TIMEOUT_HEARTBEAT"
+: > "$GG_TEST_TIMEOUT_CHILD_READY"
+while :; do printf x >> "$GG_TEST_TIMEOUT_HEARTBEAT"; sleep 0.05; done
+"#,
+    );
+    write_executable(
+        &fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+sleep 1
+"$(dirname "$0")/timeout-child" &
+while [ ! -f "$GG_TEST_TIMEOUT_CHILD_READY" ]; do sleep 0.01; done
+: > "$GG_TEST_TIMEOUT_READY"
+while :; do sleep 60; done
+"#,
+    );
+    let mut paths = vec![fake_bin];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let path = std::env::join_paths(paths).unwrap();
+    let readiness = repo_path.join(".git/timeout-ready");
+    let child_ready = repo_path.join(".git/timeout-child-ready");
+    let heartbeat = repo_path.join(".git/timeout-heartbeat");
+
+    let timed_out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_gg_bounded_with_env_and_timeout(
+            &repo_path,
+            &["sync", "--no-rebase-check"],
+            &[
+                ("PATH", path.as_os_str()),
+                ("GG_TEST_TIMEOUT_READY", readiness.as_os_str()),
+                ("GG_TEST_TIMEOUT_CHILD_READY", child_ready.as_os_str()),
+                ("GG_TEST_TIMEOUT_HEARTBEAT", heartbeat.as_os_str()),
+            ],
+            Duration::from_millis(300),
+            Some(&readiness),
+        )
+    }));
+    let panic = timed_out.expect_err("bounded command unexpectedly completed");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .expect("timeout panic must contain a message");
+    assert!(
+        message.contains("gg timed out after 300ms"),
+        "unexpected panic: {message}"
+    );
+    assert!(
+        readiness.exists(),
+        "execution deadline started before provider readiness"
+    );
+    wait_for_file(&heartbeat);
+    let heartbeat_len = fs::metadata(&heartbeat).unwrap().len();
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        heartbeat_len > 0,
+        "descendant did not write its heartbeat before timeout"
+    );
+    assert_eq!(
+        fs::metadata(&heartbeat).unwrap().len(),
+        heartbeat_len,
+        "timed-out descendant continued running after process-group cleanup"
+    );
+    fs::write(&heartbeat, "reused").expect("heartbeat file must be reusable after cleanup");
+    fs::remove_file(heartbeat).unwrap();
+}
+
 #[test]
 fn test_gg_sync_help_has_update_descriptions() {
     let (_temp_dir, repo_path) = create_test_repo();
@@ -189,7 +440,8 @@ fn test_gg_sync_jsonl_error_output_without_provider() {
     run_git(&repo_path, &["add", "."]);
     run_git(&repo_path, &["commit", "-m", "Test commit"]);
 
-    let (success, stdout, stderr) = run_gg(&repo_path, &["sync", "--jsonl"]);
+    let operations_before = operation_record_ids(&repo_path);
+    let (success, stdout, stderr) = run_gg_bounded_with_env(&repo_path, &["sync", "--jsonl"], &[]);
     assert!(!success, "sync --jsonl should fail without provider");
     assert!(
         stderr.trim().is_empty(),
@@ -211,6 +463,11 @@ fn test_gg_sync_jsonl_error_output_without_provider() {
         }
     }
     assert!(found_error, "--jsonl output must contain an error event");
+    assert_eq!(
+        operation_record_ids(&repo_path),
+        operations_before,
+        "provider preflight failure must not create an operation record"
+    );
 }
 
 #[test]
@@ -252,6 +509,105 @@ fn test_gg_sync_jsonl_empty_stack_emits_summary_only() {
         parsed["entries"].as_array().unwrap().is_empty(),
         "empty stack summary should include no entries"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_empty_stack_auth_failure_precedes_pending_remote_deletion() {
+    let (_temp_dir, repo_path, remote_path) = create_test_repo_with_remote();
+    write_remote_prune_config(&repo_path);
+    let (success, stdout, stderr) = run_gg(&repo_path, &["co", "empty-auth"]);
+    assert!(success, "checkout failed: {stdout}\n{stderr}");
+
+    let pending_branch = "testuser/empty-auth--c-1111111";
+    let expected_oid = checked_git(&repo_path, &["rev-parse", "HEAD"]);
+    checked_git(
+        &repo_path,
+        &[
+            "push",
+            "origin",
+            &format!("{expected_oid}:refs/heads/{pending_branch}"),
+        ],
+    );
+    let config_path = repo_path.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["pending_remote_branch_deletions"] = serde_json::json!([{
+        "remote": "origin",
+        "branch": pending_branch,
+        "expected_oid": expected_oid,
+        "source_operation_id": "op_test_pending_delete",
+        "state": "pending"
+    }]);
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    let pending_before = config["pending_remote_branch_deletions"].clone();
+
+    let fake_bin = repo_path.join("fake-auth-bin");
+    fs::create_dir(&fake_bin).unwrap();
+    let requests = repo_path.join(".git/provider-requests");
+    write_executable(
+        &fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$GG_TEST_PROVIDER_REQUESTS"
+if [ "$1" = "--version" ]; then
+  echo 'gh version 2.0.0'
+  exit 0
+fi
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  echo 'not authenticated' >&2
+  exit 1
+fi
+echo "unexpected provider mutation: $*" >&2
+exit 2
+"#,
+    );
+    write_executable(
+        &repo_path.join(".git/hooks/pre-push"),
+        "#!/bin/sh\nprintf 'push\n' >> \"$(git rev-parse --absolute-git-dir)/pushes\"\n",
+    );
+    let mut paths = vec![fake_bin];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let path = std::env::join_paths(paths).unwrap();
+    let operations_before = operation_record_ids(&repo_path);
+
+    let (success, stdout, stderr) = run_gg_bounded_with_env(
+        &repo_path,
+        &["sync", "--no-rebase-check"],
+        &[
+            ("PATH", path.as_os_str()),
+            ("GG_TEST_PROVIDER_REQUESTS", requests.as_os_str()),
+        ],
+    );
+
+    assert!(!success, "auth failure must stop sync: {stdout}\n{stderr}");
+    assert!(stderr.contains("Not authenticated with GitHub"), "{stderr}");
+    assert_eq!(
+        fs::read_to_string(&requests)
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
+        ["--version", "auth status"],
+        "only executable and auth preflight requests are allowed"
+    );
+    assert_eq!(operation_record_ids(&repo_path), operations_before);
+    assert!(
+        !repo_path.join(".git/pushes").exists(),
+        "unexpected push or deletion"
+    );
+    assert!(
+        run_git(
+            &remote_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{pending_branch}")
+            ]
+        )
+        .0,
+        "pending branch must not be deleted"
+    );
+    let config: Value = serde_json::from_slice(&fs::read(config_path).unwrap()).unwrap();
+    assert_eq!(config["pending_remote_branch_deletions"], pending_before);
 }
 
 #[test]
@@ -530,6 +886,72 @@ exit 1
     );
     assert!(!stdout.contains("Example configuration:"));
     assert!(!stdout.contains(r#""lint": ["cargo fmt", "cargo clippy -- -D warnings"]"#));
+}
+
+#[test]
+fn sync_lint_rebase_conflict_preserves_exact_pending_operation() {
+    let (_temp, repo, _remote) = create_test_repo_with_remote();
+    write_remote_prune_config(&repo);
+    let path = install_fake_gh(&repo);
+    let config_path = repo.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["defaults"]["lint"] = serde_json::json!([
+        "if [ \"$(git log -1 --format=%s)\" = \"Lower\" ]; then printf 'linted\\n' > conflict.txt; fi"
+    ]);
+    fs::write(config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+
+    let (success, stdout, stderr) = run_gg(&repo, &["co", "lint-rebase-conflict"]);
+    assert!(success, "checkout failed: {stdout}\n{stderr}");
+    fs::write(repo.join("conflict.txt"), "lower\n").unwrap();
+    checked_git(&repo, &["add", "conflict.txt"]);
+    checked_git(&repo, &["commit", "-m", "Lower\n\nGG-ID: c-1111111"]);
+    fs::write(repo.join("conflict.txt"), "descendant\n").unwrap();
+    checked_git(&repo, &["add", "conflict.txt"]);
+    checked_git(
+        &repo,
+        &[
+            "commit",
+            "-m",
+            "Descendant\n\nGG-ID: c-2222222\nGG-Parent: c-1111111",
+        ],
+    );
+    let operations_before = operation_record_ids(&repo);
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo,
+        &["sync", "--lint", "--no-rebase-check"],
+        &[("PATH", path.as_os_str())],
+    );
+
+    assert!(
+        !success,
+        "conflicting lint unexpectedly succeeded: {stdout}\n{stderr}"
+    );
+    let error = format!("{stdout}{stderr}");
+    assert!(
+        error.contains("Rebase conflict occurred. Resolve conflicts and run `gg continue`."),
+        "sync lost the original lint error: {error}"
+    );
+    assert!(
+        repo.join(".git/rebase-merge").exists() || repo.join(".git/rebase-apply").exists(),
+        "lint must leave the descendant replay conflict active"
+    );
+    let new_ids = operation_record_ids(&repo)
+        .difference(&operations_before)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(new_ids.len(), 1, "conflict must use one sync operation");
+    let operation_id = new_ids.into_iter().next().unwrap();
+    let operation = operation_record(&repo, &operation_id);
+    assert_eq!(operation["kind"], "sync", "{operation}");
+    let marker_path = repo.join(".git/gg/interrupted-rebase-operation.json");
+    assert_eq!(
+        (operation["status"].as_str(), marker_path.exists()),
+        (Some("pending"), true),
+        "lint conflict must preserve the pending operation and exact-ownership marker: {operation}"
+    );
+    let marker: Value = serde_json::from_slice(&fs::read(marker_path).unwrap()).unwrap();
+    assert_eq!(marker["operation_id"], operation_id);
 }
 
 #[test]
@@ -822,27 +1244,20 @@ fn test_sync_detects_uncommitted_changes() {
 
 #[test]
 fn test_sync_detects_rebase_in_progress() {
-    // Use a repo with remote to avoid "No origin remote" error
     let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
+    write_remote_prune_config(&repo_path);
+    let fake_path = install_fake_gh(&repo_path);
+    let gh_log = repo_path.join("fake-bin/gh-invocations.log");
 
-    // Set up config
-    let gg_dir = repo_path.join(".git/gg");
-    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
-    fs::write(
-        gg_dir.join("config.json"),
-        r#"{"defaults":{"branch_username":"testuser","auto_add_gg_ids":true}}"#,
-    )
-    .expect("Failed to write config");
+    let (success, stdout, stderr) = run_gg(&repo_path, &["co", "rebase-detection-test"]);
+    assert!(success, "checkout failed: {stdout}\n{stderr}");
 
-    // Create a stack
-    run_gg(&repo_path, &["co", "rebase-detection-test"]);
-
-    // Create a commit without GG-ID
+    // Leave metadata normalization work for sync so the old behavior advances
+    // beyond provider preflight and opens a segment before noticing the rebase.
     fs::write(repo_path.join("file1.txt"), "content1").expect("Failed to write file");
-    run_git(&repo_path, &["add", "."]);
-    run_git(&repo_path, &["commit", "-m", "Commit 1"]);
+    checked_git(&repo_path, &["add", "file1.txt"]);
+    checked_git(&repo_path, &["commit", "-m", "Commit 1"]);
 
-    // Simulate a rebase in progress
     let rebase_dir = repo_path.join(".git/rebase-merge");
     fs::create_dir_all(&rebase_dir).expect("Failed to create rebase-merge dir");
     fs::write(
@@ -850,28 +1265,62 @@ fn test_sync_detects_rebase_in_progress() {
         "refs/heads/testuser/rebase-detection-test",
     )
     .expect("Failed to write head-name");
-
-    // Run sync - should detect rebase in progress
-    let (success, stdout, stderr) = run_gg(&repo_path, &["sync"]);
-
-    assert!(!success, "Sync should fail when rebase is in progress");
-
-    let combined = format!("{}{}", stdout, stderr);
-
-    // Should mention rebase in progress (or fail on provider, which is also acceptable)
-    // The key is it should fail gracefully, not crash
-    assert!(
-        combined.contains("rebase")
-            || combined.contains("in progress")
-            || combined.contains("provider")
-            || combined.contains("glab")
-            || combined.contains("gh"),
-        "Should fail gracefully: {}",
-        combined
+    let marker_path = repo_path.join(".git/gg/interrupted-rebase-operation.json");
+    let marker_bytes = br#"{
+  "operation_id": "op_0000000000000_preexistingowner",
+  "sentinel": "preserve these exact bytes"
+}
+"#;
+    fs::write(&marker_path, marker_bytes).expect("write existing ownership marker");
+    let operations_before = operation_record_ids(&repo_path);
+    // A later fetch failure exercises the old broad `finish_on_error` path:
+    // it must not turn a rebase that predates sync into sync-owned state.
+    let missing_origin = repo_path.join("missing-origin.git");
+    checked_git(
+        &repo_path,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            missing_origin.to_str().expect("UTF-8 test path"),
+        ],
     );
 
-    // Clean up
-    fs::remove_dir_all(&rebase_dir).ok();
+    let (success, stdout, stderr) = run_gg_bounded_with_env(
+        &repo_path,
+        &["sync"],
+        &[
+            ("PATH", fake_path.as_os_str()),
+            ("GG_TEST_GH_LOG", gh_log.as_os_str()),
+        ],
+    );
+
+    assert!(!success, "sync should fail when a rebase is in progress");
+    assert_eq!(
+        fs::read(&marker_path).expect("read existing ownership marker"),
+        marker_bytes,
+        "sync must not claim a rebase that was already active"
+    );
+    assert_eq!(
+        operation_record_ids(&repo_path),
+        operations_before,
+        "rejecting a pre-existing rebase must not open a sync operation"
+    );
+    assert!(
+        !gh_log.exists(),
+        "rebase rejection must happen before provider preflight: {}",
+        fs::read_to_string(&gh_log).unwrap_or_default()
+    );
+
+    let combined = format!("{stdout}{stderr}");
+    assert!(
+        combined.contains("A rebase is in progress"),
+        "error must identify the active rebase: {combined}"
+    );
+    assert!(
+        combined.contains("gg continue") && combined.contains("gg abort"),
+        "error must explain how to resolve the active rebase: {combined}"
+    );
 }
 
 #[test]
@@ -1706,7 +2155,10 @@ exit 0
         .0
     );
     let operation = latest_operation(&repo_path);
-    assert_eq!(operation["status"], "pending");
+    assert_eq!(
+        operation["status"], "committed",
+        "post-mutation prune errors must finalize their segment"
+    );
     assert_eq!(operation["touched_remote"], true);
     let config: Value =
         serde_json::from_slice(&fs::read(repo_path.join(".git/gg/config.json")).unwrap()).unwrap();
@@ -1815,6 +2267,84 @@ fn test_sync_stops_when_fetch_fails() {
         stderr.contains("git fetch origin --prune failed"),
         "{stderr}"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_sync_marks_ambiguous_push_before_attempt() {
+    let (_temp, repo_path, remote_path) = create_test_repo_with_remote();
+    write_remote_prune_config(&repo_path);
+    let fake_path = install_fake_gh(&repo_path);
+    let (success, stdout, stderr) = run_gg(&repo_path, &["co", "ambiguous-push"]);
+    assert!(success, "checkout failed: {stdout}\n{stderr}");
+    checked_git(
+        &repo_path,
+        &["commit", "--allow-empty", "-m", "Entry\n\nGG-ID: c-1111111"],
+    );
+    let entry_branch = "testuser/ambiguous-push--c-1111111";
+    let real_git = Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .expect("locate git");
+    assert!(real_git.status.success());
+    let real_git = String::from_utf8(real_git.stdout)
+        .expect("git path is UTF-8")
+        .trim()
+        .to_string();
+    write_executable(
+        &repo_path.join("fake-bin/git"),
+        r#"#!/bin/sh
+set -eu
+if [ "$1" = "push" ] && [ "${4:-}" = "$GG_TEST_PUSH_BRANCH" ]; then
+  "$GG_TEST_REAL_GIT" "$@"
+  echo "simulated lost push response" >&2
+  exit 1
+fi
+exec "$GG_TEST_REAL_GIT" "$@"
+"#,
+    );
+    let operations_before = operation_record_ids(&repo_path);
+
+    let (success, stdout, stderr) = run_gg_bounded_with_env(
+        &repo_path,
+        &["sync", "--no-rebase-check"],
+        &[
+            ("PATH", fake_path.as_os_str()),
+            ("GG_TEST_REAL_GIT", real_git.as_ref()),
+            ("GG_TEST_PUSH_BRANCH", entry_branch.as_ref()),
+        ],
+    );
+
+    assert!(!success, "lost response must fail sync: {stdout}\n{stderr}");
+    assert_eq!(
+        checked_git(
+            &remote_path,
+            &["rev-parse", &format!("refs/heads/{entry_branch}")]
+        ),
+        checked_git(
+            &repo_path,
+            &["rev-parse", &format!("refs/heads/{entry_branch}")]
+        ),
+        "the shim must push before reporting failure"
+    );
+    let new_ids = operation_record_ids(&repo_path)
+        .difference(&operations_before)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(new_ids.len(), 1, "failed push must use one sync operation");
+    let operation_id = new_ids.into_iter().next().unwrap();
+    let operation = operation_record(&repo_path, &operation_id);
+    assert_eq!(operation["kind"], "sync", "{operation}");
+    assert_eq!(operation["status"], "committed", "{operation}");
+    assert_eq!(operation["touched_remote"], true, "{operation}");
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["undo", &operation_id, "--json"]);
+    assert!(
+        !success,
+        "undo must not claim local-only safety: {stdout}\n{stderr}"
+    );
+    let refusal: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(refusal["refusal"]["reason"], "remote");
 }
 
 fn assert_sync_prunes_dropped_tip(rewrite_retained_tip: bool) {
@@ -2055,7 +2585,10 @@ exit 0
 
     let operation = latest_operation(&repo_path);
     assert_eq!(operation["kind"], "sync");
-    assert_eq!(operation["status"], "pending");
+    assert_eq!(
+        operation["status"], "committed",
+        "post-mutation prune errors must finalize their segment"
+    );
     assert_eq!(operation["touched_remote"], true);
     let deleted_effect = operation["remote_effects"]
         .as_array()
@@ -2176,7 +2709,10 @@ fn test_failed_delete_response_requires_reconciliation_before_same_oid_retry() {
 
     let operation = latest_operation(&repo_path);
     assert_eq!(operation["kind"], "sync");
-    assert_eq!(operation["status"], "pending");
+    assert_eq!(
+        operation["status"], "committed",
+        "post-mutation prune errors must finalize their segment"
+    );
     assert_eq!(operation["touched_remote"], true);
     let config: Value =
         serde_json::from_slice(&fs::read(repo_path.join(".git/gg/config.json")).unwrap()).unwrap();

@@ -581,7 +581,7 @@ fn run_on_commits(
                             return Err(e);
                         }
 
-                        entries = refresh_stack_entries(repo, &base_branch, None)?;
+                        entries = refresh_stack_entries(repo, &base_branch, target_branch)?;
                     } else {
                         // Last commit in the stack was amended — no
                         // rebase needed, but the branch still points at the
@@ -1265,9 +1265,9 @@ fn execute_command(
 fn refresh_stack_entries(
     repo: &git2::Repository,
     base_branch: &str,
-    stack_branch: Option<&str>,
+    stack_branch: &str,
 ) -> Result<Vec<StackEntry>> {
-    let oids = git::get_stack_commit_oids(repo, base_branch, stack_branch)?;
+    let oids = git::get_stack_commit_oids(repo, base_branch, Some(stack_branch))?;
 
     let mut entries = Vec::with_capacity(oids.len());
     for (i, oid) in oids.iter().enumerate() {

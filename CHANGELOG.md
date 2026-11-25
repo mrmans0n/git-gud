@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `gg sync --rebase-if-needed` retargets the next review after a parent lands and keeps surviving commit SHAs when the forge says they can merge unchanged. A verified squash or a required rebase still replays the remaining entries.
+
 ## [0.10.10] - 2026-11-19
 
 ### Changed

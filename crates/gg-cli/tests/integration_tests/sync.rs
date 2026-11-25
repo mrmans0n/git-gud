@@ -11,6 +11,10 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+#[cfg(unix)]
+#[path = "sync_if_needed.rs"]
+mod if_needed;
+
 fn checked_git(repo: &Path, args: &[&str]) -> String {
     let (success, output) = run_git(repo, args);
     assert!(success, "git {args:?} failed: {output}");
@@ -526,6 +530,70 @@ exit 1
     );
     assert!(!stdout.contains("Example configuration:"));
     assert!(!stdout.contains(r#""lint": ["cargo fmt", "cargo clippy -- -D warnings"]"#));
+}
+
+#[test]
+fn sync_until_publishes_only_the_rewritten_untagged_target() {
+    for (rebase, already_applied) in [(false, false), (true, false), (true, true)] {
+        let (_temp, repo, remote) = create_test_repo_with_remote();
+        write_remote_prune_config(&repo);
+        let path = install_fake_gh(&repo.join(".git"));
+        let config_path = repo.join(".git/gg/config.json");
+        let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+        config["defaults"]["lint"] = serde_json::json!(["echo fixed > selected"]);
+        config["defaults"]["sync_behind_threshold"] = 1.into();
+        config["defaults"]["sync_auto_rebase"] = true.into();
+        fs::write(config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        checked_git(&repo, &["checkout", "-b", "testuser/partial"]);
+        for file in ["selected", "later"] {
+            fs::write(repo.join(file), file).unwrap();
+            checked_git(&repo, &["add", file]);
+            checked_git(&repo, &["commit", "-m", file]);
+        }
+        if rebase {
+            checked_git(&repo, &["checkout", "main"]);
+            checked_git(&repo, &["commit", "--allow-empty", "-m", "Advance base"]);
+            if already_applied {
+                checked_git(&repo, &["cherry-pick", "testuser/partial~1"]);
+            }
+            checked_git(&repo, &["push", "origin", "main"]);
+            checked_git(&repo, &["checkout", "testuser/partial"]);
+        }
+
+        let (ok, out, err) = run_gg_with_env(
+            &repo,
+            &["sync", "--until", "1", "--lint", "--json"],
+            &[("PATH", path.as_os_str())],
+        );
+        let branches = checked_git(
+            &remote,
+            &[
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/heads/testuser/partial--*",
+            ],
+        );
+        if already_applied {
+            assert!(
+                !ok && out.contains("Cannot identify --until entry"),
+                "{out}\n{err}"
+            );
+            assert!(
+                branches.is_empty(),
+                "published past the dropped target: {branches}"
+            );
+            continue;
+        }
+        assert!(ok, "{out}\n{err}");
+        let result: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(result["sync"]["rebased_before_sync"], rebase);
+        assert_eq!(branches.lines().count(), 1);
+        assert_eq!(
+            checked_git(&remote, &["show", &format!("{branches}:selected")]),
+            "fixed"
+        );
+        assert!(!run_git(&remote, &["cat-file", "-e", &format!("{branches}:later")]).0);
+    }
 }
 
 #[test]

@@ -15,16 +15,26 @@ gg sync [OPTIONS]
 - `-l, --lint`: Run lint before sync (aborts sync on lint failure and restores repository state to the pre-sync snapshot)
 - `--no-lint`: Disable lint before sync (overrides config default)
 - `--no-rebase-check`: Skip checking whether your stack base is behind `origin/<base>`
+- `--rebase-if-needed`: After a parent lands, keep published branches at their existing SHAs when the next PR/MR can merge into the fetched base. Conflicts with `--no-rebase-check`.
 - `--no-verify`: Skip the pre-push hook for pushes performed by this sync (forwards `git push --no-verify`). Opt-in per invocation; does not affect other hooks.
 - `-u, --until <UNTIL>`: Sync up to target commit (position, GG-ID, or SHA)
+  Lint fixes and order-preserving rebases keep the selected entry in scope even before it has a GG-ID. If a rebase drops entries and sync cannot identify the target, it stops rather than publishing a different commit.
 - `--json`: Output structured JSON for automation (suppresses human/progress output)
 - `--jsonl`: Output streaming NDJSON for automation (one JSON event per line, flushed after each; see Streaming Events below)
 
 Before pushing, `gg sync` checks whether your stack base is behind `origin/<base>`. If it is behind by at least the configured threshold, git-gud warns and suggests rebasing first (`gg rebase`).
 
-When you run `gg sync --lint`, lint runs before any push/PR updates. If lint fails, sync aborts immediately and git-gud restores your repository to the pre-sync snapshot.
+When you run `gg sync --lint`, lint runs before the first push or PR/MR update. A lint failure aborts sync and restores the checkout to its pre-lint state; it cannot undo a target change from a preceding successful lint pass.
 
-Before pushing, `gg sync` also normalizes commit metadata (`GG-ID` and `GG-Parent`) for the whole stack. This normalization is always enforced during sync (including adding missing `GG-ID` trailers) to keep stack identity and PR/MR mappings stable.
+### Sync after a parent lands
+
+Use `gg sync --rebase-if-needed` to publish the rest of a stack without restarting CI just because its bottom PR/MR merged. Sync fetches `origin/<base>`, excludes bottom entries reachable by their original SHA (even if their PR/MR mappings are gone), and retargets the next review to the base. It checks the forge's mergeability **on that target and source SHA**. If the review can merge as-is, sync leaves the surviving branches alone. It neither merges nor queues a review.
+
+If a mapped parent was squashed, sync checks that the forge's merge result reached the base and that the original source matches the local entry. It rebases just the survivors in that case, or if the new target requires a rebase. A new entry without a published review has no mergeability verdict, so sync rebases it before publishing. If the review, source, or merge result cannot be verified, sync stops rather than guessing. A target edit can already have succeeded when this happens. Inspect the review and retry.
+
+`--until` still names the entry from before the fetch, not a different entry that inherited its position. Lint skips landed entries. If the retarget requires a rebase, `--lint` checks the rebased commits again before pushing. Lint that changes files can still amend commits. Later `gg ls` commands use the confirmed base for this stack without moving your local base branch or checking it out in another worktree. When no parent has landed, the ordinary behind-base threshold and auto-rebase setting still apply.
+
+Before pushing, `gg sync` normalizes `GG-ID` and `GG-Parent` metadata for the stack. It keeps a surviving entry's existing `GG-Parent` when it identifies the actual Git parent on the confirmed base. `--rebase-if-needed` stops if unrelated trailer repairs would rewrite an otherwise unchanged published branch.
 
 After syncing the selected entries, `gg sync` consumes durable deletion intent
 created by a successful local `gg drop`. Each intent is bound to the exact

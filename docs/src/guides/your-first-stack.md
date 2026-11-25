@@ -55,6 +55,7 @@ gg sync
 
 If your stack base is behind `origin/<base>`, `gg sync` warns and suggests running `gg rebase` first.
 Use `--no-rebase-check` to skip this check once.
+After a bottom entry lands, use [`gg sync --rebase-if-needed`](../commands/sync.md#sync-after-a-parent-lands) to retarget the next review without rewriting branches that still merge cleanly.
 
 ## 7) Land approved entries
 

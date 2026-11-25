@@ -186,9 +186,7 @@ pub fn run(options: DropOptions) -> Result<()> {
         .collect();
 
     // Perform rebase omitting dropped commits
-    let base_ref = repo
-        .revparse_single(&stack_obj.base)
-        .or_else(|_| repo.revparse_single(&format!("origin/{}", stack_obj.base)))?;
+    let base_oid = stack_obj.rewrite_base_oid(&repo)?;
 
     let mut rebase_todo = String::new();
     for entry in &kept_entries {
@@ -216,7 +214,7 @@ pub fn run(options: DropOptions) -> Result<()> {
 
     let output = std::process::Command::new("git")
         .env("GIT_SEQUENCE_EDITOR", script_file.to_str().unwrap())
-        .args(["rebase", "-i", &base_ref.id().to_string()])
+        .args(["rebase", "-i", &base_oid.to_string()])
         .output()?;
 
     let _ = std::fs::remove_file(&todo_file);

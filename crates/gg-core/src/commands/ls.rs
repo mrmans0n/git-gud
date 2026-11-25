@@ -112,8 +112,11 @@ fn list_all_stacks(
                     .is_some();
 
                 let full_branch = git::format_stack_branch(&username, stack_name);
+                let stack_base = config
+                    .get_base_for_stack(stack_name)
+                    .unwrap_or(&base_branch);
                 let commits =
-                    get_stack_commits_info(repo, &full_branch, &base_branch).unwrap_or_default();
+                    get_stack_commits_info(repo, &full_branch, stack_base).unwrap_or_default();
                 let commit_count = commits.len();
                 let commits = commits
                     .into_iter()
@@ -125,18 +128,13 @@ fn list_all_stacks(
                     })
                     .collect();
 
-                let stack_base = config
-                    .get_base_for_stack(stack_name)
-                    .unwrap_or(base_branch.as_str())
-                    .to_string();
-
                 StackSummaryJson {
                     name: stack_name.clone(),
-                    base: stack_base.clone(),
+                    base: stack_base.to_owned(),
                     commit_count,
                     is_current,
                     has_worktree,
-                    behind_base: behind_count(repo, &stack_base),
+                    behind_base: behind_count(repo, stack_base),
                     commits,
                 }
             })
@@ -175,13 +173,13 @@ fn list_all_stacks(
         };
 
         let full_branch = git::format_stack_branch(&username, stack_name);
-        let commits = get_stack_commits_info(repo, &full_branch, &base_branch);
-
-        let commit_count = commits.as_ref().map(|c| c.len()).unwrap_or(0);
-        let commit_info = format!(" ({} commits)", commit_count);
         let stack_base = config
             .get_base_for_stack(stack_name)
             .unwrap_or(base_branch.as_str());
+        let commits = get_stack_commits_info(repo, &full_branch, stack_base);
+
+        let commit_count = commits.as_ref().map(|c| c.len()).unwrap_or(0);
+        let commit_info = format!(" ({} commits)", commit_count);
         let behind_indicator = behind_indicator(repo, stack_base)
             .map(|s| format!(" {}", style(s).yellow()))
             .unwrap_or_default();
@@ -250,17 +248,8 @@ fn get_stack_commits_info(
     branch: &str,
     base: &str,
 ) -> Result<Vec<(String, String)>> {
-    use git2::Sort;
-
-    let head = repo.revparse_single(branch)?;
-    let base_ref = repo
-        .revparse_single(base)
-        .or_else(|_| repo.revparse_single(&format!("origin/{}", base)))?;
-
-    let mut revwalk = repo.revwalk()?;
-    revwalk.set_sorting(Sort::TOPOLOGICAL | Sort::REVERSE)?;
-    revwalk.push(head.id())?;
-    revwalk.hide(base_ref.id())?;
+    let head = repo.refname_to_id(&format!("refs/heads/{branch}"))?;
+    let revwalk = git::stack_revwalk(repo, base, Some(branch), head)?;
 
     let mut commits = Vec::new();
     for oid in revwalk {
@@ -334,9 +323,11 @@ fn list_remote_stacks(repo: &git2::Repository, config: &Config, json: bool) -> R
         let stacks = remote_stacks
             .iter()
             .map(|stack_name| {
-                let remote_branch = format!("origin/{}/{}", username, stack_name);
-                let commit_count =
-                    count_stack_commits(repo, &remote_branch, &base_branch).unwrap_or(0);
+                let branch = git::format_stack_branch(&username, stack_name);
+                let base = config
+                    .get_base_for_stack(stack_name)
+                    .unwrap_or(&base_branch);
+                let commit_count = count_remote_stack_commits(repo, &branch, base).unwrap_or(0);
 
                 let mut pr_numbers = config
                     .get_stack(stack_name)
@@ -454,10 +445,13 @@ fn print_remote_stack_line(
     provider: Option<&Provider>,
     is_merged: bool,
 ) {
-    let remote_branch = format!("origin/{}/{}", username, stack_name);
-
-    let commit_info = if let Ok(base) = git::find_base_branch(repo) {
-        if let Ok(count) = count_stack_commits(repo, &remote_branch, &base) {
+    let stack_branch = git::format_stack_branch(username, stack_name);
+    let base = config
+        .get_base_for_stack(stack_name)
+        .map(str::to_owned)
+        .or_else(|| git::find_base_branch(repo).ok());
+    let commit_info = if let Some(base) = base {
+        if let Ok(count) = count_remote_stack_commits(repo, &stack_branch, &base) {
             format!(" ({} commits)", count)
         } else {
             String::new()
@@ -504,17 +498,10 @@ fn print_remote_stack_line(
     }
 }
 
-fn count_stack_commits(repo: &git2::Repository, branch: &str, base: &str) -> Result<usize> {
-    let head = repo.revparse_single(branch)?;
-    let base_ref = repo
-        .revparse_single(base)
-        .or_else(|_| repo.revparse_single(&format!("origin/{}", base)))?;
-
-    let mut revwalk = repo.revwalk()?;
-    revwalk.push(head.id())?;
-    revwalk.hide(base_ref.id())?;
-
-    Ok(revwalk.count())
+fn count_remote_stack_commits(repo: &git2::Repository, branch: &str, base: &str) -> Result<usize> {
+    let tip = repo.refname_to_id(&format!("refs/remotes/origin/{branch}"))?;
+    let mut walk = git::stack_revwalk(repo, base, Some(branch), tip)?;
+    Ok(walk.try_fold(0, |count, oid| oid.map(|_| count + 1))?)
 }
 
 fn behind_count(repo: &git2::Repository, base_branch: &str) -> Option<usize> {

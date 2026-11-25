@@ -6,7 +6,7 @@
 use std::fs;
 use std::path::Path;
 
-use git2::{Commit, Repository};
+use git2::{Commit, Oid, Repository};
 
 use crate::config::Config;
 use crate::error::{GgError, Result};
@@ -144,7 +144,6 @@ impl Stack {
         let git_dir = repo.path();
 
         // First, try to get branch name from HEAD
-        let on_branch = git::current_branch_name(repo).is_some();
         let branch_name = git::current_branch_name(repo)
             .or_else(|| {
                 // If in detached HEAD, try to read stored stack
@@ -163,13 +162,7 @@ impl Stack {
             .or_else(|| git::find_base_branch(repo).ok())
             .ok_or(GgError::NoBaseBranch)?;
 
-        // Get commit OIDs - use branch ref if in detached HEAD mode
-        let stack_ref = if on_branch {
-            None
-        } else {
-            Some(branch_name.clone())
-        };
-        let oids = git::get_stack_commit_oids(repo, &base, stack_ref.as_deref())?;
+        let oids = git::get_stack_commit_oids(repo, &base, Some(&branch_name))?;
 
         // Build entries
         let mut entries: Vec<StackEntry> = Vec::with_capacity(oids.len());
@@ -228,13 +221,63 @@ impl Stack {
         self.entries.iter().filter(|e| e.needs_gg_id()).collect()
     }
 
-    /// Get the expected GG-Parent for an entry position (1-indexed)
-    pub fn expected_parent_gg_id(&self, position: usize) -> Option<&str> {
-        if position <= 1 || position > self.entries.len() {
-            None
-        } else {
-            self.entries[position - 2].gg_id.as_deref()
+    fn landed_parent<'repo>(
+        &self,
+        repo: &'repo Repository,
+        confirmed_base: Option<Oid>,
+    ) -> Result<Option<Commit<'repo>>> {
+        let Some((first, base)) = self.first().zip(confirmed_base) else {
+            return Ok(None);
+        };
+        let commit = repo.find_commit(first.oid)?;
+        if commit.parent_count() != 1 {
+            return Ok(None);
         }
+        let parent = commit.parent(0)?;
+        if parent.id() == base || repo.graph_descendant_of(base, parent.id())? {
+            Ok(Some(parent))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// When replaying only visible commits, do not discard their landed parent
+    /// by replaying onto a local base that does not contain it yet.
+    pub(crate) fn rewrite_base_oid(&self, repo: &Repository) -> Result<Oid> {
+        let local_base = git::configured_base_oid(repo, &self.base)?;
+        let confirmed = git::sync_base_oid(repo, &self.branch_name(), &self.base)?;
+        if let Some(parent) = self.landed_parent(repo, confirmed)? {
+            if parent.id() != local_base && !repo.graph_descendant_of(local_base, parent.id())? {
+                return Ok(parent.id());
+            }
+        }
+        Ok(local_base)
+    }
+
+    /// Preserve an existing trailer only when it identifies the actual landed parent.
+    pub(crate) fn landed_parent_gg_id(
+        &self,
+        repo: &Repository,
+        confirmed_base: Option<Oid>,
+    ) -> Result<Option<&str>> {
+        let Some(trailer) = self.first().and_then(|entry| entry.gg_parent.as_deref()) else {
+            return Ok(None);
+        };
+        let parent_id = self
+            .landed_parent(repo, confirmed_base)?
+            .and_then(|c| get_gg_id(&c));
+        Ok((parent_id.as_deref() == Some(trailer)).then_some(trailer))
+    }
+
+    /// Pair each entry with its expected parent, including the landed boundary.
+    pub(crate) fn entries_with_expected_parents(
+        &self,
+        repo: &Repository,
+    ) -> Result<impl Iterator<Item = (&StackEntry, Option<&str>)>> {
+        let confirmed = git::sync_base_oid(repo, &self.branch_name(), &self.base)?;
+        let first = self.landed_parent_gg_id(repo, confirmed)?;
+        let parents = std::iter::once(first).chain(self.entries.iter().map(|e| e.gg_id.as_deref()));
+        Ok(self.entries.iter().zip(parents))
     }
 
     /// Get entry by position (1-indexed)
@@ -673,20 +716,7 @@ mod tests {
     }
 
     #[test]
-    fn expected_parent_first_entry_is_none() {
-        let stack = Stack {
-            name: "s".to_string(),
-            username: "u".to_string(),
-            base: "main".to_string(),
-            entries: vec![mk_entry(1, Some("c-a"))],
-            current_position: Some(0),
-        };
-
-        assert_eq!(stack.expected_parent_gg_id(1), None);
-    }
-
-    #[test]
-    fn expected_parent_uses_previous_entry_gg_id() {
+    fn expected_parents_without_a_confirmed_base_start_at_the_first_entry() {
         let stack = Stack {
             name: "s".to_string(),
             username: "u".to_string(),
@@ -695,7 +725,14 @@ mod tests {
             current_position: Some(1),
         };
 
-        assert_eq!(stack.expected_parent_gg_id(2), Some("c-a"));
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        let parents: Vec<_> = stack
+            .entries_with_expected_parents(&repo)
+            .unwrap()
+            .map(|(_, parent)| parent)
+            .collect();
+        assert_eq!(parents, [None, Some("c-a")]);
     }
 
     #[test]

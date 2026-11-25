@@ -42,6 +42,7 @@ the next merge, `gg land --wait` stops and must be rerun.
 `gg rebase`, including auto-rebase during `gg sync`, also fast-forwards a clean
 base checkout. If that checkout has uncommitted changes, git-gud leaves it alone,
 warns with its path, and rebases the stack onto `origin/<base>`.
+`gg sync --rebase-if-needed` uses a per-stack base snapshot instead. Even when it must rebase the stack, it does not move the base branch or touch its checkout.
 
 ## Default path behavior
 

@@ -147,7 +147,8 @@ pub fn run(stack_name: Option<String>, base: Option<String>, use_worktree: bool)
         if check_remote_stack_exists(&repo, &username, &stack_name) {
             // Stack exists on remote - checkout
             // Try to find either the main stack branch or an entry branch
-            let remote_stack_branch = format!("origin/{}/{}", username, stack_name);
+            let local_branch = git::format_stack_branch(&username, &stack_name);
+            let remote_stack_branch = format!("origin/{local_branch}");
             let target_branch = if repo.revparse_single(&remote_stack_branch).is_ok() {
                 // Main stack branch exists
                 remote_stack_branch
@@ -185,11 +186,15 @@ pub fn run(stack_name: Option<String>, base: Option<String>, use_worktree: bool)
                         base_branch
                     )));
                 }
-                git::get_stack_commit_oids_from_tip(&repo, base_branch, remote_commit.id())?;
+                git::get_stack_commit_oids_from_tip(
+                    &repo,
+                    base_branch,
+                    Some(&local_branch),
+                    remote_commit.id(),
+                )?;
             }
 
             // Create local stack branch pointing to this commit
-            let local_branch = git::format_stack_branch(&username, &stack_name);
             repo.branch(&local_branch, &remote_commit, false)?;
 
             let worktree_path = if use_worktree {
@@ -462,7 +467,8 @@ fn find_remote_entry_branch(
         }
     }
 
-    match git::get_stack_commit_oids_from_tip(repo, base_branch, tip.1) {
+    let stack_branch = git::format_stack_branch(username, stack_name);
+    match git::get_stack_commit_oids_from_tip(repo, base_branch, Some(&stack_branch), tip.1) {
         Err(GgError::MergeCommitInStack) => {
             return Err(GgError::Other(format!(
                 "Remote entry branches for stack '{}' have diverged; no single linear tip contains all entries. Resolve the remote branches before retrying `gg co {}`.",

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-40e09222.js";
+            window.path_to_searchindex_js = "../searchindex-1ca4968f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-95fa4ef1.js"></script>
@@ -189,7 +189,8 @@
 <li><code>--no-rebase-check</code>: Skip checking whether your stack base is behind <code>origin/&lt;base&gt;</code></li>
 <li><code>--rebase-if-needed</code>: After a parent lands, keep published branches at their existing SHAs when the next PR/MR can merge into the fetched base. Conflicts with <code>--no-rebase-check</code>.</li>
 <li><code>--no-verify</code>: Skip the pre-push hook for pushes performed by this sync (forwards <code>git push --no-verify</code>). Opt-in per invocation; does not affect other hooks.</li>
-<li><code>-u, --until &lt;UNTIL&gt;</code>: Sync up to target commit (position, GG-ID, or SHA)</li>
+<li><code>-u, --until &lt;UNTIL&gt;</code>: Sync up to target commit (position, GG-ID, or SHA)
+Lint fixes and order-preserving rebases keep the selected entry in scope even before it has a GG-ID. If a rebase drops entries and sync cannot identify the target, it stops rather than publishing a different commit.</li>
 <li><code>--json</code>: Output structured JSON for automation (suppresses human/progress output)</li>
 <li><code>--jsonl</code>: Output streaming NDJSON for automation (one JSON event per line, flushed after each; see Streaming Events below)</li>
 </ul>

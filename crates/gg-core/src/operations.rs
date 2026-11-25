@@ -255,8 +255,8 @@ pub fn is_valid_operation_id(id: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 /// On-disk store for operation records. One JSON file per record under
-/// `<gg_dir>/operations/<id>.json`. Writes are crash-safe via
-/// write-tempfile-then-rename.
+/// `<gg_dir>/operations/<id>.json`. Writes atomically replace the destination
+/// under normal same-filesystem rename semantics.
 #[derive(Debug, Clone)]
 pub struct OperationStore {
     operations_dir: PathBuf,
@@ -283,8 +283,12 @@ impl OperationStore {
         Ok(self.operations_dir.join(format!("{id}.json")))
     }
 
-    /// Persist a record atomically. Prunes Committed/Interrupted records
-    /// beyond `OPERATION_LOG_CAP` afterwards, oldest-first.
+    /// Persist a record by syncing a same-directory temporary file and
+    /// atomically replacing the destination under normal filesystem semantics.
+    /// The parent directory is not synced; after a successful rename, no later
+    /// errors are reported, avoiding a post-replacement error with an ambiguous
+    /// retry outcome. Prunes Committed/Interrupted records beyond
+    /// `OPERATION_LOG_CAP` afterwards, oldest-first.
     pub fn save(&self, record: &OperationRecord) -> Result<()> {
         fs::create_dir_all(&self.operations_dir)?;
         let path = self.path_for(&record.id)?;
@@ -689,6 +693,14 @@ impl OperationGuard {
         &self.record.id
     }
 
+    fn update_record(&mut self, update: impl FnOnce(&mut OperationRecord)) -> Result<()> {
+        let mut record = self.record.clone();
+        update(&mut record);
+        self.store.save(&record)?;
+        self.record = record;
+        Ok(())
+    }
+
     /// Persist a remote side effect to the Pending record immediately.
     ///
     /// Use this between successive remote mutations (push, PR create, PR
@@ -702,9 +714,20 @@ impl OperationGuard {
     /// Errors from the save are swallowed: losing a `remote_effect` update
     /// must not take down the mutating command that just succeeded.
     pub fn record_remote_effect(&mut self, effect: RemoteEffect) {
-        self.record.remote_effects.push(effect);
-        self.record.touched_remote = true;
-        let _ = self.store.save(&self.record);
+        let _ = self.update_record(|record| {
+            record.remote_effects.push(effect);
+            record.touched_remote = true;
+        });
+    }
+
+    /// Persist a remote side effect and report persistence failures.
+    /// Failed saves leave the in-memory record unchanged so retries do not
+    /// duplicate the effect.
+    pub fn record_remote_effect_durable(&mut self, effect: RemoteEffect) -> Result<()> {
+        self.update_record(|record| {
+            record.remote_effects.push(effect);
+            record.touched_remote = true;
+        })
     }
 
     /// Flip `touched_remote` on the Pending record without appending a
@@ -719,8 +742,7 @@ impl OperationGuard {
         if self.record.touched_remote {
             return;
         }
-        self.record.touched_remote = true;
-        let _ = self.store.save(&self.record);
+        let _ = self.update_record(|record| record.touched_remote = true);
     }
 
     /// Persist remote uncertainty before issuing a mutation whose outcome may
@@ -730,8 +752,7 @@ impl OperationGuard {
         if self.record.touched_remote {
             return Ok(());
         }
-        self.record.touched_remote = true;
-        self.store.save(&self.record)
+        self.update_record(|record| record.touched_remote = true)
     }
 
     /// Persist command-specific state needed to finish a conflict-resumed
@@ -747,8 +768,7 @@ impl OperationGuard {
         &mut self,
         changes: Vec<RemoteBranchDeletionChange>,
     ) -> Result<()> {
-        self.record.remote_branch_deletion_changes = changes;
-        self.store.save(&self.record)
+        self.update_record(|record| record.remote_branch_deletion_changes = changes)
     }
 
     /// Mark the operation as Committed with the given post-mutation ref
@@ -1070,6 +1090,27 @@ pub(crate) mod tests {
         (dir, gg_dir)
     }
 
+    fn pending_guard(
+        mut record: OperationRecord,
+    ) -> (tempfile::TempDir, OperationStore, OperationGuard) {
+        let (dir, gg_dir) = tmp_gg_dir();
+        let store = OperationStore::new(&gg_dir);
+        record.status = OperationStatus::Pending;
+        store.save(&record).unwrap();
+        let guard = OperationGuard {
+            record,
+            store: store.clone(),
+            finalized: false,
+        };
+        (dir, store, guard)
+    }
+
+    fn block_next_save(store: &OperationStore, id: &str) -> PathBuf {
+        let tmp_path = store.path_for(id).unwrap().with_extension("json.tmp");
+        fs::create_dir(&tmp_path).unwrap();
+        tmp_path
+    }
+
     // -- schema --------------------------------------------------------------
 
     #[test]
@@ -1352,6 +1393,148 @@ pub(crate) mod tests {
         }
         let loaded = store.load(&id).unwrap();
         assert_eq!(loaded.status, OperationStatus::Pending);
+    }
+
+    #[test]
+    fn mark_touched_remote_before_attempt_retries_after_save_failure() {
+        let (_g, store, mut guard) = pending_guard(make_record(OperationKind::Sync, now_ms()));
+        let tmp_path = block_next_save(&store, guard.id());
+
+        assert!(guard.mark_touched_remote_before_attempt().is_err());
+        assert!(!guard.record.touched_remote);
+        assert!(!store.load(guard.id()).unwrap().touched_remote);
+
+        fs::remove_dir(tmp_path).unwrap();
+        guard.mark_touched_remote_before_attempt().unwrap();
+        assert!(guard.record.touched_remote);
+        assert!(store.load(guard.id()).unwrap().touched_remote);
+    }
+
+    #[test]
+    fn failed_best_effort_mark_does_not_skip_durable_barrier() {
+        let (_g, store, mut guard) = pending_guard(make_record(OperationKind::Sync, now_ms()));
+        let tmp_path = block_next_save(&store, guard.id());
+
+        guard.mark_touched_remote();
+        assert!(!guard.record.touched_remote);
+        assert!(!store.load(guard.id()).unwrap().touched_remote);
+
+        fs::remove_dir(tmp_path).unwrap();
+        guard.mark_touched_remote_before_attempt().unwrap();
+        assert!(guard.record.touched_remote);
+        assert!(store.load(guard.id()).unwrap().touched_remote);
+    }
+
+    #[test]
+    fn failed_best_effort_remote_effect_does_not_skip_durable_barrier() {
+        let (_g, store, mut guard) = pending_guard(make_record(OperationKind::Sync, now_ms()));
+        let effect = RemoteEffect::Pushed {
+            remote: "origin".into(),
+            branch: "user/feature".into(),
+            force: false,
+        };
+        let tmp_path = block_next_save(&store, guard.id());
+
+        guard.record_remote_effect(effect.clone());
+        assert!(!store.load(guard.id()).unwrap().touched_remote);
+
+        fs::remove_dir(tmp_path).unwrap();
+        guard.mark_touched_remote_before_attempt().unwrap();
+        let persisted = store.load(guard.id()).unwrap();
+        assert!(
+            persisted.touched_remote,
+            "barrier returned Ok while disk remained untouched (live touched_remote={})",
+            guard.record.touched_remote
+        );
+        assert!(persisted.remote_effects.is_empty());
+
+        guard.record_remote_effect(effect.clone());
+        assert_eq!(guard.record.remote_effects, vec![effect.clone()]);
+        let persisted = store.load(guard.id()).unwrap();
+        assert_eq!(persisted.remote_effects, vec![effect]);
+        assert!(persisted.touched_remote);
+    }
+
+    #[test]
+    fn record_remote_effect_durable_retries_without_duplication_after_save_failure() {
+        let (_g, store, mut guard) = pending_guard(make_record(OperationKind::Sync, now_ms()));
+        let effect = RemoteEffect::Pushed {
+            remote: "origin".into(),
+            branch: "user/feature".into(),
+            force: false,
+        };
+        let tmp_path = block_next_save(&store, guard.id());
+
+        assert!(guard.record_remote_effect_durable(effect.clone()).is_err());
+        assert!(guard.record.remote_effects.is_empty());
+        assert!(!guard.record.touched_remote);
+        let persisted = store.load(guard.id()).unwrap();
+        assert!(persisted.remote_effects.is_empty());
+        assert!(!persisted.touched_remote);
+
+        fs::remove_dir(tmp_path).unwrap();
+        guard.record_remote_effect_durable(effect.clone()).unwrap();
+        assert_eq!(guard.record.remote_effects, vec![effect.clone()]);
+        assert!(guard.record.touched_remote);
+        let persisted = store.load(guard.id()).unwrap();
+        assert_eq!(persisted.remote_effects, vec![effect]);
+        assert!(persisted.touched_remote);
+    }
+
+    #[test]
+    fn set_remote_branch_deletion_changes_retries_after_save_failure() {
+        let old_changes = vec![RemoteBranchDeletionChange {
+            remote: "origin".into(),
+            branch: "old-branch".into(),
+            before: None,
+            after: None,
+        }];
+        let requested_changes = vec![
+            RemoteBranchDeletionChange {
+                remote: "origin".into(),
+                branch: "feature-a".into(),
+                before: None,
+                after: None,
+            },
+            RemoteBranchDeletionChange {
+                remote: "upstream".into(),
+                branch: "feature-b".into(),
+                before: None,
+                after: None,
+            },
+        ];
+        let mut record = make_record(OperationKind::Undo, now_ms());
+        record.remote_branch_deletion_changes = old_changes.clone();
+        let (_g, store, mut guard) = pending_guard(record);
+        let tmp_path = block_next_save(&store, guard.id());
+
+        assert!(guard
+            .set_remote_branch_deletion_changes(requested_changes.clone())
+            .is_err());
+        assert_eq!(guard.record.remote_branch_deletion_changes, old_changes);
+        assert_eq!(
+            store
+                .load(guard.id())
+                .unwrap()
+                .remote_branch_deletion_changes,
+            old_changes
+        );
+
+        fs::remove_dir(tmp_path).unwrap();
+        guard
+            .set_remote_branch_deletion_changes(requested_changes.clone())
+            .unwrap();
+        assert_eq!(
+            guard.record.remote_branch_deletion_changes,
+            requested_changes
+        );
+        assert_eq!(
+            store
+                .load(guard.id())
+                .unwrap()
+                .remote_branch_deletion_changes,
+            requested_changes
+        );
     }
 
     // -- sweep ---------------------------------------------------------------

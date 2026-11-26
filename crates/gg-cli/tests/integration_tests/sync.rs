@@ -1,6 +1,7 @@
+#[cfg(unix)]
+use crate::helpers::ProcessGroupGuard;
 use crate::helpers::{
     create_test_repo, create_test_repo_with_remote, run_gg, run_gg_with_env, run_git,
-    ProcessGroupGuard,
 };
 
 use serde_json::Value;
@@ -21,7 +22,7 @@ use std::io::{BufRead, BufReader};
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 #[cfg(unix)]
-use std::os::unix::{fs::PermissionsExt, net::UnixStream, process::CommandExt};
+use std::os::unix::{fs::PermissionsExt, net::UnixStream};
 
 #[cfg(unix)]
 #[path = "sync_if_needed.rs"]
@@ -281,21 +282,8 @@ fn run_gg_bounded_with_env(
     run_gg_bounded_with_env_and_timeout(repo_path, args, envs, Duration::from_secs(30), None)
 }
 
-#[cfg(unix)]
-fn signal_process_group(process_group: u32, signal: Signal) {
-    let process_group = i32::try_from(process_group).expect("process group fits pid_t");
-    let _ = kill(Pid::from_raw(-process_group), signal);
-}
-
+#[cfg(not(unix))]
 fn stop_bounded_process(child: &mut std::process::Child) {
-    #[cfg(unix)]
-    {
-        let process_group = child.id();
-        signal_process_group(process_group, Signal::SIGTERM);
-        std::thread::sleep(Duration::from_secs(2));
-        signal_process_group(process_group, Signal::SIGKILL);
-    }
-    #[cfg(not(unix))]
     let _ = child.kill();
     child.wait().expect("reap stopped gg process");
 }
@@ -328,13 +316,17 @@ fn run_gg_bounded_with_env_and_timeout(
         command.env(key, value);
     }
     #[cfg(unix)]
-    command.process_group(0);
+    let mut child = ProcessGroupGuard::spawn(&mut command).expect("spawn bounded gg process");
+    #[cfg(not(unix))]
     let mut child = command.spawn().expect("spawn bounded gg process");
     if let Some(readiness_path) = readiness_path {
         let setup_timeout = Duration::from_secs(10);
         let setup_deadline = Instant::now() + setup_timeout;
         while !readiness_path.exists() {
             if Instant::now() >= setup_deadline {
+                #[cfg(unix)]
+                drop(child);
+                #[cfg(not(unix))]
                 stop_bounded_process(&mut child);
                 panic!(
                     "gg setup timed out after {setup_timeout:?} waiting for {}\nstdout:\n{}\nstderr:\n{}",
@@ -348,10 +340,19 @@ fn run_gg_bounded_with_env_and_timeout(
     }
     let deadline = Instant::now() + timeout;
     let status = loop {
-        if let Some(status) = child.try_wait().expect("poll bounded gg process") {
+        #[cfg(unix)]
+        let status = child
+            .poll_exit_status_non_reaping()
+            .expect("poll bounded gg process");
+        #[cfg(not(unix))]
+        let status = child.try_wait().expect("poll bounded gg process");
+        if let Some(status) = status {
             break status;
         }
         if Instant::now() >= deadline {
+            #[cfg(unix)]
+            drop(child);
+            #[cfg(not(unix))]
             stop_bounded_process(&mut child);
             panic!(
                 "gg timed out after {timeout:?}\nstdout:\n{}\nstderr:\n{}",
@@ -361,6 +362,7 @@ fn run_gg_bounded_with_env_and_timeout(
         }
         std::thread::sleep(Duration::from_millis(25));
     };
+    drop(child);
     (
         status.success(),
         fs::read_to_string(stdout_path).expect("read bounded stdout"),
@@ -567,6 +569,93 @@ while :; do sleep 60; done
     );
     fs::write(&heartbeat, "reused").expect("heartbeat file must be reusable after cleanup");
     fs::remove_file(heartbeat).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn bounded_test_command_stops_descendant_after_normal_leader_exit() {
+    let (_temp, repo_path, _remote) = create_test_repo_with_remote();
+    write_remote_prune_config(&repo_path);
+    let (ok, out, err) = run_gg(&repo_path, &["co", "normal-exit-tree"]);
+    assert!(ok, "checkout failed: {out}\n{err}");
+    fs::write(repo_path.join("entry"), "entry").unwrap();
+    checked_git(&repo_path, &["add", "entry"]);
+    checked_git(&repo_path, &["commit", "-m", "Entry"]);
+
+    let fake_bin = repo_path.join(".git/normal-exit-bin");
+    fs::create_dir(&fake_bin).unwrap();
+    write_executable(
+        &fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+if [ "$1" = "--version" ]; then
+  echo 'gh version 2.0.0'
+  exit 0
+fi
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  (
+    trap '' HUP
+    : > "$GG_TEST_NORMAL_EXIT_HEARTBEAT"
+    printf x >> "$GG_TEST_NORMAL_EXIT_HEARTBEAT"
+    : > "$GG_TEST_NORMAL_EXIT_READY"
+    while [ ! -e "$GG_TEST_NORMAL_EXIT_STOP" ]; do
+      printf x >> "$GG_TEST_NORMAL_EXIT_HEARTBEAT"
+      sleep 0.05
+    done
+    : > "$GG_TEST_NORMAL_EXIT_STOPPED"
+  ) </dev/null >/dev/null 2>&1 &
+  attempts=0
+  while [ ! -e "$GG_TEST_NORMAL_EXIT_READY" ]; do
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge 400 ]; then
+      echo 'descendant readiness timed out' >&2
+      exit 2
+    fi
+    sleep 0.01
+  done
+  echo 'not authenticated' >&2
+  exit 1
+fi
+echo "unexpected gh invocation: $*" >&2
+exit 2
+"#,
+    );
+    let mut paths = vec![fake_bin];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let path = std::env::join_paths(paths).unwrap();
+    let ready = repo_path.join(".git/normal-exit-ready");
+    let heartbeat = repo_path.join(".git/normal-exit-heartbeat");
+    let stop = repo_path.join(".git/normal-exit-stop");
+    let stopped = repo_path.join(".git/normal-exit-stopped");
+
+    let (ok, out, err) = run_gg_bounded_with_env_and_timeout(
+        &repo_path,
+        &["sync", "--no-rebase-check"],
+        &[
+            ("PATH", path.as_os_str()),
+            ("GG_TEST_NORMAL_EXIT_READY", ready.as_os_str()),
+            ("GG_TEST_NORMAL_EXIT_HEARTBEAT", heartbeat.as_os_str()),
+            ("GG_TEST_NORMAL_EXIT_STOP", stop.as_os_str()),
+            ("GG_TEST_NORMAL_EXIT_STOPPED", stopped.as_os_str()),
+        ],
+        Duration::from_secs(10),
+        Some(&ready),
+    );
+    assert!(!ok, "auth failure unexpectedly succeeded: {out}\n{err}");
+    assert!(err.contains("Not authenticated with GitHub"), "{err}");
+
+    let heartbeat_len = fs::metadata(&heartbeat).unwrap().len();
+    std::thread::sleep(Duration::from_millis(250));
+    let descendant_stopped = fs::metadata(&heartbeat).unwrap().len() == heartbeat_len;
+    if !descendant_stopped {
+        fs::write(&stop, "").expect("request leaked descendant cleanup");
+        wait_for_file(&stopped);
+    }
+    assert!(
+        descendant_stopped,
+        "bounded runner returned while a provider descendant was still active"
+    );
+    fs::write(&heartbeat, "reused").expect("heartbeat file must be reusable after cleanup");
 }
 
 #[test]

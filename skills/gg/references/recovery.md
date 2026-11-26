@@ -15,7 +15,13 @@
    After aborting a conflicted `gg rebase`, inspect for the operation's
    `gg-rebase-autostash`; restore it or explicitly surface it before declaring
    the worktree clean.
-3. Before targeted undo, run `gg undo --list --json`.
+3. Before targeted undo, run `gg undo --list --json`. A single sync can create
+   multiple records: a completed remote retarget segment and a successor for
+   later replay, lint, or publication. Inspect every matching record and its
+   `status`, `touched_remote`, remote effects, and arguments; never select by
+   timestamp or assume one record per invocation. While a rebase is paused,
+   confirm the exact `operation_id` from `gg ls --json`, then run the
+   argument-free `gg continue` or `gg abort`; pass an ID only to targeted undo.
 4. Treat undo as moving refs and `HEAD` only; it never restores working-tree or
    remote state.
 5. If `refusal.reason == "remote"`, surface the provider-specific revert hint

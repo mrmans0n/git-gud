@@ -193,7 +193,13 @@ fn reconcile_pending_deletions(
         stack_name,
         &current_branches,
         config,
-        record_remote_effect,
+        |checkpoint, _config| match checkpoint {
+            super::sync::RemoteDeletionCheckpoint::BeforeAttempt => record_remote_effect(None),
+            super::sync::RemoteDeletionCheckpoint::Effect(effect) => {
+                record_remote_effect(Some(effect))
+            }
+            super::sync::RemoteDeletionCheckpoint::Complete => Ok(()),
+        },
     )?;
     // Keep the stack (and its intents) recoverable instead of stranding them.
     if deferred.is_empty() {

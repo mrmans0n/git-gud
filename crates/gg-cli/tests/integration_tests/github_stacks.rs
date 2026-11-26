@@ -1,12 +1,20 @@
-use crate::helpers::{create_test_repo_with_remote, run_gg, run_gg_with_env, run_git};
+use crate::helpers::{
+    create_test_repo_with_remote, run_gg, run_gg_with_env, run_git, ProcessGroupGuard,
+};
 
 use serde_json::Value;
 use std::ffi::{OsStr, OsString};
 use std::fs;
+#[cfg(unix)]
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::process::{Command, Stdio};
+#[cfg(unix)]
+use std::time::{Duration, Instant};
 
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::{fs::PermissionsExt, net::UnixStream};
 
 struct GithubStackFixture {
     _temp_dir: tempfile::TempDir,
@@ -46,6 +54,14 @@ impl GithubStackFixture {
         fs::write(&path, message).expect("failed to write fake link failure");
         path
     }
+}
+
+fn operation_record(repo: &Path, id: &str) -> Value {
+    serde_json::from_slice(
+        &fs::read(repo.join(".git/gg/operations").join(format!("{id}.json")))
+            .expect("read exact operation record"),
+    )
+    .expect("parse exact operation record")
 }
 
 fn setup_fixture(mode: &str) -> GithubStackFixture {
@@ -238,6 +254,18 @@ if [ "$1" = "stack" ] && [ "$2" = "link" ]; then
     cat "${GG_FAKE_LINK_FAILURE}" >&2
     exit 1
   fi
+  if [ -n "${GG_FAKE_BLOCK_LINK:-}" ]; then
+    pending=''
+    for record in "$GG_TEST_GIT_DIR/gg/operations/"*.json; do
+      grep -q '"status": "pending"' "$record" || continue
+      [ -z "$pending" ] || { echo 'multiple pending operations' >&2; exit 1; }
+      pending=$(basename "$record" .json)
+    done
+    [ -n "$pending" ] || { echo 'missing pending operation' >&2; exit 1; }
+    printf '%s\n' "$pending" > "$GG_FAKE_LINK_OPERATION_ID"
+    touch "$GG_FAKE_BLOCK_LINK"
+    while [ ! -f "$GG_FAKE_RELEASE_LINK" ]; do sleep 0.01; done
+  fi
   if [ -n "${GG_FAKE_LINKED_FILE:-}" ]; then
     echo linked > "${GG_FAKE_LINKED_FILE}"
   fi
@@ -391,6 +419,93 @@ fn sync_jsonl_appends_after_merged_prefix_and_repeats_result_in_summary() {
     assert_eq!(fixture.link_lines(), vec!["stack link 7 42"]);
 }
 
+#[cfg(unix)]
+#[test]
+fn jsonl_disconnect_after_native_stack_link_stops_before_navigation_comments() {
+    let fixture = setup_fixture("auto");
+    let after = fixture.set_stack_response("stack-after.json", stack_created_json());
+    let linked = fixture.repo_path.join("fake-linked");
+    let block = fixture.repo_path.join("fake-link-started");
+    let release = fixture.repo_path.join("release-fake-link");
+    let operation_id_path = fixture.repo_path.join("fake-link-operation-id");
+    let git_dir = fixture.repo_path.join(".git");
+
+    let (read_stream, write_stream) = UnixStream::pair().unwrap();
+    read_stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let stdout_fd: std::os::fd::OwnedFd = write_stream.into();
+    let stderr_path = fixture.repo_path.join("native-stack-disconnect-stderr");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_gg"));
+    command
+        .args(["sync", "--jsonl", "--no-rebase-check"])
+        .current_dir(&fixture.repo_path)
+        .env("PATH", &fixture.path_env)
+        .env("GG_FAKE_GH_LOG", &fixture.fake_log)
+        .env("GG_FAKE_STACK_AFTER_41", &after)
+        .env("GG_FAKE_LINKED_FILE", &linked)
+        .env("GG_FAKE_BLOCK_LINK", &block)
+        .env("GG_FAKE_RELEASE_LINK", &release)
+        .env("GG_FAKE_LINK_OPERATION_ID", &operation_id_path)
+        .env("GG_TEST_GIT_DIR", &git_dir)
+        .stdout(Stdio::from(stdout_fd))
+        .stderr(Stdio::from(fs::File::create(&stderr_path).unwrap()));
+    let mut child = ProcessGroupGuard::spawn(&mut command).expect("start sync");
+    let mut reader = BufReader::new(read_stream);
+    let mut first = String::new();
+    reader.read_line(&mut first).expect("read start event");
+    assert_eq!(
+        serde_json::from_str::<Value>(&first).unwrap()["event"],
+        "start"
+    );
+
+    let readiness_deadline = Instant::now() + Duration::from_secs(10);
+    while !block.exists() {
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!(
+                "sync exited before native stack link ({status}): {}",
+                fs::read_to_string(&stderr_path).unwrap_or_default()
+            );
+        }
+        if Instant::now() >= readiness_deadline {
+            let _ = fs::write(&release, "release");
+            panic!("sync did not reach native stack link");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let operation_id = fs::read_to_string(&operation_id_path)
+        .unwrap()
+        .trim()
+        .to_string();
+    let pending = operation_record(&fixture.repo_path, &operation_id);
+    assert_eq!(pending["status"], "pending", "{pending}");
+    assert_eq!(pending["touched_remote"], true, "{pending}");
+
+    drop(reader);
+    fs::write(&release, "release").unwrap();
+    let process_deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= process_deadline {
+            panic!("sync did not stop after native stack checkpoint disconnect");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    assert!(!status.success(), "closed JSONL consumer must abort sync");
+    assert_eq!(fixture.link_lines(), vec!["stack link --base main 41 42"]);
+    assert!(
+        !fixture.log().contains("/issues/"),
+        "navigation-comment mutation followed disconnected native-stack checkpoint: {}",
+        fixture.log()
+    );
+    let record = operation_record(&fixture.repo_path, &operation_id);
+    assert_eq!(record["status"], "committed", "{record}");
+    assert_eq!(record["touched_remote"], true, "{record}");
+}
+
 #[test]
 fn sync_until_reports_partial_skip_without_stack_command() {
     let fixture = setup_fixture("auto");
@@ -439,14 +554,15 @@ fn existing_review_lookup_failure_stops_before_main_loop_mutation() {
 }
 
 #[test]
-fn sync_base_update_failure_skips_without_stack_command() {
+fn sync_base_update_failure_stops_without_stack_command() {
     let fixture = setup_fixture("auto");
     let (success, stdout, stderr) =
         run_sync_json(&fixture, &[("GG_FAKE_PR_EDIT_FAIL", OsStr::new("1"))]);
-    assert!(success, "sync failed\nstdout:{stdout}\nstderr:{stderr}");
-    let value: Value = serde_json::from_str(&stdout).expect("sync should emit JSON");
-    assert_eq!(value["sync"]["github_stack"]["action"], "skipped");
-    assert_eq!(value["sync"]["github_stack"]["reason"], "unresolved_prs");
+    assert!(!success, "base update failure must stop sync");
+    assert!(
+        format!("{stdout}{stderr}").contains("failed to update PR base"),
+        "{stdout}\n{stderr}"
+    );
     let log = fixture.log();
     assert!(log.contains("pr edit 41 --base main"));
     assert!(!log.contains("stack --version"));
@@ -454,7 +570,7 @@ fn sync_base_update_failure_skips_without_stack_command() {
 }
 
 #[test]
-fn sync_replacement_create_failure_skips_without_stack_command() {
+fn sync_replacement_create_failure_stops_without_stack_command() {
     let fixture = setup_fixture("auto");
     let (success, stdout, stderr) = run_sync_json(
         &fixture,
@@ -463,10 +579,11 @@ fn sync_replacement_create_failure_skips_without_stack_command() {
             ("GG_FAKE_PR_CREATE_FAIL", OsStr::new("1")),
         ],
     );
-    assert!(success, "sync failed\nstdout:{stdout}\nstderr:{stderr}");
-    let value: Value = serde_json::from_str(&stdout).expect("sync should emit JSON");
-    assert_eq!(value["sync"]["github_stack"]["action"], "skipped");
-    assert_eq!(value["sync"]["github_stack"]["reason"], "unresolved_prs");
+    assert!(!success, "replacement creation failure must stop sync");
+    assert!(
+        format!("{stdout}{stderr}").contains("failed to create replacement PR"),
+        "{stdout}\n{stderr}"
+    );
     let log = fixture.log();
     assert!(log.contains("pr create --head testuser/native-stack--c-2222222"));
     assert!(!log.contains("stack --version"));
@@ -514,18 +631,19 @@ fn sync_divergence_warns_without_link() {
 }
 
 #[test]
-fn sync_link_failure_warns_without_corrupting_json() {
+fn sync_link_failure_returns_error_without_corrupting_json() {
     let fixture = setup_fixture("auto");
     let link_failure = fixture.set_link_failure("link failed");
     let (success, stdout, stderr) = run_sync_json(
         &fixture,
         &[("GG_FAKE_LINK_FAILURE", link_failure.as_os_str())],
     );
-    assert!(success, "sync failed\nstdout:{stdout}\nstderr:{stderr}");
+    assert!(
+        !success,
+        "ambiguous link failure must stop sync: {stdout}\n{stderr}"
+    );
     let value: Value = serde_json::from_str(&stdout).expect("sync should remain one JSON document");
-    assert_eq!(value["sync"]["github_stack"]["action"], "warning");
-    assert_eq!(value["sync"]["github_stack"]["reason"], "backend_failed");
-    assert_eq!(value["sync"]["github_stack"]["message"], "link failed");
+    assert_eq!(value["error"], "link failed");
 
     let (success, undo_stdout, undo_stderr) =
         run_gg(&fixture.repo_path, &["undo", "--list", "--json"]);

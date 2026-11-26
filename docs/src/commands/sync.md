@@ -303,18 +303,21 @@ Event kinds:
 | `entry_started` | `position`, `sha`, `title`, `gg_id`, `branch` | Processing begins for a stack entry |
 | `push_started` | `position`, `branch` | A push is about to start |
 | `push_done` | `position`, `branch`, `forced` | Push succeeded |
-| `push_error` | `position`, `branch`, `error` | Push failed (entry is skipped) |
+| `push_error` | `position`, `branch`, `error` | Push failed; sync stops because the remote result may be ambiguous |
 | `pr_created` | `position`, `pr_number`, `pr_url`, `draft` | New PR/MR created |
-| `pr_updated` | `position`, `pr_number`, `action` | Existing PR/MR updated (`updated`/`recreated`) |
+| `pr_create_error` | `position`, `branch`, `error` | PR/MR creation failed; sync stops because the remote result may be ambiguous |
+| `pr_comment` | `position`, `pr_number`, `action`, `error` | Replacement notice comment checkpointed (`action` is `created` or `error`) |
+| `pr_closed` | `position`, `pr_number`, `error` | Replaced PR/MR close attempted |
+| `pr_updated` | `position`, `pr_number`, `action` | Existing PR/MR updated; mutation checkpoints use `title_updated`, `description_updated`, or `retargeted` (`updated`/`recreated` remain aggregate publication actions) |
 | `pr_skipped_closed` | `position`, `pr_number` | Existing PR/MR is merged/closed and skipped |
 | `nav_comment` | `position`, `pr_number`, `action`, `error` | Managed nav comment reconciled (`created`/`updated`/`unchanged`/`deleted`/`error`/`skip`) |
 | `github_stack` | `mode`, `action`, `reason`, `stack_number`, `pr_numbers`, `message` | GitHub Stacked PRs reconciliation completed; `status` is `ok` or `warning` |
 | `error` | `message` | Fatal error before completion |
-| `summary` | same shape as `--json` `sync` object | Sync finished (success or partial failure) |
+| `summary` | same shape as `--json` `sync` object | Sync finished successfully |
 
-The last event is always `summary`, so consumers can detect completion without
-reconstructing state. If an unrecoverable error happens before the summary,
-an `error` event is emitted and the process exits non-zero.
+On successful completion, the last event is `summary`, so consumers can detect
+completion without reconstructing state. If an unrecoverable error happens
+before completion, the final event is `error` and the process exits non-zero.
 
 ### Example `--jsonl` output
 

@@ -26,6 +26,38 @@ Before pushing, `gg sync` checks whether your stack base is behind `origin/<base
 
 When you run `gg sync --lint`, lint runs before the first push or PR/MR update. A lint failure aborts sync and restores the checkout to its pre-lint state; it cannot undo a target change from a preceding successful lint pass.
 
+## Failure boundaries and safe retries
+
+Before the per-entry sync loop mutates anything, `gg sync` reads every mapped
+PR/MR in scope. A failed lookup, missing or null review, or an unexpected source,
+target, or state aborts before that loop starts mutating. This is a fail-closed
+preflight, not a transaction for the whole command.
+
+Immediately before each remote mutation involving an existing mapped review,
+sync reads that review's provider state again and authorizes that specific
+change. Unmapped branch pushes and initial review creation have no existing
+review to reread, but an ambiguous response leaves the same uncertainty. A race
+or lookup failure can stop the command after an earlier operation segment,
+branch push, or PR/MR creation or update succeeded. There is no automatic
+rollback. When sync creates a replacement for a review whose source branch
+changed, it persists the new review mapping immediately after successful
+creation, before attempting later updates or closing the old review.
+
+Before retrying a failed sync, reconcile what actually happened:
+
+- inspect the mapped review number, state, source, and target on the provider;
+- compare the relevant remote branch tips with the intended local commits;
+- inspect `gg/config.json` under the directory reported by
+  `git rev-parse --git-common-dir` for the current saved mapping;
+- enumerate all matching operation records with `gg undo --list --json` and
+  check `status`, `touched_remote`, and `remote_effects`; and
+- if a rebase is paused, use `gg ls --json` to identify the owning operation
+  before choosing `gg continue` or `gg abort`.
+
+Do not blindly retry an uncertain push or remote deletion: an ambiguous response
+may hide a successful mutation. Retry only after provider state, remote refs,
+local config, and operation records agree on the current state.
+
 ### Sync after a parent lands
 
 Use `gg sync --rebase-if-needed` to publish the rest of a stack without restarting CI just because its bottom PR/MR merged. Sync fetches `origin/<base>`, excludes bottom entries reachable by their original SHA (even if their PR/MR mappings are gone), and retargets the next review to the base. It checks the forge's mergeability **on that target and source SHA**. If the review can merge as-is, sync leaves the surviving branches alone. It neither merges nor queues a review.

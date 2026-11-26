@@ -27,20 +27,34 @@ case "$1 ${2:-}" in
       [ "$(cat "$dir/$key$n")" != "$4" ] || echo "$n"
     done;;
   'pr edit')
-    [ "$4" = --base ] || exit 1
-    pending=
-    for record in "$TEST_GIT_DIR"/gg/operations/*.json; do
-      grep -q '"status": "pending"' "$record" || continue
-      [ -z "$pending" ] || { echo 'multiple pending operations' >&2; exit 1; }
-      pending=$(basename "$record" .json)
-    done
-    [ -n "$pending" ] || { echo 'missing pending operation' >&2; exit 1; }
-    printf '%s\n' "$pending" > "$dir/retarget-operation-id"
-    echo "edit $3 $5" >> "$dir/events"
-    [ "${EVIDENCE:-}" = stale-target ] || echo "$5" > "$dir/base$3";;
+    printf '%s\n' "$*" >> "$dir/mutations"
+    if [ "$4" = --base ]; then
+      pending=
+      for record in "$TEST_GIT_DIR"/gg/operations/*.json; do
+        grep -q '"status": "pending"' "$record" || continue
+        [ -z "$pending" ] || { echo 'multiple pending operations' >&2; exit 1; }
+        pending=$(basename "$record" .json)
+      done
+      [ -n "$pending" ] || { echo 'missing pending operation' >&2; exit 1; }
+      printf '%s\n' "$pending" > "$dir/retarget-operation-id"
+      echo "edit $3 $5" >> "$dir/events"
+      [ "${EVIDENCE:-}" = stale-target ] || echo "$5" > "$dir/base$3"
+    fi;;
   'pr view')
     n=$3
+    view_count_file="$dir/view$n"
+    view_count=$(cat "$view_count_file" 2>/dev/null || echo 0)
+    view_count=$((view_count + 1))
+    printf '%s\n' "$view_count" > "$view_count_file"
+    if [ "${4:-}" = --json ] && [ "${5:-}" = body ]; then
+      printf '%s\n' '<!-- gg:managed:start -->' 'old body' '<!-- gg:managed:end -->'
+      exit 0
+    fi
     head=$(cat "$dir/head$n"); base=$(cat "$dir/base$n")
+    if [ "$n" = 2 ] && [ "${EVIDENCE:-}" = fail-main-lookup ] && [ "$base" = main ]; then
+      echo 'simulated authoritative lookup failure' >&2
+      exit 1
+    fi
     oid=$(git --git-dir="$TEST_ORIGIN" rev-parse "refs/heads/$head")
     state=OPEN; mergeable=MERGEABLE; merged=null
     if [ "$n" = 1 ] && [ -f "$dir/landed" ]; then
@@ -58,6 +72,18 @@ case "$1 ${2:-}" in
         wrong-sha) oid=$(git --git-dir="$TEST_ORIGIN" rev-parse main);;
       esac
     fi
+    case "${EVIDENCE:-}" in
+      closed-mapped-review|terminal-closed-expected|terminal-closed-unexpected|consecutive-terminal-reviews) state=CLOSED;;
+      terminal-predecessor) [ "$n" != 1 ] || state=CLOSED;;
+      terminal-merged-expected|terminal-merged-unexpected) state=MERGED;;
+      stale-before-push|stale-before-retarget|stale-before-title)
+        [ "$n" != 1 ] || [ "$view_count" -lt 2 ] || state=CLOSED;;
+      stale-before-description)
+        [ "$n" != 1 ] || [ "$view_count" -lt 3 ] || state=CLOSED;;
+    esac
+    case "${EVIDENCE:-}" in
+      terminal-closed-unexpected|terminal-merged-unexpected) base=unexpected-target;;
+    esac
     echo "view $n $base $mergeable" >> "$dir/events"
     case "$mergeable" in MERGEABLE) detail=CLEAN;; CONFLICTING) detail=DIRTY;; *) detail=UNKNOWN;; esac
     printf '{"number":%s,"title":"Entry %s","state":"%s","url":"https://github.com/test/repo/pull/%s","headRefName":"%s","headRefOid":"%s","baseRefName":"%s","mergeCommit":%s,"isDraft":false,"mergeable":"%s","mergeStateStatus":"%s","reviews":[],"statusCheckRollup":[]}\n' "$n" "$n" "$state" "$n" "$head" "$oid" "$base" "$merged" "$mergeable" "$detail";;
@@ -376,6 +402,284 @@ fn refuses_unknown_mergeability_or_mismatched_evidence_without_rewriting() {
         );
         assert!(!ok, "accepted {verdict}/{evidence}: {out}\n{err}");
         stack.assert_untouched();
+    }
+}
+
+#[test]
+fn existing_review_lookup_failure_stops_before_main_loop_mutation() {
+    let stack = Stack::landed(false, false);
+    let (ok, out, err) = stack.gg(
+        &["sync", "--rebase-if-needed", "--until", "2"],
+        "MERGEABLE",
+        "fail-main-lookup",
+    );
+
+    assert!(!ok, "lookup failure must stop sync: {out}\n{err}");
+    assert!(
+        err.contains("simulated authoritative lookup failure"),
+        "{out}\n{err}"
+    );
+    let events = fs::read_to_string(stack.bin.join("events")).unwrap();
+    assert_eq!(
+        events.lines().filter(|line| *line == "edit 2 main").count(),
+        1,
+        "the preparatory retarget should complete before classification: {events}"
+    );
+    assert!(
+        !stack.repo.join(".git/pushes").exists(),
+        "main-loop push ran after lookup failure"
+    );
+    assert!(
+        !events.lines().any(|line| line == "edit 3 main"),
+        "main-loop review update ran after lookup failure: {events}"
+    );
+}
+
+#[test]
+fn changed_entry_mapped_to_closed_review_is_classified_before_push() {
+    let stack = Stack::landed(false, false);
+    fs::remove_file(stack.bin.join("landed")).unwrap();
+    checked_git(
+        &stack.repo,
+        &[
+            "push",
+            "--no-verify",
+            stack.remote.to_str().unwrap(),
+            &format!("+{}:refs/heads/main", stack.base),
+        ],
+    );
+    let config_path = stack.repo.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["defaults"]["sync_auto_rebase"] = json!(false);
+    fs::write(config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+    checked_git(&stack.repo, &["fetch", "origin"]);
+    checked_git(&stack.repo, &["reset", "--hard", &stack.commits[0]]);
+
+    fs::write(stack.repo.join(IDS[0]), "changed local content").unwrap();
+    checked_git(&stack.repo, &["add", IDS[0]]);
+    checked_git(&stack.repo, &["commit", "--amend", "--no-edit"]);
+
+    let (ok, out, err) = stack.gg(
+        &["sync", "--rebase-if-needed", "--until", "1", "--json"],
+        "MERGEABLE",
+        "closed-mapped-review",
+    );
+
+    assert!(ok, "closed mapped review must be skipped: {out}\n{err}");
+    let payload: Value = serde_json::from_str(&out).expect("valid JSON response");
+    let entries = payload["sync"]["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "{payload}");
+    assert_eq!(entries[0]["pr_number"], 1, "{payload}");
+    assert_eq!(entries[0]["action"], "skipped_closed", "{payload}");
+    assert_eq!(entries[0]["pushed"], false, "{payload}");
+    assert!(
+        !stack.repo.join(".git/pushes").exists(),
+        "mapped review classification must precede push"
+    );
+    assert_eq!(
+        checked_git(&stack.remote, &["rev-parse", &branch(0)]),
+        stack.commits[0]
+    );
+}
+
+#[test]
+fn terminal_reviews_require_the_expected_target_before_skip() {
+    for (state, target_matches) in [
+        ("closed", true),
+        ("closed", false),
+        ("merged", true),
+        ("merged", false),
+    ] {
+        let stack = Stack::landed(false, false);
+        fs::remove_file(stack.bin.join("landed")).unwrap();
+        checked_git(&stack.repo, &["reset", "--hard", &stack.commits[0]]);
+        let evidence = format!(
+            "terminal-{state}-{}",
+            if target_matches {
+                "expected"
+            } else {
+                "unexpected"
+            }
+        );
+
+        let (ok, out, err) = stack.gg(
+            &["sync", "--until", "1", "--no-rebase-check", "--json"],
+            "MERGEABLE",
+            &evidence,
+        );
+
+        if target_matches {
+            assert!(ok, "{state}: {out}\n{err}");
+            let payload: Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(payload["sync"]["entries"][0]["action"], "skipped_closed");
+        } else {
+            assert!(!ok, "{state}: unexpected target was skipped: {out}\n{err}");
+            assert!(
+                format!("{out}{err}").contains("does not have the expected source and target"),
+                "{state}: {out}\n{err}"
+            );
+        }
+        assert!(!stack.repo.join(".git/pushes").exists(), "{state}");
+        assert!(!stack.bin.join("mutations").exists(), "{state}");
+    }
+}
+
+#[test]
+fn consecutive_terminal_reviews_keep_their_published_predecessor_targets() {
+    let stack = Stack::landed(false, false);
+    fs::remove_file(stack.bin.join("landed")).unwrap();
+
+    let (ok, out, err) = stack.gg(
+        &["sync", "--until", "3", "--no-rebase-check", "--json"],
+        "MERGEABLE",
+        "consecutive-terminal-reviews",
+    );
+
+    assert!(ok, "published terminal topology was rejected: {out}\n{err}");
+    let payload: Value = serde_json::from_str(&out).unwrap();
+    let entries = payload["sync"]["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 3, "{payload}");
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry["action"] == "skipped_closed"),
+        "{payload}"
+    );
+    assert!(!stack.repo.join(".git/pushes").exists());
+    assert!(!stack.bin.join("mutations").exists());
+}
+
+#[test]
+fn active_successor_of_terminal_review_is_retargeted_from_published_topology() {
+    let stack = Stack::landed(false, false);
+    fs::remove_file(stack.bin.join("landed")).unwrap();
+    checked_git(
+        &stack.repo,
+        &[
+            "push",
+            "--no-verify",
+            stack.remote.to_str().unwrap(),
+            &format!("+{}:refs/heads/main", stack.base),
+        ],
+    );
+
+    let args = ["sync", "--rebase-if-needed", "--until", "2", "--json"];
+    let (ok, out, err) = stack.gg(&args, "MERGEABLE", "terminal-predecessor");
+
+    assert!(
+        ok,
+        "active successor was rejected before retarget: {out}\n{err}"
+    );
+    let payload: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(payload["sync"]["entries"][0]["action"], "skipped_closed");
+    assert_eq!(
+        fs::read_to_string(stack.bin.join("base2")).unwrap(),
+        "main\n"
+    );
+
+    let (ok, out, err) = stack.gg(&args, "MERGEABLE", "terminal-predecessor");
+
+    assert!(
+        ok,
+        "already-reconciled successor was rejected on repeated sync: {out}\n{err}"
+    );
+    let payload: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(payload["sync"]["entries"][0]["action"], "skipped_closed");
+    assert_eq!(
+        fs::read_to_string(stack.bin.join("base2")).unwrap(),
+        "main\n"
+    );
+
+    let (ok, out, err) = stack.gg(&args, "MERGEABLE", "consecutive-terminal-reviews");
+
+    assert!(
+        ok,
+        "terminal successor on the desired walk-back target was rejected: {out}\n{err}"
+    );
+    let payload: Value = serde_json::from_str(&out).unwrap();
+    let entries = payload["sync"]["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2, "{payload}");
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry["action"] == "skipped_closed"),
+        "{payload}"
+    );
+    stack.assert_provider_requests(
+        &[
+            "pr view 1",
+            "pr view 2",
+            "pr view 2",
+            "pr edit 2 --base main",
+            "pr view 1",
+            "pr view 2",
+            "pr view 1",
+            "pr view 2",
+        ],
+        &["pr edit 2 --base main"],
+    );
+}
+
+#[test]
+fn ordinary_sync_revalidates_review_before_push() {
+    let stack = Stack::landed(false, false);
+    fs::remove_file(stack.bin.join("landed")).unwrap();
+    checked_git(&stack.repo, &["reset", "--hard", &stack.commits[0]]);
+    fs::write(stack.repo.join(IDS[0]), "changed local content").unwrap();
+    checked_git(&stack.repo, &["add", IDS[0]]);
+    checked_git(&stack.repo, &["commit", "--amend", "--no-edit"]);
+
+    let (ok, out, err) = stack.gg(
+        &["sync", "--until", "1", "--no-rebase-check"],
+        "MERGEABLE",
+        "stale-before-push",
+    );
+
+    assert!(!ok, "stale mapped review allowed a push: {out}\n{err}");
+    assert!(
+        format!("{out}{err}").contains("not open at the expected source and target"),
+        "{out}\n{err}"
+    );
+    assert_eq!(
+        fs::read_to_string(stack.bin.join("view1")).unwrap().trim(),
+        "2"
+    );
+    assert!(
+        !stack.repo.join(".git/pushes").exists(),
+        "push was attempted after stale authorization"
+    );
+}
+
+#[test]
+fn ordinary_sync_revalidates_before_review_updates() {
+    for (name, extra_args, expected_views) in [
+        ("retarget", &[][..], "2"),
+        ("title", &["--update-title"][..], "2"),
+        ("description", &["--update-descriptions"][..], "4"),
+    ] {
+        let stack = Stack::landed(false, false);
+        fs::remove_file(stack.bin.join("landed")).unwrap();
+        checked_git(&stack.repo, &["reset", "--hard", &stack.commits[0]]);
+        let mut args = vec!["sync", "--until", "1", "--no-rebase-check"];
+        args.extend_from_slice(extra_args);
+        let evidence = format!("stale-before-{name}");
+
+        let (ok, out, err) = stack.gg(&args, "MERGEABLE", &evidence);
+
+        assert!(!ok, "{name}: stale review allowed mutation: {out}\n{err}");
+        assert!(
+            format!("{out}{err}").contains("not open at the expected source and target"),
+            "{name}: {out}\n{err}"
+        );
+        assert_eq!(
+            fs::read_to_string(stack.bin.join("view1")).unwrap().trim(),
+            expected_views,
+            "{name}: unexpected authoritative read count"
+        );
+        assert!(
+            !stack.bin.join("mutations").exists(),
+            "{name}: mutation attempted after failed authorization"
+        );
     }
 }
 

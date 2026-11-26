@@ -370,6 +370,112 @@ fn compute_target_branch(
     base.to_string()
 }
 
+/// Return the targets an already-published review may currently have.
+///
+/// These targets describe the published topology independently of the current
+/// local order. The desired target is handled separately by
+/// `compute_target_branch`.
+fn expected_current_target_branches(
+    repo: &Repository,
+    config: &Config,
+    i: usize,
+    base: &str,
+    entries: &[crate::stack::StackEntry],
+    stack: &Stack,
+    previous_review: Option<&crate::provider::PrInfo>,
+) -> Vec<String> {
+    let entry_branch = stack
+        .entry_branch_name(&entries[i])
+        .expect("synced entries have GG IDs");
+    let mut targets = Vec::new();
+    let mut add_target = |target: String| {
+        if target != entry_branch && !targets.contains(&target) {
+            targets.push(target);
+        }
+    };
+
+    // A retained review can still target a dropped predecessor until this sync
+    // retargets it. Reconstruct that predecessor only from the published
+    // branch's exact parent and a pending deletion for this stack.
+    let published_oid = git::get_remote_branch_oid(repo, &entry_branch);
+    let published_parent = published_oid
+        .and_then(|oid| repo.find_commit(oid).ok())
+        .and_then(|commit| commit.parent_id(0).ok());
+    if let Some(branch) = published_parent.and_then(|parent| {
+        config
+            .pending_remote_branch_deletions
+            .iter()
+            .find(|intent| {
+                intent.remote == "origin"
+                    && intent.expected_oid.parse::<git2::Oid>().ok() == Some(parent)
+                    && matches!(
+                        git::parse_entry_branch(&intent.branch),
+                        Some((ref user, ref name, ref entry_id))
+                            if user == &stack.username
+                                && name == &stack.name
+                                && git::normalize_gg_id(entry_id).is_some()
+                    )
+            })
+            .map(|intent| intent.branch.clone())
+    }) {
+        add_target(branch);
+    }
+
+    // A previous sync may have pushed the rewritten survivor but failed before
+    // retargeting its review. The exact remote/local source match confirms that
+    // push landed; in that state, durable same-stack deletion intents whose
+    // freshly fetched branch tips still match their authorized OIDs recover the
+    // old target even though it is no longer the source commit's parent.
+    // Other stacks, malformed entry branches, changed deletion targets, and
+    // stale source tips remain unauthorized.
+    if published_oid == Some(entries[i].oid) {
+        for intent in &config.pending_remote_branch_deletions {
+            if intent.remote == "origin"
+                && intent
+                    .expected_oid
+                    .parse::<git2::Oid>()
+                    .ok()
+                    .is_some_and(|expected_oid| {
+                        git::get_remote_branch_oid(repo, &intent.branch) == Some(expected_oid)
+                    })
+                && matches!(
+                    git::parse_entry_branch(&intent.branch),
+                    Some((ref user, ref name, ref entry_id))
+                        if user == &stack.username
+                            && name == &stack.name
+                            && git::normalize_gg_id(entry_id).is_some()
+                )
+            {
+                add_target(intent.branch.clone());
+            }
+        }
+    }
+
+    // The configured base and every other mapped current entry are the only
+    // targets that can belong to the previously published stack after a local
+    // reorder. Unmapped or unrelated branches remain unauthorized.
+    add_target(base.to_string());
+    for candidate in &stack.entries {
+        let Some(gg_id) = candidate.gg_id.as_deref() else {
+            continue;
+        };
+        if config.get_mr_for_entry(&stack.name, gg_id).is_some() {
+            if let Some(branch) = stack.entry_branch_name(candidate) {
+                add_target(branch);
+            }
+        }
+    }
+
+    // Preserve renamed-head replacement topology: a following review may
+    // still target the exact source observed for the previously classified
+    // mapped review until replacements are created.
+    if let Some(branch) = previous_review.and_then(|info| info.head_branch.clone()) {
+        add_target(branch);
+    }
+
+    targets
+}
+
 /// Delete remote entry branches authorized by earlier Drops.
 ///
 /// Returns one message per branch whose deletion was deferred because an open
@@ -985,6 +1091,61 @@ pub fn run(
     // Metadata normalization and lint amendments preserve entry order.
     let entries_to_sync = &stack.entries[..end_pos];
 
+    // Resolve every mapped review before the main loop can mutate anything.
+    // Later mutation authorization still performs its own fresh provider read.
+    let mut classified_reviews = Vec::with_capacity(entries_to_sync.len());
+    let mut classified_entry_is_closed = Vec::with_capacity(entries_to_sync.len());
+    for (i, entry) in entries_to_sync.iter().enumerate() {
+        let gg_id = entry.gg_id.as_ref().unwrap();
+        let expected_head = stack.entry_branch_name(entry).unwrap();
+        let expected_current_bases = expected_current_target_branches(
+            &repo,
+            &config,
+            i,
+            &stack.base,
+            entries_to_sync,
+            &stack,
+            classified_reviews.last().and_then(Option::as_ref),
+        );
+        let desired_base = compute_target_branch(
+            i,
+            &stack.base,
+            entries_to_sync,
+            &classified_entry_is_closed,
+            &stack,
+        );
+        let existing_pr = config.get_mr_for_entry(&stack.name, gg_id);
+        let active_previous_target = (i == 0 && landed.as_ref().is_some_and(|p| p.rewritten))
+            .then(|| landed.as_ref()?.previous_target.as_deref())
+            .flatten();
+        let classified = match existing_pr {
+            Some(number) => Some(segment.finish_on_error(
+                &repo,
+                &config,
+                classify_review_for_sync(
+                    &provider,
+                    number,
+                    ReviewSyncTopology {
+                        repo: &repo,
+                        config: &config,
+                        expected_head: &expected_head,
+                        expected_current_bases: &expected_current_bases,
+                        desired_base: &desired_base,
+                        active_previous_base: active_previous_target,
+                    },
+                ),
+            )?),
+            None => None,
+        };
+        classified_entry_is_closed.push(classified.as_ref().is_some_and(|info| {
+            matches!(
+                info.state,
+                crate::provider::PrState::Merged | crate::provider::PrState::Closed
+            )
+        }));
+        classified_reviews.push(classified);
+    }
+
     // Load optional PR template
     let pr_template = template::load_template(git_dir);
 
@@ -1070,10 +1231,24 @@ pub fn run(
 
         pb.set_message(format!("Processing {}...", entry.short_sha));
 
+        // Classify a mapped review before creating or pushing its branch. A
+        // terminal review is safe to skip only when it still names this exact
+        // stack entry and target.
+        let target_branch =
+            compute_target_branch(i, &stack.base, entries_to_sync, &entry_is_closed, &stack);
+        let existing_pr = config.get_mr_for_entry(&stack.name, gg_id);
+        let classified_pr_info = classified_reviews[i].clone();
+        let review_is_terminal = classified_pr_info.as_ref().is_some_and(|info| {
+            matches!(
+                info.state,
+                crate::provider::PrState::Merged | crate::provider::PrState::Closed
+            )
+        });
+
         // Check if remote branch exists and has the same OID as local
         let remote_oid = git::get_remote_branch_oid(&repo, &entry_branch);
         let needs_push = remote_oid != Some(entry.oid);
-        if needs_push || !rebase_if_needed {
+        if !review_is_terminal && (needs_push || !rebase_if_needed) {
             segment.finish_on_error(
                 &repo,
                 &config,
@@ -1082,7 +1257,7 @@ pub fn run(
         }
 
         // Only push if the remote is different or doesn't exist
-        if needs_push {
+        if needs_push && !review_is_terminal {
             if let Some(s) = streamer.as_mut() {
                 s.emit(&SyncStreamingResponse {
                     version: OUTPUT_VERSION,
@@ -1097,16 +1272,41 @@ pub fn run(
             // Push the branch (always force-push with lease because rebases change commit SHAs)
             // This is safe because each entry branch is owned by this stack
             // If --force is passed, use hard force as an escape hatch
-            let checkpoint = segment.mark_remote_before_attempt();
-            segment.finish_on_error(&repo, &config, checkpoint)?;
+            let mut before_push_attempt_failed = false;
             let push_result = git::push_branch_with_confirmation(
                 &entry_branch,
                 true,
                 force,
                 no_verify,
                 |branch_name| suspend_sync_progress(&pb, || git::confirm_force_push(branch_name)),
+                || {
+                    let result = (|| {
+                        if let Some(info) = classified_pr_info.as_ref() {
+                            let expected_head = info
+                                .head_branch
+                                .as_deref()
+                                .expect("classified active review has a source");
+                            let expected_base = info
+                                .base_branch
+                                .as_deref()
+                                .expect("classified active review has a target");
+                            authorize_review_mutation(
+                                &provider,
+                                info.number,
+                                expected_head,
+                                expected_base,
+                            )?;
+                        }
+                        segment.mark_remote_before_attempt()
+                    })();
+                    before_push_attempt_failed |= result.is_err();
+                    result
+                },
             );
             if let Err(e) = push_result {
+                if before_push_attempt_failed {
+                    return segment.finish_result(&repo, &config, Err(e));
+                }
                 pb.finish_and_clear();
                 branch_push_failed = true;
                 if json || jsonl {
@@ -1171,24 +1371,11 @@ pub fn run(
             segment.record_remote_effect(effect);
         }
 
-        // Determine target branch for MR — uses walk-back to skip merged predecessors.
-        let target_branch =
-            compute_target_branch(i, &stack.base, entries_to_sync, &entry_is_closed, &stack);
-
         // Create or update PR
-        let existing_pr = config.get_mr_for_entry(&stack.name, gg_id);
-
         match existing_pr {
             Some(pr_num) => {
                 pr_number = Some(pr_num);
-                // Check if PR is still open before updating
-                let pr_info = match provider.get_pr_info(pr_num) {
-                    Ok(info) => Some(info),
-                    Err(_) => {
-                        pr_state_unresolved = true;
-                        None
-                    }
-                };
+                let pr_info = classified_pr_info;
                 pr_url = pr_info.as_ref().map(|info| info.url.clone());
                 // Cache the state so the nav reconcile pass can reuse it without
                 // a second network round-trip.
@@ -1234,6 +1421,10 @@ pub fn run(
                 } else if let Some(old_head_branch) =
                     mismatched_pr_head_branch(pr_info.as_ref(), &entry_branch)
                 {
+                    let old_base_branch = pr_info
+                        .as_ref()
+                        .and_then(|info| info.base_branch.as_deref())
+                        .expect("classified active review has a target");
                     let replacement_draft = pr_info
                         .as_ref()
                         .map(|info| info.draft)
@@ -1243,6 +1434,16 @@ pub fn run(
                         &description_with_replacement_note(&description, &provider, pr_num),
                     );
 
+                    segment.finish_on_error(
+                        &repo,
+                        &config,
+                        authorize_review_mutation(
+                            &provider,
+                            pr_num,
+                            old_head_branch,
+                            old_base_branch,
+                        ),
+                    )?;
                     match provider.create_pr(
                         &entry_branch,
                         &target_branch,
@@ -1251,6 +1452,9 @@ pub fn run(
                         replacement_draft,
                     ) {
                         Ok(result) => {
+                            config.set_mr_for_entry(&stack.name, gg_id, result.number);
+                            let save_result = config.save(repo.commondir());
+                            segment.finish_on_error(&repo, &config, save_result)?;
                             if let Some(s) = streamer.as_mut() {
                                 s.emit(&SyncStreamingResponse {
                                     version: OUTPUT_VERSION,
@@ -1267,7 +1471,6 @@ pub fn run(
                                     },
                                 });
                             }
-                            config.set_mr_for_entry(&stack.name, gg_id, result.number);
                             pr_number = Some(result.number);
                             pr_url = if result.url.is_empty() {
                                 None
@@ -1294,6 +1497,16 @@ pub fn run(
                                 result.number,
                                 &result.url,
                             );
+                            segment.finish_on_error(
+                                &repo,
+                                &config,
+                                authorize_review_mutation(
+                                    &provider,
+                                    pr_num,
+                                    old_head_branch,
+                                    old_base_branch,
+                                ),
+                            )?;
                             if let Err(e) = provider.create_pr_comment(pr_num, &close_comment) {
                                 if !json && !jsonl {
                                     pb.println(format!(
@@ -1315,6 +1528,16 @@ pub fn run(
                                 segment.mark_remote();
                             }
 
+                            segment.finish_on_error(
+                                &repo,
+                                &config,
+                                authorize_review_mutation(
+                                    &provider,
+                                    pr_num,
+                                    old_head_branch,
+                                    old_base_branch,
+                                ),
+                            )?;
                             match provider.close_pr(pr_num) {
                                 Ok(()) => {
                                     let closed_effect = RemoteEffect::PrClosed {
@@ -1390,10 +1613,24 @@ pub fn run(
                     }
                 } else {
                     let mut review_changed = retargeted_pr == Some(pr_num);
+                    let current_base = pr_info
+                        .as_ref()
+                        .and_then(|info| info.base_branch.as_deref())
+                        .expect("classified active review has a target");
                     if update_title
                         && (!rebase_if_needed
                             || pr_info.as_ref().is_none_or(|info| info.title != title))
                     {
+                        segment.finish_on_error(
+                            &repo,
+                            &config,
+                            authorize_review_mutation(
+                                &provider,
+                                pr_num,
+                                &entry_branch,
+                                current_base,
+                            ),
+                        )?;
                         let checkpoint = segment.mark_remote_before_attempt();
                         segment.finish_on_error(&repo, &config, checkpoint)?;
                         if let Err(e) = provider.update_pr_title(pr_num, &title) {
@@ -1451,6 +1688,16 @@ pub fn run(
                                 if !new_body.is_empty()
                                     && (!rebase_if_needed || new_body != remote_body)
                                 {
+                                    segment.finish_on_error(
+                                        &repo,
+                                        &config,
+                                        authorize_review_mutation(
+                                            &provider,
+                                            pr_num,
+                                            &entry_branch,
+                                            current_base,
+                                        ),
+                                    )?;
                                     let checkpoint = segment.mark_remote_before_attempt();
                                     segment.finish_on_error(&repo, &config, checkpoint)?;
                                     if let Err(e) =
@@ -1499,6 +1746,16 @@ pub fn run(
                         .and_then(|info| info.base_branch.as_deref())
                         != Some(target_branch.as_str());
                     if !rebase_if_needed || base_changed {
+                        segment.finish_on_error(
+                            &repo,
+                            &config,
+                            authorize_review_mutation(
+                                &provider,
+                                pr_num,
+                                &entry_branch,
+                                current_base,
+                            ),
+                        )?;
                         let checkpoint = segment.mark_remote_before_attempt();
                         segment.finish_on_error(&repo, &config, checkpoint)?;
                         match provider.update_pr_base(pr_num, &target_branch) {
@@ -1576,6 +1833,9 @@ pub fn run(
                     entry_draft,
                 ) {
                     Ok(result) => {
+                        config.set_mr_for_entry(&stack.name, gg_id, result.number);
+                        let save_result = config.save(repo.commondir());
+                        segment.finish_on_error(&repo, &config, save_result)?;
                         if let Some(s) = streamer.as_mut() {
                             s.emit(&SyncStreamingResponse {
                                 version: OUTPUT_VERSION,
@@ -1592,7 +1852,6 @@ pub fn run(
                                 },
                             });
                         }
-                        config.set_mr_for_entry(&stack.name, gg_id, result.number);
                         pr_number = Some(result.number);
                         pr_url = if result.url.is_empty() {
                             None
@@ -1733,16 +1992,36 @@ pub fn run(
         print_prune_deferrals(&warnings[warnings_before_prune..]);
     }
 
-    let active_pr_numbers: Vec<u64> = nav_snapshots
+    let active_review_specs: Vec<(u64, String, String)> = entries_to_sync
         .iter()
+        .enumerate()
+        .zip(&nav_snapshots)
         .zip(&entry_is_closed)
-        .filter_map(|(snapshot, is_closed)| {
+        .filter_map(|(((i, entry), snapshot), is_closed)| {
             if *is_closed {
                 None
             } else {
-                snapshot.as_ref().map(|value| value.pr_number)
+                snapshot.as_ref().map(|value| {
+                    (
+                        value.pr_number,
+                        stack
+                            .entry_branch_name(entry)
+                            .expect("synced entries have GG IDs"),
+                        compute_target_branch(
+                            i,
+                            &stack.base,
+                            entries_to_sync,
+                            &entry_is_closed,
+                            &stack,
+                        ),
+                    )
+                })
             }
         })
+        .collect();
+    let active_pr_numbers: Vec<u64> = active_review_specs
+        .iter()
+        .map(|(number, _, _)| *number)
         .collect();
     let has_unresolved_active_pr = nav_snapshots
         .iter()
@@ -1767,12 +2046,22 @@ pub fn run(
                     mode,
                     &stack.base,
                     &active_pr_numbers,
-                    || segment.mark_remote(),
+                    || {
+                        for (number, expected_head, expected_base) in &active_review_specs {
+                            authorize_review_mutation(
+                                &provider,
+                                *number,
+                                expected_head,
+                                expected_base,
+                            )?;
+                        }
+                        segment.mark_remote_before_attempt()
+                    },
                 );
-                if outcome.mutation_attempted {
-                    segment.mark_remote();
+                match outcome {
+                    Ok(outcome) => outcome.result,
+                    Err(error) => return segment.finish_result(&repo, &config, Err(error)),
                 }
-                outcome.result
             };
 
             let warning_message = result.is_warning().then(|| {
@@ -1926,6 +2215,11 @@ pub fn run(
                 pr_state: snap.pr_state,
                 has_existing_comment: existing.is_some(),
             });
+            let expected_head = stack
+                .entry_branch_name(&entries_to_sync[i])
+                .expect("synced entries have GG IDs");
+            let expected_base =
+                compute_target_branch(i, &stack.base, entries_to_sync, &entry_is_closed, &stack);
 
             let action_result: Option<&str> = match decision {
                 stack_nav::NavAction::Skip => None,
@@ -1943,6 +2237,18 @@ pub fn run(
                     let result = match existing {
                         Some(ref c) if c.body == body => Some("unchanged"),
                         Some(ref c) => {
+                            segment.finish_on_error(
+                                &repo,
+                                &config,
+                                authorize_review_mutation(
+                                    &provider,
+                                    snap.pr_number,
+                                    &expected_head,
+                                    &expected_base,
+                                ),
+                            )?;
+                            let checkpoint = segment.mark_remote_before_attempt();
+                            segment.finish_on_error(&repo, &config, checkpoint)?;
                             match provider.update_pr_comment(snap.pr_number, c.id, &body) {
                                 Ok(()) => Some("updated"),
                                 Err(e) => {
@@ -1960,22 +2266,36 @@ pub fn run(
                                 }
                             }
                         }
-                        None => match provider.create_pr_comment(snap.pr_number, &body) {
-                            Ok(()) => Some("created"),
-                            Err(e) => {
-                                if !json && !jsonl {
-                                    println!(
-                                        "{} Could not create nav comment on {} {}{}: {}",
-                                        style("Warning:").yellow(),
-                                        provider.pr_label(),
-                                        number_prefix,
-                                        snap.pr_number,
-                                        e
-                                    );
+                        None => {
+                            segment.finish_on_error(
+                                &repo,
+                                &config,
+                                authorize_review_mutation(
+                                    &provider,
+                                    snap.pr_number,
+                                    &expected_head,
+                                    &expected_base,
+                                ),
+                            )?;
+                            let checkpoint = segment.mark_remote_before_attempt();
+                            segment.finish_on_error(&repo, &config, checkpoint)?;
+                            match provider.create_pr_comment(snap.pr_number, &body) {
+                                Ok(()) => Some("created"),
+                                Err(e) => {
+                                    if !json && !jsonl {
+                                        println!(
+                                            "{} Could not create nav comment on {} {}{}: {}",
+                                            style("Warning:").yellow(),
+                                            provider.pr_label(),
+                                            number_prefix,
+                                            snap.pr_number,
+                                            e
+                                        );
+                                    }
+                                    Some("error")
                                 }
-                                Some("error")
                             }
-                        },
+                        }
                     };
                     if let Some(s) = streamer.as_mut() {
                         let error = if result == Some("error") {
@@ -2008,22 +2328,36 @@ pub fn run(
                 }
                 stack_nav::NavAction::Delete => {
                     let result = match existing {
-                        Some(c) => match provider.delete_pr_comment(snap.pr_number, c.id) {
-                            Ok(()) => Some("deleted"),
-                            Err(e) => {
-                                if !json && !jsonl {
-                                    println!(
-                                        "{} Could not delete nav comment on {} {}{}: {}",
-                                        style("Warning:").yellow(),
-                                        provider.pr_label(),
-                                        number_prefix,
-                                        snap.pr_number,
-                                        e
-                                    );
+                        Some(c) => {
+                            segment.finish_on_error(
+                                &repo,
+                                &config,
+                                authorize_review_mutation(
+                                    &provider,
+                                    snap.pr_number,
+                                    &expected_head,
+                                    &expected_base,
+                                ),
+                            )?;
+                            let checkpoint = segment.mark_remote_before_attempt();
+                            segment.finish_on_error(&repo, &config, checkpoint)?;
+                            match provider.delete_pr_comment(snap.pr_number, c.id) {
+                                Ok(()) => Some("deleted"),
+                                Err(e) => {
+                                    if !json && !jsonl {
+                                        println!(
+                                            "{} Could not delete nav comment on {} {}{}: {}",
+                                            style("Warning:").yellow(),
+                                            provider.pr_label(),
+                                            number_prefix,
+                                            snap.pr_number,
+                                            e
+                                        );
+                                    }
+                                    Some("error")
                                 }
-                                Some("error")
                             }
-                        },
+                        }
                         None => None,
                     };
                     if let Some(s) = streamer.as_mut() {
@@ -2228,6 +2562,244 @@ fn description_with_replacement_note(
     )
 }
 
+struct ReviewSyncTopology<'a> {
+    repo: &'a Repository,
+    config: &'a Config,
+    expected_head: &'a str,
+    expected_current_bases: &'a [String],
+    desired_base: &'a str,
+    active_previous_base: Option<&'a str>,
+}
+
+fn classify_review_for_sync(
+    provider: &Provider,
+    number: u64,
+    topology: ReviewSyncTopology<'_>,
+) -> Result<crate::provider::PrInfo> {
+    let info = provider.get_pr_info(number)?;
+    let expected_head_matches = info.head_branch.as_deref() == Some(topology.expected_head);
+    let identity_matches = info.number == number && expected_head_matches;
+    let current_topology_matches = info.base_branch.as_deref().is_some_and(|base| {
+        topology
+            .expected_current_bases
+            .iter()
+            .any(|expected| expected == base)
+    });
+    let reconciled_walk_back_matches =
+        expected_head_matches && info.base_branch.as_deref() == Some(topology.desired_base);
+    let rewritten_landing_transition_matches = expected_head_matches
+        && topology
+            .active_previous_base
+            .is_some_and(|previous| info.base_branch.as_deref() == Some(previous));
+    let migrated_topology_matches = migrated_review_topology_matches(
+        topology.repo,
+        topology.config,
+        &info,
+        topology.expected_head,
+    );
+    let mut target_matches = current_topology_matches
+        || reconciled_walk_back_matches
+        || rewritten_landing_transition_matches
+        || migrated_topology_matches;
+    if identity_matches && !target_matches {
+        target_matches = mapped_merged_predecessor_review_matches(
+            provider,
+            topology.config,
+            &info,
+            topology.expected_head,
+        )?;
+    }
+    if matches!(
+        info.state,
+        crate::provider::PrState::Merged | crate::provider::PrState::Closed
+    ) {
+        if identity_matches && target_matches {
+            return Ok(info);
+        }
+        return Err(GgError::Other(format!(
+            "Review {number} does not have the expected source and target; sync stopped."
+        )));
+    }
+    if !matches!(
+        info.state,
+        crate::provider::PrState::Open | crate::provider::PrState::Draft
+    ) || info.number != number
+        || info.head_branch.is_none()
+        || info.base_branch.is_none()
+    {
+        return Err(GgError::Other(format!(
+            "Review {number} is not open at an identifiable source and target; sync stopped."
+        )));
+    }
+    if !target_matches {
+        return Err(GgError::Other(format!(
+            "Review {number} does not have the expected source and target; sync stopped."
+        )));
+    }
+    Ok(info)
+}
+
+/// Recognize the published topology left when `unstack` moves an entry to a
+/// new stack while retaining its mapped review.
+fn migrated_review_topology_matches(
+    repo: &Repository,
+    config: &Config,
+    info: &crate::provider::PrInfo,
+    expected_head: &str,
+) -> bool {
+    let Some((current_user, current_stack, current_entry_id)) =
+        git::parse_entry_branch(expected_head)
+    else {
+        return false;
+    };
+    let Some(current_entry_id) = git::normalize_gg_id(&current_entry_id) else {
+        return false;
+    };
+    let Some((source_user, source_stack, source_entry_id)) = info
+        .head_branch
+        .as_deref()
+        .and_then(git::parse_entry_branch)
+    else {
+        return false;
+    };
+    let Some(source_entry_id) = git::normalize_gg_id(&source_entry_id) else {
+        return false;
+    };
+    let Some((target_user, target_stack, target_entry_id)) = info
+        .base_branch
+        .as_deref()
+        .and_then(git::parse_entry_branch)
+    else {
+        return false;
+    };
+    let Some(target_entry_id) = git::normalize_gg_id(&target_entry_id) else {
+        return false;
+    };
+
+    if source_user != current_user
+        || target_user != current_user
+        || source_stack == current_stack
+        || target_stack != source_stack
+        || source_entry_id != current_entry_id
+        || target_entry_id == source_entry_id
+        || config.get_mr_for_entry(&current_stack, &current_entry_id) != Some(info.number)
+    {
+        return false;
+    }
+
+    let Some(old_stack) = config.get_stack(&source_stack) else {
+        return false;
+    };
+    let target_is_accounted_for = old_stack.mrs.contains_key(&target_entry_id)
+        || config
+            .get_mr_for_entry(&current_stack, &target_entry_id)
+            .is_some();
+    if old_stack.mrs.contains_key(&source_entry_id) || !target_is_accounted_for {
+        return false;
+    }
+
+    let Some(source_branch) = info.head_branch.as_deref() else {
+        return false;
+    };
+    let Some(target_branch) = info.base_branch.as_deref() else {
+        return false;
+    };
+    let source_ref = format!("refs/remotes/origin/{source_branch}");
+    let target_ref = format!("refs/remotes/origin/{target_branch}");
+    let Some(source_oid) = repo
+        .find_reference(&source_ref)
+        .ok()
+        .and_then(|reference| reference.target())
+    else {
+        return false;
+    };
+    let Some(target_oid) = repo
+        .find_reference(&target_ref)
+        .ok()
+        .and_then(|reference| reference.target())
+    else {
+        return false;
+    };
+    let Ok(source_commit) = repo.find_commit(source_oid) else {
+        return false;
+    };
+
+    source_commit.parent_count() == 1
+        && source_commit
+            .parent_id(0)
+            .is_ok_and(|parent_oid| parent_oid == target_oid)
+}
+
+/// Recognize a review that still targets a predecessor removed from the local
+/// stack by `gg rebase` after that predecessor was merged externally.
+fn mapped_merged_predecessor_review_matches(
+    provider: &Provider,
+    config: &Config,
+    info: &crate::provider::PrInfo,
+    expected_head: &str,
+) -> Result<bool> {
+    let Some((current_user, current_stack, current_entry_id)) =
+        git::parse_entry_branch(expected_head)
+    else {
+        return Ok(false);
+    };
+    let Some(current_entry_id) = git::normalize_gg_id(&current_entry_id) else {
+        return Ok(false);
+    };
+    let Some(target_branch) = info.base_branch.as_deref() else {
+        return Ok(false);
+    };
+    let Some((target_user, target_stack, target_entry_id)) = git::parse_entry_branch(target_branch)
+    else {
+        return Ok(false);
+    };
+    let Some(target_entry_id) = git::normalize_gg_id(&target_entry_id) else {
+        return Ok(false);
+    };
+
+    if target_user != current_user
+        || target_stack != current_stack
+        || target_entry_id == current_entry_id
+        || config.get_mr_for_entry(&current_stack, &current_entry_id) != Some(info.number)
+    {
+        return Ok(false);
+    }
+
+    let Some(predecessor_number) = config.get_mr_for_entry(&current_stack, &target_entry_id) else {
+        return Ok(false);
+    };
+    if predecessor_number == info.number {
+        return Ok(false);
+    }
+
+    let predecessor = provider.get_pr_info(predecessor_number)?;
+    Ok(predecessor.number == predecessor_number
+        && predecessor.state == crate::provider::PrState::Merged
+        && predecessor.head_branch.as_deref() == Some(target_branch))
+}
+
+fn authorize_review_mutation(
+    provider: &Provider,
+    number: u64,
+    expected_head: &str,
+    expected_base: &str,
+) -> Result<crate::provider::PrInfo> {
+    let info = provider.get_pr_info(number)?;
+    if info.number != number
+        || !matches!(
+            info.state,
+            crate::provider::PrState::Open | crate::provider::PrState::Draft
+        )
+        || info.head_branch.as_deref() != Some(expected_head)
+        || info.base_branch.as_deref() != Some(expected_base)
+    {
+        return Err(GgError::Other(format!(
+            "Review {number} is not open at the expected source and target; sync stopped."
+        )));
+    }
+    Ok(info)
+}
+
 fn mismatched_pr_head_branch<'a>(
     pr_info: Option<&'a crate::provider::PrInfo>,
     entry_branch: &str,
@@ -2311,8 +2883,8 @@ mod tests {
     use super::{
         build_pr_payload, clean_title, compute_target_branch, description_with_replacement_note,
         ensure_draft_prefix_for_gitlab, github_stack_preflight_skip, is_wip_or_draft_prefix,
-        mismatched_pr_head_branch, replacement_closing_comment, suspend_sync_progress,
-        sync_progress_bar, SyncSegment,
+        migrated_review_topology_matches, mismatched_pr_head_branch, replacement_closing_comment,
+        suspend_sync_progress, sync_progress_bar, SyncSegment,
     };
     use crate::config::{Config, GithubStacksIntegration};
     use crate::git;
@@ -2742,6 +3314,187 @@ mod tests {
             mismatched_pr_head_branch(Some(&unknown), "testuser/new-stack--c-8b999da"),
             None
         );
+    }
+
+    struct MigratedTopologyFixture {
+        repo: git2::Repository,
+        _temp: tempfile::TempDir,
+        config: Config,
+        review: crate::provider::PrInfo,
+        old_base_oid: git2::Oid,
+    }
+
+    fn commit_with_parent(
+        repo: &git2::Repository,
+        message: &str,
+        parent_oid: Option<git2::Oid>,
+    ) -> git2::Oid {
+        let signature = git2::Signature::now("Test User", "test@example.com").unwrap();
+        let tree_oid = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        match parent_oid {
+            Some(parent_oid) => {
+                let parent = repo.find_commit(parent_oid).unwrap();
+                repo.commit(None, &signature, &signature, message, &tree, &[&parent])
+                    .unwrap()
+            }
+            None => repo
+                .commit(None, &signature, &signature, message, &tree, &[])
+                .unwrap(),
+        }
+    }
+
+    fn migrated_topology_fixture() -> MigratedTopologyFixture {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(temp.path()).unwrap();
+        let old_base_oid = commit_with_parent(&repo, "old base", None);
+        let predecessor_oid = commit_with_parent(&repo, "predecessor", Some(old_base_oid));
+        let source_oid = commit_with_parent(&repo, "migrated source", Some(predecessor_oid));
+        repo.reference(
+            "refs/remotes/origin/testuser/old-stack--c-1111111",
+            predecessor_oid,
+            true,
+            "test fixture",
+        )
+        .unwrap();
+        repo.reference(
+            "refs/remotes/origin/testuser/old-stack--c-2222222",
+            source_oid,
+            true,
+            "test fixture",
+        )
+        .unwrap();
+
+        let mut config = Config::default();
+        config.set_mr_for_entry("upper", "c-2222222", 428);
+        config.set_mr_for_entry("old-stack", "c-1111111", 427);
+        let review = crate::provider::PrInfo {
+            number: 428,
+            title: "Test PR".to_string(),
+            state: crate::provider::PrState::Open,
+            url: "https://example.com/pr/428".to_string(),
+            head_branch: Some("testuser/old-stack--c-2222222".to_string()),
+            base_branch: Some("testuser/old-stack--c-1111111".to_string()),
+            merge_sha: None,
+            draft: false,
+            approved: false,
+            mergeable: true,
+            changes_requested: false,
+            detailed_merge_status: None,
+            auto_merge: false,
+            head_sha: None,
+            base_mergeability: crate::provider::BaseMergeability::Unknown,
+        };
+        MigratedTopologyFixture {
+            repo,
+            _temp: temp,
+            config,
+            review,
+            old_base_oid,
+        }
+    }
+
+    #[test]
+    fn migrated_topology_accepts_retained_old_stack_predecessor() {
+        let fixture = migrated_topology_fixture();
+        assert!(migrated_review_topology_matches(
+            &fixture.repo,
+            &fixture.config,
+            &fixture.review,
+            "testuser/upper--c-2222222",
+        ));
+    }
+
+    #[test]
+    fn migrated_topology_accepts_predecessor_mapped_in_current_stack() {
+        let fixture = migrated_topology_fixture();
+        let mut config = fixture.config.clone();
+        config.remove_mr_for_entry("old-stack", "c-1111111");
+        config.set_mr_for_entry("upper", "c-1111111", 900);
+
+        assert!(migrated_review_topology_matches(
+            &fixture.repo,
+            &config,
+            &fixture.review,
+            "testuser/upper--c-2222222",
+        ));
+    }
+
+    #[test]
+    fn migrated_topology_rejects_predecessor_absent_from_both_stacks() {
+        let fixture = migrated_topology_fixture();
+        let mut config = fixture.config.clone();
+        config.remove_mr_for_entry("old-stack", "c-1111111");
+
+        assert!(!migrated_review_topology_matches(
+            &fixture.repo,
+            &config,
+            &fixture.review,
+            "testuser/upper--c-2222222",
+        ));
+    }
+
+    #[test]
+    fn migrated_topology_requires_old_stack_and_moved_source() {
+        let fixture = migrated_topology_fixture();
+
+        let mut missing_old_stack = fixture.config.clone();
+        missing_old_stack.remove_stack("old-stack");
+        assert!(!migrated_review_topology_matches(
+            &fixture.repo,
+            &missing_old_stack,
+            &fixture.review,
+            "testuser/upper--c-2222222",
+        ));
+
+        let mut source_still_mapped = fixture.config.clone();
+        source_still_mapped.set_mr_for_entry("old-stack", "c-2222222", 428);
+        assert!(!migrated_review_topology_matches(
+            &fixture.repo,
+            &source_still_mapped,
+            &fixture.review,
+            "testuser/upper--c-2222222",
+        ));
+    }
+
+    #[test]
+    fn migrated_topology_requires_both_exact_remote_refs() {
+        for missing_ref in [
+            "refs/remotes/origin/testuser/old-stack--c-1111111",
+            "refs/remotes/origin/testuser/old-stack--c-2222222",
+        ] {
+            let fixture = migrated_topology_fixture();
+            fixture
+                .repo
+                .find_reference(missing_ref)
+                .unwrap()
+                .delete()
+                .unwrap();
+            assert!(!migrated_review_topology_matches(
+                &fixture.repo,
+                &fixture.config,
+                &fixture.review,
+                "testuser/upper--c-2222222",
+            ));
+        }
+    }
+
+    #[test]
+    fn migrated_topology_requires_source_to_directly_parent_target() {
+        let fixture = migrated_topology_fixture();
+        fixture
+            .repo
+            .find_reference("refs/remotes/origin/testuser/old-stack--c-1111111")
+            .unwrap()
+            .set_target(fixture.old_base_oid, "break direct-parent evidence")
+            .unwrap();
+
+        assert!(!migrated_review_topology_matches(
+            &fixture.repo,
+            &fixture.config,
+            &fixture.review,
+            "testuser/upper--c-2222222",
+        ));
     }
 
     #[test]

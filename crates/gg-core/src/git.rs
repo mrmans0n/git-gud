@@ -1033,6 +1033,26 @@ fn build_push_args(
     args
 }
 
+#[derive(Clone, Copy)]
+struct PushOptions {
+    force_with_lease: bool,
+    hard_force: bool,
+    no_verify: bool,
+}
+
+struct PushCommandOutput {
+    success: bool,
+    stderr: Vec<u8>,
+}
+
+fn run_push_command(args: &[&str]) -> Result<PushCommandOutput> {
+    let output = Command::new("git").args(args).output()?;
+    Ok(PushCommandOutput {
+        success: output.status.success(),
+        stderr: output.stderr,
+    })
+}
+
 /// Push a branch to origin
 ///
 /// - `force_with_lease`: Use --force-with-lease (safe force, recommended for stacked diffs)
@@ -1054,6 +1074,7 @@ pub fn push_branch(
         hard_force,
         no_verify,
         confirm_force_push,
+        || Ok(()),
     )
 }
 
@@ -1063,12 +1084,41 @@ pub(crate) fn push_branch_with_confirmation(
     hard_force: bool,
     no_verify: bool,
     confirm_force: impl FnOnce(&str) -> bool,
+    before_attempt: impl FnMut() -> Result<()>,
 ) -> Result<()> {
-    let args = build_push_args(branch_name, force_with_lease, hard_force, no_verify);
+    push_branch_with_confirmation_and_runner(
+        branch_name,
+        PushOptions {
+            force_with_lease,
+            hard_force,
+            no_verify,
+        },
+        atty::is(atty::Stream::Stdin),
+        confirm_force,
+        before_attempt,
+        run_push_command,
+    )
+}
 
-    let output = Command::new("git").args(&args).output()?;
+fn push_branch_with_confirmation_and_runner(
+    branch_name: &str,
+    options: PushOptions,
+    interactive: bool,
+    confirm_force: impl FnOnce(&str) -> bool,
+    mut before_attempt: impl FnMut() -> Result<()>,
+    mut run_push: impl FnMut(&[&str]) -> Result<PushCommandOutput>,
+) -> Result<()> {
+    let args = build_push_args(
+        branch_name,
+        options.force_with_lease,
+        options.hard_force,
+        options.no_verify,
+    );
 
-    if output.status.success() {
+    before_attempt()?;
+    let output = run_push(&args)?;
+
+    if output.success {
         return Ok(());
     }
 
@@ -1077,9 +1127,9 @@ pub(crate) fn push_branch_with_confirmation(
     let stderr_str = stderr.trim();
 
     // Check for "stale info" error (force-with-lease conflict)
-    if force_with_lease && !hard_force && stderr_str.contains("stale info") {
+    if options.force_with_lease && !options.hard_force && stderr_str.contains("stale info") {
         // Check if we're in a non-interactive environment
-        if !atty::is(atty::Stream::Stdin) {
+        if !interactive {
             return Err(GgError::Other(format!(
                 "Remote branch '{}' has been updated since your last fetch.\n\
                  This could mean someone else has pushed changes.\n\
@@ -1100,8 +1150,17 @@ pub(crate) fn push_branch_with_confirmation(
             ));
         }
 
-        let retry_args = build_push_args(branch_name, false, true, no_verify);
-        return run_git_command(&retry_args).map(|_| ());
+        let retry_args = build_push_args(branch_name, false, true, options.no_verify);
+        before_attempt()?;
+        let retry = run_push(&retry_args)?;
+        if retry.success {
+            return Ok(());
+        }
+        return Err(GgError::Other(format!(
+            "git {} failed: {}",
+            retry_args.join(" "),
+            String::from_utf8_lossy(&retry.stderr)
+        )));
     }
 
     // Parse stderr to extract hook errors vs git errors
@@ -2880,6 +2939,57 @@ mod tests {
                 no_verify
             );
         }
+    }
+
+    #[test]
+    fn push_retry_is_prevented_when_second_authorization_fails() {
+        use std::cell::{Cell, RefCell};
+
+        let events = RefCell::new(Vec::new());
+        let authorizations = Cell::new(0);
+
+        let result = push_branch_with_confirmation_and_runner(
+            "feat/x",
+            PushOptions {
+                force_with_lease: true,
+                hard_force: false,
+                no_verify: false,
+            },
+            true,
+            |_| {
+                events.borrow_mut().push("confirm".to_string());
+                true
+            },
+            || {
+                authorizations.set(authorizations.get() + 1);
+                events
+                    .borrow_mut()
+                    .push(format!("authorize {}", authorizations.get()));
+                if authorizations.get() == 2 {
+                    Err(GgError::Other("review changed".to_string()))
+                } else {
+                    Ok(())
+                }
+            },
+            |args| {
+                events.borrow_mut().push(args.join(" "));
+                Ok(PushCommandOutput {
+                    success: false,
+                    stderr: b"stale info".to_vec(),
+                })
+            },
+        );
+
+        assert_eq!(result.unwrap_err().to_string(), "review changed");
+        assert_eq!(
+            events.borrow().as_slice(),
+            [
+                "authorize 1",
+                "push --force-with-lease origin feat/x",
+                "confirm",
+                "authorize 2",
+            ]
+        );
     }
 
     fn setup_remote_branch_for_delete() -> (

@@ -60,6 +60,8 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      - name: Test Homebrew formula test preservation
+        run: python3 -m unittest discover -s .github/scripts/tests -p 'test_*.py' -v
       - name: Install dist
         # we specify bash to get pipefail; it guards against the `curl` command
         # failing. otherwise `sh` won't catch that `curl` returned non-0
@@ -300,19 +302,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          persist-credentials: true
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          path: homebrew-tap
           repository: "mrmans0n/homebrew-tap"
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      - name: Save maintained Homebrew tests
+        run: |
+          cp homebrew-tap/Formula/gg-stack.rb "$RUNNER_TEMP/gg-stack.rb"
+          cp homebrew-tap/Formula/gg-mcp.rb "$RUNNER_TEMP/gg-mcp.rb"
       # So we have access to the formula
       - name: Fetch homebrew formulae
         uses: actions/download-artifact@v4
         with:
           pattern: artifacts-*
-          path: Formula/
+          path: homebrew-tap/Formula/
           merge-multiple: true
+      - name: Restore maintained Homebrew tests
+        run: |
+          python3 .github/scripts/restore_homebrew_tests.py \
+            --pair "$RUNNER_TEMP/gg-stack.rb" homebrew-tap/Formula/gg-stack.rb \
+            --pair "$RUNNER_TEMP/gg-mcp.rb" homebrew-tap/Formula/gg-mcp.rb
       # This is extra complex because you can make your Formula name not match your app name
       # so we need to find releases with a *.rb file, and publish with that filename.
       - name: Commit formula files
+        working-directory: homebrew-tap
         run: |
           git config --global user.name "${GITHUB_USER}"
           git config --global user.email "${GITHUB_EMAIL}"
@@ -334,6 +349,8 @@ jobs:
             brew update
             # We avoid reformatting user-provided data such as the homepage.
             brew style --except-cops FormulaAudit/Homepage,FormulaAuditStrict --fix "Formula/${filename}" || true
+            ruby -c "Formula/${filename}"
+            brew style --except-cops FormulaAudit/Homepage,FormulaAuditStrict "Formula/${filename}"
 
             git add "Formula/${filename}"
             git commit -m "${name} ${version}"

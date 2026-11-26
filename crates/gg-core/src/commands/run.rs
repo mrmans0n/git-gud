@@ -331,18 +331,20 @@ fn execute_raw_body(
         );
     }
 
-    let original_branch = git::current_branch_name(repo);
-    let original_head = repo.head()?.peel_to_commit()?.id();
+    let original_position = OriginalPosition::capture(repo, &stack.entries)?;
+    let mut latest_entries = stack.entries.clone();
 
-    let result = run_on_commits(repo, stack, &options, end_pos);
+    let result = run_on_commits(
+        repo,
+        stack,
+        &mut latest_entries,
+        &original_position,
+        &options,
+        end_pos,
+    );
 
     if result.is_err() && !git::is_rebase_in_progress(repo) {
-        restore_original_position(
-            repo,
-            original_branch.as_deref(),
-            original_head,
-            options.json,
-        );
+        restore_original_position(repo, &original_position, &latest_entries, options.json);
     }
 
     result
@@ -351,37 +353,22 @@ fn execute_raw_body(
 fn run_on_commits(
     repo: &git2::Repository,
     stack: Stack,
+    entries: &mut Vec<StackEntry>,
+    original_position: &OriginalPosition,
     options: &RunOptions,
     end_pos: usize,
 ) -> Result<RunResult> {
-    let original_branch = git::current_branch_name(repo);
-    let original_head = repo.head()?.peel_to_commit()?.id();
-    let original_gg_id = stack
-        .entries
-        .iter()
-        .find(|entry| entry.oid == original_head)
-        .and_then(|entry| entry.gg_id.as_deref())
-        .filter(|gg_id| {
-            stack
-                .entries
-                .iter()
-                .filter(|entry| entry.gg_id.as_deref() == Some(*gg_id))
-                .count()
-                == 1
-        })
-        .map(str::to_owned);
     let repo_root = repo
         .workdir()
         .ok_or_else(|| GgError::Other("Repository has no working directory".to_string()))?;
     let mut had_changes = false;
     let base_branch = stack.base.clone();
     let stack_branch = stack.branch_name();
-    let mut entries = stack.entries.clone();
     let mut run_results: Vec<RunCommitResult> = Vec::with_capacity(end_pos);
     let mut all_passed = true;
 
     let mut i = 0;
-    while i < end_pos {
+    while i < end_pos && i < entries.len() {
         let entry = entries[i].clone();
         let mut had_changes_this_commit = false;
         // Captured right after `git commit --amend` succeeds so `final_sha`
@@ -567,13 +554,16 @@ fn run_on_commits(
                         // the branch at the new replayed tip automatically.
                         let new_commit_oid = new_head;
                         let old_tip_oid = entries[entries.len() - 1].oid;
+                        let stack_boundary = repo.find_commit(entries[0].oid)?.parent_id(0)?;
 
                         let new_commit = new_commit_oid.to_string();
                         let old_commit = entry.oid.to_string();
                         let old_tip = old_tip_oid.to_string();
 
-                        let target_branch =
-                            original_branch.as_deref().unwrap_or(stack_branch.as_str());
+                        let target_branch = original_position
+                            .branch
+                            .as_deref()
+                            .unwrap_or(stack_branch.as_str());
 
                         git::run_git_command(&["branch", "-f", target_branch, &old_tip])?;
                         git::checkout_branch(repo, target_branch)?;
@@ -595,7 +585,11 @@ fn run_on_commits(
                             return Err(e);
                         }
 
-                        entries = refresh_stack_entries(repo, &base_branch, target_branch)?;
+                        // Keep error recovery current before the canonical,
+                        // base-dependent refresh can fail.
+                        *entries =
+                            refresh_stack_entries_from_tip(repo, target_branch, stack_boundary)?;
+                        *entries = refresh_stack_entries(repo, &base_branch, target_branch)?;
                     } else {
                         // Last commit in the stack was amended — no
                         // rebase needed, but the branch still points at the
@@ -605,8 +599,10 @@ fn run_on_commits(
                         // move_branch_to_head step (which, on an early break
                         // from stop_on_error, would point the branch at the
                         // failing commit and silently discard commits above).
-                        let target_branch =
-                            original_branch.as_deref().unwrap_or(stack_branch.as_str());
+                        let target_branch = original_position
+                            .branch
+                            .as_deref()
+                            .unwrap_or(stack_branch.as_str());
                         git::run_git_command(&[
                             "branch",
                             "-f",
@@ -715,26 +711,12 @@ fn run_on_commits(
     if !options.json {
         println!();
     }
-    if let Some(branch) = original_branch {
-        git::checkout_branch(repo, &branch)?;
-        if had_changes && !options.json {
-            println!(
-                "{}",
-                style("Changes were made. Review with `gg ls` and sync with `gg sync`.").dim()
-            );
-        }
-    } else if let Some(entry) = original_gg_id.as_deref().and_then(|gg_id| {
-        let mut matches = entries
-            .iter()
-            .filter(|entry| entry.gg_id.as_deref() == Some(gg_id));
-        let entry = matches.next()?;
-        matches.next().is_none().then_some(entry)
-    }) {
-        let commit = repo.find_commit(entry.oid)?;
-        git::checkout_commit(repo, &commit)?;
-    } else {
-        let commit = repo.find_commit(original_head)?;
-        git::checkout_commit(repo, &commit)?;
+    restore_position(repo, original_position, entries)?;
+    if original_position.branch.is_some() && had_changes && !options.json {
+        println!(
+            "{}",
+            style("Changes were made. Review with `gg ls` and sync with `gg sync`.").dim()
+        );
     }
 
     if !options.json {
@@ -1286,6 +1268,35 @@ fn execute_command(
     }
 }
 
+fn refresh_stack_entries_from_tip(
+    repo: &git2::Repository,
+    stack_branch: &str,
+    stack_boundary: Oid,
+) -> Result<Vec<StackEntry>> {
+    let branch = repo.find_branch(stack_branch, git2::BranchType::Local)?;
+    let mut commit = branch.get().peel_to_commit()?;
+    let mut commits = Vec::new();
+
+    while commit.id() != stack_boundary {
+        commits.push(commit.id());
+        if commit.parent_count() == 0 {
+            return Err(GgError::Other(format!(
+                "Could not refresh stack recovery state: boundary {stack_boundary} is not in the first-parent history of '{stack_branch}'"
+            )));
+        }
+        commit = commit.parent(0)?;
+    }
+
+    commits.reverse();
+    let mut entries = Vec::with_capacity(commits.len());
+    for (index, oid) in commits.into_iter().enumerate() {
+        let commit = repo.find_commit(oid)?;
+        entries.push(StackEntry::from_commit(&commit, index + 1));
+    }
+
+    Ok(entries)
+}
+
 fn refresh_stack_entries(
     repo: &git2::Repository,
     base_branch: &str,
@@ -1302,11 +1313,113 @@ fn refresh_stack_entries(
     Ok(entries)
 }
 
+struct OriginalPosition {
+    branch: Option<String>,
+    head: Oid,
+    gg_id: Option<String>,
+}
+
+impl OriginalPosition {
+    fn capture(repo: &git2::Repository, entries: &[StackEntry]) -> Result<Self> {
+        let branch = git::current_branch_name(repo);
+        let head = repo.head()?.peel_to_commit()?.id();
+        let gg_id = unique_entry(entries, |entry| entry.oid == head)
+            .and_then(|entry| entry.gg_id.as_deref())
+            .and_then(|gg_id| {
+                unique_entry(entries, |entry| entry.gg_id.as_deref() == Some(gg_id))
+                    .map(|_| gg_id.to_owned())
+            });
+
+        Ok(Self {
+            branch,
+            head,
+            gg_id,
+        })
+    }
+}
+
+fn unique_entry(
+    entries: &[StackEntry],
+    mut predicate: impl FnMut(&StackEntry) -> bool,
+) -> Option<&StackEntry> {
+    let mut matches = entries.iter().filter(|entry| predicate(entry));
+    let entry = matches.next()?;
+    matches.next().is_none().then_some(entry)
+}
+
+fn rewritten_head(
+    original_position: &OriginalPosition,
+    latest_entries: &[StackEntry],
+) -> Option<Oid> {
+    original_position.gg_id.as_deref().and_then(|gg_id| {
+        unique_entry(latest_entries, |entry| {
+            entry.gg_id.as_deref() == Some(gg_id)
+        })
+        .map(|entry| entry.oid)
+    })
+}
+
+fn restore_position(
+    repo: &git2::Repository,
+    original_position: &OriginalPosition,
+    latest_entries: &[StackEntry],
+) -> Result<()> {
+    if let Some(branch) = original_position.branch.as_deref() {
+        return git::checkout_branch(repo, branch);
+    }
+
+    let oid = rewritten_head(original_position, latest_entries).unwrap_or(original_position.head);
+    let commit = repo.find_commit(oid)?;
+    git::checkout_commit(repo, &commit)
+}
+
+enum ErrorRestoreOutcome {
+    Restored,
+    FellBackToOriginalCommit,
+    Failed,
+}
+
+fn restore_position_after_error(
+    repo: &git2::Repository,
+    original_position: &OriginalPosition,
+    latest_entries: &[StackEntry],
+) -> ErrorRestoreOutcome {
+    if let Some(branch) = original_position.branch.as_deref() {
+        return if git::checkout_branch(repo, branch).is_ok() {
+            ErrorRestoreOutcome::Restored
+        } else {
+            ErrorRestoreOutcome::Failed
+        };
+    }
+
+    let rewritten_head = rewritten_head(original_position, latest_entries);
+    if let Some(oid) = rewritten_head.filter(|oid| *oid != original_position.head) {
+        if let Ok(commit) = repo.find_commit(oid) {
+            if git::checkout_commit(repo, &commit).is_ok() {
+                return ErrorRestoreOutcome::Restored;
+            }
+        }
+    }
+
+    let restored_original = repo
+        .find_commit(original_position.head)
+        .map(|commit| git::checkout_commit(repo, &commit).is_ok())
+        .unwrap_or(false);
+
+    if !restored_original {
+        ErrorRestoreOutcome::Failed
+    } else if rewritten_head.is_some_and(|oid| oid != original_position.head) {
+        ErrorRestoreOutcome::FellBackToOriginalCommit
+    } else {
+        ErrorRestoreOutcome::Restored
+    }
+}
+
 /// Restore the original branch/HEAD position.
 fn restore_original_position(
     repo: &git2::Repository,
-    original_branch: Option<&str>,
-    original_head: Oid,
+    original_position: &OriginalPosition,
+    latest_entries: &[StackEntry],
     json: bool,
 ) {
     if !json {
@@ -1314,22 +1427,25 @@ fn restore_original_position(
         println!("{} Restoring original position...", style("→").cyan());
     }
 
-    let restored = if let Some(branch) = original_branch {
-        git::checkout_branch(repo, branch).is_ok()
-    } else if let Ok(commit) = repo.find_commit(original_head) {
-        git::checkout_commit(repo, &commit).is_ok()
-    } else {
-        false
-    };
+    let outcome = restore_position_after_error(repo, original_position, latest_entries);
 
     if !json {
-        if restored {
-            println!("{} Restored to original position", style("OK").green());
-        } else {
-            println!(
-                "{} Could not restore original position. You may be in detached HEAD.",
-                style("Warning:").yellow()
-            );
+        match outcome {
+            ErrorRestoreOutcome::Restored => {
+                println!("{} Restored to original position", style("OK").green());
+            }
+            ErrorRestoreOutcome::FellBackToOriginalCommit => {
+                println!(
+                    "{} Could not restore the rewritten position; restored the exact original commit instead.",
+                    style("Warning:").yellow()
+                );
+            }
+            ErrorRestoreOutcome::Failed => {
+                println!(
+                    "{} Could not restore original position. You may be in detached HEAD.",
+                    style("Warning:").yellow()
+                );
+            }
         }
     }
 }

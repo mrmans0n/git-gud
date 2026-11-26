@@ -451,6 +451,567 @@ fn test_lint_until_restores_rewritten_detached_entry() {
 
 #[cfg(unix)]
 #[test]
+fn test_failed_lint_restores_rewritten_detached_entry() {
+    let (_temp_dir, repo_path) =
+        create_detached_restore_repo("[ -f file1.txt ] && echo linted >> file1.txt && rm \"$0\"");
+
+    let stack_branch = "testuser/lint-detached-error";
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "lint-detached-error"]);
+    assert!(success, "Failed to create stack: {stderr}");
+
+    for position in 1..=2 {
+        fs::write(
+            repo_path.join(format!("file{position}.txt")),
+            format!("entry {position}\n"),
+        )
+        .expect("Failed to write file");
+        run_git(&repo_path, &["add", "."]);
+        run_git(
+            &repo_path,
+            &[
+                "commit",
+                "-m",
+                &format!("Entry {position}\n\nGG-ID: c-eee000{position}"),
+            ],
+        );
+    }
+
+    let (success, _, stderr) = run_gg(&repo_path, &["mv", "1"]);
+    assert!(success, "Failed to detach at entry 1: {stderr}");
+    let (_, original_head) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["lint", "--until", "2"]);
+    assert!(
+        !success,
+        "Lint should fail after its command removes itself: stdout={stdout}, stderr={stderr}"
+    );
+    assert!(
+        format!("{stdout}{stderr}").contains("not found"),
+        "Expected command-not-found failure: stdout={stdout}, stderr={stderr}"
+    );
+
+    let (_, stack_count) = run_git(
+        &repo_path,
+        &["rev-list", "--count", &format!("main..{stack_branch}")],
+    );
+    assert_eq!(stack_count.trim(), "2");
+    let (_, stack_tip_message) = run_git(&repo_path, &["show", "-s", "--format=%B", stack_branch]);
+    assert!(stack_tip_message.contains("GG-ID: c-eee0002"));
+
+    let (_, rewritten_entry_one) = run_git(
+        &repo_path,
+        &[
+            "log",
+            "-1",
+            "--format=%H",
+            "--fixed-strings",
+            "--grep=GG-ID: c-eee0001",
+            stack_branch,
+        ],
+    );
+    assert_ne!(rewritten_entry_one.trim(), original_head.trim());
+    let (_, linted_file) = run_git(
+        &repo_path,
+        &["show", &format!("{}:file1.txt", rewritten_entry_one.trim())],
+    );
+    assert!(linted_file.contains("linted"));
+
+    let (attached, _) = run_git(&repo_path, &["symbolic-ref", "--short", "HEAD"]);
+    assert!(!attached, "HEAD should remain detached after lint fails");
+    let (_, head) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        head.trim(),
+        rewritten_entry_one.trim(),
+        "original={}, stdout={stdout}, stderr={stderr}",
+        original_head.trim()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_failed_lint_refresh_restores_rewritten_detached_entry() {
+    let (_temp_dir, repo_path) = create_detached_restore_repo(
+        "[ -f file1.txt ] && echo linted >> file1.txt && git branch -D main",
+    );
+
+    let stack_branch = "testuser/lint-detached-refresh-error";
+    let (_, base_oid) = run_git(&repo_path, &["rev-parse", "main"]);
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "lint-detached-refresh-error"]);
+    assert!(success, "Failed to create stack: {stderr}");
+
+    for position in 1..=2 {
+        fs::write(
+            repo_path.join(format!("file{position}.txt")),
+            format!("entry {position}\n"),
+        )
+        .expect("Failed to write file");
+        run_git(&repo_path, &["add", "."]);
+        run_git(
+            &repo_path,
+            &[
+                "commit",
+                "-m",
+                &format!("Entry {position}\n\nGG-ID: c-fff000{position}"),
+            ],
+        );
+    }
+
+    let (success, _, stderr) = run_gg(&repo_path, &["mv", "1"]);
+    assert!(success, "Failed to detach at entry 1: {stderr}");
+    let (_, original_head) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["lint", "--until", "1"]);
+    assert!(
+        !success,
+        "Lint should fail when the base disappears before refresh: stdout={stdout}, stderr={stderr}"
+    );
+    let (base_exists, _) = run_git(&repo_path, &["rev-parse", "--verify", "refs/heads/main"]);
+    assert!(!base_exists, "Lint command should remove the base branch");
+
+    let (_, stack_count) = run_git(
+        &repo_path,
+        &[
+            "rev-list",
+            "--count",
+            &format!("{}..{stack_branch}", base_oid.trim()),
+        ],
+    );
+    assert_eq!(stack_count.trim(), "2");
+    let (_, stack_tip_message) = run_git(&repo_path, &["show", "-s", "--format=%B", stack_branch]);
+    assert!(stack_tip_message.contains("GG-ID: c-fff0002"));
+
+    let (_, rewritten_entry_one) = run_git(
+        &repo_path,
+        &[
+            "log",
+            "-1",
+            "--format=%H",
+            "--fixed-strings",
+            "--grep=GG-ID: c-fff0001",
+            stack_branch,
+        ],
+    );
+    assert_ne!(rewritten_entry_one.trim(), original_head.trim());
+    let (_, linted_file) = run_git(
+        &repo_path,
+        &["show", &format!("{}:file1.txt", rewritten_entry_one.trim())],
+    );
+    assert!(linted_file.contains("linted"));
+
+    let (attached, _) = run_git(&repo_path, &["symbolic-ref", "--short", "HEAD"]);
+    assert!(!attached, "HEAD should remain detached after refresh fails");
+    let (_, head) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        head.trim(),
+        rewritten_entry_one.trim(),
+        "original={}, stdout={stdout}, stderr={stderr}",
+        original_head.trim()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_failed_lint_refresh_uses_local_branch_when_tag_has_same_name() {
+    let (_temp_dir, repo_path) = create_detached_restore_repo(
+        "[ -f file1.txt ] && echo linted >> file1.txt && git branch -D main",
+    );
+
+    let stack_branch = "testuser/lint-ambiguous-refresh";
+    let (_, base_oid) = run_git(&repo_path, &["rev-parse", "main"]);
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "lint-ambiguous-refresh"]);
+    assert!(success, "Failed to create stack: {stderr}");
+
+    for position in 1..=2 {
+        fs::write(
+            repo_path.join(format!("file{position}.txt")),
+            format!("entry {position}\n"),
+        )
+        .expect("Failed to write file");
+        run_git(&repo_path, &["add", "."]);
+        run_git(
+            &repo_path,
+            &[
+                "commit",
+                "-m",
+                &format!("Entry {position}\n\nGG-ID: c-bbb100{position}"),
+            ],
+        );
+    }
+    run_git(&repo_path, &["tag", stack_branch, base_oid.trim()]);
+    let (_, tag_oid) = run_git(
+        &repo_path,
+        &["rev-parse", &format!("refs/tags/{stack_branch}")],
+    );
+    assert_eq!(tag_oid.trim(), base_oid.trim());
+
+    let (success, _, stderr) = run_gg(&repo_path, &["mv", "1"]);
+    assert!(success, "Failed to detach at entry 1: {stderr}");
+    let (_, original_entry_one) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["lint", "--until", "1"]);
+    assert!(
+        !success,
+        "Lint should fail when the base disappears before canonical refresh: stdout={stdout}, stderr={stderr}"
+    );
+    assert!(
+        format!("{stdout}{stderr}").contains("Could not find base branch"),
+        "Expected canonical refresh failure: stdout={stdout}, stderr={stderr}"
+    );
+
+    let (_, rewritten_entry_one) = run_git(
+        &repo_path,
+        &[
+            "log",
+            "-1",
+            "--format=%H",
+            "--fixed-strings",
+            "--grep=GG-ID: c-bbb1001",
+            &format!("refs/heads/{stack_branch}"),
+        ],
+    );
+    assert_ne!(rewritten_entry_one.trim(), original_entry_one.trim());
+    assert_ne!(rewritten_entry_one.trim(), base_oid.trim());
+    let (_, linted_file) = run_git(
+        &repo_path,
+        &["show", &format!("{}:file1.txt", rewritten_entry_one.trim())],
+    );
+    assert!(linted_file.contains("linted"));
+
+    let (_, branch_count) = run_git(
+        &repo_path,
+        &[
+            "rev-list",
+            "--count",
+            &format!("{}..refs/heads/{stack_branch}", base_oid.trim()),
+        ],
+    );
+    assert_eq!(branch_count.trim(), "2");
+    let (_, tag_after) = run_git(
+        &repo_path,
+        &["rev-parse", &format!("refs/tags/{stack_branch}")],
+    );
+    assert_eq!(tag_after.trim(), base_oid.trim());
+
+    let (attached, _) = run_git(&repo_path, &["symbolic-ref", "--short", "HEAD"]);
+    assert!(!attached, "HEAD should remain detached after lint fails");
+    let (_, head) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        head.trim(),
+        rewritten_entry_one.trim(),
+        "Recovery must follow the rewritten local branch entry rather than the stale original or same-named tag: original={}, base={}, stdout={stdout}, stderr={stderr}",
+        original_entry_one.trim(),
+        base_oid.trim()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_lint_fails_when_rewritten_detached_checkout_is_blocked() {
+    let lint_command = "printf 'tracked\\n' > blocked.txt && git add -f blocked.txt";
+    let (_temp_dir, repo_path) = create_detached_restore_repo(lint_command);
+
+    fs::write(repo_path.join(".gitignore"), "blocked.txt/\n").expect("Failed to write ignore rule");
+    fs::write(
+        repo_path.join(".gitattributes"),
+        "trigger.txt filter=blocker\n",
+    )
+    .expect("Failed to write attributes");
+    let smudge_path = repo_path.join(".git/gg/blocker-smudge");
+    fs::write(
+        &smudge_path,
+        "#!/bin/sh\ncat\ngit_dir=$(git rev-parse --git-dir)\nif { [ -d \"$git_dir/rebase-merge\" ] || [ -d \"$git_dir/rebase-apply\" ]; } && [ ! -e blocked.txt ]; then\n  touch \"$git_dir/gg/smudge-ran\"\n  mkdir blocked.txt\n  printf 'obstruction\\n' > blocked.txt/obstruction\n  chmod 000 blocked.txt\nfi\n",
+    )
+    .expect("Failed to write smudge filter");
+    let mut permissions = fs::metadata(&smudge_path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&smudge_path, permissions).unwrap();
+    run_git(
+        &repo_path,
+        &["config", "filter.blocker.smudge", ".git/gg/blocker-smudge"],
+    );
+    run_git(&repo_path, &["config", "filter.blocker.clean", "cat"]);
+    run_git(&repo_path, &["config", "filter.blocker.required", "true"]);
+    run_git(&repo_path, &["add", ".gitignore", ".gitattributes"]);
+    run_git(&repo_path, &["commit", "--amend", "--no-edit"]);
+
+    let stack_branch = "testuser/lint-blocked-restore";
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "lint-blocked-restore"]);
+    assert!(success, "Failed to create stack: {stderr}");
+
+    fs::write(repo_path.join("file1.txt"), "entry 1\n").expect("Failed to write entry 1");
+    run_git(&repo_path, &["add", "file1.txt"]);
+    run_git(&repo_path, &["commit", "-m", "Entry 1\n\nGG-ID: c-ccc1001"]);
+    fs::write(repo_path.join("blocked.txt"), "tracked\n")
+        .expect("Failed to write the future blocking path");
+    run_git(&repo_path, &["add", "-f", "blocked.txt"]);
+    run_git(&repo_path, &["commit", "-m", "Entry 2\n\nGG-ID: c-ccc1002"]);
+    run_git(&repo_path, &["rm", "blocked.txt"]);
+    fs::write(repo_path.join("trigger.txt"), "trigger\n").expect("Failed to write trigger");
+    fs::write(repo_path.join("entry3.marker"), "entry 3\n")
+        .expect("Failed to write entry 3 marker");
+    run_git(&repo_path, &["add", "trigger.txt", "entry3.marker"]);
+    run_git(&repo_path, &["commit", "-m", "Entry 3\n\nGG-ID: c-ccc1003"]);
+
+    let (success, _, stderr) = run_gg(&repo_path, &["mv", "1"]);
+    assert!(success, "Failed to detach at entry 1: {stderr}");
+    let (_, original_entry_one) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["lint", "--until", "1"]);
+
+    let (_, rewritten_entry_one) = run_git(
+        &repo_path,
+        &[
+            "log",
+            "-1",
+            "--format=%H",
+            "--fixed-strings",
+            "--grep=GG-ID: c-ccc1001",
+            stack_branch,
+        ],
+    );
+    assert_ne!(rewritten_entry_one.trim(), original_entry_one.trim());
+    let (rewritten_tracks_blocker, _) = run_git(
+        &repo_path,
+        &[
+            "cat-file",
+            "-e",
+            &format!("{}:blocked.txt", rewritten_entry_one.trim()),
+        ],
+    );
+    assert!(
+        rewritten_tracks_blocker,
+        "The rewritten detached entry should contain the path that blocks checkout"
+    );
+
+    let (_, branch_count) = run_git(
+        &repo_path,
+        &["rev-list", "--count", &format!("main..{stack_branch}")],
+    );
+    assert_eq!(
+        branch_count.trim(),
+        "2",
+        "The redundant entry should be dropped"
+    );
+    let (_, branch_tip) = run_git(&repo_path, &["rev-parse", stack_branch]);
+    let (_, branch_tip_message) = run_git(
+        &repo_path,
+        &["show", "-s", "--format=%B", branch_tip.trim()],
+    );
+    assert!(branch_tip_message.contains("GG-ID: c-ccc1003"));
+    let (tip_tracks_blocker, _) = run_git(
+        &repo_path,
+        &[
+            "cat-file",
+            "-e",
+            &format!("{}:blocked.txt", branch_tip.trim()),
+        ],
+    );
+    assert!(
+        !tip_tracks_blocker,
+        "The rewritten branch tip must delete the blocking path"
+    );
+    assert!(
+        repo_path.join(".git/gg/smudge-ran").exists(),
+        "The smudge filter should create the checkout blocker during rebase"
+    );
+    let blocker_path = repo_path.join("blocked.txt");
+    let mut blocker_permissions = fs::metadata(&blocker_path).unwrap().permissions();
+    assert_eq!(
+        blocker_permissions.mode() & 0o777,
+        0,
+        "The ignored directory should deny removal during checkout"
+    );
+    blocker_permissions.set_mode(0o700);
+    fs::set_permissions(&blocker_path, blocker_permissions).unwrap();
+    assert_eq!(
+        fs::read_to_string(blocker_path.join("obstruction")).unwrap(),
+        "obstruction\n",
+        "The ignored untracked directory should be the final checkout blocker"
+    );
+    let (_, ignored_status) = run_git(
+        &repo_path,
+        &["status", "--ignored", "--porcelain", "--", "blocked.txt"],
+    );
+    assert_eq!(ignored_status, "!! blocked.txt/\n");
+
+    let (attached, _) = run_git(&repo_path, &["symbolic-ref", "--short", "HEAD"]);
+    assert!(!attached, "Cleanup should leave HEAD detached");
+    let (_, head) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        head.trim(),
+        original_entry_one.trim(),
+        "Best-effort cleanup should fall back to the exact original OID"
+    );
+
+    assert!(
+        !success,
+        "Lint must fail when final restoration cannot check out the rewritten detached entry: stdout={stdout}, stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("Permission denied")
+            && stdout.contains("Could not restore the rewritten position"),
+        "The failure should come from the blocked final checkout: stdout={stdout}, stderr={stderr}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_lint_until_handles_dropped_requested_detached_entry() {
+    let (_temp_dir, repo_path) =
+        create_detached_restore_repo("[ -f file.txt ] && printf 'entry 2\\n' > file.txt");
+
+    let stack_branch = "testuser/lint-dropped-requested-entry";
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "lint-dropped-requested-entry"]);
+    assert!(success, "Failed to create stack: {stderr}");
+
+    fs::write(repo_path.join("file.txt"), "entry 1\n").expect("Failed to write entry 1");
+    run_git(&repo_path, &["add", "file.txt"]);
+    run_git(&repo_path, &["commit", "-m", "Entry 1\n\nGG-ID: c-ddd2001"]);
+    fs::write(repo_path.join("file.txt"), "entry 2\n").expect("Failed to write entry 2");
+    run_git(&repo_path, &["add", "file.txt"]);
+    run_git(&repo_path, &["commit", "-m", "Entry 2\n\nGG-ID: c-ddd2002"]);
+
+    let (success, _, stderr) = run_gg(&repo_path, &["mv", "2"]);
+    assert!(success, "Failed to detach at entry 2: {stderr}");
+    let (_, original_entry_two) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_gg"))
+        .args(["lint", "--until", "2"])
+        .current_dir(&repo_path)
+        .env("HOME", repo_path.join(".test-home"))
+        .output()
+        .expect("Failed to run gg lint");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_ne!(
+        output.status.code(),
+        Some(101),
+        "Lint must not panic after rebase drops the requested entry: stdout={stdout}, stderr={stderr}"
+    );
+    assert!(
+        output.status.success(),
+        "Lint should succeed after processing the remaining entry: stdout={stdout}, stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("Ran on 1 commit(s) — all passed"),
+        "Lint should report only the surviving processed entry: stdout={stdout}"
+    );
+
+    let (_, stack_count) = run_git(
+        &repo_path,
+        &["rev-list", "--count", &format!("main..{stack_branch}")],
+    );
+    assert_eq!(stack_count.trim(), "1");
+    let (_, stack_tip) = run_git(&repo_path, &["rev-parse", stack_branch]);
+    let (_, stack_tip_message) =
+        run_git(&repo_path, &["show", "-s", "--format=%B", stack_tip.trim()]);
+    assert!(stack_tip_message.contains("GG-ID: c-ddd2001"));
+    assert!(!stack_tip_message.contains("GG-ID: c-ddd2002"));
+    let (_, linted_file) = run_git(
+        &repo_path,
+        &["show", &format!("{}:file.txt", stack_tip.trim())],
+    );
+    assert_eq!(linted_file, "entry 2\n");
+
+    let (attached, _) = run_git(&repo_path, &["symbolic-ref", "--short", "HEAD"]);
+    assert!(!attached, "HEAD should remain detached");
+    let (_, head) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        head.trim(),
+        original_entry_two.trim(),
+        "A dropped detached entry must be restored to its exact original OID"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_failed_lint_refresh_preserves_dropped_detached_entry_with_duplicate_base_gg_id() {
+    let (_temp_dir, repo_path) = create_detached_restore_repo(
+        "[ -f file.txt ] && printf 'entry 2\\n' > file.txt && git branch -D main",
+    );
+
+    run_git(
+        &repo_path,
+        &[
+            "commit",
+            "--amend",
+            "-m",
+            "Add lint script\n\nGG-ID: c-abc0002",
+        ],
+    );
+    let (_, base_oid) = run_git(&repo_path, &["rev-parse", "main"]);
+
+    let stack_branch = "testuser/lint-dropped-detached-refresh-error";
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "lint-dropped-detached-refresh-error"]);
+    assert!(success, "Failed to create stack: {stderr}");
+
+    fs::write(repo_path.join("file.txt"), "entry 1\n").expect("Failed to write entry 1");
+    run_git(&repo_path, &["add", "file.txt"]);
+    run_git(&repo_path, &["commit", "-m", "Entry 1\n\nGG-ID: c-abc0001"]);
+    fs::write(repo_path.join("file.txt"), "entry 2\n").expect("Failed to write entry 2");
+    run_git(&repo_path, &["add", "file.txt"]);
+    run_git(&repo_path, &["commit", "-m", "Entry 2\n\nGG-ID: c-abc0002"]);
+
+    let (success, _, stderr) = run_gg(&repo_path, &["mv", "2"]);
+    assert!(success, "Failed to detach at entry 2: {stderr}");
+    let (_, original_entry_two) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    assert_ne!(original_entry_two.trim(), base_oid.trim());
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["lint", "--until", "1"]);
+    assert!(
+        !success,
+        "Lint should fail when the base disappears before refresh: stdout={stdout}, stderr={stderr}"
+    );
+    assert!(
+        format!("{stdout}{stderr}").contains("Could not find base branch"),
+        "Expected canonical refresh failure: stdout={stdout}, stderr={stderr}"
+    );
+    let (base_exists, _) = run_git(&repo_path, &["rev-parse", "--verify", "refs/heads/main"]);
+    assert!(!base_exists, "Lint command should remove the base branch");
+
+    let (_, stack_count) = run_git(
+        &repo_path,
+        &[
+            "rev-list",
+            "--count",
+            &format!("{}..{stack_branch}", base_oid.trim()),
+        ],
+    );
+    assert_eq!(
+        stack_count.trim(),
+        "1",
+        "The now-empty descendant should be dropped during rebase"
+    );
+    let (_, stack_history) = run_git(
+        &repo_path,
+        &[
+            "log",
+            "--format=%B%x00",
+            &format!("{}..{stack_branch}", base_oid.trim()),
+        ],
+    );
+    assert!(stack_history.contains("GG-ID: c-abc0001"));
+    assert!(!stack_history.contains("GG-ID: c-abc0002"));
+
+    let (attached, _) = run_git(&repo_path, &["symbolic-ref", "--short", "HEAD"]);
+    assert!(!attached, "HEAD should remain detached after refresh fails");
+    let (_, head) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        head.trim(),
+        original_entry_two.trim(),
+        "A dropped detached entry must fall back to its original OID: base={}, stdout={stdout}, stderr={stderr}",
+        base_oid.trim()
+    );
+    assert_ne!(
+        head.trim(),
+        base_oid.trim(),
+        "The duplicate base GG-ID must not be selected"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn test_lint_until_restores_rewritten_detached_last_entry() {
     let (_temp_dir, repo_path) =
         create_detached_restore_repo("[ -f file2.txt ] && echo linted >> file2.txt");

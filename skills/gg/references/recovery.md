@@ -17,16 +17,27 @@
    operation record. One invocation can create multiple segments. Inspect each
    record's `status`, `touched_remote`, `remote_effects`, and arguments; never
    select by timestamp or assume one record per invocation.
-2. Reconcile publication state before any retry. Read the saved mapping from
-   `gg/config.json` under `git rev-parse --git-common-dir`, inspect that review
-   number's state, source, and target directly on the
-   provider, and inspect the remote tips of every branch that may have been pushed
-   or deleted. A successfully created replacement review can already be persisted
+2. Reconcile publication state before any retry. Read the saved mapping and any
+   `review_creation_intents` from `gg/config.json` under
+   `git rev-parse --git-common-dir`. A creation intent binds one entry to the
+   exact source branch, target branch, and origin operation ID that preceded an
+   ambiguous create request. Do not delete it or issue another create manually.
+   A later `gg sync` loads that origin first, then accepts only one open or draft
+   provider review with the exact saved source and target; zero, multiple,
+   terminal, mismatched, or failed lookups stop without mutation. Inspect the
+   mapped review number's state, source, and target directly on the provider,
+   and inspect the remote tips of every branch that may have been pushed or
+   deleted. A successfully created replacement review can already be persisted
    in local config even when a later step failed.
 3. Treat `touched_remote: true`, or an ambiguous push or deletion response, as a
-   boundary against automatic recovery. Do not silently undo or rerun the remote
-   mutation. Retry only after provider state, remote refs, local config, and the
-   operation records have been reconciled.
+   boundary against automatic recovery. Review creation is the narrow exception:
+   when its durable intent and exact origin record are intact, `gg sync`
+   authoritatively discovers the exact saved source/target review, reconciles
+   one `pr_created` effect on that origin, and installs the mapping without a
+   second create. If any prerequisite cannot be read or saved, it retains the
+   intent and stops. Do not silently undo or rerun any other remote mutation.
+   Retry only after provider state, remote refs, local config, and the operation
+   records have been reconciled.
 4. While a rebase is paused, confirm its exact `operation_id` with `gg ls --json`,
    then run the argument-free `gg continue` or `gg abort`; those commands recover
    the operation named by the saved marker. Pass an operation ID explicitly only

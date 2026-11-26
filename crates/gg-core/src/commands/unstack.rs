@@ -156,7 +156,7 @@ pub fn run(options: UnstackOptions) -> Result<()> {
 
     // Migrate config (MR mappings, base override)
     let preserve_original_worktree = options.worktree || options.keep_current;
-    let migrated_review_mappings = migrate_config(
+    let (migrated_review_mappings, migrated_review_creation_intents) = migrate_config(
         &mut config,
         &original_stack,
         &new_stack_name,
@@ -211,7 +211,7 @@ pub fn run(options: UnstackOptions) -> Result<()> {
         false,
     )?;
 
-    let sync_required = migrated_review_mappings > 0;
+    let sync_required = migrated_review_mappings > 0 || migrated_review_creation_intents > 0;
     let current_stack = if preserve_original_worktree {
         original_stack.clone()
     } else {
@@ -539,7 +539,7 @@ fn migrate_config(
     new_stack: &str,
     moved_entries: &[UnstackEntryJson],
     preserve_original_worktree: bool,
-) -> usize {
+) -> (usize, usize) {
     let original_base = config
         .get_stack(original_stack)
         .and_then(|s| s.base.clone());
@@ -560,6 +560,15 @@ fn migrate_config(
             new_config.mrs.insert(gg_id.clone(), mr);
             config.remove_mr_for_entry(original_stack, gg_id);
         }
+        if let Some(intent) = config
+            .stacks
+            .get_mut(original_stack)
+            .and_then(|stack| stack.review_creation_intents.remove(gg_id))
+        {
+            new_config
+                .review_creation_intents
+                .insert(gg_id.clone(), intent);
+        }
     }
 
     // When the current worktree stays with the old (lower) stack, preserve its
@@ -575,7 +584,10 @@ fn migrate_config(
         }
     }
 
-    let migrated = new_config.mrs.len();
+    let migrated = (
+        new_config.mrs.len(),
+        new_config.review_creation_intents.len(),
+    );
     config.stacks.insert(new_stack.to_string(), new_config);
     migrated
 }
@@ -699,6 +711,86 @@ mod tests {
     }
 
     #[test]
+    fn migrate_config_moves_review_creation_intents_with_entries() {
+        let moved_intent = crate::config::ReviewCreationIntent {
+            source_branch: "user/feature--c-moved01".to_string(),
+            target_branch: "user/feature--c-parent1".to_string(),
+            origin_operation_id: "op_123_moved".to_string(),
+        };
+        let retained_intent = crate::config::ReviewCreationIntent {
+            source_branch: "user/feature--c-stays01".to_string(),
+            target_branch: "main".to_string(),
+            origin_operation_id: "op_123_stays".to_string(),
+        };
+        let mut config = Config::default();
+        config.stacks.insert(
+            "feature".to_string(),
+            StackConfig {
+                mrs: HashMap::from([("c-moved01".to_string(), 42)]),
+                review_creation_intents: HashMap::from([
+                    ("c-moved01".to_string(), moved_intent.clone()),
+                    ("c-stays01".to_string(), retained_intent.clone()),
+                ]),
+                ..StackConfig::default()
+            },
+        );
+        let moved_entries = vec![UnstackEntryJson {
+            position: 2,
+            sha: "abc1234".to_string(),
+            title: "Upper commit".to_string(),
+            gg_id: Some("c-moved01".to_string()),
+        }];
+
+        migrate_config(&mut config, "feature", "feature-2", &moved_entries, false);
+
+        assert_eq!(
+            config.get_review_creation_intent("feature-2", "c-moved01"),
+            Some(&moved_intent)
+        );
+        assert_eq!(
+            config.get_review_creation_intent("feature", "c-stays01"),
+            Some(&retained_intent)
+        );
+        assert!(config
+            .get_review_creation_intent("feature", "c-moved01")
+            .is_none());
+        assert!(config
+            .get_review_creation_intent("feature-2", "c-stays01")
+            .is_none());
+    }
+
+    #[test]
+    fn migrate_config_reports_intent_only_migration() {
+        let intent = crate::config::ReviewCreationIntent {
+            source_branch: "user/feature--c-moved01".to_string(),
+            target_branch: "user/feature--c-parent1".to_string(),
+            origin_operation_id: "op_123_moved".to_string(),
+        };
+        let mut config = Config::default();
+        config.stacks.insert(
+            "feature".to_string(),
+            StackConfig {
+                review_creation_intents: HashMap::from([("c-moved01".to_string(), intent.clone())]),
+                ..StackConfig::default()
+            },
+        );
+        let moved_entries = vec![UnstackEntryJson {
+            position: 2,
+            sha: "abc1234".to_string(),
+            title: "Upper commit".to_string(),
+            gg_id: Some("c-moved01".to_string()),
+        }];
+
+        let migrated = migrate_config(&mut config, "feature", "feature-2", &moved_entries, false);
+
+        assert_eq!(migrated, (0, 1));
+        assert_eq!(
+            config.get_review_creation_intent("feature-2", "c-moved01"),
+            Some(&intent)
+        );
+    }
+
+    #[test]
     fn migrate_config_preserves_inherited_base() {
         let mut config = Config::default();
         config.defaults.base = Some("main".to_string());
@@ -707,6 +799,7 @@ mod tests {
             StackConfig {
                 base: None,
                 mrs: HashMap::from([("c-abc1234".to_string(), 42)]),
+                review_creation_intents: HashMap::new(),
                 worktree_path: None,
             },
         );
@@ -719,7 +812,7 @@ mod tests {
 
         let migrated = migrate_config(&mut config, "feature", "feature-2", &moved_entries, false);
 
-        assert_eq!(migrated, 1);
+        assert_eq!(migrated, (1, 0));
         assert_eq!(config.get_stack("feature-2").unwrap().base, None);
         assert_eq!(config.get_base_for_stack("feature-2"), Some("main"));
         assert_eq!(config.get_mr_for_entry("feature-2", "c-abc1234"), Some(42));

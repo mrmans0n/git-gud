@@ -166,6 +166,14 @@ pub struct GithubDefaults {
     pub stacks_integration: GithubStacksIntegration,
 }
 
+/// Durable identity for a review create request whose provider response may be ambiguous.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReviewCreationIntent {
+    pub source_branch: String,
+    pub target_branch: String,
+    pub origin_operation_id: String,
+}
+
 /// Per-stack configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StackConfig {
@@ -176,6 +184,10 @@ pub struct StackConfig {
     /// Mapping from entry-id to MR number
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub mrs: HashMap<String, u64>,
+
+    /// Review creates that must be resolved before another create is attempted.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub review_creation_intents: HashMap<String, ReviewCreationIntent>,
 
     /// Absolute path to a linked worktree for this stack
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -364,6 +376,74 @@ impl Config {
         if let Some(stack) = self.stacks.get_mut(stack_name) {
             stack.mrs.remove(entry_id);
         }
+    }
+
+    /// Get a pending review-creation intent for an entry.
+    pub fn get_review_creation_intent(
+        &self,
+        stack_name: &str,
+        entry_id: &str,
+    ) -> Option<&ReviewCreationIntent> {
+        self.stacks
+            .get(stack_name)
+            .and_then(|stack| stack.review_creation_intents.get(entry_id))
+    }
+
+    /// Persist a review-creation intent without changing memory on save failure.
+    pub fn set_review_creation_intent(
+        &mut self,
+        git_dir: &Path,
+        stack_name: &str,
+        entry_id: &str,
+        intent: ReviewCreationIntent,
+    ) -> Result<()> {
+        self.update_transactionally(git_dir, |config| {
+            config
+                .get_or_create_stack(stack_name)
+                .review_creation_intents
+                .insert(entry_id.to_string(), intent);
+        })
+    }
+
+    /// Remove one review-creation intent without changing memory on save failure.
+    pub fn remove_review_creation_intent(
+        &mut self,
+        git_dir: &Path,
+        stack_name: &str,
+        entry_id: &str,
+    ) -> Result<()> {
+        self.update_transactionally(git_dir, |config| {
+            if let Some(stack) = config.stacks.get_mut(stack_name) {
+                stack.review_creation_intents.remove(entry_id);
+            }
+        })
+    }
+
+    /// Install a recovered review mapping and consume its intent atomically.
+    pub fn install_review_mapping(
+        &mut self,
+        git_dir: &Path,
+        stack_name: &str,
+        entry_id: &str,
+        mr_number: u64,
+    ) -> Result<()> {
+        self.update_transactionally(git_dir, |config| {
+            let stack = config.get_or_create_stack(stack_name);
+            stack.mrs.insert(entry_id.to_string(), mr_number);
+            stack.review_creation_intents.remove(entry_id);
+        })
+    }
+
+    fn update_transactionally(
+        &mut self,
+        git_dir: &Path,
+        update: impl FnOnce(&mut Config),
+    ) -> Result<()> {
+        let mut prospective = self.clone();
+        update(&mut prospective);
+        prospective.save(git_dir)?;
+        *self = prospective;
+        Ok(())
     }
 
     /// Get all stacks
@@ -1084,6 +1164,95 @@ mod tests {
         let json = r#"{"defaults":{}}"#;
         let parsed: Config = serde_json::from_str(json).unwrap();
         assert!(!parsed.defaults.stack_nav_comments);
+    }
+
+    #[test]
+    fn review_creation_intents_round_trip_with_required_origin() {
+        let json = r#"{
+            "stacks": {
+                "feature": {
+                    "review_creation_intents": {
+                        "c-abc1234": {
+                            "source_branch": "user/feature--c-abc1234",
+                            "target_branch": "main",
+                            "origin_operation_id": "op_123_abc"
+                        }
+                    }
+                }
+            }
+        }"#;
+
+        let config: Config = serde_json::from_str(json).unwrap();
+        let serialized = serde_json::to_value(config).unwrap();
+
+        assert_eq!(
+            serialized["stacks"]["feature"]["review_creation_intents"]["c-abc1234"]
+                ["origin_operation_id"],
+            "op_123_abc"
+        );
+    }
+
+    #[test]
+    fn failed_intent_removal_save_preserves_in_memory_and_disk_state() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_dir = temp_dir.path();
+        let intent = ReviewCreationIntent {
+            source_branch: "user/feature--c-abc1234".to_string(),
+            target_branch: "main".to_string(),
+            origin_operation_id: "op_123_abc".to_string(),
+        };
+        let mut config = Config::default();
+        config
+            .set_review_creation_intent(git_dir, "feature", "c-abc1234", intent.clone())
+            .unwrap();
+        let temp_path = Config::config_path(git_dir).with_extension("tmp");
+        fs::create_dir(&temp_path).unwrap();
+
+        assert!(config
+            .remove_review_creation_intent(git_dir, "feature", "c-abc1234")
+            .is_err());
+        assert_eq!(
+            config.get_review_creation_intent("feature", "c-abc1234"),
+            Some(&intent)
+        );
+        assert_eq!(
+            Config::load(git_dir)
+                .unwrap()
+                .get_review_creation_intent("feature", "c-abc1234"),
+            Some(&intent)
+        );
+    }
+
+    #[test]
+    fn failed_mapping_install_save_preserves_intent_without_memory_only_mapping() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_dir = temp_dir.path();
+        let intent = ReviewCreationIntent {
+            source_branch: "user/feature--c-abc1234".to_string(),
+            target_branch: "main".to_string(),
+            origin_operation_id: "op_123_abc".to_string(),
+        };
+        let mut config = Config::default();
+        config
+            .set_review_creation_intent(git_dir, "feature", "c-abc1234", intent.clone())
+            .unwrap();
+        let temp_path = Config::config_path(git_dir).with_extension("tmp");
+        fs::create_dir(&temp_path).unwrap();
+
+        assert!(config
+            .install_review_mapping(git_dir, "feature", "c-abc1234", 42)
+            .is_err());
+        assert_eq!(config.get_mr_for_entry("feature", "c-abc1234"), None);
+        assert_eq!(
+            config.get_review_creation_intent("feature", "c-abc1234"),
+            Some(&intent)
+        );
+        let reloaded = Config::load(git_dir).unwrap();
+        assert_eq!(reloaded.get_mr_for_entry("feature", "c-abc1234"), None);
+        assert_eq!(
+            reloaded.get_review_creation_intent("feature", "c-abc1234"),
+            Some(&intent)
+        );
     }
 
     // ============ Tests for global config loading ============

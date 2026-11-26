@@ -16,6 +16,7 @@
 //! are always `#[serde(default, skip_serializing_if = "…")]` so a future
 //! schema version can deserialize under the current version (forward-compat).
 
+use std::collections::HashSet;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -259,6 +260,7 @@ pub fn is_valid_operation_id(id: &str) -> bool {
 /// under normal same-filesystem rename semantics.
 #[derive(Debug, Clone)]
 pub struct OperationStore {
+    common_dir: Option<PathBuf>,
     operations_dir: PathBuf,
 }
 
@@ -267,6 +269,7 @@ impl OperationStore {
     /// via `crate::git::gg_dir(repo)` — this type does not look at repos.
     pub fn new(gg_dir: &Path) -> Self {
         Self {
+            common_dir: gg_dir.parent().map(Path::to_path_buf),
             operations_dir: gg_dir.join("operations"),
         }
     }
@@ -350,8 +353,8 @@ impl OperationStore {
         Ok(records)
     }
 
-    /// Prune oldest Committed/Interrupted records when over cap. Never
-    /// removes Pending — the writing process may still be alive. Errors are
+    /// Prune oldest unprotected Committed/Interrupted records when over cap.
+    /// Never removes Pending or live review-creation intent origins. Errors are
     /// swallowed to avoid cascading a save failure into the caller.
     fn prune_to_cap(&self) {
         let Ok(mut records) = self.list(usize::MAX) else {
@@ -360,6 +363,18 @@ impl OperationStore {
         if records.len() <= OPERATION_LOG_CAP {
             return;
         }
+        let Some(common_dir) = &self.common_dir else {
+            return;
+        };
+        let Ok(config) = Config::load(common_dir) else {
+            return;
+        };
+        let protected_ids: HashSet<&str> = config
+            .stacks
+            .values()
+            .flat_map(|stack| stack.review_creation_intents.values())
+            .map(|intent| intent.origin_operation_id.as_str())
+            .collect();
         // Sort oldest-first for pruning.
         records.sort_by_key(|r| r.created_at_ms);
         let excess = records.len() - OPERATION_LOG_CAP;
@@ -368,7 +383,7 @@ impl OperationStore {
             if pruned >= excess {
                 break;
             }
-            if rec.status == OperationStatus::Pending {
+            if rec.status == OperationStatus::Pending || protected_ids.contains(rec.id.as_str()) {
                 continue;
             }
             if let Ok(path) = self.path_for(&rec.id) {
@@ -544,6 +559,82 @@ pub fn finalize_operation_by_id(
     record.refs_after = snapshot_refs(repo, config, scope)?;
     record.remote_effects = remote_effects;
     record.touched_remote = touched_remote;
+    store.save(&record)?;
+    Ok(record)
+}
+
+/// Load and validate the sync operation that owns a review-creation intent.
+pub fn load_creation_operation_by_id(
+    repo: &Repository,
+    operation_id: &str,
+) -> Result<OperationRecord> {
+    let record = OperationStore::new(&crate::git::gg_dir(repo)).load(operation_id)?;
+    if record.kind != OperationKind::Sync
+        || record.schema_version != SCHEMA_VERSION
+        || !record.touched_remote
+    {
+        return Err(GgError::Other(format!(
+            "Operation {operation_id} cannot own a review-creation intent"
+        )));
+    }
+    if record
+        .remote_effects
+        .iter()
+        .filter(|effect| matches!(effect, RemoteEffect::PrCreated { .. }))
+        .count()
+        > 1
+    {
+        return Err(GgError::Other(format!(
+            "Operation {operation_id} has multiple review creations"
+        )));
+    }
+    Ok(record)
+}
+
+/// Add a recovered review creation to its exact origin operation at most once.
+/// An existing creation is idempotent only when both its number and URL match
+/// byte-for-byte; conflicting or duplicate creation effects are rejected.
+pub fn reconcile_creation_operation_by_id(
+    repo: &Repository,
+    operation_id: &str,
+    number: u64,
+    url: &str,
+) -> Result<OperationRecord> {
+    let store = OperationStore::new(&crate::git::gg_dir(repo));
+    let mut record = load_creation_operation_by_id(repo, operation_id)?;
+    let mut existing_creations = record
+        .remote_effects
+        .iter()
+        .filter_map(|effect| match effect {
+            RemoteEffect::PrCreated { number, url } => Some((*number, url)),
+            _ => None,
+        });
+    let existing_creation = existing_creations.next();
+    if existing_creations.next().is_some() {
+        return Err(GgError::Other(format!(
+            "Operation {operation_id} has multiple review creations"
+        )));
+    }
+    if existing_creation.is_some_and(|(existing_number, existing_url)| {
+        existing_number != number || existing_url != url
+    }) {
+        return Err(GgError::Other(format!(
+            "Operation {operation_id} has a conflicting review creation"
+        )));
+    }
+    if existing_creation.is_none() {
+        record.remote_effects.push(RemoteEffect::PrCreated {
+            number,
+            url: url.to_string(),
+        });
+    }
+    record.touched_remote = true;
+    if matches!(
+        record.status,
+        OperationStatus::Pending | OperationStatus::Interrupted
+    ) {
+        record.status = OperationStatus::Committed;
+    }
     store.save(&record)?;
     Ok(record)
 }
@@ -1111,6 +1202,205 @@ pub(crate) mod tests {
         tmp_path
     }
 
+    // -- creation intent reconciliation --------------------------------------
+
+    #[test]
+    fn reconcile_creation_operation_rejects_wrong_operation_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        let store = OperationStore::new(&crate::git::gg_dir(&repo));
+        let mut record = make_record(OperationKind::Land, 1_694);
+        record.touched_remote = true;
+        store.save(&record).unwrap();
+
+        let error = reconcile_creation_operation_by_id(
+            &repo,
+            &record.id,
+            42,
+            "https://example.test/reviews/42",
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("cannot own a review-creation intent"));
+        assert_eq!(store.load(&record.id).unwrap().remote_effects, vec![]);
+    }
+
+    #[test]
+    fn reconcile_creation_operation_rejects_unsupported_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        let store = OperationStore::new(&crate::git::gg_dir(&repo));
+        let mut record = make_record(OperationKind::Sync, 1_695);
+        record.schema_version = SCHEMA_VERSION - 1;
+        record.touched_remote = true;
+        store.save(&record).unwrap();
+
+        let error = reconcile_creation_operation_by_id(
+            &repo,
+            &record.id,
+            42,
+            "https://example.test/reviews/42",
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("cannot own a review-creation intent"));
+        assert_eq!(store.load(&record.id).unwrap().remote_effects, vec![]);
+    }
+
+    #[test]
+    fn reconcile_creation_operation_rejects_untouched_sync_origin() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        let store = OperationStore::new(&crate::git::gg_dir(&repo));
+        let record = make_record(OperationKind::Sync, 1_699);
+        store.save(&record).unwrap();
+
+        let error = reconcile_creation_operation_by_id(
+            &repo,
+            &record.id,
+            42,
+            "https://example.test/reviews/42",
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("cannot own a review-creation intent"));
+        assert_eq!(store.load(&record.id).unwrap().remote_effects, vec![]);
+    }
+
+    #[test]
+    fn reconcile_creation_operation_rejects_conflicting_review_number() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        let store = OperationStore::new(&crate::git::gg_dir(&repo));
+        let mut record = make_record(OperationKind::Sync, 1_698);
+        record.touched_remote = true;
+        record.remote_effects.push(RemoteEffect::PrCreated {
+            number: 41,
+            url: "https://example.test/reviews/41".to_string(),
+        });
+        store.save(&record).unwrap();
+
+        let error = reconcile_creation_operation_by_id(
+            &repo,
+            &record.id,
+            42,
+            "https://example.test/reviews/42",
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("conflicting review creation"));
+        let unchanged = store.load(&record.id).unwrap();
+        assert_eq!(unchanged.status, record.status);
+        assert_eq!(unchanged.touched_remote, record.touched_remote);
+        assert_eq!(unchanged.remote_effects, record.remote_effects);
+    }
+
+    #[test]
+    fn reconcile_creation_operation_rejects_conflicting_review_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        let store = OperationStore::new(&crate::git::gg_dir(&repo));
+        let mut record = make_record(OperationKind::Sync, 1_697);
+        record.touched_remote = true;
+        record.remote_effects.push(RemoteEffect::PrCreated {
+            number: 42,
+            url: "https://example.test/reviews/wrong".to_string(),
+        });
+        store.save(&record).unwrap();
+
+        let error = reconcile_creation_operation_by_id(
+            &repo,
+            &record.id,
+            42,
+            "https://example.test/reviews/42",
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("conflicting review creation"));
+        assert_eq!(
+            store.load(&record.id).unwrap().remote_effects,
+            record.remote_effects
+        );
+    }
+
+    #[test]
+    fn reconcile_creation_operation_rejects_multiple_review_effects() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        let store = OperationStore::new(&crate::git::gg_dir(&repo));
+        let mut record = make_record(OperationKind::Sync, 1_696);
+        record.touched_remote = true;
+        record.remote_effects.extend([
+            RemoteEffect::PrCreated {
+                number: 42,
+                url: "https://example.test/reviews/42".to_string(),
+            },
+            RemoteEffect::PrCreated {
+                number: 42,
+                url: "https://example.test/reviews/42".to_string(),
+            },
+        ]);
+        store.save(&record).unwrap();
+
+        let error = reconcile_creation_operation_by_id(
+            &repo,
+            &record.id,
+            42,
+            "https://example.test/reviews/42",
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("multiple review creations"));
+        assert_eq!(
+            store.load(&record.id).unwrap().remote_effects,
+            record.remote_effects
+        );
+    }
+
+    #[test]
+    fn reconcile_creation_operation_by_id_is_idempotent_and_commits_origin() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        let store = OperationStore::new(&crate::git::gg_dir(&repo));
+        let mut record = make_record(OperationKind::Sync, 1_700);
+        record.status = OperationStatus::Interrupted;
+        record.touched_remote = true;
+        store.save(&record).unwrap();
+
+        reconcile_creation_operation_by_id(
+            &repo,
+            &record.id,
+            42,
+            "https://example.test/reviews/42",
+        )
+        .unwrap();
+        reconcile_creation_operation_by_id(
+            &repo,
+            &record.id,
+            42,
+            "https://example.test/reviews/42",
+        )
+        .unwrap();
+
+        let reconciled = store.load(&record.id).unwrap();
+        assert_eq!(reconciled.status, OperationStatus::Committed);
+        assert!(reconciled.touched_remote);
+        assert_eq!(
+            reconciled
+                .remote_effects
+                .iter()
+                .filter(|effect| matches!(effect, RemoteEffect::PrCreated { number: 42, .. }))
+                .count(),
+            1
+        );
+    }
+
     // -- schema --------------------------------------------------------------
 
     #[test]
@@ -1278,6 +1568,97 @@ pub(crate) mod tests {
         let all = store.list(usize::MAX).unwrap();
         assert!(all.iter().any(|r| r.status == OperationStatus::Pending));
         assert!(all.len() <= OPERATION_LOG_CAP + 1);
+    }
+
+    #[test]
+    fn store_preserves_creation_intent_origin_until_intent_is_removed() {
+        let (common_dir, gg_dir) = tmp_gg_dir();
+        let store = OperationStore::new(&gg_dir);
+        let mut origin = make_record(OperationKind::Sync, 0);
+        origin.stack_name = Some("quiet-stack".to_string());
+        store.save(&origin).unwrap();
+
+        let mut config = Config::default();
+        config
+            .get_or_create_stack("quiet-stack")
+            .review_creation_intents
+            .insert(
+                "c-protected".to_string(),
+                crate::config::ReviewCreationIntent {
+                    source_branch: "user/quiet/c-protected".to_string(),
+                    target_branch: "main".to_string(),
+                    origin_operation_id: origin.id.clone(),
+                },
+            );
+        config.save(common_dir.path()).unwrap();
+
+        for i in 1..=OPERATION_LOG_CAP as u64 {
+            let mut record = make_record(OperationKind::Drop, i);
+            record.stack_name = Some("busy-stack".to_string());
+            store.save(&record).unwrap();
+        }
+
+        assert_eq!(store.load(&origin.id).unwrap().id, origin.id);
+
+        config
+            .get_or_create_stack("quiet-stack")
+            .review_creation_intents
+            .remove("c-protected");
+        config.save(common_dir.path()).unwrap();
+        store
+            .save(&make_record(
+                OperationKind::Drop,
+                OPERATION_LOG_CAP as u64 + 1,
+            ))
+            .unwrap();
+
+        assert!(matches!(
+            store.load(&origin.id),
+            Err(GgError::OperationRecordNotFound(_))
+        ));
+        assert!(store.list(usize::MAX).unwrap().len() <= OPERATION_LOG_CAP);
+    }
+
+    #[test]
+    fn store_does_not_prune_when_existing_config_cannot_be_read_or_parsed() {
+        let setup_full_store = || {
+            let (common_dir, gg_dir) = tmp_gg_dir();
+            let store = OperationStore::new(&gg_dir);
+            let origin = make_record(OperationKind::Sync, 0);
+            store.save(&origin).unwrap();
+            for i in 1..OPERATION_LOG_CAP as u64 {
+                store.save(&make_record(OperationKind::Drop, i)).unwrap();
+            }
+            (common_dir, store, origin)
+        };
+
+        let (malformed_common_dir, malformed_store, malformed_origin) = setup_full_store();
+        fs::write(Config::config_path(malformed_common_dir.path()), "{").unwrap();
+        malformed_store
+            .save(&make_record(OperationKind::Drop, OPERATION_LOG_CAP as u64))
+            .unwrap();
+        assert_eq!(
+            malformed_store.load(&malformed_origin.id).unwrap().id,
+            malformed_origin.id
+        );
+        assert_eq!(
+            malformed_store.list(usize::MAX).unwrap().len(),
+            OPERATION_LOG_CAP + 1
+        );
+
+        let (unreadable_common_dir, unreadable_store, unreadable_origin) = setup_full_store();
+        fs::create_dir(Config::config_path(unreadable_common_dir.path())).unwrap();
+        unreadable_store
+            .save(&make_record(OperationKind::Drop, OPERATION_LOG_CAP as u64))
+            .unwrap();
+        assert_eq!(
+            unreadable_store.load(&unreadable_origin.id).unwrap().id,
+            unreadable_origin.id
+        );
+        assert_eq!(
+            unreadable_store.list(usize::MAX).unwrap().len(),
+            OPERATION_LOG_CAP + 1
+        );
     }
 
     #[test]

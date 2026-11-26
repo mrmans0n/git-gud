@@ -276,8 +276,14 @@ fn cleanup_after_merge(
 ) -> Vec<String> {
     let mut warnings = Vec::new();
 
-    // Remove PR/MR mapping from config
-    config.remove_mr_for_entry(&stack.name, gg_id);
+    // Remove only the exact mapping and creation intent that produced the
+    // successfully merged review. Unrelated unresolved intents remain durable.
+    if config.get_mr_for_entry(&stack.name, gg_id) == Some(pr_num) {
+        if let Some(stack_config) = config.stacks.get_mut(&stack.name) {
+            stack_config.mrs.remove(gg_id);
+            stack_config.review_creation_intents.remove(gg_id);
+        }
+    }
 
     // Update the base of remaining PRs/MRs to point to the main branch.
     // This is critical for stacked PRs - after merging PR #1, PR #2 should
@@ -3261,6 +3267,79 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_after_merge_removes_only_the_landed_entry_intent() {
+        use crate::config::ReviewCreationIntent;
+        use crate::stack::StackEntry;
+
+        let landed_intent = ReviewCreationIntent {
+            source_branch: "user/stack--c-landed1".to_string(),
+            target_branch: "main".to_string(),
+            origin_operation_id: "op_123_landed".to_string(),
+        };
+        let unrelated_intent = ReviewCreationIntent {
+            source_branch: "user/stack--c-pending1".to_string(),
+            target_branch: "user/stack--c-landed1".to_string(),
+            origin_operation_id: "op_123_pending".to_string(),
+        };
+        let mut config = Config::default();
+        config.stacks.insert(
+            "stack".to_string(),
+            StackConfig {
+                mrs: HashMap::from([
+                    ("c-landed1".to_string(), 42),
+                    ("c-pending1".to_string(), 43),
+                ]),
+                review_creation_intents: HashMap::from([
+                    ("c-landed1".to_string(), landed_intent),
+                    ("c-pending1".to_string(), unrelated_intent.clone()),
+                ]),
+                ..StackConfig::default()
+            },
+        );
+        let stack = Stack {
+            name: "stack".to_string(),
+            username: "user".to_string(),
+            base: "main".to_string(),
+            entries: vec![StackEntry {
+                oid: git2::Oid::ZERO_SHA1,
+                short_sha: "abcdef0".to_string(),
+                title: "Landed".to_string(),
+                gg_id: Some("c-landed1".to_string()),
+                gg_parent: None,
+                mr_number: Some(42),
+                mr_state: Some(PrState::Open),
+                approved: true,
+                changes_requested: false,
+                mergeable: true,
+                ci_status: None,
+                position: 1,
+                in_merge_train: false,
+                merge_train_position: None,
+                auto_merge: false,
+            }],
+            current_position: Some(0),
+        };
+
+        cleanup_after_merge(
+            &mut config,
+            &stack,
+            &Provider::GitHub,
+            "c-landed1",
+            42,
+            false,
+            true,
+        );
+
+        assert!(config
+            .get_review_creation_intent("stack", "c-landed1")
+            .is_none());
+        assert_eq!(
+            config.get_review_creation_intent("stack", "c-pending1"),
+            Some(&unrelated_intent)
+        );
+    }
+
+    #[test]
     fn test_config_remove_mr_for_entry_removes_single_entry() {
         // Create a config with multiple MR mappings
         let mut config = Config {
@@ -3273,6 +3352,7 @@ mod tests {
         let mut stack_config = StackConfig {
             base: None,
             mrs: HashMap::new(),
+            review_creation_intents: HashMap::new(),
             worktree_path: None,
         };
         stack_config.mrs.insert("c-abc1234".to_string(), 123);
@@ -3304,6 +3384,7 @@ mod tests {
         let mut stack_config = StackConfig {
             base: None,
             mrs: HashMap::new(),
+            review_creation_intents: HashMap::new(),
             worktree_path: None,
         };
         stack_config.mrs.insert("c-abc1234".to_string(), 123);
@@ -3353,6 +3434,7 @@ mod tests {
         let mut stack_config = StackConfig {
             base: None,
             mrs: HashMap::new(),
+            review_creation_intents: HashMap::new(),
             worktree_path: None,
         };
         stack_config.mrs.insert("c-abc1234".to_string(), 123);
@@ -3372,13 +3454,6 @@ mod tests {
         config.remove_mr_for_entry("test-stack", "c-ghi9012");
         assert_eq!(config.stacks.get("test-stack").unwrap().mrs.len(), 0);
     }
-
-    // Note: cleanup_after_merge is tested indirectly through the land command
-    // integration. Direct unit testing would require mocking Config, Stack,
-    // and Provider. The function is well-defined with:
-    // - config.remove_mr_for_entry() called unconditionally
-    // - Base update logic only runs when land_all=true
-    // - Updates remaining entries in stack after current index
 
     #[test]
     #[allow(clippy::type_complexity)]

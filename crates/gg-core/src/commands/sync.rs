@@ -6,10 +6,12 @@ use console::style;
 use dialoguer::Confirm;
 use git2::Repository;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use crate::config::{Config, GithubStacksIntegration, RemoteBranchDeletionState};
+use crate::config::{
+    Config, GithubStacksIntegration, RemoteBranchDeletionState, ReviewCreationIntent,
+};
 use crate::error::{GgError, Result};
 use crate::git::{self, get_commit_description, strip_gg_id_from_message};
 use crate::github_stacks::{
@@ -66,6 +68,13 @@ impl SyncSegment {
 
     fn guard_mut(&mut self) -> &mut OperationGuard {
         self.guard.as_mut().expect("sync segment must be started")
+    }
+
+    fn operation_id(&self) -> &str {
+        self.guard
+            .as_ref()
+            .expect("sync segment must be started")
+            .id()
     }
 
     fn mark_remote_before_attempt(&mut self) -> Result<()> {
@@ -161,6 +170,128 @@ impl SyncSegment {
             }
         }
     }
+}
+
+fn begin_review_creation(
+    repo: &Repository,
+    config: &mut Config,
+    stack_name: &str,
+    gg_id: &str,
+    source_branch: &str,
+    target_branch: &str,
+    segment: &mut SyncSegment,
+) -> Result<()> {
+    segment.ensure_started(repo, config)?;
+    let mark_result = segment.mark_remote_before_attempt();
+    segment.finish_on_error(repo, config, mark_result)?;
+    let intent = ReviewCreationIntent {
+        source_branch: source_branch.to_string(),
+        target_branch: target_branch.to_string(),
+        origin_operation_id: segment.operation_id().to_string(),
+    };
+    let save_result =
+        config.set_review_creation_intent(repo.commondir(), stack_name, gg_id, intent);
+    segment.finish_on_error(repo, config, save_result)
+}
+
+fn complete_review_creation(
+    repo: &Repository,
+    config: &mut Config,
+    stack_name: &str,
+    gg_id: &str,
+    result: &crate::provider::PrCreationResult,
+    segment: &mut SyncSegment,
+) -> Result<()> {
+    let effect_result = segment.record_remote_effect_durable(RemoteEffect::PrCreated {
+        number: result.number,
+        url: result.url.clone(),
+    });
+    segment.finish_on_error(repo, config, effect_result)?;
+    let install_result =
+        config.install_review_mapping(repo.commondir(), stack_name, gg_id, result.number);
+    segment.finish_on_error(repo, config, install_result)
+}
+
+fn select_recoverable_review(
+    gg_id: &str,
+    intent: &ReviewCreationIntent,
+    candidates: Vec<crate::provider::PrInfo>,
+) -> Result<crate::provider::PrInfo> {
+    let mut matches = candidates
+        .into_iter()
+        .filter(|info| {
+            matches!(
+                info.state,
+                crate::provider::PrState::Open | crate::provider::PrState::Draft
+            ) && info.head_branch.as_deref() == Some(intent.source_branch.as_str())
+                && info.base_branch.as_deref() == Some(intent.target_branch.as_str())
+        })
+        .collect::<Vec<_>>();
+
+    match matches.len() {
+        1 => Ok(matches.pop().expect("one exact review match")),
+        count => Err(GgError::Other(format!(
+            "Pending review creation for {gg_id} resolved to {count} open or draft reviews with exact source/target topology '{} -> {}'. Refusing to create another review; inspect the provider and repository config.",
+            intent.source_branch, intent.target_branch
+        ))),
+    }
+}
+
+fn resolve_review_creation_intent(
+    provider: &Provider,
+    gg_id: &str,
+    intent: &ReviewCreationIntent,
+) -> Result<crate::provider::PrInfo> {
+    let review_numbers = provider.list_prs_for_branch(&intent.source_branch)?;
+    let mut candidates = Vec::with_capacity(review_numbers.len());
+    for number in review_numbers {
+        candidates.push(provider.get_pr_info(number)?);
+    }
+    select_recoverable_review(gg_id, intent, candidates)
+}
+
+fn recover_review_creation_intents(
+    repo: &Repository,
+    provider: &Provider,
+    config: &mut Config,
+    stack_name: &str,
+) -> Result<HashMap<String, crate::provider::PrInfo>> {
+    let mut intents = config
+        .get_stack(stack_name)
+        .map(|stack| {
+            stack
+                .review_creation_intents
+                .iter()
+                .map(|(gg_id, intent)| (gg_id.clone(), intent.clone()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    intents.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+    // Validate every origin before any provider lookup or local reconciliation.
+    // A damaged intent set must fail without partially consuming earlier intents.
+    for (_, intent) in &intents {
+        operations::load_creation_operation_by_id(repo, &intent.origin_operation_id)?;
+    }
+
+    let mut resolved = Vec::with_capacity(intents.len());
+    for (gg_id, intent) in intents {
+        let info = resolve_review_creation_intent(provider, &gg_id, &intent)?;
+        resolved.push((gg_id, intent, info));
+    }
+
+    let mut recovered = HashMap::new();
+    for (gg_id, intent, info) in resolved {
+        operations::reconcile_creation_operation_by_id(
+            repo,
+            &intent.origin_operation_id,
+            info.number,
+            &info.url,
+        )?;
+        config.install_review_mapping(repo.commondir(), stack_name, &gg_id, info.number)?;
+        recovered.insert(gg_id, info);
+    }
+    Ok(recovered)
 }
 
 fn preserve_error_on_emit(
@@ -735,16 +866,19 @@ pub fn run(
 
     // Load stack early to validate --until and decide whether sync can remain a
     // provider-free no-op.
-    let initial_stack = Stack::load(&repo, &config)?;
+    let mut initial_stack = Stack::load(&repo, &config)?;
     // Keep the caller's target identity from the stack they could see before
     // fetching. Do not interpret a position a second time on a shorter stack.
     let selected = until
         .as_deref()
         .map(|target| resolve_target(&initial_stack, target))
         .transpose()?
-        .map(|pos| &initial_stack.entries[pos - 1]);
+        .map(|pos| initial_stack.entries[pos - 1].clone());
     let has_pending_deletion = has_pending_remote_entry_deletion(&config, &initial_stack);
-    let provider = if initial_stack.is_empty() && !has_pending_deletion {
+    let has_creation_intents = config
+        .get_stack(&initial_stack.name)
+        .is_some_and(|stack| !stack.review_creation_intents.is_empty());
+    let provider = if initial_stack.is_empty() && !has_pending_deletion && !has_creation_intents {
         Provider::detect(&repo).ok()
     } else {
         let provider = Provider::detect(&repo)?;
@@ -752,6 +886,21 @@ pub fn run(
         provider.check_auth()?;
         Some(provider)
     };
+    let mut recovered_reviews = if has_creation_intents {
+        recover_review_creation_intents(
+            &repo,
+            provider
+                .as_ref()
+                .expect("creation-intent recovery has a provider"),
+            &mut config,
+            &initial_stack.name,
+        )?
+    } else {
+        HashMap::new()
+    };
+    if !recovered_reviews.is_empty() {
+        initial_stack = Stack::load(&repo, &config)?;
+    }
     let mut segment = SyncSegment::new();
     if !initial_stack.is_empty() || has_pending_deletion {
         segment.ensure_started(&repo, &config)?;
@@ -987,7 +1136,7 @@ pub fn run(
     };
 
     let end_position =
-        |stack: &Stack| sync_end_position(stack, selected, skipped, initial_stack.len());
+        |stack: &Stack| sync_end_position(stack, selected.as_ref(), skipped, initial_stack.len());
     let (mut stack, mut end_pos) = segment.finish_on_error(
         &repo,
         &config,
@@ -1196,6 +1345,7 @@ pub fn run(
                 classify_review_for_sync(
                     &provider,
                     number,
+                    recovered_reviews.remove(gg_id),
                     ReviewSyncTopology {
                         repo: &repo,
                         config: &config,
@@ -1519,8 +1669,15 @@ pub fn run(
                             old_base_branch,
                         ),
                     )?;
-                    segment.ensure_started(&repo, &config)?;
-                    segment.mark_remote_before_attempt()?;
+                    begin_review_creation(
+                        &repo,
+                        &mut config,
+                        &stack.name,
+                        gg_id,
+                        &entry_branch,
+                        &target_branch,
+                        &mut segment,
+                    )?;
                     match provider.create_pr(
                         &entry_branch,
                         &target_branch,
@@ -1529,14 +1686,14 @@ pub fn run(
                         replacement_draft,
                     ) {
                         Ok(result) => {
-                            let created_effect = RemoteEffect::PrCreated {
-                                number: result.number,
-                                url: result.url.clone(),
-                            };
-                            segment.record_remote_effect_durable(created_effect)?;
-                            config.set_mr_for_entry(&stack.name, gg_id, result.number);
-                            let save_result = config.save(repo.commondir());
-                            segment.finish_on_error(&repo, &config, save_result)?;
+                            complete_review_creation(
+                                &repo,
+                                &mut config,
+                                &stack.name,
+                                gg_id,
+                                &result,
+                                &mut segment,
+                            )?;
                             segment.finish(&repo, &config)?;
                             if let Some(s) = streamer.as_mut() {
                                 s.try_emit(&SyncStreamingResponse {
@@ -2035,8 +2192,15 @@ pub fn run(
             None => {
                 // Create new PR/MR — wrap description in managed markers
                 let wrapped_description = managed_body::wrap(&description);
-                segment.ensure_started(&repo, &config)?;
-                segment.mark_remote_before_attempt()?;
+                begin_review_creation(
+                    &repo,
+                    &mut config,
+                    &stack.name,
+                    gg_id,
+                    &entry_branch,
+                    &target_branch,
+                    &mut segment,
+                )?;
                 match provider.create_pr(
                     &entry_branch,
                     &target_branch,
@@ -2045,14 +2209,14 @@ pub fn run(
                     entry_draft,
                 ) {
                     Ok(result) => {
-                        let effect = RemoteEffect::PrCreated {
-                            number: result.number,
-                            url: result.url.clone(),
-                        };
-                        segment.record_remote_effect_durable(effect)?;
-                        config.set_mr_for_entry(&stack.name, gg_id, result.number);
-                        let save_result = config.save(repo.commondir());
-                        segment.finish_on_error(&repo, &config, save_result)?;
+                        complete_review_creation(
+                            &repo,
+                            &mut config,
+                            &stack.name,
+                            gg_id,
+                            &result,
+                            &mut segment,
+                        )?;
                         segment.finish(&repo, &config)?;
                         if let Some(s) = streamer.as_mut() {
                             s.try_emit(&SyncStreamingResponse {
@@ -2842,9 +3006,13 @@ struct ReviewSyncTopology<'a> {
 fn classify_review_for_sync(
     provider: &Provider,
     number: u64,
+    recovered: Option<crate::provider::PrInfo>,
     topology: ReviewSyncTopology<'_>,
 ) -> Result<crate::provider::PrInfo> {
-    let info = provider.get_pr_info(number)?;
+    let info = match recovered {
+        Some(info) if info.number == number => info,
+        _ => provider.get_pr_info(number)?,
+    };
     let expected_head_matches = info.head_branch.as_deref() == Some(topology.expected_head);
     let identity_matches = info.number == number && expected_head_matches;
     let current_topology_matches = info.base_branch.as_deref().is_some_and(|base| {
@@ -3152,15 +3320,17 @@ mod tests {
         build_pr_payload, clean_title, compute_target_branch, description_with_replacement_note,
         ensure_draft_prefix_for_gitlab, github_stack_preflight_skip, is_wip_or_draft_prefix,
         migrated_review_topology_matches, mismatched_pr_head_branch, preserve_error_on_emit,
-        replacement_closing_comment, suspend_sync_progress, sync_progress_bar, SyncSegment,
+        replacement_closing_comment, select_recoverable_review, suspend_sync_progress,
+        sync_progress_bar, SyncSegment,
     };
-    use crate::config::{Config, GithubStacksIntegration};
+    use crate::config::{Config, GithubStacksIntegration, ReviewCreationIntent};
     use crate::git;
     use crate::github_stacks::{GithubStackReason, GithubStackSyncResult};
     use crate::operations::{OperationRecord, OperationStatus, RemoteEffect};
     use crate::output::{
         SyncEntryResultJson, SyncMetadataJson, SyncResponse, SyncResultJson, OUTPUT_VERSION,
     };
+    use crate::provider::{BaseMergeability, PrInfo, PrState};
     use indicatif::{ProgressDrawTarget, TermLike};
     use std::fs;
     use std::io;
@@ -3168,6 +3338,88 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
     use std::time::{Duration, Instant};
+
+    fn recovery_intent() -> ReviewCreationIntent {
+        ReviewCreationIntent {
+            source_branch: "user/stack--c-review1".to_string(),
+            target_branch: "main".to_string(),
+            origin_operation_id: "op_0000000000001_review".to_string(),
+        }
+    }
+
+    fn recovery_candidate(number: u64, state: PrState, source: &str, target: &str) -> PrInfo {
+        PrInfo {
+            number,
+            title: format!("Review {number}"),
+            state,
+            url: format!("https://example.test/reviews/{number}"),
+            head_branch: Some(source.to_string()),
+            base_branch: Some(target.to_string()),
+            merge_sha: None,
+            draft: false,
+            approved: false,
+            mergeable: false,
+            changes_requested: false,
+            detailed_merge_status: None,
+            auto_merge: false,
+            head_sha: None,
+            base_mergeability: BaseMergeability::Unknown,
+        }
+    }
+
+    #[test]
+    fn review_creation_recovery_accepts_one_exact_open_or_draft_match() {
+        let intent = recovery_intent();
+        for state in [PrState::Open, PrState::Draft] {
+            let review = select_recoverable_review(
+                "c-review1",
+                &intent,
+                vec![recovery_candidate(
+                    41,
+                    state,
+                    &intent.source_branch,
+                    &intent.target_branch,
+                )],
+            )
+            .unwrap();
+            assert_eq!(review.number, 41);
+        }
+    }
+
+    #[test]
+    fn review_creation_recovery_rejects_zero_or_multiple_exact_matches() {
+        let intent = recovery_intent();
+        assert!(select_recoverable_review("c-review1", &intent, Vec::new()).is_err());
+        let exact = || {
+            recovery_candidate(
+                41,
+                PrState::Open,
+                &intent.source_branch,
+                &intent.target_branch,
+            )
+        };
+        assert!(select_recoverable_review("c-review1", &intent, vec![exact(), exact()]).is_err());
+    }
+
+    #[test]
+    fn review_creation_recovery_rejects_closed_and_merged_reviews() {
+        let intent = recovery_intent();
+        for state in [PrState::Closed, PrState::Merged] {
+            let candidate =
+                recovery_candidate(41, state, &intent.source_branch, &intent.target_branch);
+            assert!(select_recoverable_review("c-review1", &intent, vec![candidate]).is_err());
+        }
+    }
+
+    #[test]
+    fn review_creation_recovery_rejects_source_or_target_mismatch() {
+        let intent = recovery_intent();
+        let wrong_source = recovery_candidate(41, PrState::Open, "other/source", "main");
+        let wrong_target =
+            recovery_candidate(42, PrState::Open, &intent.source_branch, "other/target");
+        assert!(select_recoverable_review("c-review1", &intent, vec![wrong_source]).is_err());
+        assert!(select_recoverable_review("c-review1", &intent, vec![wrong_target]).is_err());
+    }
 
     #[derive(Debug)]
     struct FlushCountingTerm {

@@ -29,6 +29,10 @@
    and inspect the remote tips of every branch that may have been pushed or
    deleted. A successfully created replacement review can already be persisted
    in local config even when a later step failed.
+   A pending remote deletion is freshly authorized after its durable checkpoint;
+   a dependent-review result or lookup failure restores the intent to `pending`
+   without attempting the deletion push. Treat a `deleting` intent as uncertain:
+   do not infer from the provider lookup alone that no push was attempted.
 3. Treat `touched_remote: true`, or an ambiguous push or deletion response, as a
    boundary against automatic recovery. Review creation is the narrow exception:
    when its durable intent and exact origin record are intact, `gg sync`

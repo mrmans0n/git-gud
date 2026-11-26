@@ -156,8 +156,40 @@ if [ "$1" = "pr" ] && [ "$2" = "close" ]; then
 fi
 
 if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
-  if [ "$3" = "--base" ] && [ -f "$(dirname "$0")/targets/$(echo "$4" | tr / _)" ]; then
-    cat "$(dirname "$0")/targets/$(echo "$4" | tr / _)"
+  if [ "$3" = "--base" ]; then
+    dir=$(dirname "$0")
+    target_key=$(echo "$4" | tr / _)
+    count_file="$dir/list-count-$target_key"
+    count=$(cat "$count_file" 2>/dev/null || echo 0)
+    count=$((count + 1))
+    printf '%s\n' "$count" > "$count_file"
+    if [ "${GG_TEST_BLOCK_PR_LIST_BRANCH:-}" = "$4" ]; then
+      if [ "$count" -eq 1 ] && [ -n "${GG_TEST_FIRST_PR_LIST_READY:-}" ]; then
+        : > "$GG_TEST_FIRST_PR_LIST_READY"
+      fi
+      if [ "$count" -eq 2 ]; then
+        grep -q '"state": "deleting"' "$GG_TEST_CONFIG_PATH"
+        checkpoint=''
+        for record in "$GG_TEST_GIT_DIR/gg/operations/"*.json; do
+          grep -q '"status": "pending"' "$record" || continue
+          grep -q '"touched_remote": true' "$record" || continue
+          [ -z "$checkpoint" ] || { echo 'multiple deletion checkpoints' >&2; exit 1; }
+          checkpoint=$record
+        done
+        [ -n "$checkpoint" ] || { echo 'missing durable deletion checkpoint' >&2; exit 1; }
+        if [ "${GG_TEST_FAIL_FRESH_PR_LIST_EMPTY:-}" = "1" ]; then
+          exit 1
+        fi
+        : > "$GG_TEST_FRESH_PR_LIST_READY"
+        while [ ! -f "$GG_TEST_RACE_RELEASE" ]; do
+          printf x >> "$GG_TEST_RACE_HEARTBEAT"
+          sleep 0.05
+        done
+      fi
+    fi
+    if [ -f "$dir/targets/$target_key" ]; then
+      cat "$dir/targets/$target_key"
+    fi
   fi
   exit 0
 fi
@@ -206,6 +238,13 @@ fi
 
 case " $* " in
   *" push --force-with-lease=refs/heads/$delete_branch:"*" :refs/heads/$delete_branch "*)
+    if [ "${GG_TEST_DELETE_MODE:-}" = "block_before_delete" ]; then
+      : > "$GG_TEST_DELETE_PUSH_READY"
+      while [ ! -f "$GG_TEST_RACE_RELEASE" ]; do
+        printf x >> "$GG_TEST_RACE_HEARTBEAT"
+        sleep 0.05
+      done
+    fi
     "$GG_TEST_REAL_GIT" "$@"
     status=$?
     if [ "$status" -ne 0 ]; then
@@ -5723,6 +5762,257 @@ fn test_sync_keeps_dropped_branch_while_open_review_targets_it() {
     assert!(
         !remote_has_dropped(),
         "sync must prune once no open review targets the branch"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn pending_branch_deletion_reauthorizes_after_uncertainty_checkpoint() {
+    let (_temp, repo_path, remote_path, fake_path) =
+        setup_published_prune_stack("fresh-delete-authorization");
+    let dropped_branch = "testuser/fresh-delete-authorization--c-3333333";
+    let (success, stdout, stderr) = run_gg(&repo_path, &["drop", "3", "--yes"]);
+    assert!(success, "drop failed: {stdout}\n{stderr}");
+
+    let fake_bin = repo_path.join("fake-bin");
+    let targets = fake_bin.join("targets");
+    fs::create_dir_all(&targets).unwrap();
+    let target_file = targets.join(dropped_branch.replace('/', "_"));
+    let first_lookup_ready = fake_bin.join("first-delete-lookup-ready");
+    let fresh_lookup_ready = fake_bin.join("fresh-delete-lookup-ready");
+    let delete_push_ready = fake_bin.join("delete-push-ready");
+    let release = fake_bin.join("release-delete-race");
+    let heartbeat = fake_bin.join("delete-race-heartbeat");
+    let git_log = fake_bin.join("delete-race-git-requests");
+    let config_path = repo_path.join(".git/gg/config.json");
+    let real_git = install_git_delete_shim(&repo_path);
+    let operations_before = operation_record_ids(&repo_path);
+
+    let race_target = target_file.clone();
+    let race_fresh_ready = fresh_lookup_ready.clone();
+    let race_push_ready = delete_push_ready.clone();
+    let race_release = release.clone();
+    let racer = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let boundary = loop {
+            if race_fresh_ready.exists() {
+                break "fresh lookup";
+            }
+            if race_push_ready.exists() {
+                break "deletion push";
+            }
+            assert!(
+                Instant::now() < deadline,
+                "sync reached neither fresh authorization nor deletion push"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        fs::write(race_target, "999\n").unwrap();
+        fs::write(race_release, "release\n").unwrap();
+        boundary
+    });
+
+    let (success, stdout, stderr) = run_gg_bounded_with_env_and_timeout(
+        &repo_path,
+        &["sync", "--until", "1", "--no-rebase-check"],
+        &[
+            ("PATH", fake_path.as_os_str()),
+            ("GG_TEST_REAL_GIT", real_git.as_ref()),
+            ("GG_TEST_DELETE_BRANCH", dropped_branch.as_ref()),
+            ("GG_TEST_DELETE_MODE", "block_before_delete".as_ref()),
+            ("GG_TEST_GIT_LOG", git_log.as_os_str()),
+            ("GG_TEST_BLOCK_PR_LIST_BRANCH", dropped_branch.as_ref()),
+            (
+                "GG_TEST_FIRST_PR_LIST_READY",
+                first_lookup_ready.as_os_str(),
+            ),
+            (
+                "GG_TEST_FRESH_PR_LIST_READY",
+                fresh_lookup_ready.as_os_str(),
+            ),
+            ("GG_TEST_DELETE_PUSH_READY", delete_push_ready.as_os_str()),
+            ("GG_TEST_RACE_RELEASE", release.as_os_str()),
+            ("GG_TEST_RACE_HEARTBEAT", heartbeat.as_os_str()),
+            ("GG_TEST_CONFIG_PATH", config_path.as_os_str()),
+            ("GG_TEST_GIT_DIR", repo_path.join(".git").as_os_str()),
+        ],
+        Duration::from_secs(20),
+        Some(&first_lookup_ready),
+    );
+    let boundary = racer.join().unwrap();
+
+    assert_eq!(
+        boundary, "fresh lookup",
+        "deletion reached its push before fresh provider authorization: {stdout}\n{stderr}"
+    );
+    assert!(success, "safe deferral failed: {stdout}\n{stderr}");
+    assert!(
+        stdout.contains("#999 still targets it"),
+        "fresh dependent review was not reported: {stdout}\n{stderr}"
+    );
+    assert_eq!(
+        fs::read_to_string(
+            fake_bin.join(format!("list-count-{}", dropped_branch.replace('/', "_")))
+        )
+        .unwrap()
+        .trim(),
+        "2",
+        "deletion must perform classification and fresh authorization lookups"
+    );
+    let pushes = fs::read_to_string(&git_log).unwrap_or_default();
+    assert!(
+        !pushes.lines().any(|request| {
+            request.contains("push --force-with-lease=") && request.contains(dropped_branch)
+        }),
+        "dependent review did not stop exact-OID deletion push: {pushes}"
+    );
+    assert!(
+        run_git(
+            &remote_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{dropped_branch}")
+            ]
+        )
+        .0,
+        "fresh authorization must preserve the remote branch"
+    );
+    let config: Value = serde_json::from_slice(&fs::read(config_path).unwrap()).unwrap();
+    let intent = config["pending_remote_branch_deletions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|intent| intent["branch"] == dropped_branch)
+        .expect("deferred deletion intent must remain retryable");
+    assert_eq!(intent["state"], "pending", "{intent}");
+    let operation_ids = operation_record_ids(&repo_path)
+        .difference(&operations_before)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(!operation_ids.is_empty(), "{operation_ids:?}");
+    for operation_id in operation_ids {
+        let operation = operation_record(&repo_path, &operation_id);
+        assert_eq!(operation["status"], "committed", "{operation}");
+        assert!(
+            operation["remote_effects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|effect| effect["kind"] != "branch_deleted"),
+            "fresh authorization must not record a deletion effect: {operation}"
+        );
+    }
+
+    wait_for_file(&heartbeat);
+    let heartbeat_len = fs::metadata(&heartbeat).unwrap().len();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        fs::metadata(&heartbeat).unwrap().len(),
+        heartbeat_len,
+        "provider or push blocker survived bounded process cleanup"
+    );
+    fs::write(&heartbeat, "reused").expect("heartbeat must be reusable after cleanup");
+}
+
+#[cfg(unix)]
+#[test]
+fn pending_branch_deletion_defers_when_fresh_lookup_exits_nonzero_without_stderr() {
+    let (_temp, repo_path, remote_path, fake_path) =
+        setup_published_prune_stack("failed-fresh-delete-authorization");
+    let dropped_branch = "testuser/failed-fresh-delete-authorization--c-3333333";
+    let (success, stdout, stderr) = run_gg(&repo_path, &["drop", "3", "--yes"]);
+    assert!(success, "drop failed: {stdout}\n{stderr}");
+
+    let fake_bin = repo_path.join("fake-bin");
+    let git_log = fake_bin.join("failed-fresh-delete-git-requests");
+    let config_path = repo_path.join(".git/gg/config.json");
+    let real_git = install_git_delete_shim(&repo_path);
+    let operations_before = operation_record_ids(&repo_path);
+
+    let (success, stdout, stderr) = run_gg_bounded_with_env(
+        &repo_path,
+        &["sync", "--until", "1", "--no-rebase-check"],
+        &[
+            ("PATH", fake_path.as_os_str()),
+            ("GG_TEST_REAL_GIT", real_git.as_ref()),
+            ("GG_TEST_DELETE_BRANCH", dropped_branch.as_ref()),
+            ("GG_TEST_GIT_LOG", git_log.as_os_str()),
+            ("GG_TEST_BLOCK_PR_LIST_BRANCH", dropped_branch.as_ref()),
+            ("GG_TEST_FAIL_FRESH_PR_LIST_EMPTY", "1".as_ref()),
+            ("GG_TEST_CONFIG_PATH", config_path.as_os_str()),
+            ("GG_TEST_GIT_DIR", repo_path.join(".git").as_os_str()),
+        ],
+    );
+
+    let pushes = fs::read_to_string(&git_log).unwrap_or_default();
+    assert!(
+        !pushes.lines().any(|request| {
+            request.contains("push --force-with-lease=") && request.contains(dropped_branch)
+        }),
+        "failed fresh provider lookup did not stop exact-OID deletion push: {pushes}"
+    );
+    assert!(
+        success,
+        "safe lookup-error deferral failed: {stdout}\n{stderr}"
+    );
+    assert!(
+        run_git(
+            &remote_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{dropped_branch}")
+            ]
+        )
+        .0,
+        "failed fresh provider lookup must preserve the remote branch"
+    );
+    assert!(
+        stdout.contains("could not check for open reviews targeting it"),
+        "lookup failure warning was not emitted: {stdout}\n{stderr}"
+    );
+
+    let config: Value = serde_json::from_slice(&fs::read(config_path).unwrap()).unwrap();
+    let intent = config["pending_remote_branch_deletions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|intent| intent["branch"] == dropped_branch)
+        .expect("deferred deletion intent must remain retryable");
+    assert_eq!(intent["state"], "pending", "{intent}");
+
+    let operation_ids = operation_record_ids(&repo_path)
+        .difference(&operations_before)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(!operation_ids.is_empty(), "{operation_ids:?}");
+    let operations = operation_ids
+        .iter()
+        .map(|operation_id| operation_record(&repo_path, operation_id))
+        .collect::<Vec<_>>();
+    assert!(
+        operations
+            .iter()
+            .all(|operation| operation["status"] == "committed"),
+        "{operations:?}"
+    );
+    assert!(
+        operations.iter().any(|operation| {
+            operation["touched_remote"] == true
+                && operation["remote_effects"] == serde_json::json!([])
+        }),
+        "lookup-error deferral must finalize a remote-uncertainty segment without effects: {operations:?}"
+    );
+    assert!(
+        operations.iter().all(|operation| {
+            operation["remote_effects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|effect| effect["kind"] != "branch_deleted")
+        }),
+        "lookup-error deferral must record no deletion effect: {operations:?}"
     );
 }
 

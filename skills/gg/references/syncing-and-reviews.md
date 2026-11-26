@@ -43,9 +43,12 @@
    not retry automatically or replace the expected OID with a fresh server tip.
    Undo or local recreation cancels intent, and absence
    from this clone or a historical Drop journal record is never authority.
-   A "Kept remote branch" warning means an open PR/MR still targets the
-   dropped branch; retarget it with a full `gg sync`, never delete the branch
-   by hand. If review creation returns an ambiguous response, stop immediately.
+   Sync rechecks for dependent PRs/MRs after persisting its deletion checkpoint
+   and immediately before the exact-OID push. A "Kept remote branch" warning
+   means that one of these checks found a dependent review or failed; the
+   deletion intent remains pending. Retarget with a full `gg sync`, never delete
+   the branch by hand. If review creation returns an ambiguous response, stop
+   immediately.
    Sync persists the exact source, target, and origin operation before create;
    the next sync may recover only one exact open/draft provider match and will
    not issue another create. Do not remove the intent or retry creation by hand.

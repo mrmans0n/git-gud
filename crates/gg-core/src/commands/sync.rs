@@ -10,7 +10,8 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use crate::config::{
-    Config, GithubStacksIntegration, RemoteBranchDeletionState, ReviewCreationIntent,
+    Config, GithubStacksIntegration, PendingRemoteBranchDeletion, RemoteBranchDeletionState,
+    ReviewCreationIntent,
 };
 use crate::error::{GgError, Result};
 use crate::git::{self, get_commit_description, strip_gg_id_from_message};
@@ -632,6 +633,54 @@ pub(crate) enum RemoteDeletionCheckpoint {
     Complete,
 }
 
+fn remote_deletion_deferral(provider: Option<&Provider>, branch: &str) -> Option<String> {
+    let provider = match provider {
+        Some(provider) => provider,
+        None => {
+            return Some(format!(
+                "Kept remote branch '{branch}': could not check for open reviews targeting it (no provider detected)."
+            ));
+        }
+    };
+    match provider.list_prs_targeting_branch(branch) {
+        Ok(numbers) if numbers.is_empty() => None,
+        Ok(numbers) => {
+            let numbers = numbers
+                .iter()
+                .map(|n| format!("{}{n}", provider.pr_number_prefix()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Some(format!(
+                "Kept remote branch '{}': open {} {} still targets it. Retarget them (a full `gg sync` does), then sync again.",
+                branch,
+                provider.pr_label(),
+                numbers
+            ))
+        }
+        Err(error) => Some(format!(
+            "Kept remote branch '{branch}': could not check for open reviews targeting it ({error})."
+        )),
+    }
+}
+
+fn set_remote_deletion_state(
+    repo: &Repository,
+    config: &mut Config,
+    intent: &PendingRemoteBranchDeletion,
+    state: RemoteBranchDeletionState,
+) -> Result<()> {
+    let mut updated = config.clone();
+    let stored = updated
+        .pending_remote_branch_deletions
+        .iter_mut()
+        .find(|candidate| candidate.remote == intent.remote && candidate.branch == intent.branch)
+        .expect("cloned pending deletion must still exist");
+    stored.state = state;
+    updated.save(repo.commondir())?;
+    *config = updated;
+    Ok(())
+}
+
 /// Delete remote entry branches authorized by earlier Drops.
 ///
 /// Returns one message per branch whose deletion was deferred because an open
@@ -697,50 +746,31 @@ pub(crate) fn reconcile_pending_remote_entry_deletions(
 
         // Deleting a branch that an open review still targets would close or
         // break that review. Keep the intent until nothing targets it.
-        let dependents = match provider {
-            Some(provider) => provider.list_prs_targeting_branch(&intent.branch),
-            None => Err(GgError::Other("no provider detected".to_string())),
-        };
-        match dependents {
-            Ok(numbers) if numbers.is_empty() => {}
-            Ok(numbers) => {
-                let provider = provider.expect("dependents were listed by a provider");
-                let numbers = numbers
-                    .iter()
-                    .map(|n| format!("{}{n}", provider.pr_number_prefix()))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                deferred.push(format!(
-                    "Kept remote branch '{}': open {} {} still targets it. Retarget them (a full `gg sync` does), then sync again.",
-                    intent.branch,
-                    provider.pr_label(),
-                    numbers
-                ));
-                continue;
-            }
-            Err(error) => {
-                deferred.push(format!(
-                    "Kept remote branch '{}': could not check for open reviews targeting it ({error}).",
-                    intent.branch
-                ));
-                continue;
-            }
+        if let Some(message) = remote_deletion_deferral(provider, &intent.branch) {
+            deferred.push(message);
+            continue;
         }
 
-        let stored = config
-            .pending_remote_branch_deletions
-            .iter_mut()
-            .find(|candidate| {
-                candidate.remote == intent.remote && candidate.branch == intent.branch
-            })
-            .expect("cloned pending deletion must still exist");
-        stored.state = RemoteBranchDeletionState::Deleting;
-        config.save(repo.commondir())?;
+        set_remote_deletion_state(repo, config, &intent, RemoteBranchDeletionState::Deleting)?;
+
+        // A crash or cancellation from this point can make the deletion outcome
+        // unknowable. Persist operation-level uncertainty before the final
+        // provider authorization as well as before the push itself.
+        checkpoint(RemoteDeletionCheckpoint::BeforeAttempt, config)?;
+
+        // The earlier lookup classified the branch before the durable deletion
+        // checkpoint and is stale. Re-authorize after that checkpoint so a
+        // newly dependent review can still stop the exact-OID deletion push.
+        if let Some(message) = remote_deletion_deferral(provider, &intent.branch) {
+            set_remote_deletion_state(repo, config, &intent, RemoteBranchDeletionState::Pending)?;
+            deferred.push(message);
+            checkpoint(RemoteDeletionCheckpoint::Complete, config)?;
+            continue;
+        }
 
         // Any unsuccessful push is ambiguous: the server may have applied the
         // deletion before the response was lost. Persist remote uncertainty
         // before attempting it, and leave the intent in `deleting` on error.
-        checkpoint(RemoteDeletionCheckpoint::BeforeAttempt, config)?;
         git::delete_remote_branch_at_oid(repo, &intent.remote, &intent.branch, expected_oid)?;
 
         checkpoint(

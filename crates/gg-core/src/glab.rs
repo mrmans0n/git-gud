@@ -842,32 +842,31 @@ fn list_open_mrs(branch_flag: &str, branch: &str) -> Result<Vec<u64>> {
         .args(["mr", "list", branch_flag, branch, "--output", "json"])
         .output()?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !stderr.is_empty() {
-            return Err(GgError::GlabError(format!(
-                "Failed to list MRs for branch {}: {}",
-                branch, stderr
-            )));
-        }
-        return Ok(vec![]);
-    }
+    ensure_mr_list_succeeded(output.status.success(), &output.stderr, branch)?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    if stdout.trim().is_empty() || stdout.trim() == "[]" {
-        return Ok(vec![]);
-    }
+    parse_open_mr_numbers(&output.stdout)
+}
 
-    // Parse JSON array of MRs
+fn parse_open_mr_numbers(stdout: &[u8]) -> Result<Vec<u64>> {
     #[derive(Deserialize)]
     struct MrListItem {
         iid: u64,
     }
 
-    let mrs: Vec<MrListItem> = serde_json::from_str(&stdout)
-        .map_err(|e| GgError::GlabError(format!("Failed to parse MR list: {}", e)))?;
-
+    let mrs: Vec<MrListItem> = serde_json::from_slice(stdout)
+        .map_err(|error| GgError::GlabError(format!("Failed to parse MR list: {error}")))?;
     Ok(mrs.into_iter().map(|mr| mr.iid).collect())
+}
+
+fn ensure_mr_list_succeeded(success: bool, stderr: &[u8], branch: &str) -> Result<()> {
+    if success {
+        return Ok(());
+    }
+    Err(GgError::GlabError(format!(
+        "Failed to list MRs for branch {}: {}",
+        branch,
+        String::from_utf8_lossy(stderr).trim()
+    )))
 }
 
 /// Project merge settings that affect how gg lands MRs.
@@ -1491,6 +1490,18 @@ pub fn delete_mr_note(mr_iid: u64, note_id: u64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_mr_list_rejects_nonzero_status_without_stderr() {
+        let error = ensure_mr_list_succeeded(false, b"", "stack-branch").unwrap_err();
+        assert!(error.to_string().contains("stack-branch"), "{error}");
+    }
+
+    #[test]
+    fn open_mr_numbers_reject_empty_success_output() {
+        let error = parse_open_mr_numbers(b"").unwrap_err();
+        assert!(error.to_string().contains("parse MR list"), "{error}");
+    }
 
     #[test]
     fn test_parse_mr_number_exclamation_format() {

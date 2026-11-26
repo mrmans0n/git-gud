@@ -668,31 +668,29 @@ fn list_open_prs(branch_flag: &str, branch: &str) -> Result<Vec<u64>> {
         .output()?;
 
     if !output.status.success() {
-        // If no PRs found, gh returns success with empty output
-        // If there's an actual error, return it
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if !stderr.is_empty() {
-            return Err(GgError::Other(format!(
-                "Failed to list PRs for branch {}: {}",
-                branch, stderr
-            )));
-        }
-        return Ok(vec![]);
+        return Err(GgError::Other(format!(
+            "Failed to list PRs for branch {}: {}",
+            branch,
+            stderr.trim()
+        )));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut prs = Vec::new();
+    parse_open_pr_numbers(&output.stdout)
+}
 
-    for line in stdout.lines() {
-        let line = line.trim();
-        if !line.is_empty() {
-            if let Ok(num) = line.parse::<u64>() {
-                prs.push(num);
-            }
-        }
-    }
-
-    Ok(prs)
+fn parse_open_pr_numbers(stdout: &[u8]) -> Result<Vec<u64>> {
+    let stdout = std::str::from_utf8(stdout)
+        .map_err(|error| GgError::Other(format!("Failed to parse PR list output: {error}")))?;
+    stdout
+        .lines()
+        .map(str::trim)
+        .map(|line| {
+            line.parse::<u64>().map_err(|error| {
+                GgError::Other(format!("Failed to parse PR number '{line}': {error}"))
+            })
+        })
+        .collect()
 }
 
 /// A GitHub issue comment (which includes PR comments on the Conversation tab).
@@ -817,6 +815,18 @@ pub fn delete_issue_comment(comment_id: u64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_pr_numbers_reject_malformed_nonempty_output() {
+        let error = parse_open_pr_numbers(b"12\nnot-a-pr-number\n").unwrap_err();
+        assert!(error.to_string().contains("not-a-pr-number"), "{error}");
+    }
+
+    #[test]
+    fn open_pr_numbers_reject_whitespace_only_nonempty_output() {
+        let error = parse_open_pr_numbers(b"  \n").unwrap_err();
+        assert!(error.to_string().contains("PR number"), "{error}");
+    }
 
     #[test]
     fn test_pr_state_equality() {

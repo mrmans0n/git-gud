@@ -115,8 +115,11 @@ retried automatically, even when stderr reports a rejection. This also applies t
 `--until`: the complete local stack protects every retained or recreated entry.
 Before deleting, sync asks GitHub/GitLab whether any open PR/MR still targets
 the branch (for example, a later entry outside the `--until` range, or one whose
-base update failed). If one does, or the check fails, the branch is kept, the
-intent stays pending, and sync prints a warning (also in the JSON `warnings`).
+base update failed). After persisting the deletion checkpoint, it immediately
+repeats that provider check before the exact-OID deletion push; the earlier
+classification is not deletion authority. If either check finds a dependent
+review, or either check fails, the branch is kept, the intent remains safely
+pending, and sync prints a warning (also in the JSON `warnings`).
 Retarget the review, usually with a full `gg sync`, and sync again. `gg clean`
 applies the same check and keeps the stack when it defers a deletion.
 Remote deletions make the sync operation ineligible for local `gg undo`.

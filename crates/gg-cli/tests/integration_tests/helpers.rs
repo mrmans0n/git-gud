@@ -2,7 +2,125 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+#[cfg(target_os = "macos")]
+use nix::libc;
+#[cfg(target_os = "linux")]
+use nix::sys::wait::{waitid, Id, WaitPidFlag, WaitStatus};
+#[cfg(unix)]
+use nix::{
+    sys::signal::{kill, Signal},
+    unistd::Pid,
+};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::os::unix::process::ExitStatusExt;
+#[cfg(unix)]
+use std::process::ExitStatus;
+#[cfg(unix)]
+use std::time::Duration;
+
 use tempfile::TempDir;
+
+#[cfg(unix)]
+pub(crate) struct ProcessGroupGuard {
+    child: Option<std::process::Child>,
+    process_group: i32,
+}
+
+#[cfg(unix)]
+impl ProcessGroupGuard {
+    pub(crate) fn spawn(command: &mut Command) -> std::io::Result<Self> {
+        command.process_group(0);
+        let child = command.spawn()?;
+        let process_group = i32::try_from(child.id()).expect("process group fits pid_t");
+        Ok(Self {
+            child: Some(child),
+            process_group,
+        })
+    }
+
+    pub(crate) fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        let child = self
+            .child
+            .as_ref()
+            .expect("guarded child was already reaped");
+        poll_exit_without_reaping(i32::try_from(child.id()).expect("child pid fits pid_t"))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn poll_exit_without_reaping(pid: i32) -> std::io::Result<Option<ExitStatus>> {
+    let flags = WaitPidFlag::WEXITED | WaitPidFlag::WNOHANG | WaitPidFlag::WNOWAIT;
+    let status = waitid(Id::Pid(Pid::from_raw(pid)), flags)
+        .map_err(|error| std::io::Error::from_raw_os_error(error as i32))?;
+    Ok(match status {
+        WaitStatus::StillAlive => None,
+        WaitStatus::Exited(_, code) => Some(ExitStatus::from_raw(code << 8)),
+        WaitStatus::Signaled(_, signal, core_dumped) => Some(ExitStatus::from_raw(
+            signal as i32 | i32::from(core_dumped) << 7,
+        )),
+        _ => None,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn poll_exit_without_reaping(pid: i32) -> std::io::Result<Option<ExitStatus>> {
+    let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+    // SAFETY: `info` points to writable, zeroed storage for `siginfo_t`; waitid
+    // initializes it for the requested owned child. WNOWAIT preserves the
+    // zombie, so this guard continues to own the leader PID/PGID until Drop.
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            info.as_mut_ptr(),
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if result == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: waitid returned success, so the zeroed value is initialized even
+    // when WNOHANG reports no state change (identified by si_pid == 0).
+    let info = unsafe { info.assume_init() };
+    if info.si_pid == 0 {
+        return Ok(None);
+    }
+    let raw = match info.si_code {
+        libc::CLD_EXITED => info.si_status << 8,
+        libc::CLD_KILLED => info.si_status,
+        libc::CLD_DUMPED => info.si_status | 0x80,
+        code => {
+            return Err(std::io::Error::other(format!(
+                "waitid returned unexpected child status code {code}"
+            )))
+        }
+    };
+    Ok(Some(ExitStatus::from_raw(raw)))
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn poll_exit_without_reaping(_pid: i32) -> std::io::Result<Option<ExitStatus>> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "non-reaping process polling is supported on Linux and macOS",
+    ))
+}
+
+#[cfg(unix)]
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let group = Pid::from_raw(-self.process_group);
+        let _ = kill(group, Signal::SIGTERM);
+        std::thread::sleep(Duration::from_millis(200));
+        let _ = kill(group, Signal::SIGKILL);
+        let _ = child.wait();
+    }
+}
 
 fn isolated_home(repo_path: &std::path::Path) -> PathBuf {
     let home = repo_path.join(".test-home");

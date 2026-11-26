@@ -2,12 +2,17 @@ use super::{
     checked_git, operation_record, operation_record_ids, run_gg_bounded_with_env,
     write_remote_prune_config,
 };
-use crate::helpers::create_test_repo_with_remote;
+use crate::helpers::{create_test_repo_with_remote, ProcessGroupGuard};
 use serde_json::{json, Value};
 use std::ffi::OsString;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::UnixStream;
+
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 const IDS: [&str; 3] = ["c-1111111", "c-2222222", "c-3333333"];
@@ -29,6 +34,11 @@ case "$1 ${2:-}" in
   'pr edit')
     printf '%s\n' "$*" >> "$dir/mutations"
     if [ "$4" = --base ]; then
+      case "${EVIDENCE:-}" in
+        block-retarget|ambiguous-retarget)
+          attempts=$(cat "$dir/retarget-attempts" 2>/dev/null || echo 0)
+          echo $((attempts + 1)) > "$dir/retarget-attempts";;
+      esac
       pending=
       for record in "$TEST_GIT_DIR"/gg/operations/*.json; do
         grep -q '"status": "pending"' "$record" || continue
@@ -37,8 +47,42 @@ case "$1 ${2:-}" in
       done
       [ -n "$pending" ] || { echo 'missing pending operation' >&2; exit 1; }
       printf '%s\n' "$pending" > "$dir/retarget-operation-id"
+      if [ "${EVIDENCE:-}" = block-retarget ]; then
+        touch "$dir/retarget-started"
+        while [ ! -f "$dir/release-retarget" ]; do sleep 0.01; done
+      fi
       echo "edit $3 $5" >> "$dir/events"
       [ "${EVIDENCE:-}" = stale-target ] || echo "$5" > "$dir/base$3"
+      if [ "${EVIDENCE:-}" = ambiguous-retarget ]; then
+        echo 'simulated lost retarget response' >&2
+        exit 1
+      fi
+    elif [ "$4" = --title ] && [ "${EVIDENCE:-}" = block-title ]; then
+      attempts=$(cat "$dir/title-attempts" 2>/dev/null || echo 0)
+      echo $((attempts + 1)) > "$dir/title-attempts"
+      pending=
+      for record in "$TEST_GIT_DIR"/gg/operations/*.json; do
+        grep -q '"status": "pending"' "$record" || continue
+        [ -z "$pending" ] || { echo 'multiple pending operations' >&2; exit 1; }
+        pending=$(basename "$record" .json)
+      done
+      [ -n "$pending" ] || { echo 'missing pending operation' >&2; exit 1; }
+      printf '%s\n' "$pending" > "$dir/title-operation-id"
+      touch "$dir/title-started"
+      while [ ! -f "$dir/release-title" ]; do sleep 0.01; done
+    elif [ "$4" = --body ] && [ "${EVIDENCE:-}" = block-description ]; then
+      attempts=$(cat "$dir/description-attempts" 2>/dev/null || echo 0)
+      echo $((attempts + 1)) > "$dir/description-attempts"
+      pending=
+      for record in "$TEST_GIT_DIR"/gg/operations/*.json; do
+        grep -q '"status": "pending"' "$record" || continue
+        [ -z "$pending" ] || { echo 'multiple pending operations' >&2; exit 1; }
+        pending=$(basename "$record" .json)
+      done
+      [ -n "$pending" ] || { echo 'missing pending operation' >&2; exit 1; }
+      printf '%s\n' "$pending" > "$dir/description-operation-id"
+      touch "$dir/description-started"
+      while [ ! -f "$dir/release-description" ]; do sleep 0.01; done
     fi;;
   'pr view')
     n=$3
@@ -50,7 +94,8 @@ case "$1 ${2:-}" in
       printf '%s\n' '<!-- gg:managed:start -->' 'old body' '<!-- gg:managed:end -->'
       exit 0
     fi
-    head=$(cat "$dir/head$n"); base=$(cat "$dir/base$n")
+    head=$(cat "$dir/head$n"); base=$(cat "$dir/base$n"); title="Entry $n"
+    if [ "$n" = 2 ] && [ "${EVIDENCE:-}" = block-title ]; then title='Old title'; fi
     if [ "$n" = 2 ] && [ "${EVIDENCE:-}" = fail-main-lookup ] && [ "$base" = main ]; then
       echo 'simulated authoritative lookup failure' >&2
       exit 1
@@ -86,7 +131,7 @@ case "$1 ${2:-}" in
     esac
     echo "view $n $base $mergeable" >> "$dir/events"
     case "$mergeable" in MERGEABLE) detail=CLEAN;; CONFLICTING) detail=DIRTY;; *) detail=UNKNOWN;; esac
-    printf '{"number":%s,"title":"Entry %s","state":"%s","url":"https://github.com/test/repo/pull/%s","headRefName":"%s","headRefOid":"%s","baseRefName":"%s","mergeCommit":%s,"isDraft":false,"mergeable":"%s","mergeStateStatus":"%s","reviews":[],"statusCheckRollup":[]}\n' "$n" "$n" "$state" "$n" "$head" "$oid" "$base" "$merged" "$mergeable" "$detail";;
+    printf '{"number":%s,"title":"%s","state":"%s","url":"https://github.com/test/repo/pull/%s","headRefName":"%s","headRefOid":"%s","baseRefName":"%s","mergeCommit":%s,"isDraft":false,"mergeable":"%s","mergeStateStatus":"%s","reviews":[],"statusCheckRollup":[]}\n' "$n" "$title" "$state" "$n" "$head" "$oid" "$base" "$merged" "$mergeable" "$detail";;
   *) echo "unexpected gh $*" >&2; exit 1;;
 esac
 "#;
@@ -825,6 +870,490 @@ fn sync_rebase_conflict_surfaces_marker_failure_with_conflict_context() {
 
     fs::remove_dir(marker_tmp).unwrap();
     checked_git(&stack.repo, &["rebase", "--abort"]);
+}
+
+#[test]
+fn jsonl_disconnect_after_retarget_finalizes_exact_segment_before_second_lint() {
+    let stack = Stack::landed(false, false);
+    let lint = stack.repo.join("checkpoint-lint.sh");
+    executable(
+        &lint,
+        "#!/bin/sh\nset -eu\nprintf 'lint\\n' >> \"$(git rev-parse --absolute-git-dir)/checkpoint-lint-runs\"\n",
+    );
+    let config_path = stack.repo.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["defaults"]["lint"] = json!(["./checkpoint-lint.sh"]);
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+
+    let (read_stream, write_stream) = UnixStream::pair().unwrap();
+    read_stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let stdout_fd: std::os::fd::OwnedFd = write_stream.into();
+    let stderr_path = stack.repo.join(".git/retarget-disconnect-stderr");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_gg"));
+    command
+        .args([
+            "sync",
+            "--rebase-if-needed",
+            "--lint",
+            "--until",
+            "2",
+            "--jsonl",
+        ])
+        .current_dir(&stack.repo)
+        .env("HOME", stack.repo.join(".git/test-home"))
+        .env("PATH", &stack.path)
+        .env("TEST_ORIGIN", &stack.remote)
+        .env("TEST_GIT_DIR", stack.repo.join(".git"))
+        .env("ON_MAIN", "MERGEABLE")
+        .env("EVIDENCE", "block-retarget")
+        .stdout(Stdio::from(stdout_fd))
+        .stderr(Stdio::from(fs::File::create(&stderr_path).unwrap()));
+    let mut child = ProcessGroupGuard::spawn(&mut command).expect("start sync");
+    let mut reader = BufReader::new(read_stream);
+    let mut first = String::new();
+    reader.read_line(&mut first).expect("read start event");
+    let first: Value = serde_json::from_str(&first).expect("valid start event");
+    assert_eq!(first["event"], "start");
+
+    let readiness_deadline = Instant::now() + Duration::from_secs(10);
+    while !stack.bin.join("retarget-started").exists() {
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!(
+                "sync exited before blocked retarget ({status}): {}",
+                fs::read_to_string(&stderr_path).unwrap_or_default()
+            );
+        }
+        if Instant::now() >= readiness_deadline {
+            let _ = fs::write(stack.bin.join("release-retarget"), "release");
+            panic!(
+                "sync did not reach blocked retarget: {}",
+                fs::read_to_string(&stderr_path).unwrap_or_default()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let operation_id = stack.retarget_operation_id();
+    let pending = operation_record(&stack.repo, &operation_id);
+    assert_eq!(pending["status"], "pending", "{pending}");
+    assert_eq!(pending["touched_remote"], true, "{pending}");
+    reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
+    loop {
+        let mut buffered = String::new();
+        match reader.read_line(&mut buffered) {
+            Ok(0) => panic!("sync closed while retarget was blocked"),
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                break;
+            }
+            Err(error) => panic!("drain pre-retarget JSONL: {error}"),
+        }
+    }
+
+    fs::write(stack.bin.join("release-retarget"), "release").unwrap();
+    reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let mut checkpoint_line = String::new();
+    reader
+        .read_line(&mut checkpoint_line)
+        .expect("read retarget checkpoint event");
+    let checkpoint_event: Value =
+        serde_json::from_str(&checkpoint_line).expect("valid retarget checkpoint event");
+    drop(reader);
+    let process_deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("poll sync") {
+            break status;
+        }
+        if Instant::now() >= process_deadline {
+            panic!(
+                "sync did not stop after disconnect: {}",
+                fs::read_to_string(&stderr_path).unwrap_or_default()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    assert!(!status.success(), "closed JSONL consumer must abort sync");
+    assert_eq!(
+        fs::read_to_string(stack.bin.join("retarget-attempts"))
+            .unwrap()
+            .trim(),
+        "1"
+    );
+    let record = operation_record(&stack.repo, &operation_id);
+    assert_eq!(record["status"], "committed", "{record}");
+    assert_eq!(record["touched_remote"], true, "{record}");
+    assert_eq!(
+        checkpoint_event["event"], "pr_updated",
+        "{checkpoint_event}"
+    );
+    assert_eq!(
+        checkpoint_event["action"], "retargeted",
+        "{checkpoint_event}"
+    );
+    assert_eq!(
+        fs::read_to_string(stack.repo.join(".git/checkpoint-lint-runs"))
+            .unwrap()
+            .lines()
+            .count(),
+        1,
+        "disconnect after retarget must prevent the second lint phase"
+    );
+    assert!(!stack.repo.join(".git/pushes").exists(), "unexpected push");
+}
+
+#[test]
+fn jsonl_disconnect_after_title_update_stops_before_description_update() {
+    let stack = Stack::landed(false, false);
+    let (read_stream, write_stream) = UnixStream::pair().unwrap();
+    read_stream
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
+    let stdout_fd: std::os::fd::OwnedFd = write_stream.into();
+    let stderr_path = stack.repo.join(".git/title-disconnect-stderr");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_gg"));
+    command
+        .args([
+            "sync",
+            "--rebase-if-needed",
+            "--until",
+            "2",
+            "--update-title",
+            "--update-descriptions",
+            "--jsonl",
+        ])
+        .current_dir(&stack.repo)
+        .env("HOME", stack.repo.join(".git/test-home"))
+        .env("PATH", &stack.path)
+        .env("TEST_ORIGIN", &stack.remote)
+        .env("TEST_GIT_DIR", stack.repo.join(".git"))
+        .env("ON_MAIN", "MERGEABLE")
+        .env("EVIDENCE", "block-title")
+        .stdout(Stdio::from(stdout_fd))
+        .stderr(Stdio::from(fs::File::create(&stderr_path).unwrap()));
+    let mut child = ProcessGroupGuard::spawn(&mut command).expect("start sync");
+    let mut reader = BufReader::new(read_stream);
+    let readiness_deadline = Instant::now() + Duration::from_secs(10);
+    while !stack.bin.join("title-started").exists() {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => panic!("sync closed before title update"),
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => panic!("read JSONL before title update: {error}"),
+        }
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!(
+                "sync exited before title update ({status}): {}",
+                fs::read_to_string(&stderr_path).unwrap_or_default()
+            );
+        }
+        if Instant::now() >= readiness_deadline {
+            let _ = fs::write(stack.bin.join("release-title"), "release");
+            panic!("timed out waiting for title update");
+        }
+    }
+    let operation_id = fs::read_to_string(stack.bin.join("title-operation-id"))
+        .expect("title request must capture its operation id")
+        .trim()
+        .to_string();
+    let pending = operation_record(&stack.repo, &operation_id);
+    assert_eq!(pending["status"], "pending", "{pending}");
+    assert_eq!(pending["touched_remote"], true, "{pending}");
+
+    drop(reader);
+    fs::write(stack.bin.join("release-title"), "release").unwrap();
+    let process_deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= process_deadline {
+            panic!("sync did not stop after title disconnect");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    assert!(!status.success(), "closed JSONL consumer must abort sync");
+    assert_eq!(
+        fs::read_to_string(stack.bin.join("title-attempts"))
+            .unwrap()
+            .trim(),
+        "1"
+    );
+    let mutations = fs::read_to_string(stack.bin.join("mutations")).unwrap();
+    assert!(
+        !mutations.contains("--body"),
+        "description update followed disconnected title checkpoint: {mutations}"
+    );
+    let record = operation_record(&stack.repo, &operation_id);
+    assert_eq!(record["status"], "committed", "{record}");
+    assert_eq!(record["touched_remote"], true, "{record}");
+}
+
+#[test]
+fn jsonl_disconnect_after_description_update_stops_before_next_review_mutation() {
+    let stack = Stack::landed(false, false);
+    let (read_stream, write_stream) = UnixStream::pair().unwrap();
+    read_stream
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
+    let stdout_fd: std::os::fd::OwnedFd = write_stream.into();
+    let stderr_path = stack.repo.join(".git/description-disconnect-stderr");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_gg"));
+    command
+        .args([
+            "sync",
+            "--rebase-if-needed",
+            "--update-descriptions",
+            "--jsonl",
+        ])
+        .current_dir(&stack.repo)
+        .env("HOME", stack.repo.join(".git/test-home"))
+        .env("PATH", &stack.path)
+        .env("TEST_ORIGIN", &stack.remote)
+        .env("TEST_GIT_DIR", stack.repo.join(".git"))
+        .env("ON_MAIN", "MERGEABLE")
+        .env("EVIDENCE", "block-description")
+        .stdout(Stdio::from(stdout_fd))
+        .stderr(Stdio::from(fs::File::create(&stderr_path).unwrap()));
+    let mut child = ProcessGroupGuard::spawn(&mut command).expect("start sync");
+    let mut reader = BufReader::new(read_stream);
+    let readiness_deadline = Instant::now() + Duration::from_secs(10);
+    while !stack.bin.join("description-started").exists() {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => panic!("sync closed before description update"),
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => panic!("read JSONL before description update: {error}"),
+        }
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!(
+                "sync exited before description update ({status}): {}",
+                fs::read_to_string(&stderr_path).unwrap_or_default()
+            );
+        }
+        if Instant::now() >= readiness_deadline {
+            let _ = fs::write(stack.bin.join("release-description"), "release");
+            panic!("timed out waiting for description update");
+        }
+    }
+    let operation_id = fs::read_to_string(stack.bin.join("description-operation-id"))
+        .expect("description request must capture its operation id")
+        .trim()
+        .to_string();
+    let pending = operation_record(&stack.repo, &operation_id);
+    assert_eq!(pending["status"], "pending", "{pending}");
+    assert_eq!(pending["touched_remote"], true, "{pending}");
+
+    drop(reader);
+    fs::write(stack.bin.join("release-description"), "release").unwrap();
+    let process_deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= process_deadline {
+            panic!("sync did not stop after description disconnect");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    assert!(!status.success(), "closed JSONL consumer must abort sync");
+    assert_eq!(
+        fs::read_to_string(stack.bin.join("description-attempts"))
+            .unwrap()
+            .trim(),
+        "1"
+    );
+    let mutations = fs::read_to_string(stack.bin.join("mutations")).unwrap();
+    assert!(
+        !mutations.lines().any(|line| line.starts_with("pr edit 3 ")),
+        "a later review mutation followed disconnected description checkpoint: {mutations}"
+    );
+    let record = operation_record(&stack.repo, &operation_id);
+    assert_eq!(record["status"], "committed", "{record}");
+    assert_eq!(record["touched_remote"], true, "{record}");
+}
+
+#[test]
+fn jsonl_disconnect_during_second_lint_finalizes_retarget_and_rebase_segments() {
+    let stack = Stack::landed(false, false);
+    executable(
+        &stack.repo.join("two-phase-checkpoint-lint.sh"),
+        r#"#!/bin/sh
+set -eu
+dir=$(git rev-parse --absolute-git-dir)
+count=$(cat "$dir/lint-count" 2>/dev/null || echo 0)
+count=$((count + 1))
+echo "$count" > "$dir/lint-count"
+pending=''
+for record in "$dir/gg/operations/"*.json; do
+  grep -q '"status": "pending"' "$record" || continue
+  [ -z "$pending" ] || { echo 'multiple pending operations' >&2; exit 1; }
+  pending=$(basename "$record" .json)
+done
+[ -n "$pending" ] || { echo 'missing pending operation' >&2; exit 1; }
+if [ "$count" = 2 ]; then
+  printf '%s\n' "$pending" > "$dir/second-lint-operation-id"
+  touch "$dir/fake-bin/second-lint-started"
+  while [ ! -f "$dir/fake-bin/release-second-lint" ]; do sleep 0.01; done
+fi
+"#,
+    );
+    let config_path = stack.repo.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["defaults"]["lint"] = json!(["./two-phase-checkpoint-lint.sh"]);
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+
+    let (read_stream, write_stream) = UnixStream::pair().unwrap();
+    read_stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let stdout_fd: std::os::fd::OwnedFd = write_stream.into();
+    let stderr_path = stack.repo.join(".git/second-lint-disconnect-stderr");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_gg"));
+    command
+        .args([
+            "sync",
+            "--rebase-if-needed",
+            "--lint",
+            "--until",
+            "2",
+            "--jsonl",
+        ])
+        .current_dir(&stack.repo)
+        .env("HOME", stack.repo.join(".git/test-home"))
+        .env("PATH", &stack.path)
+        .env("TEST_ORIGIN", &stack.remote)
+        .env("TEST_GIT_DIR", stack.repo.join(".git"))
+        .env("ON_MAIN", "CONFLICTING")
+        .env("EVIDENCE", "block-retarget")
+        .stdout(Stdio::from(stdout_fd))
+        .stderr(Stdio::from(fs::File::create(&stderr_path).unwrap()));
+    let mut child = ProcessGroupGuard::spawn(&mut command).expect("start sync");
+    let mut reader = BufReader::new(read_stream);
+    let mut first = String::new();
+    reader.read_line(&mut first).expect("read start event");
+    assert_eq!(
+        serde_json::from_str::<Value>(&first).unwrap()["event"],
+        "start"
+    );
+
+    let retarget_deadline = Instant::now() + Duration::from_secs(10);
+    while !stack.bin.join("retarget-started").exists() {
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!(
+                "sync exited before retarget ({status}): {}",
+                fs::read_to_string(&stderr_path).unwrap_or_default()
+            );
+        }
+        if Instant::now() >= retarget_deadline {
+            let _ = fs::write(stack.bin.join("release-retarget"), "release");
+            panic!("sync did not reach retarget");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let retarget_id = stack.retarget_operation_id();
+    fs::write(stack.bin.join("release-retarget"), "release").unwrap();
+
+    let second_lint_deadline = Instant::now() + Duration::from_secs(10);
+    while !stack.bin.join("second-lint-started").exists() {
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!(
+                "sync exited before second lint ({status}): {}",
+                fs::read_to_string(&stderr_path).unwrap_or_default()
+            );
+        }
+        if Instant::now() >= second_lint_deadline {
+            let _ = fs::write(stack.bin.join("release-second-lint"), "release");
+            panic!("sync did not reach second lint");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let second_lint_id = fs::read_to_string(stack.repo.join(".git/second-lint-operation-id"))
+        .unwrap()
+        .trim()
+        .to_string();
+    assert_ne!(second_lint_id, retarget_id);
+
+    drop(reader);
+    fs::write(stack.bin.join("release-second-lint"), "release").unwrap();
+    let process_deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= process_deadline {
+            panic!("sync did not stop after second-lint disconnect");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    assert!(!status.success(), "closed JSONL consumer must abort sync");
+    assert_eq!(
+        fs::read_to_string(stack.bin.join("retarget-attempts"))
+            .unwrap()
+            .trim(),
+        "1"
+    );
+    assert!(!stack.repo.join(".git/pushes").exists(), "unexpected push");
+    for (id, touched_remote) in [(&retarget_id, true), (&second_lint_id, false)] {
+        let record = operation_record(&stack.repo, id);
+        assert_eq!(record["status"], "committed", "{record}");
+        assert_eq!(record["touched_remote"], touched_remote, "{record}");
+    }
+}
+
+#[test]
+fn ambiguous_retarget_response_finalizes_remote_uncertainty_without_retry() {
+    let stack = Stack::landed(false, false);
+
+    let (ok, out, err) = stack.gg(
+        &["sync", "--rebase-if-needed", "--until", "2", "--json"],
+        "MERGEABLE",
+        "ambiguous-retarget",
+    );
+
+    assert!(
+        !ok,
+        "ambiguous retarget unexpectedly succeeded: {out}\n{err}"
+    );
+    assert!(
+        format!("{out}{err}").contains("simulated lost retarget response"),
+        "{out}\n{err}"
+    );
+    assert_eq!(
+        fs::read_to_string(stack.bin.join("retarget-attempts"))
+            .unwrap()
+            .trim(),
+        "1"
+    );
+    let operation_id = stack.retarget_operation_id();
+    let record = operation_record(&stack.repo, &operation_id);
+    assert_eq!(record["status"], "committed", "{record}");
+    assert_eq!(record["touched_remote"], true, "{record}");
 }
 
 #[test]

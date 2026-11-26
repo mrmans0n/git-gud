@@ -74,17 +74,6 @@ impl SyncSegment {
         Ok(())
     }
 
-    fn mark_remote(&mut self) {
-        self.guard_mut().mark_touched_remote();
-        self.touched_remote = true;
-    }
-
-    fn record_remote_effect(&mut self, effect: RemoteEffect) {
-        self.guard_mut().record_remote_effect(effect.clone());
-        self.remote_effects.push(effect);
-        self.touched_remote = true;
-    }
-
     fn record_remote_effect_durable(&mut self, effect: RemoteEffect) -> Result<()> {
         self.guard_mut()
             .record_remote_effect_durable(effect.clone())?;
@@ -121,6 +110,25 @@ impl SyncSegment {
         }
     }
 
+    fn finish_error(&mut self, repo: &Repository, config: &Config, error: GgError) -> GgError {
+        self.finish_result::<()>(repo, config, Err(error))
+            .expect_err("finishing an error result cannot succeed")
+    }
+
+    fn finish_emit(
+        &mut self,
+        repo: &Repository,
+        config: &Config,
+        result: std::io::Result<()>,
+        message: &str,
+    ) -> Result<()> {
+        self.finish_on_error(
+            repo,
+            config,
+            result.map_err(|_| GgError::Other(message.to_string())),
+        )
+    }
+
     fn finish_on_error<T, E>(
         &mut self,
         repo: &Repository,
@@ -152,6 +160,17 @@ impl SyncSegment {
                 }
             }
         }
+    }
+}
+
+fn preserve_error_on_emit(
+    emit_result: std::io::Result<()>,
+    error: GgError,
+    output_error: &str,
+) -> GgError {
+    match emit_result {
+        Ok(()) => error,
+        Err(_) => GgError::Other(format!("{error}; additionally {output_error}")),
     }
 }
 
@@ -476,6 +495,12 @@ fn expected_current_target_branches(
     targets
 }
 
+pub(crate) enum RemoteDeletionCheckpoint {
+    BeforeAttempt,
+    Effect(RemoteEffect),
+    Complete,
+}
+
 /// Delete remote entry branches authorized by earlier Drops.
 ///
 /// Returns one message per branch whose deletion was deferred because an open
@@ -488,7 +513,7 @@ pub(crate) fn reconcile_pending_remote_entry_deletions(
     stack_name: &str,
     current_branches: &HashSet<String>,
     config: &mut Config,
-    mut record_remote_effect: impl FnMut(Option<RemoteEffect>) -> Result<()>,
+    mut checkpoint: impl FnMut(RemoteDeletionCheckpoint, &Config) -> Result<()>,
 ) -> Result<Vec<String>> {
     let before = config.pending_remote_branch_deletions.len();
     config
@@ -584,18 +609,31 @@ pub(crate) fn reconcile_pending_remote_entry_deletions(
         // Any unsuccessful push is ambiguous: the server may have applied the
         // deletion before the response was lost. Persist remote uncertainty
         // before attempting it, and leave the intent in `deleting` on error.
-        record_remote_effect(None)?;
+        checkpoint(RemoteDeletionCheckpoint::BeforeAttempt, config)?;
         git::delete_remote_branch_at_oid(repo, &intent.remote, &intent.branch, expected_oid)?;
 
-        record_remote_effect(Some(RemoteEffect::BranchDeleted {
-            remote: intent.remote.clone(),
-            branch: intent.branch.clone(),
-            prior_oid: Some(intent.expected_oid.clone()),
-        }))?;
+        checkpoint(
+            RemoteDeletionCheckpoint::Effect(RemoteEffect::BranchDeleted {
+                remote: intent.remote.clone(),
+                branch: intent.branch.clone(),
+                prior_oid: Some(intent.expected_oid.clone()),
+            }),
+            config,
+        )?;
         config.pending_remote_branch_deletions.retain(|candidate| {
             candidate.remote != intent.remote || candidate.branch != intent.branch
         });
-        config.save(repo.commondir())?;
+        let save_result = config.save(repo.commondir());
+        let completion_result = checkpoint(RemoteDeletionCheckpoint::Complete, config);
+        match (save_result, completion_result) {
+            (Ok(()), Ok(())) => {}
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => return Err(error),
+            (Err(error), Err(finalize_error)) => {
+                return Err(GgError::Other(format!(
+                    "{error}; additionally failed to finalize sync operation: {finalize_error}"
+                )))
+            }
+        }
     }
 
     Ok(deferred)
@@ -629,6 +667,9 @@ fn prune_stale_remote_entry_branches_for_operation(
     segment: &mut SyncSegment,
     warnings: &mut Vec<String>,
 ) -> Result<()> {
+    if has_pending_remote_entry_deletion(config, stack) {
+        segment.ensure_started(repo, config)?;
+    }
     let current_branches = stack
         .entries
         .iter()
@@ -641,11 +682,14 @@ fn prune_stale_remote_entry_branches_for_operation(
         &stack.name,
         &current_branches,
         config,
-        |effect| {
-            if let Some(effect) = effect {
-                segment.record_remote_effect_durable(effect)
-            } else {
-                segment.mark_remote_before_attempt()
+        |checkpoint, current_config| {
+            segment.ensure_started(repo, current_config)?;
+            match checkpoint {
+                RemoteDeletionCheckpoint::BeforeAttempt => segment.mark_remote_before_attempt(),
+                RemoteDeletionCheckpoint::Effect(effect) => {
+                    segment.record_remote_effect_durable(effect)
+                }
+                RemoteDeletionCheckpoint::Complete => segment.finish(repo, current_config),
             }
         },
     )?;
@@ -758,19 +802,23 @@ pub fn run(
         }
         if jsonl {
             let mut streamer = StreamingJson::new();
-            streamer.emit(&SyncStreamingResponse {
-                version: OUTPUT_VERSION,
-                command: "sync".to_string(),
-                event: SyncStreamingEvent::Summary {
-                    stack: initial_stack.name,
-                    base: initial_stack.base,
-                    rebased_before_sync: false,
-                    warnings,
-                    github_stack: None,
-                    metadata: SyncMetadataJson::default(),
-                    entries: vec![],
-                },
-            });
+            streamer
+                .try_emit(&SyncStreamingResponse {
+                    version: OUTPUT_VERSION,
+                    command: "sync".to_string(),
+                    event: SyncStreamingEvent::Summary {
+                        stack: initial_stack.name,
+                        base: initial_stack.base,
+                        rebased_before_sync: false,
+                        warnings,
+                        github_stack: None,
+                        metadata: SyncMetadataJson::default(),
+                        entries: vec![],
+                    },
+                })
+                .map_err(|_| {
+                    GgError::Other("Output stream closed before sync summary.".to_string())
+                })?;
         }
         return Ok(());
     }
@@ -864,7 +912,10 @@ pub fn run(
     let mut streamer = streamer;
 
     let mut start_emitted = false;
-    let mut lint_before_sync = |current_stack: &Stack, end_pos: usize| -> Result<()> {
+    let mut lint_before_sync = |current_stack: &Stack,
+                                end_pos: usize,
+                                streamer: &mut Option<StreamingJson>|
+     -> Result<()> {
         if !run_lint || end_pos == 0 {
             return Ok(());
         }
@@ -876,7 +927,7 @@ pub fn run(
         // Emit Start before lint so streaming clients know the stack and
         // entry count up front instead of waiting for lint to finish.
         if let Some(s) = streamer.as_mut().filter(|_| !start_emitted) {
-            s.emit(&SyncStreamingResponse {
+            s.try_emit(&SyncStreamingResponse {
                 version: OUTPUT_VERSION,
                 command: "sync".to_string(),
                 event: SyncStreamingEvent::Start {
@@ -884,7 +935,8 @@ pub fn run(
                     base: current_stack.base.clone(),
                     total_entries: end_pos,
                 },
-            });
+            })
+            .map_err(|_| GgError::Other("Output stream closed before lint.".to_string()))?;
             start_emitted = true;
         }
         // If the client closes the stream mid-lint, stop emitting but let lint
@@ -951,7 +1003,7 @@ pub fn run(
             after_land::check_preserved_metadata(&repo, &stack),
         )?;
     }
-    if let Err(error) = lint_before_sync(&stack, end_pos) {
+    if let Err(error) = lint_before_sync(&stack, end_pos, &mut streamer) {
         return segment.finish_on_error(&repo, &config, Err(error));
     }
     if run_lint {
@@ -976,6 +1028,7 @@ pub fn run(
                 prefix.previous_target.as_deref(),
                 &provider,
                 || {
+                    segment.ensure_started(&repo, &config)?;
                     segment.mark_remote_before_attempt()?;
                     retarget_started = true;
                     retargeted_pr = first.mr_number;
@@ -986,6 +1039,23 @@ pub fn run(
                 Ok(needs_rebase) => {
                     if retarget_started {
                         segment.finish(&repo, &config)?;
+                        if let (Some(s), Some(pr_number)) = (streamer.as_mut(), retargeted_pr) {
+                            s.try_emit(&SyncStreamingResponse {
+                                version: OUTPUT_VERSION,
+                                command: "sync".to_string(),
+                                event: SyncStreamingEvent::PrUpdated {
+                                    position: first.position,
+                                    pr_number,
+                                    action: "retargeted".to_string(),
+                                },
+                            })
+                            .map_err(|_| {
+                                GgError::Other(
+                                    "Output stream closed after review retarget; sync aborted."
+                                        .to_string(),
+                                )
+                            })?;
+                        }
                     }
                     needs_rebase
                 }
@@ -1008,7 +1078,7 @@ pub fn run(
                         Ok((stack, end_pos))
                     }),
                 )?;
-                if let Err(error) = lint_before_sync(&stack, end_pos) {
+                if let Err(error) = lint_before_sync(&stack, end_pos, &mut streamer) {
                     return segment.finish_on_error(&repo, &config, Err(error));
                 }
                 if run_lint {
@@ -1061,7 +1131,7 @@ pub fn run(
             println!("{}", style("Stack is empty. Nothing to sync.").dim());
         }
         if let Some(s) = streamer.as_mut() {
-            s.emit(&SyncStreamingResponse {
+            s.try_emit(&SyncStreamingResponse {
                 version: OUTPUT_VERSION,
                 command: "sync".to_string(),
                 event: SyncStreamingEvent::Summary {
@@ -1073,7 +1143,8 @@ pub fn run(
                     metadata: SyncMetadataJson::default(),
                     entries: vec![],
                 },
-            });
+            })
+            .map_err(|_| GgError::Other("Output stream closed before sync summary.".to_string()))?;
         }
         return Ok(());
     }
@@ -1164,7 +1235,6 @@ pub fn run(
     let mut force_draft = draft;
     let mut json_entries: Vec<SyncEntryResultJson> = Vec::new();
     let mut nav_snapshots: Vec<Option<NavEntrySnapshot>> = Vec::new();
-    let mut branch_push_failed = false;
     // Track which entries are closed/merged so downstream entries can skip them
     // when computing their target branch (walk-back algorithm for stacked MRs).
     let mut entry_is_closed: Vec<bool> = Vec::with_capacity(entries_to_sync.len());
@@ -1172,15 +1242,20 @@ pub fn run(
 
     if !start_emitted {
         if let Some(s) = streamer.as_mut() {
-            s.emit(&SyncStreamingResponse {
-                version: OUTPUT_VERSION,
-                command: "sync".to_string(),
-                event: SyncStreamingEvent::Start {
-                    stack: stack.name.clone(),
-                    base: stack.base.clone(),
-                    total_entries: entries_to_sync.len(),
-                },
-            });
+            segment.finish_emit(
+                &repo,
+                &config,
+                s.try_emit(&SyncStreamingResponse {
+                    version: OUTPUT_VERSION,
+                    command: "sync".to_string(),
+                    event: SyncStreamingEvent::Start {
+                        stack: stack.name.clone(),
+                        base: stack.base.clone(),
+                        total_entries: entries_to_sync.len(),
+                    },
+                }),
+                "Output stream closed before sync.",
+            )?;
         }
     }
 
@@ -1191,17 +1266,22 @@ pub fn run(
         let raw_title = strip_gg_id_from_message(&entry.title);
 
         if let Some(s) = streamer.as_mut() {
-            s.emit(&SyncStreamingResponse {
-                version: OUTPUT_VERSION,
-                command: "sync".to_string(),
-                event: SyncStreamingEvent::EntryStarted {
-                    position: entry.position,
-                    sha: entry.short_sha.clone(),
-                    title: entry.title.clone(),
-                    gg_id: gg_id.clone(),
-                    branch: entry_branch.clone(),
-                },
-            });
+            segment.finish_emit(
+                &repo,
+                &config,
+                s.try_emit(&SyncStreamingResponse {
+                    version: OUTPUT_VERSION,
+                    command: "sync".to_string(),
+                    event: SyncStreamingEvent::EntryStarted {
+                        position: entry.position,
+                        sha: entry.short_sha.clone(),
+                        title: entry.title.clone(),
+                        gg_id: gg_id.clone(),
+                        branch: entry_branch.clone(),
+                    },
+                }),
+                "Output stream closed before entry sync.",
+            )?;
         }
 
         if !force_draft && is_wip_or_draft_prefix(&raw_title) {
@@ -1212,14 +1292,13 @@ pub fn run(
         let title = clean_title(&raw_title);
 
         let mut action = "up_to_date".to_string();
-        let mut pr_number: Option<u64> = None;
-        let mut pr_url: Option<String> = None;
+        let mut pr_number: Option<u64>;
+        let mut pr_url: Option<String>;
         let mut pushed = false;
         let mut entry_error: Option<String> = None;
         let mut pr_state_cached: Option<crate::stack_nav::PrEntryState> = None;
         let mut effective_draft = entry_draft;
         let mut is_entry_closed = false;
-        let mut pr_state_unresolved = false;
 
         let (title, description) = build_pr_payload(
             &title,
@@ -1259,14 +1338,19 @@ pub fn run(
         // Only push if the remote is different or doesn't exist
         if needs_push && !review_is_terminal {
             if let Some(s) = streamer.as_mut() {
-                s.emit(&SyncStreamingResponse {
-                    version: OUTPUT_VERSION,
-                    command: "sync".to_string(),
-                    event: SyncStreamingEvent::PushStarted {
-                        position: entry.position,
-                        branch: entry_branch.clone(),
-                    },
-                });
+                segment.finish_emit(
+                    &repo,
+                    &config,
+                    s.try_emit(&SyncStreamingResponse {
+                        version: OUTPUT_VERSION,
+                        command: "sync".to_string(),
+                        event: SyncStreamingEvent::PushStarted {
+                            position: entry.position,
+                            branch: entry_branch.clone(),
+                        },
+                    }),
+                    "Output stream closed before push; sync aborted.",
+                )?;
             }
             pushed = true;
             // Push the branch (always force-push with lease because rebases change commit SHAs)
@@ -1297,6 +1381,7 @@ pub fn run(
                                 expected_base,
                             )?;
                         }
+                        segment.ensure_started(&repo, &config)?;
                         segment.mark_remote_before_attempt()
                     })();
                     before_push_attempt_failed |= result.is_err();
@@ -1307,11 +1392,11 @@ pub fn run(
                 if before_push_attempt_failed {
                     return segment.finish_result(&repo, &config, Err(e));
                 }
+                let mut e = segment.finish_error(&repo, &config, e);
                 pb.finish_and_clear();
-                branch_push_failed = true;
-                if json || jsonl {
-                    if let Some(s) = streamer.as_mut() {
-                        s.emit(&SyncStreamingResponse {
+                if let Some(s) = streamer.as_mut() {
+                    e = preserve_error_on_emit(
+                        s.try_emit(&SyncStreamingResponse {
                             version: OUTPUT_VERSION,
                             command: "sync".to_string(),
                             event: SyncStreamingEvent::PushError {
@@ -1319,37 +1404,29 @@ pub fn run(
                                 branch: entry_branch.clone(),
                                 error: e.to_string(),
                             },
-                        });
-                    }
-                    action = "error".to_string();
-                    entry_error = Some(e.to_string());
-
-                    json_entries.push(SyncEntryResultJson {
-                        position: entry.position,
-                        sha: entry.short_sha.clone(),
-                        title: entry.title.clone(),
-                        gg_id: gg_id.clone(),
-                        branch: entry_branch,
-                        action,
-                        pr_number,
-                        pr_url,
-                        draft: entry_draft,
-                        pushed,
-                        error: entry_error,
-                        nav_comment_action: None,
-                    });
-                    nav_snapshots.push(None);
-                    entry_is_closed.push(false);
-                    entry_has_unresolved_pr_state.push(true);
-                    continue;
+                        }),
+                        e,
+                        "Output stream closed after push error; sync aborted.",
+                    );
                 }
-
-                format_push_error(&e, &entry_branch);
-                return segment.finish_result(&repo, &config, Err(e));
+                if !json && !jsonl {
+                    format_push_error(&e, &entry_branch);
+                }
+                return Err(e);
             }
 
+            // Record the push durably before changing in-memory state,
+            // finalizing its exact segment, or reporting success.
+            let effect = RemoteEffect::Pushed {
+                remote: "origin".to_string(),
+                branch: entry_branch.clone(),
+                force,
+            };
+            segment.record_remote_effect_durable(effect)?;
+            segment.finish(&repo, &config)?;
+
             if let Some(s) = streamer.as_mut() {
-                s.emit(&SyncStreamingResponse {
+                s.try_emit(&SyncStreamingResponse {
                     version: OUTPUT_VERSION,
                     command: "sync".to_string(),
                     event: SyncStreamingEvent::PushDone {
@@ -1357,18 +1434,11 @@ pub fn run(
                         branch: entry_branch.clone(),
                         forced: force,
                     },
-                });
+                })
+                .map_err(|_| {
+                    GgError::Other("Output stream closed after push; sync aborted.".to_string())
+                })?;
             }
-
-            // Record the push as a remote effect. `sync` always pushes with
-            // force-with-lease because rebases rewrite entry-branch history;
-            // the `force` field here reflects the hard --force escape hatch.
-            let effect = RemoteEffect::Pushed {
-                remote: "origin".to_string(),
-                branch: entry_branch.clone(),
-                force,
-            };
-            segment.record_remote_effect(effect);
         }
 
         // Create or update PR
@@ -1399,14 +1469,19 @@ pub fn run(
                 if is_closed {
                     action = "skipped_closed".to_string();
                     if let Some(s) = streamer.as_mut() {
-                        s.emit(&SyncStreamingResponse {
-                            version: OUTPUT_VERSION,
-                            command: "sync".to_string(),
-                            event: SyncStreamingEvent::PrSkippedClosed {
-                                position: entry.position,
-                                pr_number: pr_num,
-                            },
-                        });
+                        segment.finish_emit(
+                            &repo,
+                            &config,
+                            s.try_emit(&SyncStreamingResponse {
+                                version: OUTPUT_VERSION,
+                                command: "sync".to_string(),
+                                event: SyncStreamingEvent::PrSkippedClosed {
+                                    position: entry.position,
+                                    pr_number: pr_num,
+                                },
+                            }),
+                            "Output stream closed after skipped review; sync aborted.",
+                        )?;
                     }
                     // Skip updating closed/merged PRs
                     if !json && !jsonl {
@@ -1444,6 +1519,8 @@ pub fn run(
                             old_base_branch,
                         ),
                     )?;
+                    segment.ensure_started(&repo, &config)?;
+                    segment.mark_remote_before_attempt()?;
                     match provider.create_pr(
                         &entry_branch,
                         &target_branch,
@@ -1452,11 +1529,17 @@ pub fn run(
                         replacement_draft,
                     ) {
                         Ok(result) => {
+                            let created_effect = RemoteEffect::PrCreated {
+                                number: result.number,
+                                url: result.url.clone(),
+                            };
+                            segment.record_remote_effect_durable(created_effect)?;
                             config.set_mr_for_entry(&stack.name, gg_id, result.number);
                             let save_result = config.save(repo.commondir());
                             segment.finish_on_error(&repo, &config, save_result)?;
+                            segment.finish(&repo, &config)?;
                             if let Some(s) = streamer.as_mut() {
-                                s.emit(&SyncStreamingResponse {
+                                s.try_emit(&SyncStreamingResponse {
                                     version: OUTPUT_VERSION,
                                     command: "sync".to_string(),
                                     event: SyncStreamingEvent::PrCreated {
@@ -1469,7 +1552,13 @@ pub fn run(
                                         },
                                         draft: replacement_draft,
                                     },
-                                });
+                                })
+                                .map_err(|_| {
+                                    GgError::Other(
+                                        "Output stream closed after replacement review creation; sync aborted."
+                                            .to_string(),
+                                    )
+                                })?;
                             }
                             pr_number = Some(result.number);
                             pr_url = if result.url.is_empty() {
@@ -1483,12 +1572,6 @@ pub fn run(
                                 stack_nav::PrEntryState::Open
                             });
                             action = "recreated".to_string();
-
-                            let created_effect = RemoteEffect::PrCreated {
-                                number: result.number,
-                                url: result.url.clone(),
-                            };
-                            segment.record_remote_effect(created_effect);
 
                             let close_comment = replacement_closing_comment(
                                 &provider,
@@ -1507,7 +1590,37 @@ pub fn run(
                                     old_base_branch,
                                 ),
                             )?;
-                            if let Err(e) = provider.create_pr_comment(pr_num, &close_comment) {
+                            segment.ensure_started(&repo, &config)?;
+                            segment.mark_remote_before_attempt()?;
+                            let comment_result = provider.create_pr_comment(pr_num, &close_comment);
+                            let comment_result =
+                                segment.finish_result(&repo, &config, comment_result);
+                            let comment_error =
+                                comment_result.as_ref().err().map(ToString::to_string);
+                            let emit_result = streamer.as_mut().map(|s| {
+                                s.try_emit(&SyncStreamingResponse {
+                                    version: OUTPUT_VERSION,
+                                    command: "sync".to_string(),
+                                    event: SyncStreamingEvent::PrComment {
+                                        position: entry.position,
+                                        pr_number: pr_num,
+                                        action: if comment_error.is_some() {
+                                            "error".to_string()
+                                        } else {
+                                            "created".to_string()
+                                        },
+                                        error: comment_error.clone(),
+                                    },
+                                })
+                            });
+                            if let Err(mut e) = comment_result {
+                                if let Some(emit_result) = emit_result {
+                                    e = preserve_error_on_emit(
+                                        emit_result,
+                                        e,
+                                        "Output stream closed after replacement comment; sync aborted.",
+                                    );
+                                }
                                 if !json && !jsonl {
                                     pb.println(format!(
                                         "{} Could not comment on old {} {}{}: {}",
@@ -1518,14 +1631,15 @@ pub fn run(
                                         e
                                     ));
                                 }
-                                if entry_error.is_none() {
-                                    entry_error = Some(format!(
-                                        "Recreated, but could not comment on old {}: {e}",
-                                        provider.pr_label()
-                                    ));
-                                }
-                            } else {
-                                segment.mark_remote();
+                                return Err(e);
+                            }
+                            if let Some(emit_result) = emit_result {
+                                emit_result.map_err(|_| {
+                                    GgError::Other(
+                                        "Output stream closed after replacement comment; sync aborted."
+                                            .to_string(),
+                                    )
+                                })?;
                             }
 
                             segment.finish_on_error(
@@ -1538,7 +1652,10 @@ pub fn run(
                                     old_base_branch,
                                 ),
                             )?;
-                            match provider.close_pr(pr_num) {
+                            segment.ensure_started(&repo, &config)?;
+                            segment.mark_remote_before_attempt()?;
+                            let close_result = provider.close_pr(pr_num);
+                            match close_result {
                                 Ok(()) => {
                                     let closed_effect = RemoteEffect::PrClosed {
                                         number: pr_num,
@@ -1547,9 +1664,43 @@ pub fn run(
                                             .map(|info| info.url.clone())
                                             .unwrap_or_default(),
                                     };
-                                    segment.record_remote_effect(closed_effect);
+                                    segment.record_remote_effect_durable(closed_effect)?;
+                                    segment.finish(&repo, &config)?;
+                                    if let Some(s) = streamer.as_mut() {
+                                        s.try_emit(&SyncStreamingResponse {
+                                            version: OUTPUT_VERSION,
+                                            command: "sync".to_string(),
+                                            event: SyncStreamingEvent::PrClosed {
+                                                position: entry.position,
+                                                pr_number: pr_num,
+                                                error: None,
+                                            },
+                                        })
+                                        .map_err(|_| {
+                                            GgError::Other(
+                                                "Output stream closed after old review close; sync aborted."
+                                                    .to_string(),
+                                            )
+                                        })?;
+                                    }
                                 }
                                 Err(e) => {
+                                    let mut e = segment.finish_error(&repo, &config, e);
+                                    if let Some(s) = streamer.as_mut() {
+                                        e = preserve_error_on_emit(
+                                            s.try_emit(&SyncStreamingResponse {
+                                                version: OUTPUT_VERSION,
+                                                command: "sync".to_string(),
+                                                event: SyncStreamingEvent::PrClosed {
+                                                    position: entry.position,
+                                                    pr_number: pr_num,
+                                                    error: Some(e.to_string()),
+                                                },
+                                            }),
+                                            e,
+                                            "Output stream closed after old review close error; sync aborted.",
+                                        );
+                                    }
                                     if !json && !jsonl {
                                         pb.println(format!(
                                             "{} Could not close old {} {}{}: {}",
@@ -1560,12 +1711,7 @@ pub fn run(
                                             e
                                         ));
                                     }
-                                    if entry_error.is_none() {
-                                        entry_error = Some(format!(
-                                            "Recreated, but could not close old {}: {e}",
-                                            provider.pr_label()
-                                        ));
-                                    }
+                                    return Err(e);
                                 }
                             }
 
@@ -1591,14 +1737,27 @@ pub fn run(
                             }
                         }
                         Err(e) => {
+                            let mut e = segment.finish_error(&repo, &config, e);
+                            if let Some(s) = streamer.as_mut() {
+                                e = preserve_error_on_emit(
+                                    s.try_emit(&SyncStreamingResponse {
+                                        version: OUTPUT_VERSION,
+                                        command: "sync".to_string(),
+                                        event: SyncStreamingEvent::PrCreateError {
+                                            position: entry.position,
+                                            branch: entry_branch.clone(),
+                                            error: e.to_string(),
+                                        },
+                                    }),
+                                    e,
+                                    "Output stream closed after replacement review creation error; sync aborted.",
+                                );
+                            }
                             // The old PR still exists, but its head branch no
                             // longer represents this local entry. If creating
                             // the replacement fails, skip native GitHub stack
                             // reconciliation instead of linking the stale PR
                             // into the native stack.
-                            pr_state_unresolved = true;
-                            action = "error".to_string();
-                            entry_error = Some(e.to_string());
                             if !json && !jsonl {
                                 pb.println(format!(
                                     "{} Failed to recreate {} for {} after source branch changed from {}: {}",
@@ -1609,10 +1768,12 @@ pub fn run(
                                     e
                                 ));
                             }
+                            return Err(e);
                         }
                     }
                 } else {
                     let mut review_changed = retargeted_pr == Some(pr_num);
+                    let mut review_event_emitted = review_changed;
                     let current_base = pr_info
                         .as_ref()
                         .and_then(|info| info.base_branch.as_deref())
@@ -1631,9 +1792,11 @@ pub fn run(
                                 current_base,
                             ),
                         )?;
-                        let checkpoint = segment.mark_remote_before_attempt();
-                        segment.finish_on_error(&repo, &config, checkpoint)?;
-                        if let Err(e) = provider.update_pr_title(pr_num, &title) {
+                        segment.ensure_started(&repo, &config)?;
+                        segment.mark_remote_before_attempt()?;
+                        let title_result = provider.update_pr_title(pr_num, &title);
+                        let title_result = segment.finish_result(&repo, &config, title_result);
+                        if let Err(e) = title_result {
                             if !json && !jsonl {
                                 pb.println(format!(
                                     "{} Could not update {} {}{} title: {}",
@@ -1644,12 +1807,27 @@ pub fn run(
                                     e
                                 ));
                             }
-                            if entry_error.is_none() {
-                                entry_error = Some(format!("Could not update title: {e}"));
-                            }
-                        } else {
-                            review_changed = true;
+                            return Err(e);
                         }
+                        review_changed = true;
+                        if let Some(s) = streamer.as_mut() {
+                            s.try_emit(&SyncStreamingResponse {
+                                version: OUTPUT_VERSION,
+                                command: "sync".to_string(),
+                                event: SyncStreamingEvent::PrUpdated {
+                                    position: entry.position,
+                                    pr_number: pr_num,
+                                    action: "title_updated".to_string(),
+                                },
+                            })
+                            .map_err(|_| {
+                                GgError::Other(
+                                    "Output stream closed after review title update; sync aborted."
+                                        .to_string(),
+                                )
+                            })?;
+                        }
+                        review_event_emitted = true;
                     }
 
                     if update_descriptions {
@@ -1698,11 +1876,13 @@ pub fn run(
                                             current_base,
                                         ),
                                     )?;
-                                    let checkpoint = segment.mark_remote_before_attempt();
-                                    segment.finish_on_error(&repo, &config, checkpoint)?;
-                                    if let Err(e) =
-                                        provider.update_pr_description(pr_num, &new_body)
-                                    {
+                                    segment.ensure_started(&repo, &config)?;
+                                    segment.mark_remote_before_attempt()?;
+                                    let description_result =
+                                        provider.update_pr_description(pr_num, &new_body);
+                                    let description_result =
+                                        segment.finish_result(&repo, &config, description_result);
+                                    if let Err(e) = description_result {
                                         if !json && !jsonl {
                                             pb.println(format!(
                                                 "{} Could not update {} {}{} description: {}",
@@ -1713,13 +1893,27 @@ pub fn run(
                                                 e
                                             ));
                                         }
-                                        if entry_error.is_none() {
-                                            entry_error =
-                                                Some(format!("Could not update description: {e}"));
-                                        }
-                                    } else {
-                                        review_changed = true;
+                                        return Err(e);
                                     }
+                                    review_changed = true;
+                                    if let Some(s) = streamer.as_mut() {
+                                        s.try_emit(&SyncStreamingResponse {
+                                            version: OUTPUT_VERSION,
+                                            command: "sync".to_string(),
+                                            event: SyncStreamingEvent::PrUpdated {
+                                                position: entry.position,
+                                                pr_number: pr_num,
+                                                action: "description_updated".to_string(),
+                                            },
+                                        })
+                                        .map_err(|_| {
+                                            GgError::Other(
+                                                "Output stream closed after review description update; sync aborted."
+                                                    .to_string(),
+                                            )
+                                        })?;
+                                    }
+                                    review_event_emitted = true;
                                 }
                             }
                             Err(e) => {
@@ -1756,34 +1950,43 @@ pub fn run(
                                 current_base,
                             ),
                         )?;
-                        let checkpoint = segment.mark_remote_before_attempt();
-                        segment.finish_on_error(&repo, &config, checkpoint)?;
-                        match provider.update_pr_base(pr_num, &target_branch) {
-                            Ok(()) => {
-                                review_changed |= base_changed;
+                        segment.ensure_started(&repo, &config)?;
+                        segment.mark_remote_before_attempt()?;
+                        let retarget_result = provider.update_pr_base(pr_num, &target_branch);
+                        let retarget_result =
+                            segment.finish_result(&repo, &config, retarget_result);
+                        if let Err(e) = retarget_result {
+                            if !json && !jsonl {
+                                pb.println(format!(
+                                    "{} Could not update {} {}{}: {}",
+                                    style("Warning:").yellow(),
+                                    provider.pr_label(),
+                                    provider.pr_number_prefix(),
+                                    pr_num,
+                                    e
+                                ));
                             }
-                            Err(e) => {
-                                // Native GitHub stack reconciliation must reflect
-                                // the ordinary PR base chain. If the provider
-                                // rejects that base update, skip the later native
-                                // stack mutation rather than linking a topology
-                                // `gg sync` did not actually establish.
-                                pr_state_unresolved = true;
-                                if !json && !jsonl {
-                                    pb.println(format!(
-                                        "{} Could not update {} {}{}: {}",
-                                        style("Warning:").yellow(),
-                                        provider.pr_label(),
-                                        provider.pr_number_prefix(),
-                                        pr_num,
-                                        e
-                                    ));
-                                }
-                                if entry_error.is_none() {
-                                    entry_error = Some(format!("Could not update base: {e}"));
-                                }
-                            }
+                            return Err(e);
                         }
+                        review_changed |= base_changed;
+                        if let Some(s) = streamer.as_mut() {
+                            s.try_emit(&SyncStreamingResponse {
+                                version: OUTPUT_VERSION,
+                                command: "sync".to_string(),
+                                event: SyncStreamingEvent::PrUpdated {
+                                    position: entry.position,
+                                    pr_number: pr_num,
+                                    action: "retargeted".to_string(),
+                                },
+                            })
+                            .map_err(|_| {
+                                GgError::Other(
+                                    "Output stream closed after review retarget; sync aborted."
+                                        .to_string(),
+                                )
+                            })?;
+                        }
+                        review_event_emitted = true;
                     }
 
                     // Show appropriate message based on whether we pushed
@@ -1809,22 +2012,31 @@ pub fn run(
                     {
                         action = "updated".to_string();
                     }
-                    if let Some(s) = streamer.as_mut() {
-                        s.emit(&SyncStreamingResponse {
-                            version: OUTPUT_VERSION,
-                            command: "sync".to_string(),
-                            event: SyncStreamingEvent::PrUpdated {
-                                position: entry.position,
-                                pr_number: pr_num,
-                                action: action.clone(),
-                            },
-                        });
+                    if !review_event_emitted {
+                        if let Some(s) = streamer.as_mut() {
+                            segment.finish_emit(
+                                &repo,
+                                &config,
+                                s.try_emit(&SyncStreamingResponse {
+                                    version: OUTPUT_VERSION,
+                                    command: "sync".to_string(),
+                                    event: SyncStreamingEvent::PrUpdated {
+                                        position: entry.position,
+                                        pr_number: pr_num,
+                                        action: action.clone(),
+                                    },
+                                }),
+                                "Output stream closed after review status; sync aborted.",
+                            )?;
+                        }
                     }
                 }
             }
             None => {
                 // Create new PR/MR — wrap description in managed markers
                 let wrapped_description = managed_body::wrap(&description);
+                segment.ensure_started(&repo, &config)?;
+                segment.mark_remote_before_attempt()?;
                 match provider.create_pr(
                     &entry_branch,
                     &target_branch,
@@ -1833,11 +2045,17 @@ pub fn run(
                     entry_draft,
                 ) {
                     Ok(result) => {
+                        let effect = RemoteEffect::PrCreated {
+                            number: result.number,
+                            url: result.url.clone(),
+                        };
+                        segment.record_remote_effect_durable(effect)?;
                         config.set_mr_for_entry(&stack.name, gg_id, result.number);
                         let save_result = config.save(repo.commondir());
                         segment.finish_on_error(&repo, &config, save_result)?;
+                        segment.finish(&repo, &config)?;
                         if let Some(s) = streamer.as_mut() {
-                            s.emit(&SyncStreamingResponse {
+                            s.try_emit(&SyncStreamingResponse {
                                 version: OUTPUT_VERSION,
                                 command: "sync".to_string(),
                                 event: SyncStreamingEvent::PrCreated {
@@ -1850,7 +2068,13 @@ pub fn run(
                                     },
                                     draft: entry_draft,
                                 },
-                            });
+                            })
+                            .map_err(|_| {
+                                GgError::Other(
+                                    "Output stream closed after review creation; sync aborted."
+                                        .to_string(),
+                                )
+                            })?;
                         }
                         pr_number = Some(result.number);
                         pr_url = if result.url.is_empty() {
@@ -1859,16 +2083,6 @@ pub fn run(
                             Some(result.url.clone())
                         };
                         action = "created".to_string();
-
-                        // Record the PR creation as a remote effect so `gg undo`
-                        // can surface a provider-specific revert hint. Persist
-                        // immediately so a mid-sequence failure still leaves an
-                        // accurate record on disk.
-                        let effect = RemoteEffect::PrCreated {
-                            number: result.number,
-                            url: result.url.clone(),
-                        };
-                        segment.record_remote_effect(effect);
 
                         if !json && !jsonl {
                             let draft_label = if entry_draft { " (draft)" } else { "" };
@@ -1893,8 +2107,22 @@ pub fn run(
                         }
                     }
                     Err(e) => {
-                        action = "error".to_string();
-                        entry_error = Some(e.to_string());
+                        let mut e = segment.finish_error(&repo, &config, e);
+                        if let Some(s) = streamer.as_mut() {
+                            e = preserve_error_on_emit(
+                                s.try_emit(&SyncStreamingResponse {
+                                    version: OUTPUT_VERSION,
+                                    command: "sync".to_string(),
+                                    event: SyncStreamingEvent::PrCreateError {
+                                        position: entry.position,
+                                        branch: entry_branch.clone(),
+                                        error: e.to_string(),
+                                    },
+                                }),
+                                e,
+                                "Output stream closed after review creation error; sync aborted.",
+                            );
+                        }
                         if !json && !jsonl {
                             pb.println(format!(
                                 "{} Failed to create {} for {}: {}",
@@ -1904,6 +2132,7 @@ pub fn run(
                                 e
                             ));
                         }
+                        return Err(e);
                     }
                 }
             }
@@ -1964,24 +2193,20 @@ pub fn run(
         };
         nav_snapshots.push(nav_snapshot);
         entry_is_closed.push(is_entry_closed);
-        entry_has_unresolved_pr_state.push(pr_state_unresolved);
+        entry_has_unresolved_pr_state.push(false);
 
         pb.inc(1);
     }
 
     let warnings_before_prune = warnings.len();
-    let prune_result = if branch_push_failed {
-        Ok(())
-    } else {
-        prune_stale_remote_entry_branches_for_operation(
-            &repo,
-            Some(&provider),
-            &stack,
-            &mut config,
-            &mut segment,
-            &mut warnings,
-        )
-    };
+    let prune_result = prune_stale_remote_entry_branches_for_operation(
+        &repo,
+        Some(&provider),
+        &stack,
+        &mut config,
+        &mut segment,
+        &mut warnings,
+    );
     if let Err(error) = prune_result {
         pb.finish_and_clear();
         return segment.finish_result(&repo, &config, Err(error));
@@ -2034,6 +2259,7 @@ pub fn run(
     let github_stack_result = match provider {
         Provider::GitHub => {
             let mode = config.get_github_stacks_integration();
+            let mut mutation_error = None;
             let result = if let Some(result) = github_stack_preflight_skip(
                 mode,
                 until.as_deref(),
@@ -2055,11 +2281,27 @@ pub fn run(
                                 expected_base,
                             )?;
                         }
+                        segment.ensure_started(&repo, &config)?;
                         segment.mark_remote_before_attempt()
                     },
                 );
                 match outcome {
-                    Ok(outcome) => outcome.result,
+                    Ok(outcome) => {
+                        if outcome.mutation_attempted {
+                            if outcome.result.is_warning() {
+                                let error = GgError::Other(
+                                    outcome.result.message.clone().unwrap_or_else(|| {
+                                        "GitHub stack mutation outcome could not be confirmed"
+                                            .to_string()
+                                    }),
+                                );
+                                mutation_error = Some(segment.finish_error(&repo, &config, error));
+                            } else {
+                                segment.finish(&repo, &config)?;
+                            }
+                        }
+                        outcome.result
+                    }
                     Err(error) => return segment.finish_result(&repo, &config, Err(error)),
                 }
             };
@@ -2136,13 +2378,30 @@ pub fn run(
             }
 
             if let Some(s) = streamer.as_mut() {
-                s.emit(&SyncStreamingResponse {
+                let emit_result = s.try_emit(&SyncStreamingResponse {
                     version: OUTPUT_VERSION,
                     command: "sync".to_string(),
                     event: SyncStreamingEvent::GithubStack {
                         result: result.clone(),
                     },
                 });
+                if let Some(error) = mutation_error.take() {
+                    mutation_error = Some(preserve_error_on_emit(
+                        emit_result,
+                        error,
+                        "Output stream closed after GitHub stack reconciliation; sync aborted.",
+                    ));
+                } else {
+                    segment.finish_emit(
+                        &repo,
+                        &config,
+                        emit_result,
+                        "Output stream closed after GitHub stack reconciliation; sync aborted.",
+                    )?;
+                }
+            }
+            if let Some(error) = mutation_error {
+                return Err(error);
             }
 
             Some(result)
@@ -2247,24 +2506,32 @@ pub fn run(
                                     &expected_base,
                                 ),
                             )?;
-                            let checkpoint = segment.mark_remote_before_attempt();
-                            segment.finish_on_error(&repo, &config, checkpoint)?;
-                            match provider.update_pr_comment(snap.pr_number, c.id, &body) {
-                                Ok(()) => Some("updated"),
-                                Err(e) => {
-                                    if !json && !jsonl {
-                                        println!(
-                                            "{} Could not update nav comment on {} {}{}: {}",
-                                            style("Warning:").yellow(),
-                                            provider.pr_label(),
-                                            number_prefix,
-                                            snap.pr_number,
-                                            e
-                                        );
-                                    }
-                                    Some("error")
+                            segment.ensure_started(&repo, &config)?;
+                            segment.mark_remote_before_attempt()?;
+                            let update_result =
+                                provider.update_pr_comment(snap.pr_number, c.id, &body);
+                            let update_result =
+                                segment.finish_result(&repo, &config, update_result);
+                            if let Err(mut e) = update_result {
+                                if let Some(s) = streamer.as_mut() {
+                                    e = preserve_error_on_emit(
+                                        s.try_emit(&SyncStreamingResponse {
+                                            version: OUTPUT_VERSION,
+                                            command: "sync".to_string(),
+                                            event: SyncStreamingEvent::NavComment {
+                                                position: snap.json_index + 1,
+                                                pr_number: snap.pr_number,
+                                                action: "error".to_string(),
+                                                error: Some(e.to_string()),
+                                            },
+                                        }),
+                                        e,
+                                        "Output stream closed after navigation comment update error; sync aborted.",
+                                    );
                                 }
+                                return Err(e);
                             }
+                            Some("updated")
                         }
                         None => {
                             segment.finish_on_error(
@@ -2277,52 +2544,49 @@ pub fn run(
                                     &expected_base,
                                 ),
                             )?;
-                            let checkpoint = segment.mark_remote_before_attempt();
-                            segment.finish_on_error(&repo, &config, checkpoint)?;
-                            match provider.create_pr_comment(snap.pr_number, &body) {
-                                Ok(()) => Some("created"),
-                                Err(e) => {
-                                    if !json && !jsonl {
-                                        println!(
-                                            "{} Could not create nav comment on {} {}{}: {}",
-                                            style("Warning:").yellow(),
-                                            provider.pr_label(),
-                                            number_prefix,
-                                            snap.pr_number,
-                                            e
-                                        );
-                                    }
-                                    Some("error")
+                            segment.ensure_started(&repo, &config)?;
+                            segment.mark_remote_before_attempt()?;
+                            let create_result = provider.create_pr_comment(snap.pr_number, &body);
+                            let create_result =
+                                segment.finish_result(&repo, &config, create_result);
+                            if let Err(mut e) = create_result {
+                                if let Some(s) = streamer.as_mut() {
+                                    e = preserve_error_on_emit(
+                                        s.try_emit(&SyncStreamingResponse {
+                                            version: OUTPUT_VERSION,
+                                            command: "sync".to_string(),
+                                            event: SyncStreamingEvent::NavComment {
+                                                position: snap.json_index + 1,
+                                                pr_number: snap.pr_number,
+                                                action: "error".to_string(),
+                                                error: Some(e.to_string()),
+                                            },
+                                        }),
+                                        e,
+                                        "Output stream closed after navigation comment creation error; sync aborted.",
+                                    );
                                 }
+                                return Err(e);
                             }
+                            Some("created")
                         }
                     };
                     if let Some(s) = streamer.as_mut() {
-                        let error = if result == Some("error") {
-                            Some(format!(
-                                "Could not {} nav comment on {} {}{}",
-                                if existing.is_some() {
-                                    "update"
-                                } else {
-                                    "create"
+                        segment.finish_emit(
+                            &repo,
+                            &config,
+                            s.try_emit(&SyncStreamingResponse {
+                                version: OUTPUT_VERSION,
+                                command: "sync".to_string(),
+                                event: SyncStreamingEvent::NavComment {
+                                    position: snap.json_index + 1,
+                                    pr_number: snap.pr_number,
+                                    action: result.unwrap_or("skip").to_string(),
+                                    error: None,
                                 },
-                                provider.pr_label(),
-                                number_prefix,
-                                snap.pr_number
-                            ))
-                        } else {
-                            None
-                        };
-                        s.emit(&SyncStreamingResponse {
-                            version: OUTPUT_VERSION,
-                            command: "sync".to_string(),
-                            event: SyncStreamingEvent::NavComment {
-                                position: snap.json_index + 1,
-                                pr_number: snap.pr_number,
-                                action: result.unwrap_or("skip").to_string(),
-                                error,
-                            },
-                        });
+                            }),
+                            "Output stream closed after navigation comment; sync aborted.",
+                        )?;
                     }
                     result
                 }
@@ -2339,47 +2603,50 @@ pub fn run(
                                     &expected_base,
                                 ),
                             )?;
-                            let checkpoint = segment.mark_remote_before_attempt();
-                            segment.finish_on_error(&repo, &config, checkpoint)?;
-                            match provider.delete_pr_comment(snap.pr_number, c.id) {
-                                Ok(()) => Some("deleted"),
-                                Err(e) => {
-                                    if !json && !jsonl {
-                                        println!(
-                                            "{} Could not delete nav comment on {} {}{}: {}",
-                                            style("Warning:").yellow(),
-                                            provider.pr_label(),
-                                            number_prefix,
-                                            snap.pr_number,
-                                            e
-                                        );
-                                    }
-                                    Some("error")
+                            segment.ensure_started(&repo, &config)?;
+                            segment.mark_remote_before_attempt()?;
+                            let delete_result = provider.delete_pr_comment(snap.pr_number, c.id);
+                            let delete_result =
+                                segment.finish_result(&repo, &config, delete_result);
+                            if let Err(mut e) = delete_result {
+                                if let Some(s) = streamer.as_mut() {
+                                    e = preserve_error_on_emit(
+                                        s.try_emit(&SyncStreamingResponse {
+                                            version: OUTPUT_VERSION,
+                                            command: "sync".to_string(),
+                                            event: SyncStreamingEvent::NavComment {
+                                                position: snap.json_index + 1,
+                                                pr_number: snap.pr_number,
+                                                action: "error".to_string(),
+                                                error: Some(e.to_string()),
+                                            },
+                                        }),
+                                        e,
+                                        "Output stream closed after navigation comment deletion error; sync aborted.",
+                                    );
                                 }
+                                return Err(e);
                             }
+                            Some("deleted")
                         }
                         None => None,
                     };
                     if let Some(s) = streamer.as_mut() {
-                        s.emit(&SyncStreamingResponse {
-                            version: OUTPUT_VERSION,
-                            command: "sync".to_string(),
-                            event: SyncStreamingEvent::NavComment {
-                                position: snap.json_index + 1,
-                                pr_number: snap.pr_number,
-                                action: result.unwrap_or("skip").to_string(),
-                                error: if result == Some("error") {
-                                    Some(format!(
-                                        "Could not delete nav comment on {} {}{}",
-                                        provider.pr_label(),
-                                        number_prefix,
-                                        snap.pr_number
-                                    ))
-                                } else {
-                                    None
+                        segment.finish_emit(
+                            &repo,
+                            &config,
+                            s.try_emit(&SyncStreamingResponse {
+                                version: OUTPUT_VERSION,
+                                command: "sync".to_string(),
+                                event: SyncStreamingEvent::NavComment {
+                                    position: snap.json_index + 1,
+                                    pr_number: snap.pr_number,
+                                    action: result.unwrap_or("skip").to_string(),
+                                    error: None,
                                 },
-                            },
-                        });
+                            }),
+                            "Output stream closed after navigation comment; sync aborted.",
+                        )?;
                     }
                     result
                 }
@@ -2420,7 +2687,7 @@ pub fn run(
         });
     } else if jsonl {
         if let Some(s) = streamer.as_mut() {
-            s.emit(&SyncStreamingResponse {
+            s.try_emit(&SyncStreamingResponse {
                 version: OUTPUT_VERSION,
                 command: "sync".to_string(),
                 event: SyncStreamingEvent::Summary {
@@ -2436,7 +2703,8 @@ pub fn run(
                     },
                     entries: json_entries,
                 },
-            });
+            })
+            .map_err(|_| GgError::Other("Output stream closed before sync summary.".to_string()))?;
         }
     } else {
         println!();
@@ -2883,8 +3151,8 @@ mod tests {
     use super::{
         build_pr_payload, clean_title, compute_target_branch, description_with_replacement_note,
         ensure_draft_prefix_for_gitlab, github_stack_preflight_skip, is_wip_or_draft_prefix,
-        migrated_review_topology_matches, mismatched_pr_head_branch, replacement_closing_comment,
-        suspend_sync_progress, sync_progress_bar, SyncSegment,
+        migrated_review_topology_matches, mismatched_pr_head_branch, preserve_error_on_emit,
+        replacement_closing_comment, suspend_sync_progress, sync_progress_bar, SyncSegment,
     };
     use crate::config::{Config, GithubStacksIntegration};
     use crate::git;
@@ -2904,6 +3172,24 @@ mod tests {
     #[derive(Debug)]
     struct FlushCountingTerm {
         flush_count: Arc<AtomicUsize>,
+    }
+
+    #[test]
+    fn output_failure_preserves_primary_and_finalization_errors() {
+        let primary = crate::error::GgError::Other(
+            "mutation failed; additionally failed to finalize sync operation: finalize failed"
+                .to_string(),
+        );
+        let error = preserve_error_on_emit(
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed")),
+            primary,
+            "Output stream closed while reporting mutation failure.",
+        );
+
+        assert_eq!(
+            error.to_string(),
+            "mutation failed; additionally failed to finalize sync operation: finalize failed; additionally Output stream closed while reporting mutation failure."
+        );
     }
 
     #[test]

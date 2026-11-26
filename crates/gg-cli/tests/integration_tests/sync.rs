@@ -1,5 +1,6 @@
 use crate::helpers::{
     create_test_repo, create_test_repo_with_remote, run_gg, run_gg_with_env, run_git,
+    ProcessGroupGuard,
 };
 
 use serde_json::Value;
@@ -11,11 +12,16 @@ use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use nix::{
+    libc,
     sys::signal::{kill, Signal},
     unistd::Pid,
 };
 #[cfg(unix)]
-use std::os::unix::{fs::PermissionsExt, process::CommandExt};
+use std::io::{BufRead, BufReader};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+#[cfg(unix)]
+use std::os::unix::{fs::PermissionsExt, net::UnixStream, process::CommandExt};
 
 #[cfg(unix)]
 #[path = "sync_if_needed.rs"]
@@ -139,6 +145,15 @@ if [ "$1" = "pr" ] && [ "$2" = "edit" ]; then
   exit 0
 fi
 
+if [ "$1" = "api" ] && [ "$2" = "-X" ] && [ "$3" = "POST" ]; then
+  echo '{}'
+  exit 0
+fi
+
+if [ "$1" = "pr" ] && [ "$2" = "close" ]; then
+  exit 0
+fi
+
 if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
   if [ "$3" = "--base" ] && [ -f "$(dirname "$0")/targets/$(echo "$4" | tr / _)" ]; then
     cat "$(dirname "$0")/targets/$(echo "$4" | tr / _)"
@@ -184,6 +199,10 @@ fn install_git_delete_shim(repo_path: &Path) -> String {
 set -eu
 delete_branch=${GG_TEST_DELETE_BRANCH:-__no_test_branch__}
 
+if [ -n "${GG_TEST_GIT_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "$GG_TEST_GIT_LOG"
+fi
+
 case " $* " in
   *" push --force-with-lease=refs/heads/$delete_branch:"*" :refs/heads/$delete_branch "*)
     "$GG_TEST_REAL_GIT" "$@"
@@ -195,6 +214,31 @@ case " $* " in
       fail_after_delete)
         echo "simulated lost deletion response" >&2
         exit 1
+        ;;
+      obstruct_config_after_delete)
+        pending=''
+        for record in "$GG_TEST_GIT_DIR/gg/operations/"*.json; do
+          grep -q '"status": "pending"' "$record" || continue
+          [ -z "$pending" ] || { echo 'multiple pending operations' >&2; exit 1; }
+          pending=$(basename "$record" .json)
+        done
+        [ -n "$pending" ] || { echo 'missing pending operation' >&2; exit 1; }
+        printf '%s\n' "$pending" > "$(dirname "$0")/delete-operation-id"
+        echo 1 > "$(dirname "$0")/delete-count"
+        mkdir "$GG_TEST_GIT_DIR/gg/config.tmp"
+        ;;
+      block_post_delete_completion)
+        pending=''
+        for record in "$GG_TEST_GIT_DIR/gg/operations/"*.json; do
+          grep -q '"status": "pending"' "$record" || continue
+          [ -z "$pending" ] || { echo 'multiple pending operations' >&2; exit 1; }
+          pending=$(basename "$record" .json)
+        done
+        [ -n "$pending" ] || { echo 'missing pending operation' >&2; exit 1; }
+        printf '%s\n' "$pending" > "$(dirname "$0")/delete-operation-id"
+        echo 1 > "$(dirname "$0")/delete-count"
+        : > "$(dirname "$0")/delete-complete"
+        while [ ! -f "$(dirname "$0")/config-lock-held" ]; do sleep 0.01; done
         ;;
       republish_after_delete)
         "$GG_TEST_REAL_GIT" -C "$GG_TEST_DELETE_REPO" push origin \
@@ -340,6 +384,105 @@ fn operation_record_ids_accepts_only_regular_json_files() {
         operation_record_ids(repo_path),
         ["op-valid".to_string()].into_iter().collect()
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn process_group_guard_drop_stops_group_after_panic() {
+    let temp = tempfile::tempdir().unwrap();
+    let heartbeat = temp.path().join("heartbeat");
+    let ready = temp.path().join("ready");
+    let script = temp.path().join("guard-child.sh");
+    write_executable(
+        &script,
+        r#"#!/bin/sh
+set -eu
+: > "$GUARD_HEARTBEAT"
+(while :; do printf x >> "$GUARD_HEARTBEAT"; sleep 0.05; done) &
+touch "$GUARD_READY"
+wait
+"#,
+    );
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut command = Command::new(&script);
+        command
+            .env("GUARD_HEARTBEAT", &heartbeat)
+            .env("GUARD_READY", &ready);
+        let mut child = ProcessGroupGuard::spawn(&mut command).expect("spawn guarded group");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ready.exists() {
+            assert!(child.try_wait().unwrap().is_none(), "guarded child exited");
+            assert!(Instant::now() < deadline, "guarded child was not ready");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("exercise guard drop");
+    }));
+    assert!(panicked.is_err());
+    let heartbeat_len = fs::metadata(&heartbeat).unwrap().len();
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        fs::metadata(&heartbeat).unwrap().len(),
+        heartbeat_len,
+        "descendant survived guard drop"
+    );
+    fs::write(&heartbeat, "reused").expect("heartbeat file must be reusable after cleanup");
+}
+
+#[cfg(unix)]
+#[test]
+fn process_group_guard_poll_keeps_exited_leader_owned_until_drop() {
+    let temp = tempfile::tempdir().unwrap();
+    let heartbeat = temp.path().join("heartbeat-after-leader-exit");
+    let descendant_pid = temp.path().join("descendant-pid");
+    let script = temp.path().join("exiting-guard-leader.sh");
+    write_executable(
+        &script,
+        r#"#!/bin/sh
+set -eu
+: > "$GUARD_HEARTBEAT"
+(while :; do printf x >> "$GUARD_HEARTBEAT"; sleep 0.05; done) &
+printf '%s\n' "$!" > "$GUARD_DESCENDANT_PID"
+exit 23
+"#,
+    );
+
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut command = Command::new(&script);
+        command
+            .env("GUARD_HEARTBEAT", &heartbeat)
+            .env("GUARD_DESCENDANT_PID", &descendant_pid);
+        let mut child = ProcessGroupGuard::spawn(&mut command).expect("spawn guarded group");
+        wait_for_file(&descendant_pid);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = child.try_wait().expect("poll exited group leader") {
+                assert_eq!(status.code(), Some(23));
+                break;
+            }
+            assert!(Instant::now() < deadline, "group leader did not exit");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("drop guard after observing leader exit");
+    }));
+    assert!(panicked.is_err());
+
+    wait_for_file(&heartbeat);
+    let heartbeat_len = fs::metadata(&heartbeat).unwrap().len();
+    std::thread::sleep(Duration::from_millis(250));
+    let descendant_stopped = fs::metadata(&heartbeat).unwrap().len() == heartbeat_len;
+    if !descendant_stopped {
+        let pid = fs::read_to_string(&descendant_pid)
+            .unwrap()
+            .trim()
+            .parse::<i32>()
+            .unwrap();
+        let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
+    }
+    assert!(
+        descendant_stopped,
+        "descendant survived after status polling reaped the group leader"
+    );
+    fs::write(&heartbeat, "reused").expect("heartbeat file must be reusable after cleanup");
 }
 
 #[cfg(unix)]
@@ -1053,6 +1196,155 @@ fn sync_until_publishes_only_the_rewritten_untagged_target() {
 
 #[cfg(unix)]
 #[test]
+fn jsonl_disconnect_after_navigation_comment_stops_before_next_comment() {
+    let (_temp, repo, _remote) = create_test_repo_with_remote();
+    write_remote_prune_config(&repo);
+    let config_path = repo.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["defaults"]["provider"] = "github".into();
+    config["defaults"]["sync_behind_threshold"] = 0.into();
+    config["defaults"]["stack_nav_comments"] = true.into();
+    config["defaults"]["github"]["stacks_integration"] = "off".into();
+    fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+    let (ok, out, err) = run_gg(&repo, &["co", "nav-disconnect"]);
+    assert!(ok, "checkout failed: {out}\n{err}");
+    for (file, message) in [
+        ("one", "One\n\nGG-ID: c-1111111"),
+        ("two", "Two\n\nGG-ID: c-2222222\nGG-Parent: c-1111111"),
+    ] {
+        fs::write(repo.join(file), file).unwrap();
+        checked_git(&repo, &["add", file]);
+        checked_git(&repo, &["commit", "-m", message]);
+    }
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["stacks"]["nav-disconnect"]["mrs"]["c-1111111"] = 41.into();
+    config["stacks"]["nav-disconnect"]["mrs"]["c-2222222"] = 42.into();
+    fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+    checked_git(
+        &repo,
+        &[
+            "push",
+            "origin",
+            "HEAD~1:refs/heads/testuser/nav-disconnect--c-1111111",
+            "HEAD:refs/heads/testuser/nav-disconnect--c-2222222",
+        ],
+    );
+
+    let fake_bin = repo.join("fake-nav-disconnect-bin");
+    fs::create_dir(&fake_bin).unwrap();
+    write_executable(
+        &fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+dir=$(dirname "$0")
+case "$1 ${2:-}" in
+  '--version ') echo 'gh version 2.0.0';;
+  'auth status') exit 0;;
+  'pr view')
+    n=$3
+    if [ "$n" = 41 ]; then head=testuser/nav-disconnect--c-1111111; base=main; else head=testuser/nav-disconnect--c-2222222; base=testuser/nav-disconnect--c-1111111; fi
+    printf '{"number":%s,"title":"Entry","state":"OPEN","url":"https://github.com/test/repo/pull/%s","headRefName":"%s","baseRefName":"%s","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}\n' "$n" "$n" "$head" "$base";;
+  'pr edit') exit 0;;
+  'api repos/'*) echo '[]';;
+  'api -X')
+    [ "$3" = POST ] || { echo "unexpected gh $*" >&2; exit 1; }
+    attempts=$(cat "$dir/comment-attempts" 2>/dev/null || echo 0)
+    attempts=$((attempts + 1))
+    echo "$attempts" > "$dir/comment-attempts"
+    printf '%s\n' "$4" >> "$dir/comment-targets"
+    if [ "$attempts" = 1 ]; then
+      pending=''
+      for record in "$TEST_GIT_DIR/gg/operations/"*.json; do
+        grep -q '"status": "pending"' "$record" || continue
+        [ -z "$pending" ] || { echo 'multiple pending operations' >&2; exit 1; }
+        pending=$(basename "$record" .json)
+      done
+      [ -n "$pending" ] || { echo 'missing pending operation' >&2; exit 1; }
+      printf '%s\n' "$pending" > "$dir/comment-operation-id"
+      touch "$dir/comment-started"
+      while [ ! -f "$dir/release-comment" ]; do sleep 0.01; done
+    fi
+    echo '{}';;
+  *) echo "unexpected gh $*" >&2; exit 1;;
+esac
+"#,
+    );
+    let mut paths = vec![fake_bin.clone()];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let path = std::env::join_paths(paths).unwrap();
+
+    let (read_stream, write_stream) = UnixStream::pair().unwrap();
+    read_stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let stdout_fd: std::os::fd::OwnedFd = write_stream.into();
+    let stderr_path = repo.join(".git/nav-disconnect-stderr");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_gg"));
+    command
+        .args(["sync", "--no-rebase-check", "--jsonl"])
+        .current_dir(&repo)
+        .env("PATH", path)
+        .env("TEST_GIT_DIR", repo.join(".git"))
+        .stdout(Stdio::from(stdout_fd))
+        .stderr(Stdio::from(fs::File::create(&stderr_path).unwrap()));
+    let mut child = ProcessGroupGuard::spawn(&mut command).expect("start sync");
+    let mut reader = BufReader::new(read_stream);
+    let mut first = String::new();
+    reader.read_line(&mut first).expect("read start event");
+    assert_eq!(
+        serde_json::from_str::<Value>(&first).unwrap()["event"],
+        "start"
+    );
+
+    let readiness_deadline = Instant::now() + Duration::from_secs(10);
+    while !fake_bin.join("comment-started").exists() {
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!(
+                "sync exited before navigation comment ({status}): {}",
+                fs::read_to_string(&stderr_path).unwrap_or_default()
+            );
+        }
+        if Instant::now() >= readiness_deadline {
+            let _ = fs::write(fake_bin.join("release-comment"), "release");
+            panic!("sync did not reach navigation comment");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let operation_id = fs::read_to_string(fake_bin.join("comment-operation-id"))
+        .unwrap()
+        .trim()
+        .to_string();
+    let pending = operation_record(&repo, &operation_id);
+    assert_eq!(pending["status"], "pending", "{pending}");
+    assert_eq!(pending["touched_remote"], true, "{pending}");
+
+    drop(reader);
+    fs::write(fake_bin.join("release-comment"), "release").unwrap();
+    let process_deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= process_deadline {
+            panic!("sync did not stop after navigation-comment disconnect");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    assert!(!status.success(), "closed JSONL consumer must abort sync");
+    assert_eq!(
+        fs::read_to_string(fake_bin.join("comment-attempts"))
+            .unwrap()
+            .trim(),
+        "1"
+    );
+    let record = operation_record(&repo, &operation_id);
+    assert_eq!(record["status"], "committed", "{record}");
+    assert_eq!(record["touched_remote"], true, "{record}");
+}
+
+#[cfg(unix)]
+#[test]
 fn ordinary_navigation_mutations_revalidate_review() {
     for (mode, enabled, forbidden) in [
         ("create", true, "api -X POST"),
@@ -1242,6 +1534,522 @@ esac
             assert!(requests.contains("api -X POST"), "{requests}");
         }
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn disconnect_before_start_event_finalizes_local_segment() {
+    let (_temp, repo, remote) = create_test_repo_with_remote();
+    write_remote_prune_config(&repo);
+    let config_path = repo.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["defaults"]["provider"] = "github".into();
+    config["defaults"]["sync_behind_threshold"] = 0.into();
+    config["defaults"]["github"]["stacks_integration"] = "off".into();
+    fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+    let (ok, out, err) = run_gg(&repo, &["co", "pre-start-disconnect"]);
+    assert!(ok, "checkout failed: {out}\n{err}");
+    checked_git(
+        &repo,
+        &["commit", "--allow-empty", "-m", "Entry\n\nGG-ID: c-7100005"],
+    );
+    let fake_bin = repo.join("pre-start-disconnect-bin");
+    fs::create_dir(&fake_bin).unwrap();
+    write_executable(
+        &fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+case "$1 ${2:-}" in
+  '--version ') echo 'gh version 2.0.0';;
+  'auth status') touch "$(dirname "$0")/ready";;
+  'pr create') touch "$(dirname "$0")/remote-mutation"; echo 'https://github.com/test/repo/pull/714';;
+  *) echo "unexpected gh $*" >&2; exit 1;;
+esac
+"#,
+    );
+    let mut paths = vec![fake_bin.clone()];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let path = std::env::join_paths(paths).unwrap();
+    let operation_ids_before = operation_record_ids(&repo);
+    let (read_stream, write_stream) = UnixStream::pair().unwrap();
+    drop(read_stream);
+    let stdout_fd: std::os::fd::OwnedFd = write_stream.into();
+    let stderr_path = repo.join(".git/pre-start-disconnect-stderr");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_gg"));
+    command
+        .args(["sync", "--until", "1", "--no-rebase-check", "--jsonl"])
+        .current_dir(&repo)
+        .env("PATH", path)
+        .stdout(Stdio::from(stdout_fd))
+        .stderr(Stdio::from(fs::File::create(&stderr_path).unwrap()));
+    let mut child = ProcessGroupGuard::spawn(&mut command).expect("start sync");
+    let readiness_deadline = Instant::now() + Duration::from_secs(10);
+    while !fake_bin.join("ready").exists() {
+        if Instant::now() >= readiness_deadline {
+            panic!("sync did not complete provider readiness");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let process_deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= process_deadline {
+            panic!("sync did not stop after pre-start disconnect");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    assert!(!status.success(), "closed consumer must abort sync");
+    let operation_ids = operation_record_ids(&repo)
+        .difference(&operation_ids_before)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(operation_ids.len(), 1, "{operation_ids:?}");
+    let operation_id = &operation_ids[0];
+    let record = operation_record(&repo, operation_id);
+    assert_eq!(record["status"], "committed", "{record}");
+    assert_eq!(record["touched_remote"], false, "{record}");
+    assert_eq!(record["remote_effects"], serde_json::json!([]), "{record}");
+    assert!(!fake_bin.join("remote-mutation").exists());
+    assert!(
+        !run_git(
+            &remote,
+            &[
+                "show-ref",
+                "--verify",
+                "refs/heads/testuser/pre-start-disconnect--c-7100005"
+            ]
+        )
+        .0,
+        "entry branch was pushed after disconnect"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn disconnect_before_first_remote_mutation_finalizes_local_segment() {
+    let (_temp, repo, remote) = create_test_repo_with_remote();
+    write_remote_prune_config(&repo);
+    let config_path = repo.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["defaults"]["provider"] = "github".into();
+    config["defaults"]["sync_behind_threshold"] = 0.into();
+    config["defaults"]["github"]["stacks_integration"] = "off".into();
+    config["defaults"]["lint"] = serde_json::json!(["./block-lint.sh"]);
+    fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+    let (ok, out, err) = run_gg(&repo, &["co", "pre-mutation-disconnect"]);
+    assert!(ok, "checkout failed: {out}\n{err}");
+    checked_git(
+        &repo,
+        &["commit", "--allow-empty", "-m", "Entry\n\nGG-ID: c-7100004"],
+    );
+    write_executable(
+        &repo.join("block-lint.sh"),
+        r#"#!/bin/sh
+set -eu
+operations=$(git rev-parse --absolute-git-dir)/gg/operations
+pending=''
+for record in "$operations/"*.json; do
+  grep -q '"status": "pending"' "$record" || continue
+  [ -z "$pending" ] || { echo 'multiple pending operations' >&2; exit 1; }
+  pending=$(basename "$record" .json)
+done
+[ -n "$pending" ] || { echo 'missing pending operation' >&2; exit 1; }
+printf '%s\n' "$pending" > .git/pre-mutation-operation-id
+touch .git/pre-mutation-lint-started
+while [ ! -f .git/release-pre-mutation-lint ]; do sleep 0.01; done
+"#,
+    );
+    let fake_bin = repo.join("pre-mutation-disconnect-bin");
+    fs::create_dir(&fake_bin).unwrap();
+    write_executable(
+        &fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+case "$1 ${2:-}" in
+  '--version ') echo 'gh version 2.0.0';;
+  'auth status') exit 0;;
+  'pr create') touch "$(dirname "$0")/remote-mutation"; echo 'https://github.com/test/repo/pull/713';;
+  *) echo "unexpected gh $*" >&2; exit 1;;
+esac
+"#,
+    );
+    let mut paths = vec![fake_bin.clone()];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let path = std::env::join_paths(paths).unwrap();
+
+    let (read_stream, write_stream) = UnixStream::pair().unwrap();
+    read_stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let stdout_fd: std::os::fd::OwnedFd = write_stream.into();
+    let stderr_path = repo.join(".git/pre-mutation-disconnect-stderr");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_gg"));
+    command
+        .args([
+            "sync",
+            "--lint",
+            "--until",
+            "1",
+            "--no-rebase-check",
+            "--jsonl",
+        ])
+        .current_dir(&repo)
+        .env("PATH", path)
+        .stdout(Stdio::from(stdout_fd))
+        .stderr(Stdio::from(fs::File::create(&stderr_path).unwrap()));
+    let mut child = ProcessGroupGuard::spawn(&mut command).expect("start sync");
+    let mut reader = BufReader::new(read_stream);
+    let mut start = String::new();
+    reader.read_line(&mut start).expect("read start event");
+    assert_eq!(
+        serde_json::from_str::<Value>(&start).unwrap()["event"],
+        "start"
+    );
+    let readiness = repo.join(".git/pre-mutation-lint-started");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !readiness.exists() {
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!(
+                "sync exited before lint readiness ({status}): {}",
+                fs::read_to_string(&stderr_path).unwrap_or_default()
+            );
+        }
+        if Instant::now() >= deadline {
+            let _ = fs::write(repo.join(".git/release-pre-mutation-lint"), "release");
+            panic!("sync did not reach pre-mutation lint readiness");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let operation_id = fs::read_to_string(repo.join(".git/pre-mutation-operation-id"))
+        .unwrap()
+        .trim()
+        .to_string();
+    drop(reader);
+    fs::write(repo.join(".git/release-pre-mutation-lint"), "release").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            panic!("sync did not stop after pre-mutation disconnect");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    assert!(!status.success(), "closed consumer must abort sync");
+    let record = operation_record(&repo, &operation_id);
+    assert_eq!(record["status"], "committed", "{record}");
+    assert_eq!(record["touched_remote"], false, "{record}");
+    assert_eq!(record["remote_effects"], serde_json::json!([]), "{record}");
+    assert!(!fake_bin.join("remote-mutation").exists());
+    assert!(
+        !run_git(
+            &remote,
+            &[
+                "show-ref",
+                "--verify",
+                "refs/heads/testuser/pre-mutation-disconnect--c-7100004"
+            ]
+        )
+        .0,
+        "entry branch was pushed after disconnect"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn mutation_and_finalization_failures_are_reported_together() {
+    let (_temp, repo, _remote) = create_test_repo_with_remote();
+    write_remote_prune_config(&repo);
+    let config_path = repo.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["defaults"]["provider"] = "github".into();
+    config["defaults"]["sync_behind_threshold"] = 0.into();
+    config["defaults"]["github"]["stacks_integration"] = "off".into();
+    fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+    let (ok, out, err) = run_gg(&repo, &["co", "double-failure"]);
+    assert!(ok, "checkout failed: {out}\n{err}");
+    checked_git(
+        &repo,
+        &["commit", "--allow-empty", "-m", "Entry\n\nGG-ID: c-7100003"],
+    );
+
+    let fake_bin = repo.join("double-failure-bin");
+    fs::create_dir(&fake_bin).unwrap();
+    write_executable(
+        &fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+dir=$(dirname "$0")
+case "$1 ${2:-}" in
+  '--version ') echo 'gh version 2.0.0';;
+  'auth status') exit 0;;
+  'pr create')
+    pending=''
+    for record in "$TEST_GIT_DIR/gg/operations/"*.json; do
+      grep -q '"status": "pending"' "$record" || continue
+      [ -z "$pending" ] || { echo 'multiple pending operations' >&2; exit 1; }
+      pending=$(basename "$record" .json)
+    done
+    [ -n "$pending" ] || { echo 'missing pending operation' >&2; exit 1; }
+    printf '%s\n' "$pending" > "$dir/operation-id"
+    mkdir "$TEST_GIT_DIR/gg/operations/$pending.json.tmp"
+    echo 'simulated create mutation failure' >&2
+    exit 1;;
+  *) echo "unexpected gh $*" >&2; exit 1;;
+esac
+"#,
+    );
+    let mut paths = vec![fake_bin.clone()];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let path = std::env::join_paths(paths).unwrap();
+
+    let (ok, stdout, stderr) = run_gg_bounded_with_env(
+        &repo,
+        &["sync", "--until", "1", "--no-rebase-check", "--jsonl"],
+        &[
+            ("PATH", path.as_os_str()),
+            ("TEST_GIT_DIR", repo.join(".git").as_os_str()),
+        ],
+    );
+    let operation_id = fs::read_to_string(fake_bin.join("operation-id"))
+        .unwrap()
+        .trim()
+        .to_string();
+    fs::remove_dir(
+        repo.join(".git/gg/operations")
+            .join(format!("{operation_id}.json.tmp")),
+    )
+    .unwrap();
+
+    assert!(!ok, "double failure must fail: {stdout}\n{stderr}");
+    let diagnostic = format!("{stdout}\n{stderr}");
+    assert!(
+        diagnostic.contains("simulated create mutation failure"),
+        "mutation error was lost: {diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("additionally failed to finalize sync operation"),
+        "finalization error was lost: {diagnostic}"
+    );
+    let record = operation_record(&repo, &operation_id);
+    assert_eq!(record["status"], "pending", "{record}");
+    assert_eq!(record["touched_remote"], true, "{record}");
+}
+
+#[cfg(unix)]
+#[test]
+fn ordinary_create_config_save_failure_preserves_known_result() {
+    let (_temp, repo, _remote) = create_test_repo_with_remote();
+    write_remote_prune_config(&repo);
+    let config_path = repo.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["defaults"]["provider"] = "github".into();
+    config["defaults"]["sync_behind_threshold"] = 0.into();
+    config["defaults"]["github"]["stacks_integration"] = "off".into();
+    fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+    let (ok, out, err) = run_gg(&repo, &["co", "ordinary-create-save-failure"]);
+    assert!(ok, "checkout failed: {out}\n{err}");
+    checked_git(
+        &repo,
+        &["commit", "--allow-empty", "-m", "Entry\n\nGG-ID: c-7100001"],
+    );
+
+    let fake_bin = repo.join("ordinary-create-save-failure-bin");
+    fs::create_dir(&fake_bin).unwrap();
+    write_executable(
+        &fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+dir=$(dirname "$0")
+printf '%s\n' "$*" >> "$dir/requests"
+case "$1 ${2:-}" in
+  '--version ') echo 'gh version 2.0.0';;
+  'auth status') exit 0;;
+  'pr create')
+    pending=''
+    for record in "$TEST_GIT_DIR/gg/operations/"*.json; do
+      grep -q '"status": "pending"' "$record" || continue
+      [ -z "$pending" ] || { echo 'multiple pending operations' >&2; exit 1; }
+      pending=$(basename "$record" .json)
+    done
+    [ -n "$pending" ] || { echo 'missing pending operation' >&2; exit 1; }
+    printf '%s\n' "$pending" > "$dir/operation-id"
+    mkdir "$TEST_GIT_DIR/gg/config.tmp"
+    echo 1 > "$dir/create-count"
+    echo 'https://github.com/test/repo/pull/711';;
+  *) echo "unexpected gh $*" >&2; exit 1;;
+esac
+"#,
+    );
+    let mut paths = vec![fake_bin.clone()];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let path = std::env::join_paths(paths).unwrap();
+
+    let (ok, stdout, stderr) = run_gg_bounded_with_env(
+        &repo,
+        &["sync", "--until", "1", "--no-rebase-check", "--jsonl"],
+        &[
+            ("PATH", path.as_os_str()),
+            ("TEST_GIT_DIR", repo.join(".git").as_os_str()),
+        ],
+    );
+    fs::remove_dir(repo.join(".git/gg/config.tmp")).unwrap();
+
+    assert!(!ok, "blocked config save must fail: {stdout}\n{stderr}");
+    let operation_id = fs::read_to_string(fake_bin.join("operation-id"))
+        .unwrap()
+        .trim()
+        .to_string();
+    let record = operation_record(&repo, &operation_id);
+    assert_eq!(record["status"], "committed", "{record}");
+    assert_eq!(record["touched_remote"], true, "{record}");
+    let effects = record["remote_effects"].as_array().unwrap();
+    assert_eq!(effects.len(), 1, "{record}");
+    assert_eq!(effects[0]["kind"], "pr_created", "{record}");
+    assert_eq!(effects[0]["number"], 711, "{record}");
+    assert_eq!(
+        effects[0]["url"], "https://github.com/test/repo/pull/711",
+        "{record}"
+    );
+    let events = stdout
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert!(events.iter().all(|event| event["event"] != "pr_created"));
+    assert!(events.iter().all(|event| event["event"] != "summary"));
+    assert_eq!(
+        fs::read_to_string(fake_bin.join("create-count")).unwrap(),
+        "1\n"
+    );
+    let requests = fs::read_to_string(fake_bin.join("requests")).unwrap();
+    assert_eq!(
+        requests
+            .lines()
+            .filter(|request| request.starts_with("pr create "))
+            .count(),
+        1,
+        "{requests}"
+    );
+    assert!(
+        requests.lines().all(|line| !line.starts_with("pr edit ")
+            && !line.starts_with("pr close ")
+            && !line.starts_with("api ")),
+        "follow-up mutation escaped after config failure: {requests}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn replacement_create_config_save_failure_preserves_known_result() {
+    let (_temp, repo, _remote) = create_test_repo_with_remote();
+    write_remote_prune_config(&repo);
+    let config_path = repo.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["defaults"]["provider"] = "github".into();
+    config["defaults"]["sync_behind_threshold"] = 0.into();
+    config["defaults"]["sync_update_descriptions"] = false.into();
+    config["defaults"]["github"]["stacks_integration"] = "off".into();
+    fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+    let (ok, out, err) = run_gg(&repo, &["co", "replacement-create-save-failure"]);
+    assert!(ok, "checkout failed: {out}\n{err}");
+    checked_git(
+        &repo,
+        &["commit", "--allow-empty", "-m", "Entry\n\nGG-ID: c-7100002"],
+    );
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["stacks"]["replacement-create-save-failure"]["mrs"]["c-7100002"] = 428.into();
+    fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+
+    let fake_bin = repo.join("replacement-create-save-failure-bin");
+    fs::create_dir(&fake_bin).unwrap();
+    write_executable(
+        &fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+dir=$(dirname "$0")
+printf '%s\n' "$*" >> "$dir/requests"
+case "$1 ${2:-}" in
+  '--version ') echo 'gh version 2.0.0';;
+  'auth status') exit 0;;
+  'pr view')
+    echo '{"number":428,"title":"Entry","state":"OPEN","url":"https://github.com/test/repo/pull/428","headRefName":"testuser/old-stack--c-7100002","baseRefName":"main","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
+    ;;
+  'pr create')
+    pending=''
+    for record in "$TEST_GIT_DIR/gg/operations/"*.json; do
+      grep -q '"status": "pending"' "$record" || continue
+      [ -z "$pending" ] || { echo 'multiple pending operations' >&2; exit 1; }
+      pending=$(basename "$record" .json)
+    done
+    [ -n "$pending" ] || { echo 'missing pending operation' >&2; exit 1; }
+    printf '%s\n' "$pending" > "$dir/operation-id"
+    mkdir "$TEST_GIT_DIR/gg/config.tmp"
+    echo 1 > "$dir/create-count"
+    echo 'https://github.com/test/repo/pull/712';;
+  *) echo "unexpected gh $*" >&2; exit 1;;
+esac
+"#,
+    );
+    let mut paths = vec![fake_bin.clone()];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let path = std::env::join_paths(paths).unwrap();
+
+    let (ok, stdout, stderr) = run_gg_bounded_with_env(
+        &repo,
+        &["sync", "--until", "1", "--no-rebase-check", "--jsonl"],
+        &[
+            ("PATH", path.as_os_str()),
+            ("TEST_GIT_DIR", repo.join(".git").as_os_str()),
+        ],
+    );
+    fs::remove_dir(repo.join(".git/gg/config.tmp")).unwrap();
+
+    assert!(!ok, "blocked config save must fail: {stdout}\n{stderr}");
+    let operation_id = fs::read_to_string(fake_bin.join("operation-id"))
+        .unwrap()
+        .trim()
+        .to_string();
+    let record = operation_record(&repo, &operation_id);
+    assert_eq!(record["status"], "committed", "{record}");
+    assert_eq!(record["touched_remote"], true, "{record}");
+    let effects = record["remote_effects"].as_array().unwrap();
+    assert_eq!(effects.len(), 1, "{record}");
+    assert_eq!(effects[0]["kind"], "pr_created", "{record}");
+    assert_eq!(effects[0]["number"], 712, "{record}");
+    assert_eq!(
+        effects[0]["url"], "https://github.com/test/repo/pull/712",
+        "{record}"
+    );
+    let events = stdout
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert!(events.iter().all(|event| event["event"] != "pr_created"));
+    assert!(events.iter().all(|event| event["event"] != "summary"));
+    assert_eq!(
+        fs::read_to_string(fake_bin.join("create-count")).unwrap(),
+        "1\n"
+    );
+    let requests = fs::read_to_string(fake_bin.join("requests")).unwrap();
+    assert_eq!(
+        requests
+            .lines()
+            .filter(|request| request.starts_with("pr create "))
+            .count(),
+        1,
+        "{requests}"
+    );
+    assert!(
+        requests
+            .lines()
+            .all(|line| !line.starts_with("api ") && !line.starts_with("pr close ")),
+        "replacement follow-up escaped after config failure: {requests}"
+    );
 }
 
 #[cfg(unix)]
@@ -4092,6 +4900,575 @@ fn test_sync_stops_when_fetch_fails() {
 
 #[cfg(unix)]
 #[test]
+fn jsonl_disconnect_after_replacement_comment_stops_before_old_review_close() {
+    let (_temp, repo_path, _remote_path) = create_test_repo_with_remote();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","provider":"github","base":"main","sync_behind_threshold":0}}"#,
+    )
+    .unwrap();
+    let (ok, out, err) = run_gg(&repo_path, &["co", "replacement-disconnect"]);
+    assert!(ok, "{out}\n{err}");
+    checked_git(
+        &repo_path,
+        &["commit", "--allow-empty", "-m", "Entry\n\nGG-ID: c-7777777"],
+    );
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{
+  "defaults": {
+    "branch_username": "testuser",
+    "provider": "github",
+    "base": "main",
+    "sync_behind_threshold": 0
+  },
+  "stacks": {
+    "replacement-disconnect": {
+      "base": "main",
+      "mrs": {"c-7777777": 428}
+    }
+  }
+}"#,
+    )
+    .unwrap();
+
+    let fake_bin = repo_path.join("replacement-disconnect-bin");
+    fs::create_dir_all(&fake_bin).unwrap();
+    write_executable(
+        &fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+dir=$(dirname "$0")
+case "$1 ${2:-}" in
+  '--version ') echo 'gh version 2.0.0';;
+  'auth status') exit 0;;
+  'pr view')
+    echo '{"number":428,"title":"Entry","state":"OPEN","url":"https://github.com/test/repo/pull/428","headRefName":"testuser/old-stack--c-7777777","baseRefName":"main","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
+    ;;
+  'pr create')
+    attempts=$(cat "$dir/create-attempts" 2>/dev/null || echo 0)
+    echo $((attempts + 1)) > "$dir/create-attempts"
+    echo 'https://github.com/test/repo/pull/900'
+    ;;
+  'api -X')
+    case "$*" in
+      *issues/428/comments*)
+        attempts=$(cat "$dir/comment-attempts" 2>/dev/null || echo 0)
+        echo $((attempts + 1)) > "$dir/comment-attempts"
+        operation_id=''
+        count=0
+        for record in "$TEST_GIT_DIR/gg/operations/"*.json; do
+          if grep -Eq '"status"[[:space:]]*:[[:space:]]*"pending"' "$record"; then
+            operation_id=$(basename "$record" .json)
+            count=$((count + 1))
+          fi
+        done
+        [ "$count" -eq 1 ]
+        printf '%s\n' "$operation_id" > "$dir/comment-operation-id"
+        touch "$dir/comment-started"
+        while [ ! -f "$dir/release-comment" ]; do sleep 0.01; done
+        echo '{}'
+        ;;
+      *) echo '[]';;
+    esac
+    ;;
+  'api repos/'*) echo '[]';;
+  'pr close')
+    attempts=$(cat "$dir/close-attempts" 2>/dev/null || echo 0)
+    echo $((attempts + 1)) > "$dir/close-attempts"
+    ;;
+  *) echo "unexpected gh $*" >&2; exit 1;;
+esac
+"#,
+    );
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut path = std::ffi::OsString::from(fake_bin.as_os_str());
+    path.push(":");
+    path.push(old_path);
+
+    let (read_stream, write_stream) = UnixStream::pair().unwrap();
+    read_stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let stdout_fd: std::os::fd::OwnedFd = write_stream.into();
+    let stderr_path = repo_path.join(".git/replacement-disconnect-stderr");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_gg"));
+    command
+        .args(["sync", "--until", "1", "--no-rebase-check", "--jsonl"])
+        .current_dir(&repo_path)
+        .env("PATH", path)
+        .env("TEST_GIT_DIR", repo_path.join(".git"))
+        .stdout(Stdio::from(stdout_fd))
+        .stderr(Stdio::from(fs::File::create(&stderr_path).unwrap()));
+    let mut child = ProcessGroupGuard::spawn(&mut command).expect("start sync");
+    let mut reader = BufReader::new(read_stream);
+    let mut first = String::new();
+    reader.read_line(&mut first).expect("read start event");
+    assert_eq!(
+        serde_json::from_str::<Value>(&first).unwrap()["event"],
+        "start"
+    );
+
+    let readiness_deadline = Instant::now() + Duration::from_secs(10);
+    while !fake_bin.join("comment-started").exists() {
+        if let Some(status) = child.try_wait().unwrap() {
+            let mut remaining = String::new();
+            loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => remaining.push_str(&line),
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        break;
+                    }
+                    Err(error) => panic!("read failed replacement output: {error}"),
+                }
+            }
+            panic!(
+                "sync exited before replacement comment ({status}): {remaining}\nstderr: {}",
+                fs::read_to_string(&stderr_path).unwrap_or_default()
+            );
+        }
+        if Instant::now() >= readiness_deadline {
+            let _ = fs::write(fake_bin.join("release-comment"), "release");
+            panic!(
+                "sync did not reach replacement comment: {}",
+                fs::read_to_string(&stderr_path).unwrap_or_default()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let operation_id = fs::read_to_string(fake_bin.join("comment-operation-id"))
+        .unwrap()
+        .trim()
+        .to_string();
+    let pending = operation_record(&repo_path, &operation_id);
+    assert_eq!(pending["status"], "pending", "{pending}");
+    assert_eq!(pending["touched_remote"], true, "{pending}");
+
+    drop(reader);
+    fs::write(fake_bin.join("release-comment"), "release").unwrap();
+    let process_deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= process_deadline {
+            panic!(
+                "sync did not stop after JSONL disconnect: {}",
+                fs::read_to_string(&stderr_path).unwrap_or_default()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    assert!(!status.success(), "disconnect must abort sync");
+    assert_eq!(
+        fs::read_to_string(fake_bin.join("create-attempts"))
+            .unwrap()
+            .trim(),
+        "1"
+    );
+    assert_eq!(
+        fs::read_to_string(fake_bin.join("comment-attempts"))
+            .unwrap()
+            .trim(),
+        "1"
+    );
+    assert!(
+        !fake_bin.join("close-attempts").exists(),
+        "old review was closed after disconnected replacement-comment event"
+    );
+    let record = operation_record(&repo_path, &operation_id);
+    assert_eq!(record["status"], "committed", "{record}");
+    assert_eq!(record["touched_remote"], true, "{record}");
+}
+
+#[cfg(unix)]
+#[test]
+fn replacement_close_persistence_failure_emits_no_success_and_keeps_uncertainty() {
+    let (_temp, repo_path, _remote_path) = create_test_repo_with_remote();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","provider":"github","base":"main","sync_behind_threshold":0}}"#,
+    )
+    .unwrap();
+    let (ok, out, err) = run_gg(&repo_path, &["co", "replacement-close-persistence"]);
+    assert!(ok, "{out}\n{err}");
+    checked_git(
+        &repo_path,
+        &["commit", "--allow-empty", "-m", "Entry\n\nGG-ID: c-7777778"],
+    );
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{
+  "defaults": {
+    "branch_username": "testuser",
+    "provider": "github",
+    "base": "main",
+    "sync_behind_threshold": 0
+  },
+  "stacks": {
+    "replacement-close-persistence": {
+      "base": "main",
+      "mrs": {"c-7777778": 429}
+    }
+  }
+}"#,
+    )
+    .unwrap();
+
+    let fake_bin = repo_path.join("replacement-close-persistence-bin");
+    fs::create_dir_all(&fake_bin).unwrap();
+    write_executable(
+        &fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+dir=$(dirname "$0")
+case "$1 ${2:-}" in
+  '--version ') echo 'gh version 2.0.0';;
+  'auth status') exit 0;;
+  'pr view')
+    echo '{"number":429,"title":"Entry","state":"OPEN","url":"https://github.com/test/repo/pull/429","headRefName":"testuser/old-stack--c-7777778","baseRefName":"main","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
+    ;;
+  'pr create')
+    echo 'https://github.com/test/repo/pull/901'
+    ;;
+  'api -X') echo '{}';;
+  'api repos/'*) echo '[]';;
+  'pr close')
+    attempts=$(cat "$dir/close-attempts" 2>/dev/null || echo 0)
+    echo $((attempts + 1)) > "$dir/close-attempts"
+    operation_id=''
+    count=0
+    for record in "$TEST_GIT_DIR/gg/operations/"*.json; do
+      if grep -Eq '"status"[[:space:]]*:[[:space:]]*"pending"' "$record"; then
+        operation_id=$(basename "$record" .json)
+        count=$((count + 1))
+      fi
+    done
+    [ "$count" -eq 1 ]
+    printf '%s\n' "$operation_id" > "$dir/close-operation-id"
+    mkdir "$TEST_GIT_DIR/gg/operations/$operation_id.json.tmp"
+    ;;
+  *) echo "unexpected gh $*" >&2; exit 1;;
+esac
+"#,
+    );
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut path = std::ffi::OsString::from(fake_bin.as_os_str());
+    path.push(":");
+    path.push(old_path);
+
+    let (success, stdout, stderr) = run_gg_bounded_with_env(
+        &repo_path,
+        &["sync", "--until", "1", "--no-rebase-check", "--jsonl"],
+        &[
+            ("PATH", path.as_os_str()),
+            ("TEST_GIT_DIR", repo_path.join(".git").as_os_str()),
+        ],
+    );
+    assert!(
+        !success,
+        "persistence failure must abort sync: {stdout}\n{stderr}"
+    );
+    let operation_id = fs::read_to_string(fake_bin.join("close-operation-id"))
+        .unwrap()
+        .trim()
+        .to_string();
+    let obstruction = gg_dir
+        .join("operations")
+        .join(format!("{operation_id}.json.tmp"));
+    fs::remove_dir(&obstruction).unwrap();
+
+    let events: Vec<Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(
+        events.iter().all(|event| event["event"] != "pr_closed"),
+        "close success escaped before durable persistence: {events:?}"
+    );
+    assert!(
+        events.iter().all(|event| event["event"] != "summary"),
+        "later summary escaped after close persistence failure: {events:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(fake_bin.join("close-attempts"))
+            .unwrap()
+            .trim(),
+        "1"
+    );
+    let record = operation_record(&repo_path, &operation_id);
+    assert_eq!(record["status"], "pending", "{record}");
+    assert_eq!(record["touched_remote"], true, "{record}");
+    assert!(
+        record["remote_effects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|effect| effect["kind"] != "pr_closed"),
+        "failed durable write leaked a close effect: {record}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn jsonl_disconnect_after_push_stops_before_review_creation() {
+    let (_temp, repo_path, _remote_path) = create_test_repo_with_remote();
+    write_remote_prune_config(&repo_path);
+    let config_path = repo_path.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["defaults"]["github"]["stacks_integration"] = serde_json::json!("off");
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    let (success, stdout, stderr) = run_gg(&repo_path, &["co", "disconnect-push"]);
+    assert!(success, "checkout failed: {stdout}\n{stderr}");
+    checked_git(
+        &repo_path,
+        &["commit", "--allow-empty", "-m", "Entry\n\nGG-ID: c-7000002"],
+    );
+
+    let fake_bin = repo_path.join("fake-disconnect-push-bin");
+    fs::create_dir(&fake_bin).unwrap();
+    write_executable(
+        &fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+dir=$(dirname "$0")
+case "$1 ${2:-}" in
+  '--version ') echo 'gh version 2.0.0';;
+  'auth status') exit 0;;
+  'pr create') touch "$dir/create-attempted"; echo 'https://github.com/test/repo/pull/101';;
+  *) echo "unexpected gh $*" >&2; exit 1;;
+esac
+"#,
+    );
+    let real_git = Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .expect("locate git");
+    assert!(real_git.status.success());
+    let real_git = String::from_utf8(real_git.stdout).unwrap();
+    write_executable(
+        &fake_bin.join("git"),
+        r#"#!/bin/sh
+set -eu
+"$GG_TEST_REAL_GIT" "$@"
+case " $* " in
+  *" push "*)
+    operations="$($GG_TEST_REAL_GIT rev-parse --absolute-git-dir)/gg/operations"
+    pending=
+    for record in "$operations"/*.json; do
+      grep -q '"status": "pending"' "$record" || continue
+      [ -z "$pending" ] || { echo 'multiple pending operations' >&2; exit 1; }
+      pending="$record"
+    done
+    [ -n "$pending" ] || { echo 'missing pending operation' >&2; exit 1; }
+    basename "$pending" .json > "$(dirname "$0")/operation-id"
+    touch "$(dirname "$0")/push-complete"
+    while [ ! -f "$(dirname "$0")/release-push" ]; do sleep 0.01; done
+    ;;
+esac
+"#,
+    );
+    let mut paths = vec![fake_bin.clone()];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let path = std::env::join_paths(paths).unwrap();
+
+    let (read_stream, write_stream) = UnixStream::pair().unwrap();
+    read_stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let stdout_fd: std::os::fd::OwnedFd = write_stream.into();
+    let stderr_path = repo_path.join(".git/push-disconnect-stderr");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_gg"));
+    command
+        .args(["sync", "--until", "1", "--no-rebase-check", "--jsonl"])
+        .current_dir(&repo_path)
+        .env("PATH", path)
+        .env("GG_TEST_REAL_GIT", real_git.trim())
+        .stdout(Stdio::from(stdout_fd))
+        .stderr(Stdio::from(fs::File::create(&stderr_path).unwrap()));
+    let mut child = ProcessGroupGuard::spawn(&mut command).expect("start sync");
+    let mut reader = BufReader::new(read_stream);
+    let mut first = String::new();
+    reader.read_line(&mut first).expect("read start event");
+    assert_eq!(
+        serde_json::from_str::<Value>(&first).unwrap()["event"],
+        "start"
+    );
+
+    let readiness_deadline = Instant::now() + Duration::from_secs(10);
+    while !fake_bin.join("push-complete").exists() {
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!(
+                "sync exited before blocked push completed ({status}): {}",
+                fs::read_to_string(&stderr_path).unwrap_or_default()
+            );
+        }
+        if Instant::now() >= readiness_deadline {
+            let _ = fs::write(fake_bin.join("release-push"), "release");
+            panic!("sync did not reach blocked push completion");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let operation_id = fs::read_to_string(fake_bin.join("operation-id"))
+        .unwrap()
+        .trim()
+        .to_string();
+    let pending = operation_record(&repo_path, &operation_id);
+    assert_eq!(pending["status"], "pending", "{pending}");
+    assert_eq!(pending["touched_remote"], true, "{pending}");
+
+    drop(reader);
+    fs::write(fake_bin.join("release-push"), "release").unwrap();
+    let process_deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= process_deadline {
+            panic!("sync did not stop after push checkpoint disconnect");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    assert!(!status.success(), "closed JSONL consumer must abort sync");
+    assert!(
+        !fake_bin.join("create-attempted").exists(),
+        "review creation followed disconnected push checkpoint"
+    );
+    let record = operation_record(&repo_path, &operation_id);
+    assert_eq!(record["status"], "committed", "{record}");
+    assert_eq!(record["touched_remote"], true, "{record}");
+    assert_eq!(
+        record["remote_effects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|effect| effect["kind"] == "pushed")
+            .count(),
+        1,
+        "{record}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn push_success_event_waits_for_durable_remote_effect() {
+    let (_temp, repo_path, _remote_path) = create_test_repo_with_remote();
+    write_remote_prune_config(&repo_path);
+    let config_path = repo_path.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["defaults"]["github"]["stacks_integration"] = serde_json::json!("off");
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    let (success, stdout, stderr) = run_gg(&repo_path, &["co", "durable-push"]);
+    assert!(success, "checkout failed: {stdout}\n{stderr}");
+    checked_git(
+        &repo_path,
+        &["commit", "--allow-empty", "-m", "Entry\n\nGG-ID: c-7000001"],
+    );
+
+    let fake_bin = repo_path.join("fake-durable-push-bin");
+    fs::create_dir(&fake_bin).unwrap();
+    write_executable(
+        &fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+dir=$(dirname "$0")
+case "$1 ${2:-}" in
+  '--version ') echo 'gh version 2.0.0';;
+  'auth status') exit 0;;
+  'pr create') touch "$dir/create-attempted"; echo 'https://github.com/test/repo/pull/101';;
+  *) echo "unexpected gh $*" >&2; exit 1;;
+esac
+"#,
+    );
+    let real_git = Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .expect("locate git");
+    assert!(real_git.status.success());
+    let real_git = String::from_utf8(real_git.stdout).unwrap();
+    write_executable(
+        &fake_bin.join("git"),
+        r#"#!/bin/sh
+set -eu
+"$GG_TEST_REAL_GIT" "$@"
+case " $* " in
+  *" push "*)
+    operations="$($GG_TEST_REAL_GIT rev-parse --absolute-git-dir)/gg/operations"
+    pending=
+    for record in "$operations"/*.json; do
+      grep -q '"status": "pending"' "$record" || continue
+      [ -z "$pending" ] || { echo 'multiple pending operations' >&2; exit 1; }
+      pending="$record"
+    done
+    [ -n "$pending" ] || { echo 'missing pending operation' >&2; exit 1; }
+    basename "$pending" .json > "$(dirname "$0")/operation-id"
+    mkdir "$pending.tmp"
+    ;;
+esac
+"#,
+    );
+    let mut paths = vec![fake_bin.clone()];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let path = std::env::join_paths(paths).unwrap();
+
+    let (success, stdout, stderr) = run_gg_bounded_with_env(
+        &repo_path,
+        &["sync", "--until", "1", "--no-rebase-check", "--jsonl"],
+        &[
+            ("PATH", path.as_os_str()),
+            ("GG_TEST_REAL_GIT", real_git.trim().as_ref()),
+        ],
+    );
+    let operation_id = fs::read_to_string(fake_bin.join("operation-id"))
+        .expect("push shim must capture operation id")
+        .trim()
+        .to_string();
+    let obstruction = repo_path
+        .join(".git/gg/operations")
+        .join(format!("{operation_id}.json.tmp"));
+    fs::remove_dir(&obstruction).expect("restore operation store");
+
+    assert!(
+        !success,
+        "persistence failure must stop sync: {stdout}\n{stderr}"
+    );
+    let events = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect::<Vec<_>>();
+    assert!(
+        events.iter().all(|event| event["event"] != "push_done"),
+        "push success was emitted before durable recording: {events:?}"
+    );
+    assert!(
+        !fake_bin.join("create-attempted").exists(),
+        "review creation followed failed push-effect persistence"
+    );
+    let operation = operation_record(&repo_path, &operation_id);
+    assert_eq!(operation["status"], "pending", "{operation}");
+    assert_eq!(operation["touched_remote"], true, "{operation}");
+    assert_eq!(
+        operation["remote_effects"],
+        serde_json::json!([]),
+        "{operation}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn test_sync_marks_ambiguous_push_before_attempt() {
     let (_temp, repo_path, remote_path) = create_test_repo_with_remote();
     write_remote_prune_config(&repo_path);
@@ -4366,6 +5743,7 @@ exit 0
         fs::set_permissions(&hook, perms).unwrap();
     }
 
+    let operation_ids_before_prune = operation_record_ids(&repo_path);
     let (success, stdout, stderr) = run_gg_with_env(
         &repo_path,
         &["sync", "--until", "1", "--no-rebase-check"],
@@ -4404,19 +5782,45 @@ exit 0
         "a successful earlier deletion must remain applied"
     );
 
-    let operation = latest_operation(&repo_path);
-    assert_eq!(operation["kind"], "sync");
+    let operation_ids = operation_record_ids(&repo_path)
+        .difference(&operation_ids_before_prune)
+        .cloned()
+        .collect::<Vec<_>>();
     assert_eq!(
-        operation["status"], "committed",
-        "post-mutation prune errors must finalize their segment"
+        operation_ids.len(),
+        3,
+        "review creation and each deletion attempt must own exact operation segments: {operation_ids:?}"
     );
-    assert_eq!(operation["touched_remote"], true);
+    let operations = operation_ids
+        .iter()
+        .map(|id| (id.clone(), operation_record(&repo_path, id)))
+        .collect::<Vec<_>>();
+    for (_, operation) in &operations {
+        assert_eq!(operation["kind"], "sync");
+        assert_eq!(operation["status"], "committed", "{operation}");
+        assert_eq!(operation["touched_remote"], true, "{operation}");
+    }
+    let (_, operation) = operations
+        .iter()
+        .find(|(_, operation)| {
+            operation["remote_effects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|effect| effect["kind"] == "branch_deleted")
+        })
+        .expect("successful deletion must have its own durable effect");
+    let uncertain = operations
+        .iter()
+        .find(|(_, operation)| operation["remote_effects"] == serde_json::json!([]))
+        .expect("failed deletion must have its own uncertainty segment");
+    assert_eq!(uncertain.1["remote_effects"], serde_json::json!([]));
     let deleted_effect = operation["remote_effects"]
         .as_array()
         .unwrap()
         .iter()
         .find(|effect| effect["kind"] == "branch_deleted")
-        .expect("successful deletion must be persisted before the later failure");
+        .unwrap();
     assert_eq!(deleted_effect["branch"], "testuser/reject-prune--c-2222222");
     assert!(deleted_effect["prior_oid"].is_string());
 
@@ -4484,6 +5888,162 @@ exit 0
         .0,
         "retry must not delete a successfully consumed intent after the branch is republished"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn branch_delete_config_save_and_finalization_failures_are_reported_together() {
+    let (_temp, repo_path, remote_path, fake_path) =
+        setup_published_prune_stack("delete-save-finalize-failure");
+    let dropped_branch = "testuser/delete-save-finalize-failure--c-3333333";
+    let dropped_oid = checked_git(
+        &remote_path,
+        &["rev-parse", &format!("refs/heads/{dropped_branch}")],
+    );
+    let later_branch = "testuser/delete-save-finalize-failure--c-2222222";
+    let (success, stdout, stderr) = run_gg(&repo_path, &["drop", "3", "--yes"]);
+    assert!(success, "drop failed: {stdout}\n{stderr}");
+    let (success, stdout, stderr) = run_gg(&repo_path, &["drop", "2", "--yes"]);
+    assert!(success, "second drop failed: {stdout}\n{stderr}");
+    clear_stack_mappings(&repo_path, "delete-save-finalize-failure");
+    let real_git = install_git_delete_shim(&repo_path);
+    let git_log = repo_path.join("fake-bin/git-requests");
+
+    let blocker_repo = repo_path.clone();
+    let blocker = std::thread::spawn(move || {
+        let fake_bin = blocker_repo.join("fake-bin");
+        wait_for_file(&fake_bin.join("delete-complete"));
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(blocker_repo.join(".git/gg/config.lock"))
+            .unwrap();
+        // SAFETY: the descriptor stays open for the lock's lifetime and refers
+        // to the same config lock file used by Config::save.
+        assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
+        fs::write(fake_bin.join("config-lock-held"), "").unwrap();
+
+        // The deletion shim cannot return before this lock is held. Give the
+        // current implementation ample time to expose an early finalization;
+        // the required implementation instead blocks in the config save.
+        std::thread::sleep(Duration::from_secs(2));
+        let operation_id = fs::read_to_string(fake_bin.join("delete-operation-id"))
+            .unwrap()
+            .trim()
+            .to_string();
+        fs::create_dir(blocker_repo.join(".git/gg/config.tmp")).unwrap();
+        fs::create_dir(
+            blocker_repo
+                .join(".git/gg/operations")
+                .join(format!("{operation_id}.json.tmp")),
+        )
+        .unwrap();
+        // SAFETY: this releases the exclusive lock acquired above before the
+        // file is dropped.
+        assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_UN) }, 0);
+        operation_id
+    });
+
+    let (success, stdout, stderr) = run_gg_bounded_with_env(
+        &repo_path,
+        &["sync", "--until", "1", "--no-rebase-check", "--jsonl"],
+        &[
+            ("PATH", fake_path.as_os_str()),
+            ("GG_TEST_REAL_GIT", real_git.as_ref()),
+            ("GG_TEST_DELETE_BRANCH", dropped_branch.as_ref()),
+            (
+                "GG_TEST_DELETE_MODE",
+                "block_post_delete_completion".as_ref(),
+            ),
+            ("GG_TEST_GIT_DIR", repo_path.join(".git").as_os_str()),
+            ("GG_TEST_GIT_LOG", git_log.as_os_str()),
+        ],
+    );
+    let operation_id = blocker.join().unwrap();
+    fs::remove_dir(repo_path.join(".git/gg/config.tmp")).unwrap();
+    fs::remove_dir(
+        repo_path
+            .join(".git/gg/operations")
+            .join(format!("{operation_id}.json.tmp")),
+    )
+    .unwrap();
+
+    assert!(!success, "double failure must fail: {stdout}\n{stderr}");
+    let diagnostic = format!("{stdout}\n{stderr}");
+    assert!(
+        diagnostic.contains("additionally failed to finalize sync operation"),
+        "finalization error was lost: {diagnostic}"
+    );
+    assert!(
+        diagnostic.matches("Is a directory").count() >= 2,
+        "config-save or finalization error was lost: {diagnostic}"
+    );
+    assert!(
+        !run_git(
+            &remote_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{dropped_branch}")
+            ]
+        )
+        .0,
+        "delete shim must remove the remote branch"
+    );
+    let record = operation_record(&repo_path, &operation_id);
+    assert_eq!(record["kind"], "sync", "{record}");
+    assert_eq!(record["status"], "pending", "{record}");
+    assert_eq!(record["touched_remote"], true, "{record}");
+    let effects = record["remote_effects"].as_array().unwrap();
+    assert_eq!(effects.len(), 1, "{record}");
+    assert_eq!(effects[0]["kind"], "branch_deleted", "{record}");
+    assert_eq!(effects[0]["remote"], "origin", "{record}");
+    assert_eq!(effects[0]["branch"], dropped_branch, "{record}");
+    assert_eq!(effects[0]["prior_oid"], dropped_oid, "{record}");
+    assert_eq!(
+        fs::read_to_string(repo_path.join("fake-bin/delete-count")).unwrap(),
+        "1\n"
+    );
+    let pushes = fs::read_to_string(&git_log)
+        .unwrap()
+        .lines()
+        .filter(|request| request.split_whitespace().any(|arg| arg == "push"))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        pushes.len(),
+        1,
+        "a later remote mutation started after deletion completion failed: {pushes:?}"
+    );
+    assert!(pushes[0].contains(dropped_branch), "{pushes:?}");
+    assert!(
+        run_git(
+            &remote_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{later_branch}")
+            ]
+        )
+        .0,
+        "the next authorized deletion started after completion failed"
+    );
+    let events = stdout
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert!(events.iter().all(|event| event["event"] != "summary"));
+    let config: Value =
+        serde_json::from_slice(&fs::read(repo_path.join(".git/gg/config.json")).unwrap()).unwrap();
+    let intent = config["pending_remote_branch_deletions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|intent| intent["branch"] == dropped_branch)
+        .expect("disk must retain deleting intent after failed save");
+    assert_eq!(intent["state"], "deleting");
 }
 
 #[cfg(unix)]

@@ -208,7 +208,15 @@ impl Serialize for SyncStreamingResponse {
         S: Serializer,
     {
         let status = match &self.event {
-            SyncStreamingEvent::Error { .. } | SyncStreamingEvent::PushError { .. } => "error",
+            SyncStreamingEvent::Error { .. }
+            | SyncStreamingEvent::PushError { .. }
+            | SyncStreamingEvent::PrCreateError { .. } => "error",
+            SyncStreamingEvent::PrComment { error, .. }
+            | SyncStreamingEvent::PrClosed { error, .. }
+                if error.is_some() =>
+            {
+                "error"
+            }
             SyncStreamingEvent::GithubStack { result }
                 if result.action == GithubStackAction::Warning =>
             {
@@ -289,6 +297,22 @@ pub enum SyncStreamingEvent {
         pr_number: u64,
         pr_url: Option<String>,
         draft: bool,
+    },
+    PrCreateError {
+        position: usize,
+        branch: String,
+        error: String,
+    },
+    PrComment {
+        position: usize,
+        pr_number: u64,
+        action: String,
+        error: Option<String>,
+    },
+    PrClosed {
+        position: usize,
+        pr_number: u64,
+        error: Option<String>,
     },
     PrUpdated {
         position: usize,
@@ -1112,6 +1136,99 @@ mod tests {
         assert_eq!(v["stack"], "my-feature");
         assert_eq!(v["base"], "main");
         assert_eq!(v["total_entries"], 3);
+    }
+
+    #[test]
+    fn sync_streaming_mutation_events_serialize_exact_actions() {
+        for (event, expected_event, expected_action) in [
+            (
+                SyncStreamingEvent::PrUpdated {
+                    position: 1,
+                    pr_number: 41,
+                    action: "title_updated".to_string(),
+                },
+                "pr_updated",
+                Some("title_updated"),
+            ),
+            (
+                SyncStreamingEvent::PrUpdated {
+                    position: 1,
+                    pr_number: 41,
+                    action: "description_updated".to_string(),
+                },
+                "pr_updated",
+                Some("description_updated"),
+            ),
+            (
+                SyncStreamingEvent::PrUpdated {
+                    position: 1,
+                    pr_number: 41,
+                    action: "retargeted".to_string(),
+                },
+                "pr_updated",
+                Some("retargeted"),
+            ),
+            (
+                SyncStreamingEvent::PrComment {
+                    position: 1,
+                    pr_number: 41,
+                    action: "created".to_string(),
+                    error: None,
+                },
+                "pr_comment",
+                Some("created"),
+            ),
+            (
+                SyncStreamingEvent::PrClosed {
+                    position: 1,
+                    pr_number: 41,
+                    error: None,
+                },
+                "pr_closed",
+                None,
+            ),
+        ] {
+            let response = SyncStreamingResponse {
+                version: OUTPUT_VERSION,
+                command: "sync".to_string(),
+                event,
+            };
+            let value = serde_json::to_value(response).unwrap();
+            assert_eq!(value["event"], expected_event);
+            assert_eq!(value["status"], "ok");
+            if let Some(action) = expected_action {
+                assert_eq!(value["action"], action);
+            }
+        }
+    }
+
+    #[test]
+    fn sync_streaming_mutation_error_events_serialize_error_status() {
+        for event in [
+            SyncStreamingEvent::PrCreateError {
+                position: 1,
+                branch: "user/stack--c-1234567".to_string(),
+                error: "lost response".to_string(),
+            },
+            SyncStreamingEvent::PrComment {
+                position: 1,
+                pr_number: 41,
+                action: "error".to_string(),
+                error: Some("lost response".to_string()),
+            },
+            SyncStreamingEvent::PrClosed {
+                position: 1,
+                pr_number: 41,
+                error: Some("lost response".to_string()),
+            },
+        ] {
+            let response = SyncStreamingResponse {
+                version: OUTPUT_VERSION,
+                command: "sync".to_string(),
+                event,
+            };
+            assert_eq!(serde_json::to_value(response).unwrap()["status"], "error");
+        }
     }
 
     #[test]

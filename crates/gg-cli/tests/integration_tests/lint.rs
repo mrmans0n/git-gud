@@ -353,6 +353,268 @@ fn test_lint_until_restores_branch_after_changes() {
     );
 }
 
+#[cfg(unix)]
+fn create_detached_restore_repo(lint_command: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    let (_temp_dir, repo_path) = create_test_repo();
+
+    fs::write(
+        repo_path.join("lint.sh"),
+        format!("#!/bin/sh\n{lint_command}\nexit 0\n"),
+    )
+    .expect("Failed to write lint script");
+    let mut permissions = fs::metadata(repo_path.join("lint.sh"))
+        .unwrap()
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(repo_path.join("lint.sh"), permissions).unwrap();
+    run_git(&repo_path, &["add", "lint.sh"]);
+    run_git(&repo_path, &["commit", "-m", "Add lint script"]);
+
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).expect("Failed to create gg dir");
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","lint":["./lint.sh"]}}"#,
+    )
+    .expect("Failed to write config");
+
+    (_temp_dir, repo_path)
+}
+
+#[cfg(unix)]
+#[test]
+fn test_lint_until_restores_rewritten_detached_entry() {
+    let (_temp_dir, repo_path) = create_detached_restore_repo(
+        "[ -f file2.txt ] && [ ! -f file3.txt ] && echo linted >> file2.txt",
+    );
+
+    let stack_branch = "testuser/lint-detached-until";
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "lint-detached-until"]);
+    assert!(success, "Failed to create stack: {stderr}");
+
+    for position in 1..=3 {
+        fs::write(
+            repo_path.join(format!("file{position}.txt")),
+            format!("content{position}\n"),
+        )
+        .expect("Failed to write file");
+        run_git(&repo_path, &["add", "."]);
+        run_git(
+            &repo_path,
+            &[
+                "commit",
+                "-m",
+                &format!("Entry {position}\n\nGG-ID: c-dea000{position}"),
+            ],
+        );
+    }
+
+    let (_, old_stack_tip) = run_git(&repo_path, &["rev-parse", stack_branch]);
+    let (success, _, stderr) = run_gg(&repo_path, &["mv", "2"]);
+    assert!(success, "Failed to detach at entry 2: {stderr}");
+    let (attached, _) = run_git(&repo_path, &["symbolic-ref", "--short", "HEAD"]);
+    assert!(!attached, "gg mv 2 should leave HEAD detached");
+    let (_, old_entry_two) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["lint", "--until", "2"]);
+    assert!(success, "Lint should succeed: {stdout} {stderr}");
+
+    let (_, stack_count) = run_git(
+        &repo_path,
+        &["rev-list", "--count", &format!("main..{stack_branch}")],
+    );
+    assert_eq!(stack_count.trim(), "3");
+    let (_, stack_tip) = run_git(&repo_path, &["rev-parse", stack_branch]);
+    assert_ne!(stack_tip.trim(), old_stack_tip.trim());
+    let (_, tip_message) = run_git(&repo_path, &["show", "-s", "--format=%B", stack_tip.trim()]);
+    assert!(tip_message.contains("GG-ID: c-dea0003"));
+
+    let (_, rewritten_entry_two) = run_git(
+        &repo_path,
+        &[
+            "log",
+            "-1",
+            "--format=%H",
+            "--grep=GG-ID: c-dea0002",
+            stack_branch,
+        ],
+    );
+    assert_ne!(rewritten_entry_two.trim(), old_entry_two.trim());
+    let (_, head) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    assert_eq!(head.trim(), rewritten_entry_two.trim());
+    let (attached, _) = run_git(&repo_path, &["symbolic-ref", "--short", "HEAD"]);
+    assert!(
+        !attached,
+        "HEAD should remain detached at rewritten entry 2"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_lint_until_restores_rewritten_detached_last_entry() {
+    let (_temp_dir, repo_path) =
+        create_detached_restore_repo("[ -f file2.txt ] && echo linted >> file2.txt");
+
+    let stack_branch = "testuser/lint-detached-last";
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "lint-detached-last"]);
+    assert!(success, "Failed to create stack: {stderr}");
+    for position in 1..=2 {
+        fs::write(
+            repo_path.join(format!("file{position}.txt")),
+            format!("entry {position}\n"),
+        )
+        .expect("Failed to write file");
+        run_git(&repo_path, &["add", "."]);
+        run_git(
+            &repo_path,
+            &[
+                "commit",
+                "-m",
+                &format!("Entry {position}\n\nGG-ID: c-ddd000{position}"),
+            ],
+        );
+    }
+
+    let (success, _, stderr) = run_gg(&repo_path, &["mv", "2"]);
+    assert!(success, "Failed to detach at entry 2: {stderr}");
+    let (_, original_head) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["lint", "--until", "2"]);
+    assert!(success, "Lint should succeed: {stdout} {stderr}");
+
+    let (_, rewritten_entry) = run_git(&repo_path, &["rev-parse", stack_branch]);
+    assert_ne!(rewritten_entry.trim(), original_head.trim());
+    let (_, head) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    assert_eq!(head.trim(), rewritten_entry.trim());
+    let (attached, _) = run_git(&repo_path, &["symbolic-ref", "--short", "HEAD"]);
+    assert!(
+        !attached,
+        "HEAD should remain detached at rewritten entry 2"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_lint_until_preserves_detached_head_without_gg_id() {
+    let (_temp_dir, repo_path) = create_detached_restore_repo("echo linted >> file1.txt");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "lint-no-id"]);
+    assert!(success, "Failed to create stack: {stderr}");
+    fs::write(repo_path.join("file1.txt"), "one\n").expect("Failed to write file");
+    run_git(&repo_path, &["add", "file1.txt"]);
+    run_git(&repo_path, &["commit", "-m", "Entry without ID"]);
+    fs::write(repo_path.join("file2.txt"), "two\n").expect("Failed to write file");
+    run_git(&repo_path, &["add", "file2.txt"]);
+    run_git(
+        &repo_path,
+        &["commit", "-m", "Second entry\n\nGG-ID: c-aaa0002"],
+    );
+
+    let (success, _, stderr) = run_gg(&repo_path, &["mv", "1"]);
+    assert!(success, "Failed to detach at entry 1: {stderr}");
+    let (_, original_head) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["lint", "--until", "1"]);
+    assert!(success, "Lint should succeed: {stdout} {stderr}");
+
+    let (attached, _) = run_git(&repo_path, &["symbolic-ref", "--short", "HEAD"]);
+    assert!(!attached, "HEAD should remain detached without a GG-ID");
+    let (_, head) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    assert_eq!(head.trim(), original_head.trim());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_lint_until_preserves_detached_sibling_with_stale_stack_context() {
+    let (_temp_dir, repo_path) = create_detached_restore_repo("echo linted >> file1.txt");
+
+    run_git(&repo_path, &["switch", "-c", "sibling"]);
+    fs::write(repo_path.join("sibling.txt"), "sibling\n").expect("Failed to write file");
+    run_git(&repo_path, &["add", "sibling.txt"]);
+    run_git(&repo_path, &["commit", "-m", "Sibling commit"]);
+    let (_, sibling_head) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    run_git(&repo_path, &["switch", "main"]);
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "lint-stale-context"]);
+    assert!(success, "Failed to create stack: {stderr}");
+    for position in 1..=2 {
+        fs::write(
+            repo_path.join(format!("file{position}.txt")),
+            format!("entry {position}\n"),
+        )
+        .expect("Failed to write file");
+        run_git(&repo_path, &["add", "."]);
+        run_git(
+            &repo_path,
+            &[
+                "commit",
+                "-m",
+                &format!("Entry {position}\n\nGG-ID: c-bbb000{position}"),
+            ],
+        );
+    }
+
+    let (success, _, stderr) = run_gg(&repo_path, &["mv", "1"]);
+    assert!(
+        success,
+        "Failed to establish stack navigation context: {stderr}"
+    );
+    let (success, _) = run_git(&repo_path, &["checkout", "--detach", "sibling"]);
+    assert!(success, "Failed to detach at sibling commit");
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["lint", "--until", "1"]);
+    assert!(success, "Lint should succeed: {stdout} {stderr}");
+
+    let (attached, _) = run_git(&repo_path, &["symbolic-ref", "--short", "HEAD"]);
+    assert!(
+        !attached,
+        "HEAD should remain detached at the sibling commit"
+    );
+    let (_, head) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    assert_eq!(head.trim(), sibling_head.trim());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_lint_until_preserves_detached_head_for_duplicate_gg_id() {
+    let (_temp_dir, repo_path) =
+        create_detached_restore_repo("[ -f file2.txt ] && echo linted >> file2.txt");
+
+    let (success, _, stderr) = run_gg(&repo_path, &["co", "lint-duplicate-id"]);
+    assert!(success, "Failed to create stack: {stderr}");
+    for position in 1..=2 {
+        fs::write(
+            repo_path.join(format!("file{position}.txt")),
+            format!("entry {position}\n"),
+        )
+        .expect("Failed to write file");
+        run_git(&repo_path, &["add", "."]);
+        run_git(
+            &repo_path,
+            &[
+                "commit",
+                "-m",
+                &format!("Entry {position}\n\nGG-ID: c-ccc0001"),
+            ],
+        );
+    }
+
+    let (success, _, stderr) = run_gg(&repo_path, &["mv", "2"]);
+    assert!(success, "Failed to detach at entry 2: {stderr}");
+    let (_, original_head) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["lint", "--until", "2"]);
+    assert!(success, "Lint should succeed: {stdout} {stderr}");
+
+    let (attached, _) = run_git(&repo_path, &["symbolic-ref", "--short", "HEAD"]);
+    assert!(
+        !attached,
+        "HEAD should remain detached for duplicate GG-IDs"
+    );
+    let (_, head) = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    assert_eq!(head.trim(), original_head.trim());
+}
+
 #[test]
 fn test_lint_until_keeps_commits_when_last_in_range_amended() {
     let (_temp_dir, repo_path) = create_test_repo();

@@ -356,6 +356,20 @@ fn run_on_commits(
 ) -> Result<RunResult> {
     let original_branch = git::current_branch_name(repo);
     let original_head = repo.head()?.peel_to_commit()?.id();
+    let original_gg_id = stack
+        .entries
+        .iter()
+        .find(|entry| entry.oid == original_head)
+        .and_then(|entry| entry.gg_id.as_deref())
+        .filter(|gg_id| {
+            stack
+                .entries
+                .iter()
+                .filter(|entry| entry.gg_id.as_deref() == Some(*gg_id))
+                .count()
+                == 1
+        })
+        .map(str::to_owned);
     let repo_root = repo
         .workdir()
         .ok_or_else(|| GgError::Other("Repository has no working directory".to_string()))?;
@@ -599,6 +613,7 @@ fn run_on_commits(
                             target_branch,
                             &new_head.to_string(),
                         ])?;
+                        entries[i].oid = new_head;
                     }
                 }
                 ChangeMode::Discard => {
@@ -708,7 +723,16 @@ fn run_on_commits(
                 style("Changes were made. Review with `gg ls` and sync with `gg sync`.").dim()
             );
         }
-    } else if !had_changes {
+    } else if let Some(entry) = original_gg_id.as_deref().and_then(|gg_id| {
+        let mut matches = entries
+            .iter()
+            .filter(|entry| entry.gg_id.as_deref() == Some(gg_id));
+        let entry = matches.next()?;
+        matches.next().is_none().then_some(entry)
+    }) {
+        let commit = repo.find_commit(entry.oid)?;
+        git::checkout_commit(repo, &commit)?;
+    } else {
         let commit = repo.find_commit(original_head)?;
         git::checkout_commit(repo, &commit)?;
     }

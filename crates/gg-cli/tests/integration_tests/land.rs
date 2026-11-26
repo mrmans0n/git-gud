@@ -1,4 +1,6 @@
-use crate::helpers::{create_test_repo, create_test_repo_with_remote, run_gg, run_git};
+use crate::helpers::{
+    create_test_repo, create_test_repo_with_remote, run_gg, run_git, ProcessGroupGuard,
+};
 
 use serde_json::Value;
 use std::ffi::OsString;
@@ -567,8 +569,9 @@ impl WaitingLandFixture {
         self.start_land_with_args(&["land", "--all", "--wait", "--no-clean"])
     }
 
-    fn start_land_with_args(&self, args: &[&str]) -> std::process::Child {
-        Command::new(env!("CARGO_BIN_EXE_gg"))
+    fn land_command(&self, args: &[&str]) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_gg"));
+        command
             .args(args)
             .current_dir(&self.repo_path)
             .env("HOME", &self.test_home)
@@ -606,9 +609,12 @@ impl WaitingLandFixture {
             .env("GG_FAKE_REQUEUED", &self.requeued)
             .env("GG_FAKE_HEAD_MOVED", &self.head_moved)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("start waiting land")
+            .stderr(Stdio::piped());
+        command
+    }
+
+    fn start_land_with_args(&self, args: &[&str]) -> std::process::Child {
+        self.land_command(args).spawn().expect("start waiting land")
     }
 
     fn wait_until_polling(&self) {
@@ -3666,5 +3672,79 @@ fn test_land_admin_config_enabled() {
     assert!(
         content.contains("\"land_admin\":true"),
         "Config should contain land_admin when enabled"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn land_persists_removal_of_only_the_successfully_merged_entry_intent() {
+    let fixture = WaitingLandFixture::new();
+    fixture.add_second_entry();
+    let config_path = fixture.repo_path.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["stacks"]["land-wait"]["review_creation_intents"] = serde_json::json!({
+        "c-1111111": {
+            "source_branch": "testuser/land-wait--c-1111111",
+            "target_branch": "main",
+            "origin_operation_id": "op_0000000000041_landed"
+        },
+        "c-2222222": {
+            "source_branch": "testuser/land-wait--c-2222222",
+            "target_branch": "testuser/land-wait--c-1111111",
+            "origin_operation_id": "op_0000000000042_pending"
+        }
+    });
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+
+    let stdout_path = fixture.repo_path.join("land-intent-cleanup.stdout");
+    let stderr_path = fixture.repo_path.join("land-intent-cleanup.stderr");
+    let mut command = fixture.land_command(&["land", "--wait", "--no-clean"]);
+    command
+        .stdout(Stdio::from(fs::File::create(&stdout_path).unwrap()))
+        .stderr(Stdio::from(fs::File::create(&stderr_path).unwrap()));
+    let mut child = ProcessGroupGuard::spawn(&mut command).expect("start guarded land");
+
+    let readiness_deadline = Instant::now() + Duration::from_secs(30);
+    while !fixture.polled.exists() {
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!(
+                "land exited before readiness ({status}): stdout={} stderr={}",
+                fs::read_to_string(&stdout_path).unwrap_or_default(),
+                fs::read_to_string(&stderr_path).unwrap_or_default()
+            );
+        }
+        assert!(
+            Instant::now() < readiness_deadline,
+            "land did not reach CI polling readiness"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    fixture.release_ci();
+
+    let execution_deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < execution_deadline,
+            "land did not finish before the execution deadline"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    drop(child);
+    let stdout = fs::read_to_string(&stdout_path).unwrap();
+    let stderr = fs::read_to_string(&stderr_path).unwrap();
+    assert!(
+        status.success(),
+        "land failed: stdout={stdout} stderr={stderr}"
+    );
+
+    let persisted: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert!(persisted["stacks"]["land-wait"]["review_creation_intents"]["c-1111111"].is_null());
+    assert_eq!(
+        persisted["stacks"]["land-wait"]["review_creation_intents"]["c-2222222"]
+            ["origin_operation_id"],
+        "op_0000000000042_pending"
     );
 }

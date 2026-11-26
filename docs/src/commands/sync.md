@@ -43,6 +43,25 @@ rollback. When sync creates a replacement for a review whose source branch
 changed, it persists the new review mapping immediately after successful
 creation, before attempting later updates or closing the old review.
 
+Before any new PR/MR create request, sync durably records the exact source,
+target, and owning operation ID in a repository-local creation intent. If the
+provider response is ambiguous, sync retains that intent, commits the owning
+operation as remote-touched, emits an error checkpoint, and stops before any
+later create, prune, stack-link, replacement follow-up, or navigation mutation.
+The next sync performs provider/authentication preflight, loads the exact origin
+operation, and searches the provider by the saved source branch. Recovery
+continues only when one open or draft review has the exact saved source and
+target. It records that review on the origin operation and installs the mapping
+without issuing another create. Zero, multiple, closed, merged, or mismatched
+results fail closed and leave the intent for manual inspection.
+
+A recovered intent deliberately uses its saved topology, even when `gg unstack`
+has since moved the entry. After recovery, normal sync topology handling can
+create a replacement review for the moved source branch. Successful `gg land`
+removes only the landed entry's intent; unrelated unresolved intents remain.
+Creation intents and mappings live in `gg/config.json` under the directory
+reported by `git rev-parse --git-common-dir`.
+
 Before retrying a failed sync, reconcile what actually happened:
 
 - inspect the mapped review number, state, source, and target on the provider;
@@ -259,7 +278,8 @@ Content **inside** the managed block (the generated description) is regenerated 
 
 ## Stack navigation comments
 
-If `defaults.stack_nav_comments` is enabled in `.git/gg/config.json`, every
+If `defaults.stack_nav_comments` is enabled in `gg/config.json` under the
+directory reported by `git rev-parse --git-common-dir`, every
 full `gg sync` (no `--until`) reconciles a managed comment on each PR/MR in
 the stack. The comment shows all entries in the stack in bottom-up order,
 with a 👉 marker on the entry that PR corresponds to — letting reviewers see

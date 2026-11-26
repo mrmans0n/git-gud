@@ -45,7 +45,10 @@
    from this clone or a historical Drop journal record is never authority.
    A "Kept remote branch" warning means an open PR/MR still targets the
    dropped branch; retarget it with a full `gg sync`, never delete the branch
-   by hand.
+   by hand. If review creation returns an ambiguous response, stop immediately.
+   Sync persists the exact source, target, and origin operation before create;
+   the next sync may recover only one exact open/draft provider match and will
+   not issue another create. Do not remove the intent or retry creation by hand.
 3. Prefer `gg sync --jsonl` for monitored agent execution. Use `gg sync --json`
    when only the final aggregate is needed.
 4. Consume the final summary event for publication results only: stack, base,

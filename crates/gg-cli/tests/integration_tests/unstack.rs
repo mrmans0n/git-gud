@@ -2,7 +2,7 @@ use crate::helpers::{create_test_repo, create_test_repo_with_worktree_support, r
 
 use serde_json::Value;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
 
@@ -699,4 +699,123 @@ fn test_unstack_last_entry_json_creates_one_entry_stack() {
     let upper_root = commit_message(&repo_path, &upper_commits[0]);
     assert!(upper_root.contains("GG-ID: c-0000003"));
     assert!(!upper_root.contains("GG-Parent:"));
+}
+
+#[test]
+fn unstack_persists_review_creation_intents_for_only_moved_entries() {
+    let (_temp_dir, repo_path) = setup_unstack_repo("intent-lower", 3);
+    let config_path = repo_path.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["stacks"]["intent-lower"]["mrs"] = serde_json::json!({
+        "c-0000001": 41,
+        "c-0000002": 42,
+        "c-0000003": 43
+    });
+    config["stacks"]["intent-lower"]["review_creation_intents"] = serde_json::json!({
+        "c-0000001": {
+            "source_branch": "testuser/intent-lower--c-0000001",
+            "target_branch": "main",
+            "origin_operation_id": "op_0000000000001_stays"
+        },
+        "c-0000002": {
+            "source_branch": "testuser/intent-lower--c-0000002",
+            "target_branch": "testuser/intent-lower--c-0000001",
+            "origin_operation_id": "op_0000000000002_moves"
+        }
+    });
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &[
+            "unstack",
+            "--target",
+            "2",
+            "--name",
+            "intent-upper",
+            "--no-tui",
+            "--json",
+        ],
+    );
+    assert!(success, "gg unstack failed: {stdout}\n{stderr}");
+
+    let persisted: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(
+        persisted["stacks"]["intent-lower"]["review_creation_intents"]["c-0000001"]
+            ["origin_operation_id"],
+        "op_0000000000001_stays"
+    );
+    assert!(persisted["stacks"]["intent-lower"]["review_creation_intents"]["c-0000002"].is_null());
+    assert_eq!(
+        persisted["stacks"]["intent-upper"]["review_creation_intents"]["c-0000002"],
+        serde_json::json!({
+            "source_branch": "testuser/intent-lower--c-0000002",
+            "target_branch": "testuser/intent-lower--c-0000001",
+            "origin_operation_id": "op_0000000000002_moves"
+        })
+    );
+    assert!(persisted["stacks"]["intent-upper"]["review_creation_intents"]["c-0000001"].is_null());
+    assert_eq!(persisted["stacks"]["intent-upper"]["mrs"]["c-0000002"], 42);
+    assert_eq!(persisted["stacks"]["intent-upper"]["mrs"]["c-0000003"], 43);
+}
+
+#[test]
+fn unstack_intent_only_migration_requires_sync_in_json_and_human_output() {
+    let configure_intent = |repo_path: &Path, stack_name: &str| {
+        let config_path = repo_path.join(".git/gg/config.json");
+        let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+        config["stacks"][stack_name]["review_creation_intents"] = serde_json::json!({
+            "c-0000002": {
+                "source_branch": format!("testuser/{stack_name}--c-0000002"),
+                "target_branch": format!("testuser/{stack_name}--c-0000001"),
+                "origin_operation_id": "op_0000000000002_intent_only"
+            }
+        });
+        fs::write(config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    };
+
+    let (_json_temp, json_repo) = setup_unstack_repo("intent-json-lower", 3);
+    configure_intent(&json_repo, "intent-json-lower");
+    let (success, stdout, stderr) = run_gg(
+        &json_repo,
+        &[
+            "unstack",
+            "--target",
+            "2",
+            "--name",
+            "intent-json-upper",
+            "--no-tui",
+            "--json",
+        ],
+    );
+    assert!(success, "gg unstack failed: {stdout}\n{stderr}");
+    let result: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(result["unstack"]["migrated_review_mappings"], 0);
+    assert_eq!(result["unstack"]["sync_required"], true);
+    let json_config: Value =
+        serde_json::from_slice(&fs::read(json_repo.join(".git/gg/config.json")).unwrap()).unwrap();
+    assert_eq!(
+        json_config["stacks"]["intent-json-upper"]["review_creation_intents"]["c-0000002"],
+        serde_json::json!({
+            "source_branch": "testuser/intent-json-lower--c-0000002",
+            "target_branch": "testuser/intent-json-lower--c-0000001",
+            "origin_operation_id": "op_0000000000002_intent_only"
+        })
+    );
+
+    let (_human_temp, human_repo) = setup_unstack_repo("intent-human-lower", 3);
+    configure_intent(&human_repo, "intent-human-lower");
+    let (success, stdout, stderr) = run_gg(
+        &human_repo,
+        &[
+            "unstack",
+            "--target",
+            "2",
+            "--name",
+            "intent-human-upper",
+            "--no-tui",
+        ],
+    );
+    assert!(success, "gg unstack failed: {stdout}\n{stderr}");
+    assert!(stdout.contains("Run `gg sync` to push the new stack and update PR/MR targets."));
 }

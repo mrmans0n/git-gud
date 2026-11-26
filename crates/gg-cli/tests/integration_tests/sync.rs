@@ -1538,6 +1538,191 @@ esac
 
 #[cfg(unix)]
 #[test]
+fn replacement_ambiguous_create_recovers_without_duplicate_review() {
+    let (_temp, repo, _remote) = create_test_repo_with_remote();
+    write_remote_prune_config(&repo);
+    let config_path = repo.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["defaults"]["sync_update_descriptions"] = false.into();
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    let (ok, out, err) = run_gg(&repo, &["co", "replacement-ambiguous"]);
+    assert!(ok, "checkout failed: {out}\n{err}");
+    checked_git(
+        &repo,
+        &["commit", "--allow-empty", "-m", "Entry\n\nGG-ID: c-1111111"],
+    );
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["stacks"]["replacement-ambiguous"]["mrs"]["c-1111111"] = 428.into();
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+
+    let fake_bin = repo.join("fake-replacement-ambiguous-bin");
+    fs::create_dir(&fake_bin).unwrap();
+    write_executable(
+        &fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+dir=$(dirname "$0")
+printf '%s|%s|%s\n' "$1" "${2:-}" "${3:-}" >> "$dir/requests"
+case "$1 ${2:-}" in
+  '--version ') echo 'gh version 2.0.0';;
+  'auth status') exit 0;;
+  'pr view')
+    case "$3" in
+      428) printf '{"number":428,"title":"Entry","state":"OPEN","url":"https://github.com/test/repo/pull/428","headRefName":"testuser/old-stack--c-1111111","baseRefName":"main","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}\n';;
+      900) printf '{"number":900,"title":"Entry","state":"OPEN","url":"https://github.com/test/repo/pull/900","headRefName":"testuser/replacement-ambiguous--c-1111111","baseRefName":"main","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}\n';;
+      *) echo "unexpected review $3" >&2; exit 1;;
+    esac;;
+  'pr create')
+    attempts=$(cat "$dir/create-attempts" 2>/dev/null || echo 0)
+    echo $((attempts + 1)) > "$dir/create-attempts"
+    pending=''
+    pending_count=0
+    for record in "$TEST_GIT_DIR/gg/operations/"*.json; do
+      grep -q '"status": "pending"' "$record" || continue
+      pending_count=$((pending_count + 1))
+      pending=$(basename "$record" .json)
+    done
+    [ "$pending_count" -eq 1 ] || exit 1
+    printf '%s\n' "$pending" > "$dir/create-operation-id"
+    : > "$dir/replacement-exists"
+    echo 'simulated lost replacement response' >&2
+    exit 1;;
+  'pr list')
+    [ "$3" = --head ]
+    [ "$4" = testuser/replacement-ambiguous--c-1111111 ]
+    [ -f "$dir/replacement-exists" ] && echo 900;;
+  'pr edit')
+    [ "$3" = 900 ]
+    printf '%s\n' edit >> "$dir/mutations";;
+  'api -X')
+    [ "$3" = POST ]
+    printf '%s\n' comment >> "$dir/mutations";;
+  'pr close')
+    [ "$3" = 428 ]
+    printf '%s\n' close >> "$dir/mutations";;
+  *) echo "unexpected gh $*" >&2; exit 1;;
+esac
+"#,
+    );
+    let mut paths = vec![fake_bin.clone()];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let path = std::env::join_paths(paths).unwrap();
+    let test_git_dir = repo.join(".git");
+    let envs = [
+        ("PATH", path.as_os_str()),
+        ("TEST_GIT_DIR", test_git_dir.as_os_str()),
+    ];
+    let args = ["sync", "--until", "1", "--no-rebase-check", "--json"];
+
+    let (first_ok, first_out, first_err) = run_gg_bounded_with_env(&repo, &args, &envs);
+    assert!(
+        !first_ok,
+        "ambiguous replacement must fail: {first_out}\n{first_err}"
+    );
+    let operation_id = fs::read_to_string(fake_bin.join("create-operation-id"))
+        .unwrap()
+        .trim()
+        .to_string();
+    let after_first: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(
+        after_first["stacks"]["replacement-ambiguous"]["mrs"]["c-1111111"],
+        428
+    );
+    assert_eq!(
+        after_first["stacks"]["replacement-ambiguous"]["review_creation_intents"]["c-1111111"]
+            ["origin_operation_id"],
+        operation_id
+    );
+    let origin = operation_record(&repo, &operation_id);
+    assert_eq!(origin["status"], "committed");
+    assert_eq!(origin["touched_remote"], true);
+    assert!(origin["remote_effects"].as_array().unwrap().is_empty());
+    let first_requests = fs::read_to_string(fake_bin.join("requests")).unwrap();
+    let first_lines = first_requests.lines().collect::<Vec<_>>();
+    let create_index = first_lines
+        .iter()
+        .position(|line| line.starts_with("pr|create|"))
+        .unwrap();
+    assert_eq!(
+        create_index + 1,
+        first_lines.len(),
+        "post-create request: {first_requests}"
+    );
+    for forbidden in ["api|", "pr|close|", "pr|comment|"] {
+        assert_eq!(
+            first_lines
+                .iter()
+                .filter(|line| line.starts_with(forbidden))
+                .count(),
+            0,
+            "forbidden request after ambiguous replacement: {first_requests}"
+        );
+    }
+
+    let (second_ok, second_out, second_err) = run_gg_bounded_with_env(&repo, &args, &envs);
+    assert!(
+        second_ok,
+        "replacement recovery failed: {second_out}\n{second_err}"
+    );
+    assert_eq!(
+        fs::read_to_string(fake_bin.join("create-attempts"))
+            .unwrap()
+            .trim(),
+        "1"
+    );
+    let persisted: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(
+        persisted["stacks"]["replacement-ambiguous"]["mrs"]["c-1111111"],
+        900
+    );
+    assert!(
+        persisted["stacks"]["replacement-ambiguous"]["review_creation_intents"]
+            .as_object()
+            .is_none_or(serde_json::Map::is_empty)
+    );
+    let reconciled = operation_record(&repo, &operation_id);
+    assert_eq!(
+        reconciled["remote_effects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|effect| {
+                effect["kind"] == "pr_created"
+                    && effect["number"] == 900
+                    && effect["url"] == "https://github.com/test/repo/pull/900"
+            })
+            .count(),
+        1
+    );
+    let requests = fs::read_to_string(fake_bin.join("requests")).unwrap();
+    let count = |prefix: &str| {
+        requests
+            .lines()
+            .filter(|line| line.starts_with(prefix))
+            .count()
+    };
+    assert_eq!(count("--version|"), 2);
+    assert_eq!(count("auth|status|"), 2);
+    assert_eq!(count("pr|create|"), 1);
+    assert_eq!(count("pr|list|--head"), 1);
+    assert_eq!(count("pr|view|428"), 3);
+    assert_eq!(count("pr|view|900"), 2);
+    assert_eq!(count("pr|edit|900"), 1);
+    assert_eq!(count("api|-X|POST"), 0);
+    assert_eq!(count("pr|close|428"), 0);
+    assert_eq!(
+        requests.lines().count(),
+        12,
+        "uncounted request: {requests}"
+    );
+    assert_eq!(
+        fs::read_to_string(fake_bin.join("mutations")).unwrap(),
+        "edit\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn disconnect_before_start_event_finalizes_local_segment() {
     let (_temp, repo, remote) = create_test_repo_with_remote();
     write_remote_prune_config(&repo);
@@ -2986,6 +3171,799 @@ fn write_remote_prune_config(repo_path: &Path) {
 }"#,
     )
     .expect("Failed to write config");
+}
+
+#[cfg(unix)]
+fn setup_empty_stack_with_ambiguous_creation(
+    stack_name: &str,
+    gg_id: &str,
+) -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    std::ffi::OsString,
+    String,
+) {
+    let (temp, repo_path, remote_path) = create_test_repo_with_remote();
+    write_remote_prune_config(&repo_path);
+    let (ok, out, err) = run_gg(&repo_path, &["co", stack_name]);
+    assert!(ok, "{out}\n{err}");
+    checked_git(
+        &repo_path,
+        &[
+            "commit",
+            "--allow-empty",
+            "-m",
+            &format!("Entry\n\nGG-ID: {gg_id}"),
+        ],
+    );
+    let branch = format!("testuser/{stack_name}--{gg_id}");
+    let fake_bin = repo_path.join("fake-empty-intent-bin");
+    fs::create_dir(&fake_bin).unwrap();
+    write_executable(
+        &fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+dir=$(dirname "$0")
+printf '%s %s\n' "$1" "${2:-}" >> "$dir/requests"
+case "$1 ${2:-}" in
+  '--version ') echo 'gh version 2.0.0';;
+  'auth status') exit 0;;
+  'pr create')
+    attempts=$(cat "$dir/create-attempts" 2>/dev/null || echo 0)
+    echo $((attempts + 1)) > "$dir/create-attempts"
+    echo 'simulated lost create response' >&2
+    exit 1;;
+  'pr list')
+    echo 'simulated authoritative recovery failure' >&2
+    exit 1;;
+  *) echo "unexpected gh $*" >&2; exit 1;;
+esac
+"#,
+    );
+    let mut paths = vec![fake_bin];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let path = std::env::join_paths(paths).unwrap();
+    let (ok, out, err) = run_gg_bounded_with_env(
+        &repo_path,
+        &["sync", "--until", "1", "--no-rebase-check", "--json"],
+        &[("PATH", path.as_os_str())],
+    );
+    assert!(!ok, "ambiguous create must fail: {out}\n{err}");
+    let expected_oid = checked_git(&repo_path, &["rev-parse", &branch]);
+    checked_git(&repo_path, &["reset", "--hard", "main"]);
+    let config_path = repo_path.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["pending_remote_branch_deletions"] = serde_json::json!([{
+        "remote": "origin",
+        "branch": branch,
+        "expected_oid": expected_oid,
+        "source_operation_id": "op_test_pending_delete",
+        "state": "pending"
+    }]);
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    (temp, repo_path, remote_path, path, branch)
+}
+
+#[cfg(unix)]
+#[test]
+fn empty_stack_creation_recovery_failure_precedes_pending_remote_prune() {
+    let (_temp, repo_path, remote_path, path, branch) =
+        setup_empty_stack_with_ambiguous_creation("empty-intent-prune", "c-7654324");
+    let config_path = repo_path.join(".git/gg/config.json");
+    let before: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(
+        before["pending_remote_branch_deletions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let intent = &before["stacks"]["empty-intent-prune"]["review_creation_intents"]["c-7654324"];
+    let origin_id = intent["origin_operation_id"].as_str().unwrap();
+    let operations_before = operation_record_ids(&repo_path);
+
+    let (ok, out, err) = run_gg_bounded_with_env(
+        &repo_path,
+        &["sync", "--no-rebase-check", "--json"],
+        &[("PATH", path.as_os_str())],
+    );
+
+    assert!(!ok, "recovery failure must abort empty sync: {out}\n{err}");
+    assert_eq!(operation_record_ids(&repo_path), operations_before);
+    let after: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(
+        after["pending_remote_branch_deletions"],
+        before["pending_remote_branch_deletions"]
+    );
+    assert_eq!(
+        after["stacks"]["empty-intent-prune"]["review_creation_intents"]["c-7654324"]
+            ["origin_operation_id"],
+        origin_id
+    );
+    assert!(
+        run_git(
+            &remote_path,
+            &["show-ref", "--verify", &format!("refs/heads/{branch}")]
+        )
+        .0,
+        "recovery failure must not prune the pending branch"
+    );
+    let requests = fs::read_to_string(repo_path.join("fake-empty-intent-bin/requests")).unwrap();
+    assert_eq!(
+        requests
+            .lines()
+            .filter(|line| line.starts_with("pr create"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        requests
+            .lines()
+            .filter(|line| line.starts_with("pr list"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        requests
+            .lines()
+            .filter(|line| line.starts_with("pr view"))
+            .count(),
+        0
+    );
+    assert!(
+        requests.lines().all(|line| {
+            line.starts_with("--version")
+                || line.starts_with("auth status")
+                || line.starts_with("pr create")
+                || line.starts_with("pr list")
+        }),
+        "uncounted provider request:\n{requests}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn empty_stack_creation_intent_without_deletion_requires_recovery() {
+    let (_temp, repo_path, _remote_path, path, _branch) =
+        setup_empty_stack_with_ambiguous_creation("empty-intent-only", "c-7654325");
+    let config_path = repo_path.join(".git/gg/config.json");
+    let mut before: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    before["pending_remote_branch_deletions"] = serde_json::json!([]);
+    fs::write(&config_path, serde_json::to_vec_pretty(&before).unwrap()).unwrap();
+    let origin_id = before["stacks"]["empty-intent-only"]["review_creation_intents"]["c-7654325"]
+        ["origin_operation_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let operations_before = operation_record_ids(&repo_path);
+
+    let (ok, out, err) = run_gg_bounded_with_env(
+        &repo_path,
+        &["sync", "--no-rebase-check", "--json"],
+        &[("PATH", path.as_os_str())],
+    );
+
+    assert!(
+        !ok,
+        "unresolved intent must not silently succeed: {out}\n{err}"
+    );
+    assert_eq!(operation_record_ids(&repo_path), operations_before);
+    let after: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(
+        after["stacks"]["empty-intent-only"]["review_creation_intents"]["c-7654325"]
+            ["origin_operation_id"],
+        origin_id
+    );
+    assert!(after["pending_remote_branch_deletions"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let requests = fs::read_to_string(repo_path.join("fake-empty-intent-bin/requests")).unwrap();
+    assert_eq!(
+        requests
+            .lines()
+            .filter(|line| line.starts_with("pr create"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        requests
+            .lines()
+            .filter(|line| line.starts_with("pr list"))
+            .count(),
+        1
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn sync_recovers_lost_create_response_without_duplicate_review() {
+    let (_temp, repo_path, _remote) = create_test_repo_with_remote();
+    write_remote_prune_config(&repo_path);
+    let config_path = repo_path.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["defaults"]["sync_update_descriptions"] = false.into();
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    let (ok, out, err) = run_gg(&repo_path, &["co", "create-intent-lost"]);
+    assert!(ok, "{out}\n{err}");
+    checked_git(
+        &repo_path,
+        &["commit", "--allow-empty", "-m", "Entry\n\nGG-ID: c-7654321"],
+    );
+    let branch = "testuser/create-intent-lost--c-7654321";
+    let fake_bin = repo_path.join("fake-create-intent-bin");
+    fs::create_dir(&fake_bin).unwrap();
+    write_executable(
+        &fake_bin.join("gh"),
+        &format!(
+            r#"#!/bin/sh
+set -eu
+dir=$(dirname "$0")
+printf '%s\n' "$*" >> "$dir/requests"
+case "$1 ${{2:-}}" in
+  '--version ') echo 'gh version 2.0.0';;
+  'auth status') exit 0;;
+  'pr create')
+    attempts=$(cat "$dir/create-attempts" 2>/dev/null || echo 0)
+    echo $((attempts + 1)) > "$dir/create-attempts"
+    touch "$dir/review-exists"
+    echo 'simulated lost create response' >&2
+    exit 1;;
+  'pr list')
+    if [ -f "$dir/lookup-fail" ]; then
+      echo 'simulated review lookup failure' >&2
+      exit 1
+    fi
+    [ "$3" = --head ] && [ "$4" = '{branch}' ] && [ -f "$dir/review-exists" ] && echo 101
+    ;;
+  'pr view')
+    echo '{{"number":101,"title":"Entry","state":"OPEN","url":"https://github.com/test/repo/pull/101","headRefName":"{branch}","baseRefName":"main","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}}'
+    ;;
+  *) echo "unexpected gh $*" >&2; exit 1;;
+esac
+"#
+        ),
+    );
+    let mut paths = vec![fake_bin.clone()];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let path = std::env::join_paths(paths).unwrap();
+    let args = ["sync", "--until", "1", "--rebase-if-needed", "--json"];
+
+    let (first_ok, first_out, first_err) =
+        run_gg_bounded_with_env(&repo_path, &args, &[("PATH", path.as_os_str())]);
+    assert!(
+        !first_ok,
+        "ambiguous create must fail: {first_out}\n{first_err}"
+    );
+    let after_first: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    let intent =
+        &after_first["stacks"]["create-intent-lost"]["review_creation_intents"]["c-7654321"];
+    assert_eq!(intent["source_branch"], branch);
+    assert_eq!(intent["target_branch"], "main");
+    let origin_id = intent["origin_operation_id"]
+        .as_str()
+        .expect("intent has required origin operation id")
+        .to_string();
+
+    let operation_ids_before_recovery = operation_record_ids(&repo_path);
+    fs::write(fake_bin.join("lookup-fail"), "fail").unwrap();
+    let (lookup_ok, lookup_out, lookup_err) =
+        run_gg_bounded_with_env(&repo_path, &args, &[("PATH", path.as_os_str())]);
+    assert!(
+        !lookup_ok,
+        "lookup failure must block recovery: {lookup_out}\n{lookup_err}"
+    );
+    assert_eq!(
+        operation_record_ids(&repo_path),
+        operation_ids_before_recovery,
+        "lookup failure must not open a successor sync segment"
+    );
+    let lookup_blocked: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(
+        lookup_blocked["stacks"]["create-intent-lost"]["review_creation_intents"]["c-7654321"]
+            ["origin_operation_id"],
+        origin_id
+    );
+    fs::remove_file(fake_bin.join("lookup-fail")).unwrap();
+
+    let origin_tmp = repo_path
+        .join(".git/gg/operations")
+        .join(format!("{origin_id}.json.tmp"));
+    fs::create_dir(&origin_tmp).unwrap();
+    let (blocked_ok, blocked_out, blocked_err) =
+        run_gg_bounded_with_env(&repo_path, &args, &[("PATH", path.as_os_str())]);
+    assert!(
+        !blocked_ok,
+        "origin save failure must block recovery: {blocked_out}\n{blocked_err}"
+    );
+    assert_eq!(
+        operation_record_ids(&repo_path),
+        operation_ids_before_recovery,
+        "failed origin reconciliation must not open a successor sync segment"
+    );
+    let blocked_config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(
+        blocked_config["stacks"]["create-intent-lost"]["review_creation_intents"]["c-7654321"]
+            ["origin_operation_id"],
+        origin_id
+    );
+    fs::remove_dir(&origin_tmp).unwrap();
+
+    let (second_ok, second_out, second_err) =
+        run_gg_bounded_with_env(&repo_path, &args, &[("PATH", path.as_os_str())]);
+    assert!(second_ok, "{second_out}\n{second_err}");
+    let second: Value = serde_json::from_str(&second_out).unwrap();
+    assert_eq!(second["sync"]["entries"][0]["pr_number"], 101);
+    assert_eq!(
+        fs::read_to_string(fake_bin.join("create-attempts"))
+            .unwrap()
+            .trim(),
+        "1",
+        "an ambiguous create must never be retried"
+    );
+    let requests = fs::read_to_string(fake_bin.join("requests")).unwrap();
+    assert_eq!(
+        requests
+            .lines()
+            .filter(|line| line.starts_with("pr list --head"))
+            .count(),
+        3,
+        "the lookup failure, blocked reconciliation, and retry each perform one source discovery"
+    );
+    assert_eq!(
+        requests
+            .lines()
+            .filter(|line| line.starts_with("pr create"))
+            .count(),
+        1
+    );
+    let persisted: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(
+        persisted["stacks"]["create-intent-lost"]["mrs"]["c-7654321"],
+        101
+    );
+    assert!(
+        persisted["stacks"]["create-intent-lost"]["review_creation_intents"]
+            .as_object()
+            .is_none_or(serde_json::Map::is_empty)
+    );
+    let origin = operation_record(&repo_path, &origin_id);
+    assert_eq!(origin["status"], "committed");
+    assert_eq!(origin["touched_remote"], true);
+    assert_eq!(
+        origin["remote_effects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|effect| effect["kind"] == "pr_created" && effect["number"] == 101)
+            .count(),
+        1
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn sync_origin_load_failure_retains_intent_without_lookup_create_or_successor_segment() {
+    let (_temp, repo_path, _remote) = create_test_repo_with_remote();
+    write_remote_prune_config(&repo_path);
+    let (ok, out, err) = run_gg(&repo_path, &["co", "create-intent-missing-origin"]);
+    assert!(ok, "{out}\n{err}");
+    checked_git(
+        &repo_path,
+        &["commit", "--allow-empty", "-m", "Entry\n\nGG-ID: c-7654323"],
+    );
+    let config_path = repo_path.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["stacks"]["create-intent-missing-origin"]["review_creation_intents"] = serde_json::json!({
+        "c-7654323": {
+            "source_branch": "testuser/create-intent-missing-origin--c-7654323",
+            "target_branch": "main",
+            "origin_operation_id": "op_0000000000999_missing"
+        }
+    });
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+
+    let fake_bin = repo_path.join("fake-create-missing-origin-bin");
+    fs::create_dir(&fake_bin).unwrap();
+    write_executable(
+        &fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+dir=$(dirname "$0")
+printf '%s\n' "$*" >> "$dir/requests"
+case "$1 ${2:-}" in
+  '--version ') echo 'gh version 2.0.0';;
+  'auth status') exit 0;;
+  *) echo "unexpected provider access after missing origin: gh $*" >&2; exit 1;;
+esac
+"#,
+    );
+    let mut paths = vec![fake_bin.clone()];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let path = std::env::join_paths(paths).unwrap();
+    let operation_ids_before = operation_record_ids(&repo_path);
+
+    let (success, stdout, stderr) = run_gg_bounded_with_env(
+        &repo_path,
+        &["sync", "--until", "1", "--rebase-if-needed", "--json"],
+        &[("PATH", path.as_os_str())],
+    );
+    assert!(!success, "missing origin must fail: {stdout}\n{stderr}");
+    assert_eq!(operation_record_ids(&repo_path), operation_ids_before);
+    let requests = fs::read_to_string(fake_bin.join("requests")).unwrap();
+    assert!(!requests.lines().any(|line| line.starts_with("pr list")));
+    assert!(!requests.lines().any(|line| line.starts_with("pr create")));
+    let persisted: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(
+        persisted["stacks"]["create-intent-missing-origin"]["review_creation_intents"]["c-7654323"]
+            ["origin_operation_id"],
+        "op_0000000000999_missing"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn sync_recovers_post_create_config_failure_without_duplicate_review_or_effect() {
+    let (_temp, repo_path, _remote) = create_test_repo_with_remote();
+    write_remote_prune_config(&repo_path);
+    let config_path = repo_path.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["defaults"]["sync_update_descriptions"] = false.into();
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    let (ok, out, err) = run_gg(&repo_path, &["co", "create-intent-config"]);
+    assert!(ok, "{out}\n{err}");
+    checked_git(
+        &repo_path,
+        &["commit", "--allow-empty", "-m", "Entry\n\nGG-ID: c-7654322"],
+    );
+    let branch = "testuser/create-intent-config--c-7654322";
+    let fake_bin = repo_path.join("fake-create-config-bin");
+    fs::create_dir(&fake_bin).unwrap();
+    write_executable(
+        &fake_bin.join("gh"),
+        &format!(
+            r#"#!/bin/sh
+set -eu
+dir=$(dirname "$0")
+printf '%s %s\n' "$1" "${{2:-}}" >> "$dir/requests"
+case "$1 ${{2:-}}" in
+  '--version ') echo 'gh version 2.0.0';;
+  'auth status') exit 0;;
+  'pr create')
+    attempts=$(cat "$dir/create-attempts" 2>/dev/null || echo 0)
+    echo $((attempts + 1)) > "$dir/create-attempts"
+    touch "$dir/review-exists"
+    echo 'simulated lost create response' >&2
+    exit 1;;
+  'pr list')
+    [ "$3" = --head ] && [ "$4" = '{branch}' ] && [ -f "$dir/review-exists" ] && echo 102
+    ;;
+  'pr view')
+    if [ -f "$dir/block-config-on-view" ]; then
+      rm "$dir/block-config-on-view"
+      mkdir "$GG_CONFIG_TMP"
+    fi
+    echo '{{"number":102,"title":"Entry","state":"OPEN","url":"https://github.com/test/repo/pull/102","headRefName":"{branch}","baseRefName":"main","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}}'
+    ;;
+  *) echo "unexpected gh $*" >&2; exit 1;;
+esac
+"#
+        ),
+    );
+    let mut paths = vec![fake_bin.clone()];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let path = std::env::join_paths(paths).unwrap();
+    let config_tmp = repo_path.join(".git/gg/config.tmp");
+    let args = ["sync", "--until", "1", "--rebase-if-needed", "--json"];
+    let envs = [
+        ("PATH", path.as_os_str()),
+        ("GG_CONFIG_TMP", config_tmp.as_os_str()),
+    ];
+
+    let (first_ok, first_out, first_err) = run_gg_bounded_with_env(&repo_path, &args, &envs);
+    assert!(
+        !first_ok,
+        "ambiguous create must fail: {first_out}\n{first_err}"
+    );
+    let after_first: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    let intent =
+        &after_first["stacks"]["create-intent-config"]["review_creation_intents"]["c-7654322"];
+    assert_eq!(intent["source_branch"], branch);
+    let origin_id = intent["origin_operation_id"]
+        .as_str()
+        .expect("intent has required origin operation id")
+        .to_string();
+    let operations_after_ambiguous = operation_record_ids(&repo_path);
+    assert!(
+        operations_after_ambiguous.contains(&origin_id),
+        "captured origin must be persisted"
+    );
+
+    fs::write(fake_bin.join("block-config-on-view"), "block").unwrap();
+    let (recovery_ok, recovery_out, recovery_err) =
+        run_gg_bounded_with_env(&repo_path, &args, &envs);
+    assert!(
+        !recovery_ok,
+        "recovery-time config save must fail: {recovery_out}\n{recovery_err}"
+    );
+    let recovery_config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert!(recovery_config["stacks"]["create-intent-config"]["mrs"]["c-7654322"].is_null());
+    assert_eq!(
+        recovery_config["stacks"]["create-intent-config"]["review_creation_intents"]["c-7654322"]
+            ["origin_operation_id"],
+        origin_id
+    );
+    assert_eq!(
+        operation_record_ids(&repo_path),
+        operations_after_ambiguous,
+        "failed recovery config save must not open a successor sync segment"
+    );
+    let recovered_origin = operation_record(&repo_path, &origin_id);
+    assert_eq!(recovered_origin["status"], "committed");
+    assert_eq!(recovered_origin["touched_remote"], true);
+    assert_eq!(
+        recovered_origin["remote_effects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|effect| {
+                effect["kind"] == "pr_created"
+                    && effect["number"] == 102
+                    && effect["url"] == "https://github.com/test/repo/pull/102"
+            })
+            .count(),
+        1
+    );
+    let requests_after_recovery = fs::read_to_string(fake_bin.join("requests")).unwrap();
+    assert_eq!(
+        requests_after_recovery
+            .lines()
+            .filter(|line| line.starts_with("pr create"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        requests_after_recovery
+            .lines()
+            .filter(|line| line.starts_with("pr list"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        requests_after_recovery
+            .lines()
+            .filter(|line| line.starts_with("pr view"))
+            .count(),
+        1
+    );
+    assert!(requests_after_recovery.lines().all(|line| {
+        line.starts_with("--version")
+            || line.starts_with("auth status")
+            || line.starts_with("pr create")
+            || line.starts_with("pr list")
+            || line.starts_with("pr view")
+    }));
+    fs::remove_dir(&config_tmp).unwrap();
+
+    let (second_ok, second_out, second_err) = run_gg_bounded_with_env(&repo_path, &args, &envs);
+    assert!(second_ok, "{second_out}\n{second_err}");
+    assert_eq!(
+        fs::read_to_string(fake_bin.join("create-attempts"))
+            .unwrap()
+            .trim(),
+        "1"
+    );
+    let persisted: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(
+        persisted["stacks"]["create-intent-config"]["mrs"]["c-7654322"],
+        102
+    );
+    let origin = operation_record(&repo_path, &origin_id);
+    assert_eq!(origin["status"], "committed");
+    assert_eq!(
+        origin["remote_effects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|effect| effect["kind"] == "pr_created" && effect["number"] == 102)
+            .count(),
+        1
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn jsonl_disconnect_during_failed_create_stops_before_remote_prune() {
+    let (_temp, repo_path, remote_path, fake_path) =
+        setup_published_prune_stack("failed-create-disconnect");
+    let dropped_branch = "testuser/failed-create-disconnect--c-3333333";
+    let (ok, out, err) = run_gg(&repo_path, &["drop", "3", "--yes"]);
+    assert!(ok, "{out}\n{err}");
+    clear_stack_mappings(&repo_path, "failed-create-disconnect");
+    let fake_bin = repo_path.join("fake-bin");
+    write_executable(
+        &fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+dir=$(dirname "$0")
+printf '%s %s\n' "$1" "${2:-}" >> "$dir/failed-create-requests"
+case "$1 ${2:-}" in
+  '--version ') echo 'gh version 2.0.0';;
+  'auth status') exit 0;;
+  'pr create')
+    attempts=$(cat "$dir/create-attempts" 2>/dev/null || echo 0)
+    echo $((attempts + 1)) > "$dir/create-attempts"
+    pending=''
+    pending_count=0
+    for record in "$TEST_GIT_DIR/gg/operations/"*.json; do
+      grep -q '"status": "pending"' "$record" || continue
+      pending_count=$((pending_count + 1))
+      pending=$(basename "$record" .json)
+    done
+    [ "$pending_count" -eq 1 ] || {
+      echo "expected exactly one pending operation, found $pending_count" >&2
+      exit 1
+    }
+    printf '%s\n' "$pending" > "$dir/create-operation-id"
+    touch "$dir/create-started"
+    while [ ! -f "$dir/release-create" ]; do sleep 0.01; done
+    echo 'simulated failed create' >&2
+    exit 1;;
+  'pr list') exit 0;;
+  *) echo "unexpected gh $*" >&2; exit 1;;
+esac
+"#,
+    );
+    let real_git = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    write_executable(
+        &fake_bin.join("git"),
+        &format!(
+            r#"#!/bin/sh
+set -eu
+case " $* " in
+  *" :refs/heads/{dropped_branch} "*) echo delete >> "$(dirname "$0")/delete-attempts";;
+esac
+exec "$REAL_GIT" "$@"
+"#
+        ),
+    );
+
+    let (read_stream, write_stream) = UnixStream::pair().unwrap();
+    read_stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let stdout_fd: std::os::fd::OwnedFd = write_stream.into();
+    let stderr_path = repo_path.join(".git/failed-create-disconnect-stderr");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_gg"));
+    command
+        .args(["sync", "--until", "1", "--no-rebase-check", "--jsonl"])
+        .current_dir(&repo_path)
+        .env("PATH", &fake_path)
+        .env("REAL_GIT", real_git.trim())
+        .env("TEST_GIT_DIR", repo_path.join(".git"))
+        .stdout(Stdio::from(stdout_fd))
+        .stderr(Stdio::from(fs::File::create(&stderr_path).unwrap()));
+    let mut child = ProcessGroupGuard::spawn(&mut command).expect("start sync");
+    let mut reader = BufReader::new(read_stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).expect("read start event");
+    assert_eq!(
+        serde_json::from_str::<Value>(&line).unwrap()["event"],
+        "start"
+    );
+
+    let readiness_deadline = Instant::now() + Duration::from_secs(10);
+    while !fake_bin.join("create-started").exists() {
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!(
+                "sync exited before create ({status}): {}",
+                fs::read_to_string(&stderr_path).unwrap_or_default()
+            );
+        }
+        assert!(
+            Instant::now() < readiness_deadline,
+            "sync did not reach create readiness"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let operation_id = fs::read_to_string(fake_bin.join("create-operation-id"))
+        .unwrap()
+        .trim()
+        .to_string();
+    let pending = operation_record(&repo_path, &operation_id);
+    assert_eq!(pending["status"], "pending", "{pending}");
+    assert_eq!(pending["touched_remote"], true, "{pending}");
+
+    drop(reader);
+    fs::write(fake_bin.join("release-create"), "release").unwrap();
+    let process_deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < process_deadline,
+            "sync did not stop after failed-create disconnect"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    assert!(!status.success(), "disconnect must abort sync");
+    assert_eq!(
+        fs::read_to_string(fake_bin.join("create-attempts"))
+            .unwrap()
+            .trim(),
+        "1"
+    );
+    assert!(!fake_bin.join("delete-attempts").exists());
+    assert!(
+        run_git(
+            &remote_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{dropped_branch}")
+            ]
+        )
+        .0,
+        "dropped branch was pruned after disconnect"
+    );
+    let record = operation_record(&repo_path, &operation_id);
+    assert_eq!(record["status"], "committed", "{record}");
+    assert_eq!(record["touched_remote"], true, "{record}");
+    assert!(record["remote_effects"].as_array().unwrap().is_empty());
+    let config: Value =
+        serde_json::from_slice(&fs::read(repo_path.join(".git/gg/config.json")).unwrap()).unwrap();
+    assert_eq!(
+        config["pending_remote_branch_deletions"][0]["state"],
+        "pending"
+    );
+    assert_eq!(
+        config["stacks"]["failed-create-disconnect"]["review_creation_intents"]["c-1111111"]
+            ["source_branch"],
+        "testuser/failed-create-disconnect--c-1111111"
+    );
+    assert_eq!(
+        config["stacks"]["failed-create-disconnect"]["review_creation_intents"]["c-1111111"]
+            ["origin_operation_id"],
+        operation_id
+    );
+    let requests = fs::read_to_string(fake_bin.join("failed-create-requests")).unwrap();
+    let request_count = |prefix: &str| {
+        requests
+            .lines()
+            .filter(|line| line.starts_with(prefix))
+            .count()
+    };
+    assert_eq!(request_count("--version"), 1);
+    assert_eq!(request_count("auth status"), 1);
+    assert_eq!(request_count("pr list"), 0);
+    assert_eq!(request_count("pr view"), 0);
+    assert_eq!(request_count("pr create"), 1);
+    assert_eq!(request_count("pr comment"), 0);
+    assert_eq!(request_count("pr close"), 0);
+    assert_eq!(
+        request_count("api"),
+        0,
+        "no native-stack or navigation request"
+    );
+    assert_eq!(
+        requests.lines().count(),
+        3,
+        "uncounted provider request: {requests}"
+    );
+    assert!(
+        !fake_bin.join("delete-attempts").exists(),
+        "prune count must be zero"
+    );
 }
 
 fn clear_stack_mappings(repo_path: &Path, stack_name: &str) {

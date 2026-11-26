@@ -29,6 +29,8 @@ Run only up to a specific entry:
 gg lint --until 2
 ```
 
+You can run lint after navigating to a detached position with `gg mv`. If lint rewrites that commit, git-gud leaves HEAD detached at the rewritten logical entry when it can identify the entry uniquely. If it cannot, git-gud safely restores the exact commit you started from rather than selecting a branch or a different stack entry.
+
 ## Run lint during sync
 
 ```bash

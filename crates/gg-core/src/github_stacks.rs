@@ -4,6 +4,7 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 
 use crate::config::GithubStacksIntegration;
+use crate::error::Result as GgResult;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemotePullRequestState {
@@ -211,7 +212,8 @@ pub fn reconcile_with_gh(
     base: &str,
     pr_numbers: &[u64],
 ) -> GithubStackReconcileOutcome {
-    reconcile_with_gh_before_mutation(mode, base, pr_numbers, || {})
+    reconcile_with_gh_before_mutation(mode, base, pr_numbers, || Ok(()))
+        .expect("infallible pre-mutation callback")
 }
 
 /// Reconcile GitHub's native stack state and run `before_mutation` immediately
@@ -220,9 +222,23 @@ pub fn reconcile_with_gh_before_mutation(
     mode: GithubStacksIntegration,
     base: &str,
     pr_numbers: &[u64],
-    before_mutation: impl FnMut(),
-) -> GithubStackReconcileOutcome {
-    reconcile_with_runner_before_mutation(&SystemGhRunner, mode, base, pr_numbers, before_mutation)
+    mut before_mutation: impl FnMut() -> GgResult<()>,
+) -> GgResult<GithubStackReconcileOutcome> {
+    let mut callback_error = None;
+    let outcome =
+        reconcile_with_runner_before_mutation(&SystemGhRunner, mode, base, pr_numbers, || {
+            match before_mutation() {
+                Ok(()) => true,
+                Err(error) => {
+                    callback_error = Some(error);
+                    false
+                }
+            }
+        });
+    match callback_error {
+        Some(error) => Err(error),
+        None => Ok(outcome),
+    }
 }
 
 #[cfg(test)]
@@ -232,7 +248,7 @@ fn reconcile_with_runner<R: GhCommandRunner>(
     base: &str,
     pr_numbers: &[u64],
 ) -> GithubStackReconcileOutcome {
-    reconcile_with_runner_before_mutation(runner, mode, base, pr_numbers, || {})
+    reconcile_with_runner_before_mutation(runner, mode, base, pr_numbers, || true)
 }
 
 fn reconcile_with_runner_before_mutation<R: GhCommandRunner>(
@@ -240,7 +256,7 @@ fn reconcile_with_runner_before_mutation<R: GhCommandRunner>(
     mode: GithubStacksIntegration,
     base: &str,
     pr_numbers: &[u64],
-    mut before_mutation: impl FnMut(),
+    mut before_mutation: impl FnMut() -> bool,
 ) -> GithubStackReconcileOutcome {
     if pr_numbers.is_empty() {
         return outcome(GithubStackSyncResult::skipped(
@@ -301,7 +317,13 @@ fn reconcile_with_runner_before_mutation<R: GhCommandRunner>(
         ReconcilePlan::Create => {
             let mut link_args = args(["stack", "link", "--base", base]);
             link_args.extend(pr_numbers.iter().map(ToString::to_string));
-            before_mutation();
+            if !before_mutation() {
+                return backend_warning(
+                    mode,
+                    pr_numbers,
+                    "pre-mutation callback failed".to_string(),
+                );
+            }
             match run_link(runner, &link_args) {
                 Ok(()) => {
                     let confirmation = discover_stacks(runner, &pr_numbers[..1]);
@@ -344,7 +366,13 @@ fn reconcile_with_runner_before_mutation<R: GhCommandRunner>(
         } => {
             let mut link_args = args(["stack", "link", &stack_number.to_string()]);
             link_args.extend(delta.iter().map(ToString::to_string));
-            before_mutation();
+            if !before_mutation() {
+                return backend_warning(
+                    mode,
+                    pr_numbers,
+                    "pre-mutation callback failed".to_string(),
+                );
+            }
             match run_link(runner, &link_args) {
                 Ok(()) => GithubStackReconcileOutcome {
                     result: GithubStackSyncResult {
@@ -1042,13 +1070,56 @@ mod tests {
             GithubStacksIntegration::Auto,
             "main",
             &[41, 42],
-            || callback_seen.set(true),
+            || {
+                callback_seen.set(true);
+                true
+            },
         );
 
         assert_eq!(outcome.result.action, GithubStackAction::Created);
         assert!(outcome.mutation_attempted);
         assert!(callback_seen.get());
         runner.inner.assert_exhausted();
+    }
+
+    #[test]
+    fn failed_pre_mutation_callback_stops_before_stack_link() {
+        let runner = FakeRunner::new([
+            response(
+                &["stack", "--version"],
+                true,
+                "gh stack version 0.1.0\n",
+                "",
+            ),
+            response(
+                &["api", "repos/{owner}/{repo}/stacks?pull_request=41"],
+                true,
+                "[]",
+                "",
+            ),
+            response(
+                &["api", "repos/{owner}/{repo}/stacks?pull_request=42"],
+                true,
+                "[]",
+                "",
+            ),
+        ]);
+
+        let outcome = reconcile_with_runner_before_mutation(
+            &runner,
+            GithubStacksIntegration::Auto,
+            "main",
+            &[41, 42],
+            || false,
+        );
+
+        assert_eq!(outcome.result.action, GithubStackAction::Warning);
+        assert_eq!(
+            outcome.result.reason,
+            Some(GithubStackReason::BackendFailed)
+        );
+        assert!(!outcome.mutation_attempted);
+        runner.assert_exhausted();
     }
 
     #[test]
@@ -1151,7 +1222,10 @@ mod tests {
             GithubStacksIntegration::Auto,
             "main",
             &[41, 42],
-            || callback_seen.set(true),
+            || {
+                callback_seen.set(true);
+                true
+            },
         );
 
         assert_eq!(outcome.result.action, GithubStackAction::Unchanged);

@@ -93,12 +93,45 @@ if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
 fi
 
 if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
-  echo "https://github.com/test/repo/pull/101"
+  count=$(cat "$(dirname "$0")/create-count" 2>/dev/null || echo 0)
+  number=$((101 + count))
+  echo $((count + 1)) > "$(dirname "$0")/create-count"
+  shift 2
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --head) printf '%s\n' "$2" > "$(dirname "$0")/created-head-$number"; shift 2;;
+      --base) printf '%s\n' "$2" > "$(dirname "$0")/created-base-$number"; shift 2;;
+      *) shift;;
+    esac
+  done
+  echo "https://github.com/test/repo/pull/$number"
+  exit 0
+fi
+
+if [ "$1" = "pr" ] && [ "$2" = "edit" ]; then
+  number=$3
+  shift 3
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --base) printf '%s\n' "$2" > "$(dirname "$0")/created-base-$number"; shift 2;;
+      *) shift;;
+    esac
+  done
   exit 0
 fi
 
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-  echo '{"number":101,"title":"Entry","state":"OPEN","url":"https://github.com/test/repo/pull/101","headRefName":null,"isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
+  number=$3
+  count_file="$(dirname "$0")/view-count-$number"
+  count=$(cat "$count_file" 2>/dev/null || echo 0)
+  count=$((count + 1))
+  printf '%s\n' "$count" > "$count_file"
+  head=$(cat "$(dirname "$0")/created-head-$number" 2>/dev/null || true)
+  base=$(cat "$(dirname "$0")/created-base-$number" 2>/dev/null || true)
+  if [ "${GG_TEST_AUTH_RACE_REVIEW:-}" = "$number" ] && [ "$count" -ge "${GG_TEST_AUTH_RACE_ON_VIEW:-999999}" ]; then
+    base=${GG_TEST_AUTH_RACE_BASE:-unrelated}
+  fi
+  printf '{"number":%s,"title":"Entry","state":"OPEN","url":"https://github.com/test/repo/pull/%s","headRefName":"%s","baseRefName":"%s","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}\n' "$number" "$number" "$head" "$base"
   exit 0
 fi
 
@@ -1018,6 +1051,291 @@ fn sync_until_publishes_only_the_rewritten_untagged_target() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn ordinary_navigation_mutations_revalidate_review() {
+    for (mode, enabled, forbidden) in [
+        ("create", true, "api -X POST"),
+        ("update", true, "api -X PATCH"),
+        ("delete", false, "api -X DELETE"),
+    ] {
+        let (_temp, repo, _remote) = create_test_repo_with_remote();
+        write_remote_prune_config(&repo);
+        let config_path = repo.join(".git/gg/config.json");
+        let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+        config["defaults"]["provider"] = "github".into();
+        config["defaults"]["sync_behind_threshold"] = 0.into();
+        config["defaults"]["stack_nav_comments"] = enabled.into();
+        fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let (ok, out, err) = run_gg(&repo, &["co", "nav-race"]);
+        assert!(ok, "checkout failed: {out}\n{err}");
+        for (file, message) in [
+            ("one", "One\n\nGG-ID: c-1111111"),
+            ("two", "Two\n\nGG-ID: c-2222222\nGG-Parent: c-1111111"),
+        ] {
+            fs::write(repo.join(file), file).unwrap();
+            checked_git(&repo, &["add", file]);
+            checked_git(&repo, &["commit", "-m", message]);
+        }
+        let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+        config["stacks"]["nav-race"]["mrs"]["c-1111111"] = 41.into();
+        config["stacks"]["nav-race"]["mrs"]["c-2222222"] = 42.into();
+        fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        checked_git(
+            &repo,
+            &[
+                "push",
+                "origin",
+                "HEAD~1:refs/heads/testuser/nav-race--c-1111111",
+                "HEAD:refs/heads/testuser/nav-race--c-2222222",
+            ],
+        );
+
+        let fake_bin = repo.join("fake-nav-race-bin");
+        fs::create_dir(&fake_bin).unwrap();
+        let log = fake_bin.join("requests");
+        write_executable(
+            &fake_bin.join("gh"),
+            r#"#!/bin/sh
+set -eu
+dir=$(dirname "$0")
+printf '%s\n' "$*" >> "$dir/requests"
+case "$1 ${2:-}" in
+  '--version ') echo 'gh version 2.0.0';;
+  'auth status') exit 0;;
+  'pr view')
+    n=$3
+    views=$(cat "$dir/views$n" 2>/dev/null || echo 0)
+    views=$((views + 1))
+    printf '%s\n' "$views" > "$dir/views$n"
+    state=OPEN
+    [ ! -f "$dir/listed$n" ] || state=CLOSED
+    if [ "$n" = 41 ]; then head=testuser/nav-race--c-1111111; base=main; else head=testuser/nav-race--c-2222222; base=testuser/nav-race--c-1111111; fi
+    printf '{"number":%s,"title":"Entry","state":"%s","url":"https://github.com/test/repo/pull/%s","headRefName":"%s","baseRefName":"%s","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}\n' "$n" "$state" "$n" "$head" "$base";;
+  'pr edit') exit 0;;
+  'api '*)
+    case "$2" in
+      *'/issues/'*'/comments?per_page=100&page=1')
+        n=$(printf '%s' "$2" | sed -E 's#.*issues/([0-9]+)/.*#\1#')
+        : > "$dir/listed$n"
+        case "$GG_NAV_RACE" in
+          create) echo '[]';;
+          *) echo '[{"id":77,"body":"old\\n<!-- gg:stack-nav -->"}]';;
+        esac;;
+      *) echo "unexpected gh $*" >&2; exit 1;;
+    esac;;
+  *) echo "unexpected gh $*" >&2; exit 1;;
+esac
+"#,
+        );
+        let mut paths = vec![fake_bin.clone()];
+        paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+        let path = std::env::join_paths(paths).unwrap();
+
+        let (ok, out, err) = run_gg_bounded_with_env(
+            &repo,
+            &["sync", "--no-rebase-check"],
+            &[("PATH", path.as_os_str()), ("GG_NAV_RACE", mode.as_ref())],
+        );
+
+        assert!(
+            !ok,
+            "{mode}: stale review allowed nav mutation: {out}\n{err}"
+        );
+        assert!(
+            format!("{out}{err}").contains("not open at the expected source and target"),
+            "{mode}: {out}\n{err}"
+        );
+        assert_eq!(
+            fs::read_to_string(fake_bin.join("views41")).unwrap().trim(),
+            "5",
+            "{mode}: unexpected review read count"
+        );
+        let requests = fs::read_to_string(&log).unwrap();
+        assert!(!requests.contains(forbidden), "{mode}: {requests}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn ordinary_replacement_followups_revalidate_old_review() {
+    for (mode, expected_views, forbidden) in [
+        ("before-comment", "4", "api -X POST"),
+        ("before-close", "5", "pr close 428"),
+    ] {
+        let (_temp, repo, _remote) = create_test_repo_with_remote();
+        write_remote_prune_config(&repo);
+        let config_path = repo.join(".git/gg/config.json");
+        let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+        config["defaults"]["provider"] = "github".into();
+        config["defaults"]["sync_behind_threshold"] = 0.into();
+        fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let (ok, out, err) = run_gg(&repo, &["co", "replacement-race"]);
+        assert!(ok, "checkout failed: {out}\n{err}");
+        fs::write(repo.join("entry"), "entry").unwrap();
+        checked_git(&repo, &["add", "entry"]);
+        checked_git(&repo, &["commit", "-m", "Entry\n\nGG-ID: c-1111111"]);
+        let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+        config["stacks"]["replacement-race"]["mrs"]["c-1111111"] = 428.into();
+        fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+
+        let fake_bin = repo.join("fake-replacement-race-bin");
+        fs::create_dir(&fake_bin).unwrap();
+        let log = fake_bin.join("requests");
+        let views = fake_bin.join("views");
+        write_executable(
+            &fake_bin.join("gh"),
+            r#"#!/bin/sh
+set -eu
+dir=$(dirname "$0")
+printf '%s\n' "$*" >> "$dir/requests"
+case "$1 ${2:-}" in
+  '--version ') echo 'gh version 2.0.0';;
+  'auth status') exit 0;;
+  'pr view')
+    views=$(cat "$dir/views" 2>/dev/null || echo 0)
+    views=$((views + 1))
+    printf '%s\n' "$views" > "$dir/views"
+    state=OPEN
+    if [ "$GG_REPLACEMENT_RACE" = before-comment ] && [ -f "$dir/created" ]; then state=CLOSED; fi
+    if [ "$GG_REPLACEMENT_RACE" = before-close ] && [ -f "$dir/commented" ]; then state=CLOSED; fi
+    printf '{"number":428,"title":"Entry","state":"%s","url":"https://github.com/test/repo/pull/428","headRefName":"testuser/old-stack--c-1111111","baseRefName":"main","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}\n' "$state";;
+  'pr create')
+    : > "$dir/created"
+    echo 'https://github.com/test/repo/pull/900';;
+  'pr close')
+    printf '%s\n' close >> "$dir/mutations";;
+  'api -X')
+    [ "$3" = POST ] || exit 1
+    : > "$dir/commented"
+    printf '%s\n' comment >> "$dir/mutations";;
+  *) echo "unexpected gh $*" >&2; exit 1;;
+esac
+"#,
+        );
+        let mut paths = vec![fake_bin.clone()];
+        paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+        let path = std::env::join_paths(paths).unwrap();
+
+        let (ok, out, err) = run_gg_bounded_with_env(
+            &repo,
+            &["sync", "--until", "1", "--no-rebase-check"],
+            &[
+                ("PATH", path.as_os_str()),
+                ("GG_REPLACEMENT_RACE", mode.as_ref()),
+            ],
+        );
+
+        assert!(
+            !ok,
+            "{mode}: stale old review allowed follow-up: {out}\n{err}"
+        );
+        assert!(
+            format!("{out}{err}").contains("not open at the expected source and target"),
+            "{mode}: {out}\n{err}"
+        );
+        assert_eq!(fs::read_to_string(&views).unwrap().trim(), expected_views);
+        let requests = fs::read_to_string(&log).unwrap();
+        assert!(requests.contains("pr create --head"), "{mode}: {requests}");
+        assert!(!requests.contains(forbidden), "{mode}: {requests}");
+        if mode == "before-close" {
+            assert!(requests.contains("api -X POST"), "{requests}");
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn replacement_mapping_survives_post_create_authorization_failure() {
+    let (_temp, repo, _remote) = create_test_repo_with_remote();
+    write_remote_prune_config(&repo);
+    let config_path = repo.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["defaults"]["provider"] = "github".into();
+    config["defaults"]["sync_behind_threshold"] = 0.into();
+    config["defaults"]["sync_update_descriptions"] = false.into();
+    fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+
+    let (ok, out, err) = run_gg(&repo, &["co", "replacement-persistence"]);
+    assert!(ok, "checkout failed: {out}\n{err}");
+    fs::write(repo.join("entry"), "entry").unwrap();
+    checked_git(&repo, &["add", "entry"]);
+    checked_git(&repo, &["commit", "-m", "Entry\n\nGG-ID: c-1111111"]);
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["stacks"]["replacement-persistence"]["mrs"]["c-1111111"] = 428.into();
+    fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+
+    let fake_bin = repo.join("fake-replacement-persistence-bin");
+    fs::create_dir(&fake_bin).unwrap();
+    let log = fake_bin.join("requests");
+    write_executable(
+        &fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+dir=$(dirname "$0")
+printf '%s\n' "$*" >> "$dir/requests"
+case "$1 ${2:-}" in
+  '--version ') echo 'gh version 2.0.0';;
+  'auth status') exit 0;;
+  'pr view')
+    number=$3
+    if [ "$number" = 428 ]; then
+      if [ -f "$dir/created" ] && [ ! -f "$dir/transient-cleared" ]; then
+        echo 'simulated transient authorization read failure' >&2
+        exit 1
+      fi
+      echo '{"number":428,"title":"Entry","state":"OPEN","url":"https://github.com/test/repo/pull/428","headRefName":"testuser/old-stack--c-1111111","baseRefName":"main","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
+    else
+      printf '{"number":%s,"title":"Entry","state":"OPEN","url":"https://github.com/test/repo/pull/%s","headRefName":"testuser/replacement-persistence--c-1111111","baseRefName":"main","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}\n' "$number" "$number"
+    fi;;
+  'pr create')
+    count=$(cat "$dir/create-count" 2>/dev/null || echo 0)
+    number=$((900 + count))
+    printf '%s\n' $((count + 1)) > "$dir/create-count"
+    : > "$dir/created"
+    printf 'https://github.com/test/repo/pull/%s\n' "$number";;
+  'pr edit') exit 0;;
+  'pr close') exit 0;;
+  'api -X') [ "$3" = POST ] || exit 1;;
+  *) echo "unexpected gh $*" >&2; exit 1;;
+esac
+"#,
+    );
+    let mut paths = vec![fake_bin.clone()];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let path = std::env::join_paths(paths).unwrap();
+    let args = ["sync", "--until", "1", "--no-rebase-check"];
+
+    let (ok, out, err) = run_gg_bounded_with_env(&repo, &args, &[("PATH", path.as_os_str())]);
+    assert!(!ok, "transient authorization read must fail: {out}\n{err}");
+    let persisted_after_failure: Value =
+        serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+
+    fs::write(fake_bin.join("transient-cleared"), "").unwrap();
+    let (ok, out, err) = run_gg_bounded_with_env(&repo, &args, &[("PATH", path.as_os_str())]);
+    assert!(ok, "retry failed: {out}\n{err}");
+
+    assert_eq!(
+        persisted_after_failure["stacks"]["replacement-persistence"]["mrs"]["c-1111111"], 900,
+        "known-success replacement mapping must survive the later authorization failure"
+    );
+    let persisted_after_retry: Value =
+        serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(
+        persisted_after_retry["stacks"]["replacement-persistence"]["mrs"]["c-1111111"], 900,
+        "retry must reuse the persisted replacement"
+    );
+    let requests = fs::read_to_string(&log).unwrap();
+    assert_eq!(
+        requests
+            .lines()
+            .filter(|request| request.starts_with("pr create "))
+            .count(),
+        1,
+        "retry must not create a duplicate replacement: {requests}"
+    );
+}
+
 #[test]
 fn test_sync_recreates_mapped_pr_when_head_branch_changed() {
     let (_temp_dir, repo_path, _remote_path) = create_test_repo_with_remote();
@@ -1093,11 +1411,11 @@ fi
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
   case "$3" in
     428)
-      echo '{"number":428,"title":"Entry A","state":"OPEN","url":"https://github.com/test/repo/pull/428","headRefName":"testuser/u312b203606--c-8b999da","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
+      echo '{"number":428,"title":"Entry A","state":"OPEN","url":"https://github.com/test/repo/pull/428","headRefName":"testuser/u312b203606--c-8b999da","baseRefName":"main","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
       exit 0
       ;;
     429)
-      echo '{"number":429,"title":"Entry B","state":"OPEN","url":"https://github.com/test/repo/pull/429","headRefName":"testuser/u312b203606--c-fa7d2e9","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
+      echo '{"number":429,"title":"Entry B","state":"OPEN","url":"https://github.com/test/repo/pull/429","headRefName":"testuser/u312b203606--c-fa7d2e9","baseRefName":"testuser/u312b203606--c-8b999da","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
       exit 0
       ;;
     *)
@@ -1876,6 +2194,1509 @@ fn latest_operation(repo_path: &Path) -> Value {
         .collect::<Vec<_>>();
     records.sort();
     serde_json::from_slice(&fs::read(records.last().unwrap()).unwrap()).unwrap()
+}
+
+fn setup_published_two_entry_stack(
+    stack_name: &str,
+) -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    std::ffi::OsString,
+) {
+    let (temp, repo_path, remote_path) = create_test_repo_with_remote();
+    write_remote_prune_config(&repo_path);
+    let fake_path = install_fake_gh(&repo_path);
+    let (success, stdout, stderr) = run_gg(&repo_path, &["co", stack_name]);
+    assert!(success, "checkout failed: {stdout}\n{stderr}");
+    for (file, title, id) in [
+        ("entry-a", "Entry A", "c-1111111"),
+        ("entry-b", "Entry B", "c-2222222"),
+    ] {
+        fs::write(repo_path.join(file), format!("{title}\n")).unwrap();
+        checked_git(&repo_path, &["add", file]);
+        checked_git(
+            &repo_path,
+            &["commit", "-m", &format!("{title}\n\nGG-ID: {id}")],
+        );
+    }
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["sync", "--no-rebase-check"],
+        &[("PATH", fake_path.as_os_str())],
+    );
+    assert!(success, "initial sync failed: {stdout}\n{stderr}");
+
+    let config: Value =
+        serde_json::from_slice(&fs::read(repo_path.join(".git/gg/config.json")).unwrap()).unwrap();
+    assert_eq!(config["stacks"][stack_name]["mrs"]["c-1111111"], 101);
+    assert_eq!(config["stacks"][stack_name]["mrs"]["c-2222222"], 102);
+    assert_eq!(
+        fs::read_to_string(repo_path.join("fake-bin/created-base-101"))
+            .unwrap()
+            .trim(),
+        "main"
+    );
+    assert_eq!(
+        fs::read_to_string(repo_path.join("fake-bin/created-base-102"))
+            .unwrap()
+            .trim(),
+        format!("testuser/{stack_name}--c-1111111")
+    );
+
+    (temp, repo_path, remote_path, fake_path)
+}
+
+fn setup_published_three_entry_stack(
+    stack_name: &str,
+) -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    std::ffi::OsString,
+) {
+    let (temp, repo_path, remote_path) = create_test_repo_with_remote();
+    write_remote_prune_config(&repo_path);
+    let fake_path = install_fake_gh(&repo_path);
+    let (success, stdout, stderr) = run_gg(&repo_path, &["co", stack_name]);
+    assert!(success, "checkout failed: {stdout}\n{stderr}");
+    for (file, title, id) in [
+        ("entry-a", "Entry A", "c-1111111"),
+        ("entry-b", "Entry B", "c-2222222"),
+        ("entry-c", "Entry C", "c-3333333"),
+    ] {
+        fs::write(repo_path.join(file), format!("{title}\n")).unwrap();
+        checked_git(&repo_path, &["add", file]);
+        checked_git(
+            &repo_path,
+            &["commit", "-m", &format!("{title}\n\nGG-ID: {id}")],
+        );
+    }
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["sync", "--no-rebase-check"],
+        &[("PATH", fake_path.as_os_str())],
+    );
+    assert!(success, "initial sync failed: {stdout}\n{stderr}");
+
+    let config: Value =
+        serde_json::from_slice(&fs::read(repo_path.join(".git/gg/config.json")).unwrap()).unwrap();
+    assert_eq!(config["stacks"][stack_name]["mrs"]["c-1111111"], 101);
+    assert_eq!(config["stacks"][stack_name]["mrs"]["c-2222222"], 102);
+    assert_eq!(config["stacks"][stack_name]["mrs"]["c-3333333"], 103);
+
+    (temp, repo_path, remote_path, fake_path)
+}
+
+#[cfg(unix)]
+fn install_partial_unstack_topology_gh(repo_path: &Path) {
+    write_executable(
+        &repo_path.join("fake-bin/gh"),
+        r#"#!/bin/sh
+set -eu
+dir=$(dirname "$0")
+printf '%s\n' "$*" >> "$GG_TEST_GH_LOG"
+
+case "$1 ${2:-}" in
+  '--version ')
+    echo 'gh version 2.0.0'
+    ;;
+  'auth status')
+    exit 0
+    ;;
+  'pr view')
+    number=$3
+    count_file="$dir/topology-view-count-$number"
+    count=$(cat "$count_file" 2>/dev/null || echo 0)
+    count=$((count + 1))
+    printf '%s\n' "$count" > "$count_file"
+    case "$number" in
+      103)
+        if [ "$count" -eq 2 ]; then
+          if git --git-dir="$GG_TEST_REMOTE" show-ref --verify --quiet "refs/heads/$GG_TEST_NEW_C_HEAD"; then
+            echo 'C was pushed before immediate authorization' >&2
+            exit 1
+          fi
+          if [ -f "$dir/topology-created-c" ]; then
+            echo 'C replacement was created before immediate authorization' >&2
+            exit 1
+          fi
+          : > "$dir/topology-authorized-c"
+        fi
+        head=$GG_TEST_OLD_C_HEAD
+        base=$GG_TEST_OLD_C_BASE
+        ;;
+      104)
+        head=$GG_TEST_NEW_B_HEAD
+        base=main
+        ;;
+      105)
+        head=$GG_TEST_NEW_C_HEAD
+        base=$GG_TEST_NEW_B_HEAD
+        ;;
+      *)
+        echo "unexpected review $number" >&2
+        exit 1
+        ;;
+    esac
+    printf '{"number":%s,"title":"Entry","state":"OPEN","url":"https://github.com/test/repo/pull/%s","headRefName":"%s","baseRefName":"%s","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}\n' "$number" "$number" "$head" "$base"
+    ;;
+  'pr create')
+    count=$(cat "$dir/create-count" 2>/dev/null || echo 0)
+    number=$((101 + count))
+    printf '%s\n' $((count + 1)) > "$dir/create-count"
+    shift 2
+    head=
+    base=
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --head) head=$2; shift 2;;
+        --base) base=$2; shift 2;;
+        *) shift;;
+      esac
+    done
+    if [ "$head" = "$GG_TEST_NEW_C_HEAD" ]; then
+      [ -f "$dir/topology-authorized-c" ] || {
+        echo 'C replacement creation lacked immediate authorization' >&2
+        exit 1
+      }
+      : > "$dir/topology-created-c"
+    fi
+    printf '%s\n' "$head" > "$dir/created-head-$number"
+    printf '%s\n' "$base" > "$dir/created-base-$number"
+    printf 'https://github.com/test/repo/pull/%s\n' "$number"
+    ;;
+  'pr edit')
+    number=$3
+    shift 3
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --base) printf '%s\n' "$2" > "$dir/created-base-$number"; shift 2;;
+        *) shift;;
+      esac
+    done
+    ;;
+  'pr close')
+    [ "$3" = 103 ] || {
+      echo "unexpected close of review $3" >&2
+      exit 1
+    }
+    [ -f "$dir/topology-commented-c" ] || {
+      echo 'C was closed before its replacement comment' >&2
+      exit 1
+    }
+    : > "$dir/topology-closed-c"
+    ;;
+  'api -X')
+    if [ "$3" = POST ]; then
+      case "$4" in
+        */issues/103/comments)
+          : > "$dir/topology-commented-c"
+          ;;
+        *)
+          echo "unexpected comment endpoint $4" >&2
+          exit 1
+          ;;
+      esac
+    else
+      echo "unexpected mutation method $3" >&2
+      exit 1
+    fi
+    ;;
+  'api '*)
+    echo '[]'
+    ;;
+  *)
+    echo "unexpected gh invocation: $*" >&2
+    exit 1
+    ;;
+esac
+"#,
+    );
+}
+
+fn reset_fake_gh_observations(repo_path: &Path, log: &Path) {
+    fs::write(log, "").unwrap();
+    for number in [101, 102] {
+        let count = repo_path.join(format!("fake-bin/view-count-{number}"));
+        if count.exists() {
+            fs::remove_file(count).unwrap();
+        }
+    }
+}
+
+#[cfg(unix)]
+fn install_rebased_predecessor_gh(repo_path: &Path) {
+    write_executable(
+        &repo_path.join("fake-bin/gh"),
+        r#"#!/bin/sh
+set -eu
+dir=$(dirname "$0")
+printf '%s\n' "$*" >> "$GG_TEST_GH_LOG"
+
+case "$1 ${2:-}" in
+  '--version ')
+    echo 'gh version 2.0.0'
+    ;;
+  'auth status')
+    exit 0
+    ;;
+  'pr view')
+    number=$3
+    if [ "${4:-}" = --json ] && [ "${5:-}" = body ]; then
+      echo 'legacy body without managed markers'
+      exit 0
+    fi
+    if [ "$number" = 101 ] && [ "${GG_TEST_PREDECESSOR_MODE:-}" = lookup-fail ]; then
+      echo 'simulated predecessor lookup failure' >&2
+      exit 1
+    fi
+    head=$(cat "$dir/created-head-$number")
+    base=$(cat "$dir/created-base-$number")
+    oid=$(git --git-dir="$GG_TEST_REMOTE" rev-parse "refs/heads/$head")
+    state=OPEN
+    merge_commit=null
+    reported_number=$number
+    if [ "$number" = 101 ]; then
+      state=MERGED
+      merge_commit=$(printf '{"oid":"%s"}' "$GG_TEST_MERGE_OID")
+      case "${GG_TEST_PREDECESSOR_MODE:-}" in
+        wrong-source) head=testuser/other-stack--c-1111111;;
+        open-state) state=OPEN; merge_commit=null;;
+        closed-state) state=CLOSED; merge_commit=null;;
+        wrong-number) reported_number=999;;
+      esac
+    fi
+    if [ "$number" = 102 ] \
+      && [ "${GG_TEST_FAIL_RETARGET_AFTER_PUSH:-}" = 1 ] \
+      && [ ! -f "$dir/failed-retarget-auth" ] \
+      && [ -f "$dir/rewritten-b-pushed" ]; then
+      base=unrelated/branch
+      : > "$dir/failed-retarget-auth"
+    fi
+    printf '{"number":%s,"title":"Entry","state":"%s","url":"https://github.com/test/repo/pull/%s","headRefName":"%s","headRefOid":"%s","baseRefName":"%s","mergeCommit":%s,"isDraft":false,"mergeable":"MERGEABLE","reviews":[]}\n' \
+      "$reported_number" "$state" "$number" "$head" "$oid" "$base" "$merge_commit"
+    ;;
+  'pr edit')
+    number=$3
+    shift 3
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --base) printf '%s\n' "$2" > "$dir/created-base-$number"; shift 2;;
+        *) shift;;
+      esac
+    done
+    ;;
+  'pr list')
+    exit 0
+    ;;
+  'api '*)
+    echo '[]'
+    ;;
+  *)
+    echo "unexpected gh invocation: $*" >&2
+    exit 1
+    ;;
+esac
+"#,
+    );
+}
+
+#[cfg(unix)]
+fn setup_externally_merged_rebased_stack(
+    stack_name: &str,
+) -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    std::ffi::OsString,
+    String,
+    String,
+    String,
+    String,
+) {
+    let (temp, repo_path, remote_path, fake_path) = setup_published_two_entry_stack(stack_name);
+    let a_branch = format!("testuser/{stack_name}--c-1111111");
+    let b_branch = format!("testuser/{stack_name}--c-2222222");
+    let original_b_oid = checked_git(
+        &remote_path,
+        &["rev-parse", &format!("refs/heads/{b_branch}")],
+    );
+    let original_base = checked_git(&repo_path, &["rev-parse", "main"]);
+    let a_tree = checked_git(
+        &remote_path,
+        &["rev-parse", &format!("refs/heads/{a_branch}^{{tree}}")],
+    );
+    let merge_oid = checked_git(
+        &repo_path,
+        &[
+            "commit-tree",
+            &a_tree,
+            "-p",
+            &original_base,
+            "-m",
+            "Squash merge Entry A",
+        ],
+    );
+    checked_git(
+        &repo_path,
+        &[
+            "push",
+            remote_path.to_str().unwrap(),
+            &format!("{merge_oid}:refs/heads/main"),
+        ],
+    );
+
+    install_rebased_predecessor_gh(&repo_path);
+    let request_log = repo_path.join("fake-bin/rebased-requests");
+    fs::write(&request_log, "").unwrap();
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["rebase"],
+        &[
+            ("PATH", fake_path.as_os_str()),
+            ("GG_TEST_GH_LOG", request_log.as_os_str()),
+            ("GG_TEST_REMOTE", remote_path.as_os_str()),
+            ("GG_TEST_MERGE_OID", merge_oid.as_ref()),
+        ],
+    );
+    assert!(success, "actual gg rebase failed: {stdout}\n{stderr}");
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["ls", "--json"]);
+    assert!(success, "post-rebase ls failed: {stdout}\n{stderr}");
+    let listing: Value = serde_json::from_str(&stdout).unwrap();
+    let entries = listing["stack"]["entries"].as_array().unwrap();
+    assert_eq!(
+        entries.len(),
+        1,
+        "actual rebase must leave only B: {listing}"
+    );
+    assert_eq!(entries[0]["gg_id"], "c-2222222", "{listing}");
+
+    let config_path = repo_path.join(".git/gg/config.json");
+    let config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(config["stacks"][stack_name]["mrs"]["c-1111111"], 101);
+    assert_eq!(config["stacks"][stack_name]["mrs"]["c-2222222"], 102);
+    let rewritten_b_oid = checked_git(&repo_path, &["rev-parse", "HEAD"]);
+    assert_ne!(
+        rewritten_b_oid, original_b_oid,
+        "the squash merge must force B through the rewritten-branch path"
+    );
+    fs::write(&request_log, "").unwrap();
+
+    (
+        temp,
+        repo_path,
+        remote_path,
+        fake_path,
+        merge_oid,
+        original_b_oid,
+        rewritten_b_oid,
+        b_branch,
+    )
+}
+
+#[cfg(unix)]
+#[test]
+fn ordinary_sync_after_actual_rebase_requires_mapped_merged_predecessor_evidence() {
+    let (
+        _temp,
+        repo_path,
+        remote_path,
+        fake_path,
+        merge_oid,
+        original_b_oid,
+        _rewritten_b_oid,
+        b_branch,
+    ) = setup_externally_merged_rebased_stack("rebase-then-sync");
+    let request_log = repo_path.join("fake-bin/rebased-requests");
+    write_executable(
+        &repo_path.join(".git/hooks/pre-push"),
+        r#"#!/bin/sh
+set -eu
+: > "$(dirname "$GG_TEST_GH_LOG")/rewritten-b-pushed"
+"#,
+    );
+    let (success, stdout, stderr) = run_gg_bounded_with_env(
+        &repo_path,
+        &["sync", "--no-rebase-check"],
+        &[
+            ("PATH", fake_path.as_os_str()),
+            ("GG_TEST_GH_LOG", request_log.as_os_str()),
+            ("GG_TEST_REMOTE", remote_path.as_os_str()),
+            ("GG_TEST_MERGE_OID", merge_oid.as_ref()),
+            (
+                "GG_TEST_FAIL_RETARGET_AFTER_PUSH",
+                std::ffi::OsStr::new("1"),
+            ),
+        ],
+    );
+    let unexpected_requests = fs::read_to_string(&request_log).unwrap();
+    let unexpected_remote_b = checked_git(
+        &remote_path,
+        &["rev-parse", &format!("refs/heads/{b_branch}")],
+    );
+    assert!(
+        !success,
+        "the injected fresh retarget authorization failure must interrupt sync: {stdout}\n{stderr}\nremote B: {unexpected_remote_b}\npush marker: {}\nrequests:\n{unexpected_requests}",
+        repo_path.join("fake-bin/rewritten-b-pushed").exists()
+    );
+    let authorization_error = format!("{stdout}{stderr}");
+    assert!(
+        authorization_error.contains("not open at the expected source and target"),
+        "B must pass mapped-predecessor preflight and fail only at fresh retarget authorization: {}",
+        authorization_error
+    );
+    let published_b_oid = checked_git(&repo_path, &["rev-parse", "HEAD"]);
+    assert_ne!(published_b_oid, original_b_oid);
+    assert_eq!(
+        checked_git(
+            &remote_path,
+            &["rev-parse", &format!("refs/heads/{b_branch}")]
+        ),
+        published_b_oid,
+        "B must be pushed before the injected retarget authorization failure"
+    );
+    assert_eq!(
+        fs::read_to_string(repo_path.join("fake-bin/created-base-102"))
+            .unwrap()
+            .trim(),
+        "testuser/rebase-then-sync--c-1111111",
+        "failed authorization must prevent retargeting"
+    );
+    let failed_requests = fs::read_to_string(&request_log).unwrap();
+    let failed_views = failed_requests
+        .lines()
+        .filter(|request| request.starts_with("pr view ") && request.contains("number,title,state"))
+        .map(|request| request.split_whitespace().nth(2).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        failed_views,
+        ["102", "101", "102", "102"],
+        "classification must read B and its mapped predecessor before fresh push and retarget authorizations: {failed_requests}"
+    );
+    assert!(!failed_requests.contains("pr edit"), "{failed_requests}");
+
+    fs::write(&request_log, "").unwrap();
+    let (success, stdout, stderr) = run_gg_bounded_with_env(
+        &repo_path,
+        &["sync", "--no-rebase-check"],
+        &[
+            ("PATH", fake_path.as_os_str()),
+            ("GG_TEST_GH_LOG", request_log.as_os_str()),
+            ("GG_TEST_REMOTE", remote_path.as_os_str()),
+            ("GG_TEST_MERGE_OID", merge_oid.as_ref()),
+            (
+                "GG_TEST_FAIL_RETARGET_AFTER_PUSH",
+                std::ffi::OsStr::new("1"),
+            ),
+        ],
+    );
+    assert!(success, "retry must retarget B safely: {stdout}\n{stderr}");
+    assert_eq!(
+        fs::read_to_string(repo_path.join("fake-bin/created-base-102"))
+            .unwrap()
+            .trim(),
+        "main"
+    );
+    let retry_requests = fs::read_to_string(&request_log).unwrap();
+    let retry_sequence = retry_requests
+        .lines()
+        .filter_map(|request| {
+            if request.starts_with("pr view ") {
+                if !request.contains("number,title,state") {
+                    return None;
+                }
+                Some(format!(
+                    "view {}",
+                    request.split_whitespace().nth(2).unwrap()
+                ))
+            } else if request.starts_with("pr edit ") {
+                Some("edit 102".to_string())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        retry_sequence,
+        ["view 102", "view 101", "view 102", "edit 102"],
+        "retry must preserve predecessor evidence and authorize immediately before retarget: {retry_requests}"
+    );
+
+    let (
+        _boundary_temp,
+        boundary_repo,
+        boundary_remote,
+        boundary_path,
+        boundary_merge,
+        boundary_original_b,
+        _,
+        boundary_b,
+    ) = setup_externally_merged_rebased_stack("rebase-evidence-boundaries");
+    let boundary_log = boundary_repo.join("fake-bin/rebased-requests");
+    let config_path = boundary_repo.join(".git/gg/config.json");
+    let original_config = fs::read(&config_path).unwrap();
+    let mut config: Value = serde_json::from_slice(&original_config).unwrap();
+    config["stacks"]["rebase-evidence-boundaries"]["mrs"]
+        .as_object_mut()
+        .unwrap()
+        .remove("c-1111111");
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+
+    for mode in [
+        "mapping-absent",
+        "wrong-source",
+        "open-state",
+        "closed-state",
+        "wrong-number",
+        "lookup-fail",
+    ] {
+        if mode != "mapping-absent" {
+            fs::write(&config_path, &original_config).unwrap();
+        }
+        fs::write(&boundary_log, "").unwrap();
+        let predecessor_mode = if mode == "mapping-absent" { "" } else { mode };
+        let (success, stdout, stderr) = run_gg_bounded_with_env(
+            &boundary_repo,
+            &["sync", "--no-rebase-check"],
+            &[
+                ("PATH", boundary_path.as_os_str()),
+                ("GG_TEST_GH_LOG", boundary_log.as_os_str()),
+                ("GG_TEST_REMOTE", boundary_remote.as_os_str()),
+                ("GG_TEST_MERGE_OID", boundary_merge.as_ref()),
+                ("GG_TEST_PREDECESSOR_MODE", predecessor_mode.as_ref()),
+            ],
+        );
+        assert!(
+            !success,
+            "{mode}: non-authoritative predecessor evidence was accepted: {stdout}\n{stderr}"
+        );
+        assert_eq!(
+            checked_git(
+                &boundary_remote,
+                &["rev-parse", &format!("refs/heads/{boundary_b}")]
+            ),
+            boundary_original_b,
+            "{mode}: rejection must happen before B is pushed"
+        );
+        let requests = fs::read_to_string(&boundary_log).unwrap();
+        assert!(!requests.contains("pr edit"), "{mode}: {requests}");
+        if mode == "mapping-absent" {
+            assert!(
+                !requests
+                    .lines()
+                    .any(|request| request.starts_with("pr view 101 ")),
+                "an absent mapping must not authorize an arbitrary provider lookup: {requests}"
+            );
+        } else {
+            assert!(
+                requests
+                    .lines()
+                    .any(|request| request.starts_with("pr view 101 ")),
+                "{mode}: the exact mapped predecessor must be read before rejection: {requests}"
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn sync_rejects_unstacked_root_review_without_authoritative_predecessor_mapping() {
+    let (_temp, repo_path, remote_path, fake_path) =
+        setup_published_two_entry_stack("unstack-missing-predecessor");
+    let old_predecessor_branch = "testuser/unstack-missing-predecessor--c-1111111";
+    let old_source_branch = "testuser/unstack-missing-predecessor--c-2222222";
+    let new_source_branch = "testuser/upper--c-2222222";
+    let old_source_oid = checked_git(
+        &remote_path,
+        &["rev-parse", &format!("refs/heads/{old_source_branch}")],
+    );
+    let old_predecessor_oid = checked_git(
+        &remote_path,
+        &["rev-parse", &format!("refs/heads/{old_predecessor_branch}")],
+    );
+
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &["unstack", "--target", "2", "--name", "upper", "--no-tui"],
+    );
+    assert!(success, "unstack failed: {stdout}\n{stderr}");
+
+    let config_path = repo_path.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["stacks"]["unstack-missing-predecessor"]["mrs"]
+        .as_object_mut()
+        .expect("old stack mappings")
+        .remove("c-1111111");
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    assert_eq!(config["stacks"]["upper"]["mrs"]["c-2222222"], 102);
+    assert!(config["stacks"]["unstack-missing-predecessor"]["mrs"]["c-2222222"].is_null());
+    assert!(config["stacks"]["unstack-missing-predecessor"]["mrs"]["c-1111111"].is_null());
+
+    let log = repo_path.join("fake-bin/requests");
+    reset_fake_gh_observations(&repo_path, &log);
+    let (success, stdout, stderr) = run_gg_bounded_with_env(
+        &repo_path,
+        &["sync", "--no-rebase-check"],
+        &[
+            ("PATH", fake_path.as_os_str()),
+            ("GG_TEST_GH_LOG", log.as_os_str()),
+        ],
+    );
+    assert!(
+        !success,
+        "review without authoritative unstack evidence was accepted: {stdout}\n{stderr}"
+    );
+    assert!(
+        format!("{stdout}{stderr}").contains("does not have the expected source and target"),
+        "sync must reject the stale review during preflight: {stdout}\n{stderr}"
+    );
+    assert_eq!(
+        checked_git(
+            &remote_path,
+            &["rev-parse", &format!("refs/heads/{old_source_branch}")]
+        ),
+        old_source_oid
+    );
+    assert_eq!(
+        checked_git(
+            &remote_path,
+            &["rev-parse", &format!("refs/heads/{old_predecessor_branch}")]
+        ),
+        old_predecessor_oid
+    );
+    assert!(
+        !run_git(
+            &remote_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{new_source_branch}")
+            ]
+        )
+        .0,
+        "preflight failure must precede the replacement branch push"
+    );
+    let requests = fs::read_to_string(&log).unwrap();
+    assert!(
+        requests
+            .lines()
+            .any(|request| request.starts_with("pr view 102 ")),
+        "the mapped review must be inspected before rejection: {requests}"
+    );
+    for forbidden in ["pr create", "pr edit", "pr close", "api -X POST"] {
+        assert!(
+            !requests.contains(forbidden),
+            "unexpected {forbidden}: {requests}"
+        );
+    }
+    let config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(config["stacks"]["upper"]["mrs"]["c-2222222"], 102);
+    assert!(config["stacks"]["unstack-missing-predecessor"]["mrs"]["c-1111111"].is_null());
+}
+
+#[cfg(unix)]
+#[test]
+fn sync_replaces_unstacked_root_review_after_actual_unstack() {
+    let (_temp, repo_path, remote_path, fake_path) =
+        setup_published_two_entry_stack("published-unstack");
+    let old_root_branch = "testuser/published-unstack--c-1111111";
+    let old_source_branch = "testuser/published-unstack--c-2222222";
+    let new_source_branch = "testuser/upper--c-2222222";
+    let old_source_oid = checked_git(
+        &remote_path,
+        &["rev-parse", &format!("refs/heads/{old_source_branch}")],
+    );
+    assert_eq!(
+        fs::read_to_string(repo_path.join("fake-bin/created-head-102"))
+            .unwrap()
+            .trim(),
+        old_source_branch
+    );
+    assert_eq!(
+        fs::read_to_string(repo_path.join("fake-bin/created-base-102"))
+            .unwrap()
+            .trim(),
+        old_root_branch
+    );
+
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &["unstack", "--target", "2", "--name", "upper", "--no-tui"],
+    );
+    assert!(success, "unstack failed: {stdout}\n{stderr}");
+    let config_path = repo_path.join(".git/gg/config.json");
+    let config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(
+        config["stacks"]["published-unstack"]["mrs"]["c-1111111"],
+        101
+    );
+    assert!(config["stacks"]["published-unstack"]["mrs"]["c-2222222"].is_null());
+    assert_eq!(config["stacks"]["upper"]["mrs"]["c-2222222"], 102);
+
+    let log = repo_path.join("fake-bin/requests");
+    reset_fake_gh_observations(&repo_path, &log);
+    let (success, stdout, stderr) = run_gg_bounded_with_env(
+        &repo_path,
+        &["sync", "--no-rebase-check"],
+        &[
+            ("PATH", fake_path.as_os_str()),
+            ("GG_TEST_GH_LOG", log.as_os_str()),
+            ("GG_TEST_AUTH_RACE_REVIEW", std::ffi::OsStr::new("102")),
+            ("GG_TEST_AUTH_RACE_ON_VIEW", std::ffi::OsStr::new("2")),
+            (
+                "GG_TEST_AUTH_RACE_BASE",
+                std::ffi::OsStr::new("unrelated/branch"),
+            ),
+        ],
+    );
+    assert!(
+        !success,
+        "stale unstacked review authorization unexpectedly allowed a push: {stdout}\n{stderr}"
+    );
+    assert!(
+        format!("{stdout}{stderr}").contains("not open at the expected source and target"),
+        "sync must classify the migrated root, then reject the strict authorization race: {stdout}\n{stderr}"
+    );
+    assert_eq!(
+        checked_git(
+            &remote_path,
+            &["rev-parse", &format!("refs/heads/{old_source_branch}")]
+        ),
+        old_source_oid,
+        "failed authorization must not alter the old published source"
+    );
+    assert!(
+        !run_git(
+            &remote_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{new_source_branch}")
+            ]
+        )
+        .0,
+        "failed authorization must precede the replacement branch push"
+    );
+    let failed_requests = fs::read_to_string(&log).unwrap();
+    assert!(!failed_requests.contains("pr create"), "{failed_requests}");
+    let config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(config["stacks"]["upper"]["mrs"]["c-2222222"], 102);
+
+    reset_fake_gh_observations(&repo_path, &log);
+    let (success, stdout, stderr) = run_gg_bounded_with_env(
+        &repo_path,
+        &["sync", "--no-rebase-check"],
+        &[
+            ("PATH", fake_path.as_os_str()),
+            ("GG_TEST_GH_LOG", log.as_os_str()),
+        ],
+    );
+    assert!(success, "unstacked root sync failed: {stdout}\n{stderr}");
+    assert_eq!(
+        fs::read_to_string(repo_path.join("fake-bin/created-head-103"))
+            .unwrap()
+            .trim(),
+        new_source_branch
+    );
+    assert_eq!(
+        fs::read_to_string(repo_path.join("fake-bin/created-base-103"))
+            .unwrap()
+            .trim(),
+        "main"
+    );
+    assert_eq!(
+        checked_git(
+            &remote_path,
+            &["rev-parse", &format!("refs/heads/{new_source_branch}")]
+        ),
+        checked_git(&repo_path, &["rev-parse", new_source_branch])
+    );
+    assert_eq!(
+        checked_git(
+            &remote_path,
+            &["rev-parse", &format!("refs/heads/{old_source_branch}")]
+        ),
+        old_source_oid,
+        "replacement must not mutate the old published source branch"
+    );
+    let config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(config["stacks"]["upper"]["mrs"]["c-2222222"], 103);
+    let requests = fs::read_to_string(&log).unwrap();
+    let authorization = requests
+        .lines()
+        .enumerate()
+        .filter(|(_, request)| request.starts_with("pr view 102 "))
+        .nth(1)
+        .map(|(index, _)| index)
+        .expect("old review must be re-read immediately before the replacement branch push");
+    let replacement = requests
+        .lines()
+        .position(|request| {
+            request.starts_with(&format!(
+                "pr create --head {new_source_branch} --base main --title Entry B --body "
+            ))
+        })
+        .unwrap_or_else(|| panic!("replacement review was not created: {requests}"));
+    assert!(authorization < replacement, "{requests}");
+    assert!(
+        requests
+            .lines()
+            .any(|request| request.starts_with("pr view 102 --json ")),
+        "old review must be re-read before replacement mutations: {requests}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn sync_replaces_non_root_review_after_partial_unstack_replacement() {
+    let (_temp, repo_path, remote_path, fake_path) =
+        setup_published_three_entry_stack("partial-unstack");
+    let old_a_branch = "testuser/partial-unstack--c-1111111";
+    let old_b_branch = "testuser/partial-unstack--c-2222222";
+    let old_c_branch = "testuser/partial-unstack--c-3333333";
+    let new_b_branch = "testuser/upper--c-2222222";
+    let new_c_branch = "testuser/upper--c-3333333";
+    let old_c_oid = checked_git(
+        &remote_path,
+        &["rev-parse", &format!("refs/heads/{old_c_branch}")],
+    );
+
+    let (success, stdout, stderr) = run_gg(
+        &repo_path,
+        &["unstack", "--target", "2", "--name", "upper", "--no-tui"],
+    );
+    assert!(success, "unstack failed: {stdout}\n{stderr}");
+    let config_path = repo_path.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(config["stacks"]["partial-unstack"]["mrs"]["c-1111111"], 101);
+    assert!(config["stacks"]["partial-unstack"]["mrs"]["c-2222222"].is_null());
+    assert!(config["stacks"]["partial-unstack"]["mrs"]["c-3333333"].is_null());
+    assert_eq!(config["stacks"]["upper"]["mrs"]["c-2222222"], 102);
+    assert_eq!(config["stacks"]["upper"]["mrs"]["c-3333333"], 103);
+    config["defaults"]["sync_update_descriptions"] = Value::Bool(false);
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+
+    let (success, stdout, stderr) = run_gg_bounded_with_env(
+        &repo_path,
+        &["sync", "--until", "1", "--no-rebase-check"],
+        &[("PATH", fake_path.as_os_str())],
+    );
+    assert!(success, "partial sync failed: {stdout}\n{stderr}");
+    let config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(config["stacks"]["upper"]["mrs"]["c-2222222"], 104);
+    assert_eq!(config["stacks"]["upper"]["mrs"]["c-3333333"], 103);
+    assert_eq!(
+        fs::read_to_string(repo_path.join("fake-bin/created-head-104"))
+            .unwrap()
+            .trim(),
+        new_b_branch
+    );
+    assert_eq!(
+        fs::read_to_string(repo_path.join("fake-bin/created-base-104"))
+            .unwrap()
+            .trim(),
+        "main"
+    );
+    assert!(
+        !run_git(
+            &remote_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{new_c_branch}")
+            ]
+        )
+        .0,
+        "partial sync must not publish C"
+    );
+
+    install_partial_unstack_topology_gh(&repo_path);
+    let log = repo_path.join("fake-bin/topology-requests");
+    fs::write(&log, "").unwrap();
+    write_executable(
+        &repo_path.join(".git/hooks/pre-push"),
+        r#"#!/bin/sh
+set -eu
+while read -r _local_ref _local_oid remote_ref _remote_oid; do
+  if [ "$remote_ref" = "refs/heads/$GG_TEST_NEW_C_HEAD" ]; then
+    [ -f "$(dirname "$GG_TEST_GH_LOG")/topology-authorized-c" ] || {
+      echo 'C push lacked immediate review authorization' >&2
+      exit 1
+    }
+    printf 'git push %s\n' "$remote_ref" >> "$GG_TEST_GH_LOG"
+  fi
+done
+"#,
+    );
+    let (success, stdout, stderr) = run_gg_bounded_with_env(
+        &repo_path,
+        &["sync", "--no-rebase-check"],
+        &[
+            ("PATH", fake_path.as_os_str()),
+            ("GG_TEST_GH_LOG", log.as_os_str()),
+            ("GG_TEST_REMOTE", remote_path.as_os_str()),
+            ("GG_TEST_OLD_C_HEAD", old_c_branch.as_ref()),
+            ("GG_TEST_OLD_C_BASE", old_b_branch.as_ref()),
+            ("GG_TEST_NEW_B_HEAD", new_b_branch.as_ref()),
+            ("GG_TEST_NEW_C_HEAD", new_c_branch.as_ref()),
+        ],
+    );
+    assert!(success, "full sync failed: {stdout}\n{stderr}");
+
+    assert_eq!(
+        checked_git(
+            &remote_path,
+            &["rev-parse", &format!("refs/heads/{old_c_branch}")]
+        ),
+        old_c_oid,
+        "replacement must not mutate C's old source branch"
+    );
+    assert_eq!(
+        checked_git(
+            &remote_path,
+            &["rev-parse", &format!("refs/heads/{new_c_branch}")]
+        ),
+        checked_git(&repo_path, &["rev-parse", new_c_branch])
+    );
+    assert_eq!(
+        fs::read_to_string(repo_path.join("fake-bin/created-base-105"))
+            .unwrap()
+            .trim(),
+        new_b_branch
+    );
+    let config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(config["stacks"]["upper"]["mrs"]["c-2222222"], 104);
+    assert_eq!(config["stacks"]["upper"]["mrs"]["c-3333333"], 105);
+
+    let requests = fs::read_to_string(&log).unwrap();
+    assert_eq!(
+        requests
+            .lines()
+            .filter(|request| request.starts_with("pr create "))
+            .count(),
+        1,
+        "full sync must create exactly one C replacement: {requests}"
+    );
+    let c_authorization = requests
+        .lines()
+        .enumerate()
+        .filter(|(_, request)| request.starts_with("pr view 103 "))
+        .nth(1)
+        .map(|(index, _)| index)
+        .expect("old C review must be re-read immediately before push");
+    let c_push = requests
+        .lines()
+        .position(|request| request == format!("git push refs/heads/{new_c_branch}"))
+        .unwrap_or_else(|| panic!("C replacement branch was not pushed: {requests}"));
+    let c_replacement = requests
+        .lines()
+        .position(|request| request.starts_with(&format!("pr create --head {new_c_branch} ")))
+        .unwrap_or_else(|| panic!("C replacement review was not created: {requests}"));
+    assert!(c_authorization < c_push, "{requests}");
+    assert!(c_push < c_replacement, "{requests}");
+    assert_eq!(
+        requests
+            .lines()
+            .filter(|request| request.starts_with("api -X POST "))
+            .count(),
+        1,
+        "only old C should receive a replacement comment: {requests}"
+    );
+    assert!(requests.contains("/issues/103/comments"), "{requests}");
+    assert_eq!(
+        requests
+            .lines()
+            .filter(|request| request.starts_with("pr close "))
+            .collect::<Vec<_>>(),
+        ["pr close 103"],
+        "only old C should be closed: {requests}"
+    );
+    assert!(repo_path.join("fake-bin/topology-commented-c").exists());
+    assert!(repo_path.join("fake-bin/topology-closed-c").exists());
+    assert!(
+        run_git(
+            &remote_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{old_a_branch}")
+            ]
+        )
+        .0
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn sync_rejects_mismatched_source_targeting_unmapped_predecessor() {
+    let (_temp, repo_path, _remote_path) = create_test_repo_with_remote();
+    write_remote_prune_config(&repo_path);
+    let fake_path = install_fake_gh(&repo_path);
+    let (success, stdout, stderr) = run_gg(&repo_path, &["co", "unmapped-predecessor"]);
+    assert!(success, "checkout failed: {stdout}\n{stderr}");
+    for (file, message) in [
+        ("predecessor", "Predecessor\n\nGG-ID: c-1111111"),
+        ("mapped", "Mapped\n\nGG-ID: c-2222222\nGG-Parent: c-1111111"),
+    ] {
+        fs::write(repo_path.join(file), file).unwrap();
+        checked_git(&repo_path, &["add", file]);
+        checked_git(&repo_path, &["commit", "-m", message]);
+    }
+
+    let predecessor_branch = "testuser/unmapped-predecessor--c-1111111";
+    let config_path = repo_path.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["stacks"]["unmapped-predecessor"]["mrs"] = serde_json::json!({
+        "c-2222222": 428
+    });
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    fs::write(
+        repo_path.join("fake-bin/created-head-428"),
+        "testuser/other-stack--c-2222222\n",
+    )
+    .unwrap();
+    fs::write(
+        repo_path.join("fake-bin/created-base-428"),
+        format!("{predecessor_branch}\n"),
+    )
+    .unwrap();
+    write_executable(
+        &repo_path.join(".git/hooks/pre-push"),
+        "#!/bin/sh\nprintf 'push\\n' >> \"$(git rev-parse --absolute-git-dir)/pushes\"\n",
+    );
+    let requests = repo_path.join("fake-bin/requests");
+
+    let (success, stdout, stderr) = run_gg_bounded_with_env(
+        &repo_path,
+        &["sync", "--no-rebase-check"],
+        &[
+            ("PATH", fake_path.as_os_str()),
+            ("GG_TEST_GH_LOG", requests.as_os_str()),
+        ],
+    );
+
+    assert!(
+        !success,
+        "mismatched review targeting an unmapped predecessor was accepted: {stdout}\n{stderr}"
+    );
+    assert!(
+        !repo_path.join(".git/pushes").exists(),
+        "classification must reject before any push"
+    );
+    let requests = fs::read_to_string(&requests).unwrap();
+    assert!(
+        !requests.lines().any(|request| {
+            request.starts_with("pr create ")
+                || request.starts_with("pr edit ")
+                || request.starts_with("pr close ")
+                || request.starts_with("api ")
+        }),
+        "classification must reject before provider mutation: {requests}"
+    );
+    assert!(
+        format!("{stdout}{stderr}").contains("does not have the expected source and target"),
+        "unexpected rejection: {stdout}\n{stderr}"
+    );
+    let config: Value = serde_json::from_slice(&fs::read(config_path).unwrap()).unwrap();
+    assert_eq!(
+        config["stacks"]["unmapped-predecessor"]["mrs"],
+        serde_json::json!({"c-2222222": 428}),
+        "rejection must preserve the existing review mapping"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn sync_retargets_published_reviews_after_local_reorder() {
+    let (_temp, repo_path, remote_path, fake_path) =
+        setup_published_two_entry_stack("published-reorder");
+    let first_branch = "testuser/published-reorder--c-1111111";
+    let second_branch = "testuser/published-reorder--c-2222222";
+    let first_published_oid = checked_git(
+        &remote_path,
+        &["rev-parse", &format!("refs/heads/{first_branch}")],
+    );
+    let second_published_oid = checked_git(
+        &remote_path,
+        &["rev-parse", &format!("refs/heads/{second_branch}")],
+    );
+    let (success, stdout, stderr) = run_gg(&repo_path, &["reorder", "--order", "2,1"]);
+    assert!(success, "reorder failed: {stdout}\n{stderr}");
+
+    let log = repo_path.join("fake-bin/requests");
+    reset_fake_gh_observations(&repo_path, &log);
+    let (success, stdout, stderr) = run_gg_bounded_with_env(
+        &repo_path,
+        &["sync", "--no-rebase-check"],
+        &[
+            ("PATH", fake_path.as_os_str()),
+            ("GG_TEST_GH_LOG", log.as_os_str()),
+            ("GG_TEST_AUTH_RACE_REVIEW", std::ffi::OsStr::new("102")),
+            ("GG_TEST_AUTH_RACE_ON_VIEW", std::ffi::OsStr::new("2")),
+            (
+                "GG_TEST_AUTH_RACE_BASE",
+                std::ffi::OsStr::new("unrelated/branch"),
+            ),
+        ],
+    );
+    assert!(
+        !success,
+        "stale review authorization unexpectedly allowed a push: {stdout}\n{stderr}"
+    );
+    assert!(
+        format!("{stdout}{stderr}").contains("not open at the expected source and target"),
+        "sync must reach strict immediate authorization before rejecting the race: {stdout}\n{stderr}"
+    );
+    assert_eq!(
+        checked_git(
+            &remote_path,
+            &["rev-parse", &format!("refs/heads/{first_branch}")]
+        ),
+        first_published_oid,
+        "failed authorization must not push the other published entry"
+    );
+    assert_eq!(
+        checked_git(
+            &remote_path,
+            &["rev-parse", &format!("refs/heads/{second_branch}")]
+        ),
+        second_published_oid,
+        "failed authorization must not push the reordered first entry"
+    );
+    assert!(
+        !fs::read_to_string(&log).unwrap().contains("pr edit"),
+        "failed authorization must precede review mutation"
+    );
+
+    reset_fake_gh_observations(&repo_path, &log);
+    let (success, stdout, stderr) = run_gg_bounded_with_env(
+        &repo_path,
+        &["sync", "--no-rebase-check"],
+        &[
+            ("PATH", fake_path.as_os_str()),
+            ("GG_TEST_GH_LOG", log.as_os_str()),
+        ],
+    );
+    assert!(success, "reordered sync failed: {stdout}\n{stderr}");
+    assert_eq!(
+        fs::read_to_string(repo_path.join("fake-bin/created-base-102"))
+            .unwrap()
+            .trim(),
+        "main"
+    );
+    assert_eq!(
+        fs::read_to_string(repo_path.join("fake-bin/created-base-101"))
+            .unwrap()
+            .trim(),
+        second_branch
+    );
+    assert_eq!(
+        checked_git(
+            &remote_path,
+            &["rev-parse", &format!("refs/heads/{first_branch}")]
+        ),
+        checked_git(&repo_path, &["rev-parse", first_branch])
+    );
+    assert_eq!(
+        checked_git(
+            &remote_path,
+            &["rev-parse", &format!("refs/heads/{second_branch}")]
+        ),
+        checked_git(&repo_path, &["rev-parse", second_branch])
+    );
+    let requests = fs::read_to_string(&log).unwrap();
+    let second_authorization = requests
+        .lines()
+        .enumerate()
+        .filter(|(_, request)| request.starts_with("pr view 102 "))
+        .nth(1)
+        .map(|(index, _)| index)
+        .expect("reordered first review must be re-read before mutation");
+    let first_retarget = requests
+        .lines()
+        .position(|request| request == "pr edit 102 --base main")
+        .expect("reordered first review must be retargeted to main");
+    assert!(second_authorization < first_retarget, "{requests}");
+}
+
+#[cfg(unix)]
+#[test]
+fn sync_retries_retarget_after_pushing_rewritten_survivor_of_bottom_drop() {
+    let (_temp, repo_path, remote_path, fake_path) =
+        setup_published_two_entry_stack("published-bottom-drop");
+    let dropped_branch = "testuser/published-bottom-drop--c-1111111";
+    let surviving_branch = "testuser/published-bottom-drop--c-2222222";
+    let surviving_published_oid = checked_git(
+        &remote_path,
+        &["rev-parse", &format!("refs/heads/{surviving_branch}")],
+    );
+    let (success, stdout, stderr) = run_gg(&repo_path, &["drop", "1", "--yes"]);
+    assert!(success, "drop failed: {stdout}\n{stderr}");
+    let rewritten_surviving_oid = checked_git(&repo_path, &["rev-parse", "HEAD"]);
+    assert_ne!(rewritten_surviving_oid, surviving_published_oid);
+
+    let config_path = repo_path.join(".git/gg/config.json");
+    let pending_after_drop: Value =
+        serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    let pending_after_drop = pending_after_drop["pending_remote_branch_deletions"].clone();
+    assert_eq!(pending_after_drop.as_array().unwrap().len(), 1);
+    assert_eq!(pending_after_drop[0]["branch"], dropped_branch);
+
+    let log = repo_path.join("fake-bin/requests");
+    reset_fake_gh_observations(&repo_path, &log);
+    let (success, stdout, stderr) = run_gg_bounded_with_env(
+        &repo_path,
+        &["sync", "--no-rebase-check"],
+        &[
+            ("PATH", fake_path.as_os_str()),
+            ("GG_TEST_GH_LOG", log.as_os_str()),
+            ("GG_TEST_AUTH_RACE_REVIEW", std::ffi::OsStr::new("102")),
+            ("GG_TEST_AUTH_RACE_ON_VIEW", std::ffi::OsStr::new("3")),
+            (
+                "GG_TEST_AUTH_RACE_BASE",
+                std::ffi::OsStr::new("unrelated/branch"),
+            ),
+        ],
+    );
+    assert!(
+        !success,
+        "stale review authorization unexpectedly allowed a retarget: {stdout}\n{stderr}"
+    );
+    assert!(
+        format!("{stdout}{stderr}").contains("not open at the expected source and target"),
+        "sync must reject the race immediately before retargeting: {stdout}\n{stderr}"
+    );
+    assert_eq!(
+        checked_git(
+            &remote_path,
+            &["rev-parse", &format!("refs/heads/{surviving_branch}")]
+        ),
+        rewritten_surviving_oid,
+        "the rewritten surviving branch push must land before retarget authorization fails"
+    );
+    assert_eq!(
+        fs::read_to_string(repo_path.join("fake-bin/created-base-102"))
+            .unwrap()
+            .trim(),
+        dropped_branch,
+        "failed authorization must leave the review targeting the dropped predecessor"
+    );
+    assert!(
+        run_git(
+            &remote_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{dropped_branch}")
+            ]
+        )
+        .0,
+        "failed authorization must not prune the dropped branch"
+    );
+    let config_after_failure: Value =
+        serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(
+        config_after_failure["pending_remote_branch_deletions"], pending_after_drop,
+        "failed retarget authorization must preserve the pending deletion intent"
+    );
+    let failed_requests = fs::read_to_string(&log).unwrap();
+    assert!(!failed_requests.contains("pr edit"), "{failed_requests}");
+    assert!(!failed_requests.contains("pr list"), "{failed_requests}");
+
+    reset_fake_gh_observations(&repo_path, &log);
+    let (success, stdout, stderr) = run_gg_bounded_with_env(
+        &repo_path,
+        &["sync", "--no-rebase-check"],
+        &[
+            ("PATH", fake_path.as_os_str()),
+            ("GG_TEST_GH_LOG", log.as_os_str()),
+        ],
+    );
+    assert!(success, "post-drop retry failed: {stdout}\n{stderr}");
+    assert_eq!(
+        fs::read_to_string(repo_path.join("fake-bin/created-base-102"))
+            .unwrap()
+            .trim(),
+        "main"
+    );
+    assert_eq!(
+        checked_git(
+            &remote_path,
+            &["rev-parse", &format!("refs/heads/{surviving_branch}")]
+        ),
+        rewritten_surviving_oid
+    );
+    assert!(
+        !run_git(
+            &remote_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{dropped_branch}")
+            ]
+        )
+        .0,
+        "the dropped branch must be deleted after its dependent review is retargeted"
+    );
+    let config_after_retry: Value =
+        serde_json::from_slice(&fs::read(config_path).unwrap()).unwrap();
+    assert!(
+        config_after_retry["pending_remote_branch_deletions"]
+            .as_array()
+            .is_none_or(Vec::is_empty),
+        "successful retry must consume the pending deletion intent: {config_after_retry}"
+    );
+    let requests = fs::read_to_string(&log).unwrap();
+    let authorization = requests
+        .lines()
+        .enumerate()
+        .filter(|(_, request)| request.starts_with("pr view 102 "))
+        .nth(1)
+        .map(|(index, _)| index)
+        .expect("surviving review must be re-read before mutation");
+    let retarget = requests
+        .lines()
+        .position(|request| request == "pr edit 102 --base main")
+        .expect("surviving review must be retargeted to main");
+    let deletion_check = requests
+        .lines()
+        .position(|request| {
+            request == format!("pr list --base {dropped_branch} --json number --jq .[].number")
+        })
+        .unwrap_or_else(|| {
+            panic!("safe deletion must check for remaining dependent reviews: {requests}")
+        });
+    assert!(authorization < retarget, "{requests}");
+    assert!(retarget < deletion_check, "{requests}");
+}
+
+#[cfg(unix)]
+#[test]
+fn sync_rejects_post_push_drop_recovery_when_dropped_branch_moved() {
+    let (_temp, repo_path, remote_path, fake_path) =
+        setup_published_two_entry_stack("moved-bottom-drop");
+    let dropped_branch = "testuser/moved-bottom-drop--c-1111111";
+    let surviving_branch = "testuser/moved-bottom-drop--c-2222222";
+    let dropped_published_oid = checked_git(
+        &remote_path,
+        &["rev-parse", &format!("refs/heads/{dropped_branch}")],
+    );
+
+    let (success, stdout, stderr) = run_gg(&repo_path, &["drop", "1", "--yes"]);
+    assert!(success, "drop failed: {stdout}\n{stderr}");
+    let rewritten_surviving_oid = checked_git(&repo_path, &["rev-parse", "HEAD"]);
+
+    let log = repo_path.join("fake-bin/requests");
+    reset_fake_gh_observations(&repo_path, &log);
+    let (success, stdout, stderr) = run_gg_bounded_with_env(
+        &repo_path,
+        &["sync", "--no-rebase-check"],
+        &[
+            ("PATH", fake_path.as_os_str()),
+            ("GG_TEST_GH_LOG", log.as_os_str()),
+            ("GG_TEST_AUTH_RACE_REVIEW", std::ffi::OsStr::new("102")),
+            ("GG_TEST_AUTH_RACE_ON_VIEW", std::ffi::OsStr::new("3")),
+            (
+                "GG_TEST_AUTH_RACE_BASE",
+                std::ffi::OsStr::new("unrelated/branch"),
+            ),
+        ],
+    );
+    assert!(
+        !success,
+        "stale review authorization unexpectedly allowed a retarget: {stdout}\n{stderr}"
+    );
+    assert_eq!(
+        checked_git(
+            &remote_path,
+            &["rev-parse", &format!("refs/heads/{surviving_branch}")]
+        ),
+        rewritten_surviving_oid,
+        "the rewritten survivor push must land before the retarget failure"
+    );
+    assert_eq!(
+        fs::read_to_string(repo_path.join("fake-bin/created-base-102"))
+            .unwrap()
+            .trim(),
+        dropped_branch
+    );
+
+    checked_git(
+        &repo_path,
+        &[
+            "push",
+            "--force",
+            "origin",
+            &format!("HEAD:refs/heads/{dropped_branch}"),
+        ],
+    );
+    let moved_dropped_oid = checked_git(
+        &remote_path,
+        &["rev-parse", &format!("refs/heads/{dropped_branch}")],
+    );
+    assert_eq!(moved_dropped_oid, rewritten_surviving_oid);
+    assert_ne!(moved_dropped_oid, dropped_published_oid);
+
+    let config_path = repo_path.join(".git/gg/config.json");
+    let config_before_retry: Value =
+        serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    let pending_before_retry = config_before_retry["pending_remote_branch_deletions"].clone();
+    assert_eq!(pending_before_retry.as_array().unwrap().len(), 1);
+    assert_eq!(pending_before_retry[0]["branch"], dropped_branch);
+    assert_eq!(
+        pending_before_retry[0]["expected_oid"],
+        dropped_published_oid
+    );
+
+    reset_fake_gh_observations(&repo_path, &log);
+    let (success, stdout, stderr) = run_gg_bounded_with_env(
+        &repo_path,
+        &["sync", "--no-rebase-check"],
+        &[
+            ("PATH", fake_path.as_os_str()),
+            ("GG_TEST_GH_LOG", log.as_os_str()),
+        ],
+    );
+    assert!(
+        !success,
+        "moved dropped branch unexpectedly authorized retry: {stdout}\n{stderr}"
+    );
+    assert!(
+        format!("{stdout}{stderr}").contains("does not have the expected source and target"),
+        "retry must reject the moved pending target during preflight: {stdout}\n{stderr}"
+    );
+    assert_eq!(
+        fs::read_to_string(repo_path.join("fake-bin/created-base-102"))
+            .unwrap()
+            .trim(),
+        dropped_branch,
+        "preflight rejection must leave the review target unchanged"
+    );
+    assert_eq!(
+        checked_git(
+            &remote_path,
+            &["rev-parse", &format!("refs/heads/{dropped_branch}")]
+        ),
+        moved_dropped_oid,
+        "preflight rejection must not prune the moved dropped branch"
+    );
+    let config_after_retry: Value =
+        serde_json::from_slice(&fs::read(config_path).unwrap()).unwrap();
+    assert_eq!(
+        config_after_retry["pending_remote_branch_deletions"], pending_before_retry,
+        "rejected recovery must preserve the pending deletion intent"
+    );
+    let requests = fs::read_to_string(log).unwrap();
+    assert!(
+        requests
+            .lines()
+            .any(|request| request.starts_with("pr view 102 ")),
+        "retry must classify the mapped review before rejecting it: {requests}"
+    );
+    assert!(!requests.contains("pr edit"), "{requests}");
+    assert!(!requests.contains("pr list"), "{requests}");
 }
 
 fn setup_published_prune_stack(

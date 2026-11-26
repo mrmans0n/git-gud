@@ -63,6 +63,7 @@ fn setup_fixture(mode: &str) -> GithubStackFixture {
     "provider": "github",
     "base": "main",
     "sync_behind_threshold": 0,
+    "sync_update_descriptions": false,
     "github": {{ "stacks_integration": "{mode}" }}
   }}
 }}"#
@@ -100,6 +101,7 @@ fn setup_fixture(mode: &str) -> GithubStackFixture {
     "provider": "github",
     "base": "main",
     "sync_behind_threshold": 0,
+    "sync_update_descriptions": false,
     "github": {{ "stacks_integration": "{mode}" }}
   }},
   "stacks": {{
@@ -152,21 +154,33 @@ if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
 fi
 
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  view_count_file="$GG_FAKE_GH_LOG.view$3"
+  view_count=$(cat "$view_count_file" 2>/dev/null || echo 0)
+  view_count=$((view_count + 1))
+  echo "$view_count" > "$view_count_file"
   if [ "$3" = "42" ] && [ -n "${GG_FAKE_PR_VIEW_42_FAIL:-}" ]; then
     echo "failed to view PR #42" >&2
     exit 1
   fi
+  if [ "$3" = "42" ] && [ -n "${GG_FAKE_PR_VIEW_42_FAIL_BEFORE_LINK:-}" ] && [ "$view_count" -gt 3 ]; then
+    echo "failed fresh view of PR #42" >&2
+    exit 1
+  fi
   case "$3" in
     41)
-      echo '{"number":41,"title":"Entry one","state":"OPEN","url":"https://github.com/test/repo/pull/41","headRefName":"testuser/native-stack--c-1111111","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
+      echo '{"number":41,"title":"Entry one","state":"OPEN","url":"https://github.com/test/repo/pull/41","headRefName":"testuser/native-stack--c-1111111","baseRefName":"main","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
       exit 0
       ;;
     42)
       if [ -n "${GG_FAKE_PR_VIEW_42_OLD_HEAD:-}" ]; then
-        echo '{"number":42,"title":"Entry two","state":"OPEN","url":"https://github.com/test/repo/pull/42","headRefName":"testuser/old-stack--c-2222222","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
+        echo '{"number":42,"title":"Entry two","state":"OPEN","url":"https://github.com/test/repo/pull/42","headRefName":"testuser/old-stack--c-2222222","baseRefName":"testuser/native-stack--c-1111111","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
         exit 0
       fi
-      echo '{"number":42,"title":"Entry two","state":"OPEN","url":"https://github.com/test/repo/pull/42","headRefName":"testuser/native-stack--c-2222222","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
+      if [ -n "${GG_FAKE_PR_VIEW_42_STALE_BEFORE_LINK:-}" ] && [ "$view_count" -gt 3 ]; then
+        echo '{"number":42,"title":"Entry two","state":"CLOSED","url":"https://github.com/test/repo/pull/42","headRefName":"testuser/native-stack--c-2222222","baseRefName":"testuser/native-stack--c-1111111","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
+        exit 0
+      fi
+      echo '{"number":42,"title":"Entry two","state":"OPEN","url":"https://github.com/test/repo/pull/42","headRefName":"testuser/native-stack--c-2222222","baseRefName":"testuser/native-stack--c-1111111","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
       exit 0
       ;;
   esac
@@ -281,6 +295,36 @@ fn run_sync_json(
 }
 
 #[test]
+fn sync_stack_link_revalidates_lookup_and_stale_state() {
+    for (env_name, expected_error) in [
+        (
+            "GG_FAKE_PR_VIEW_42_FAIL_BEFORE_LINK",
+            "failed fresh view of PR #42",
+        ),
+        (
+            "GG_FAKE_PR_VIEW_42_STALE_BEFORE_LINK",
+            "expected source and target",
+        ),
+    ] {
+        let fixture = setup_fixture("auto");
+        let (success, stdout, stderr) = run_sync_json(&fixture, &[(env_name, OsStr::new("1"))]);
+        let view_count = fs::read_to_string(format!("{}.view42", fixture.fake_log.display()))
+            .unwrap_or_default();
+
+        assert!(
+            !success,
+            "{env_name}: stale stack link succeeded: {stdout}\n{stderr}"
+        );
+        assert!(
+            format!("{stdout}{stderr}").contains(expected_error),
+            "{env_name}: {stdout}\n{stderr}"
+        );
+        assert!(fixture.link_lines().is_empty(), "{env_name}");
+        assert_eq!(view_count.trim(), "4", "{env_name}");
+    }
+}
+
+#[test]
 fn sync_json_creates_native_stack_with_exact_pr_order() {
     let fixture = setup_fixture("auto");
     let after = fixture.set_stack_response("stack-after.json", stack_created_json());
@@ -375,17 +419,23 @@ fn sync_off_reports_disabled_without_stack_command() {
 }
 
 #[test]
-fn sync_unresolved_pr_state_skips_without_stack_command() {
+fn existing_review_lookup_failure_stops_before_main_loop_mutation() {
     let fixture = setup_fixture("auto");
     let (success, stdout, stderr) =
         run_sync_json(&fixture, &[("GG_FAKE_PR_VIEW_42_FAIL", OsStr::new("1"))]);
-    assert!(success, "sync failed\nstdout:{stdout}\nstderr:{stderr}");
-    let value: Value = serde_json::from_str(&stdout).expect("sync should emit JSON");
-    assert_eq!(value["sync"]["github_stack"]["action"], "skipped");
-    assert_eq!(value["sync"]["github_stack"]["reason"], "unresolved_prs");
+    assert!(
+        !success,
+        "lookup failure must stop sync: {stdout}\n{stderr}"
+    );
+    assert!(
+        format!("{stdout}{stderr}").contains("failed to view PR #42"),
+        "{stdout}\n{stderr}"
+    );
     let log = fixture.log();
-    assert!(!log.contains("stack --version"));
-    assert!(!log.contains("/stacks"));
+    assert!(!log.contains("pr edit"), "{log}");
+    assert!(!log.contains("pr create"), "{log}");
+    assert!(!log.contains("stack --version"), "{log}");
+    assert!(!log.contains("/stacks"), "{log}");
 }
 
 #[test]

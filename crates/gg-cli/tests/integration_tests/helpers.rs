@@ -40,12 +40,16 @@ impl ProcessGroupGuard {
         })
     }
 
-    pub(crate) fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+    pub(crate) fn poll_exit_status_non_reaping(&mut self) -> std::io::Result<Option<ExitStatus>> {
         let child = self
             .child
             .as_ref()
             .expect("guarded child was already reaped");
         poll_exit_without_reaping(i32::try_from(child.id()).expect("child pid fits pid_t"))
+    }
+
+    pub(crate) fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        self.poll_exit_status_non_reaping()
     }
 }
 

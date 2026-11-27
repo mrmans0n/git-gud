@@ -75,10 +75,23 @@ fi
 
 if [ "$1" = "pr" ] && [ "$2" = "merge" ]; then
   touch "$GG_FAKE_MERGED"
+  if [ -n "${GG_FAKE_EFFECT_SAVE_BLOCK:-}" ]; then
+    for record in .git/gg/operations/*.json; do
+      if [ -f "$record" ] && grep -q '"status": "pending"' "$record"; then
+        mkdir "$record.tmp"
+        printf '%s\n' "$record.tmp" > "$GG_FAKE_EFFECT_SAVE_BLOCK"
+        break
+      fi
+    done
+  fi
   exit 0
 fi
 
 if [ "$1" = "pr" ] && [ "$2" = "edit" ]; then
+  if [ -n "${GG_FAKE_EFFECT_SAVE_BLOCK:-}" ] && [ -f "$GG_FAKE_EFFECT_SAVE_BLOCK" ]; then
+    rmdir "$(cat "$GG_FAKE_EFFECT_SAVE_BLOCK")"
+    touch "$GG_FAKE_EFFECT_SAVE_BLOCK.released"
+  fi
   if [ -f "$GG_FAKE_RETARGET_FAIL" ]; then
     echo "retarget failed" >&2
     exit 1
@@ -832,6 +845,99 @@ fn land_operation_records(repo_path: &Path) -> Vec<Value> {
         .collect();
     records.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
     records
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_provider_preflight_failure_leaves_no_operation() {
+    let fixture = WaitingLandFixture::new();
+    let empty_path = fixture.repo_path.join("empty-path");
+    fs::create_dir(&empty_path).expect("create empty PATH directory");
+
+    let output = fixture
+        .land_command(&["land", "--json", "--no-clean"])
+        .env("PATH", empty_path)
+        .output()
+        .expect("run land without provider CLI");
+
+    assert!(!output.status.success(), "provider preflight must fail");
+    assert!(
+        land_operation_records(&fixture.repo_path).is_empty(),
+        "provider preflight failure must not create a Land operation"
+    );
+    assert!(!fixture.merged.exists(), "provider must not be mutated");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_jsonl_disconnect_before_start_leaves_no_operation() {
+    let fixture = WaitingLandFixture::new();
+    let (read_stream, write_stream) =
+        std::os::unix::net::UnixStream::pair().expect("create disconnected JSONL stream");
+    drop(read_stream);
+    let stdout_fd: std::os::fd::OwnedFd = write_stream.into();
+
+    let output = fixture
+        .land_command(&["land", "--jsonl", "--no-clean"])
+        .stdout(Stdio::from(stdout_fd))
+        .spawn()
+        .expect("start land")
+        .wait_with_output()
+        .expect("wait for land");
+
+    assert!(
+        !output.status.success(),
+        "closed JSONL stream must abort land"
+    );
+    assert!(
+        land_operation_records(&fixture.repo_path).is_empty(),
+        "a failed start event must not create a Land operation"
+    );
+    assert!(!fixture.merged.exists(), "provider must not be mutated");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_surfaces_exact_effect_save_failure_before_success() {
+    let fixture = WaitingLandFixture::new();
+    fixture.add_second_entry();
+    let save_block = fixture.repo_path.join("fake-effect-save-block");
+
+    let output = fixture
+        .land_command(&["land", "--json", "--no-clean"])
+        .env("GG_FAKE_EFFECT_SAVE_BLOCK", &save_block)
+        .output()
+        .expect("run land with blocked exact-effect save");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+
+    assert!(fixture.merged.exists(), "fake provider must merge the PR");
+    assert!(
+        !output.status.success(),
+        "an exact-effect save failure must fail land: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        !std::path::PathBuf::from(format!("{}.released", save_block.display())).exists(),
+        "land must stop before the later provider call can hide the save failure"
+    );
+    let payload: Value = serde_json::from_str(&stdout).expect("parse structured error payload");
+    assert!(
+        payload["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("durably record merge")),
+        "land must report the exact-effect durability failure without a success result: {payload}"
+    );
+
+    let pending: Vec<Value> = land_operation_records(&fixture.repo_path)
+        .into_iter()
+        .filter(|record| record["status"] == "pending")
+        .collect();
+    assert_eq!(pending.len(), 1, "expected the uncertain Land operation");
+    assert_eq!(pending[0]["touched_remote"], true);
+
+    if let Ok(blocked_path) = fs::read_to_string(&save_block) {
+        let _ = fs::remove_dir(blocked_path.trim());
+    }
 }
 
 #[cfg(unix)]

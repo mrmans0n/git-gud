@@ -994,6 +994,13 @@ pub fn run(opts: LandOptions) -> Result<()> {
     let mut stack = Stack::load(&repo, &config)?;
     let mut streamer = jsonl.then(StreamingJson::new);
     if stack.is_empty() {
+        finish_land_segment(
+            &repo,
+            &config,
+            &mut guard,
+            &mut remote_effects,
+            &mut touched_remote,
+        )?;
         if json {
             print_json(&LandResponse {
                 version: OUTPUT_VERSION,
@@ -1010,13 +1017,6 @@ pub fn run(opts: LandOptions) -> Result<()> {
         } else if !jsonl {
             println!("{}", style("Stack is empty. Nothing to land.").dim());
         }
-        finish_land_segment(
-            &repo,
-            &config,
-            &mut guard,
-            &mut remote_effects,
-            &mut touched_remote,
-        )?;
         if jsonl {
             emit_land_event(
                 streamer.as_mut(),
@@ -2127,37 +2127,62 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 structured,
                 true,
             );
-            match crate::commands::clean::run_for_stack_with_repo_after_verified_land(
-                &repo,
-                &stack.name,
-                true,
-                structured,
-                &mut |effect| {
-                    touched_remote = true;
-                    if let Some(effect) = effect {
-                        guard
-                            .as_mut()
-                            .expect("land segment guard")
-                            .record_remote_effect(effect.clone());
-                        remote_effects.push(effect);
-                        Ok(())
-                    } else {
-                        guard
-                            .as_mut()
-                            .expect("land segment guard")
-                            .mark_touched_remote_before_attempt()
+            let cleanup_result = {
+                let mut segments = crate::commands::clean::RemoteDeletionSegmentOwner::new(
+                    &repo,
+                    OperationKind::Land,
+                    "land clean",
+                    &args,
+                    Some(&stack.name),
+                    &mut guard,
+                    &mut remote_effects,
+                    &mut touched_remote,
+                );
+                let result = crate::commands::clean::run_for_stack_with_repo_after_verified_land(
+                    &repo,
+                    &stack.name,
+                    true,
+                    structured,
+                    &mut |checkpoint, checkpoint_config| {
+                        segments.checkpoint(checkpoint_config, checkpoint)
+                    },
+                );
+                match result {
+                    Err(error @ GgError::DurabilityCheckpoint(_))
+                    | Err(error @ GgError::RemoteMutationUncertain(_)) => Err(error),
+                    result => {
+                        let final_config = Config::load_with_global(git_dir)?;
+                        segments.finish(&final_config)?;
+                        result
                     }
-                },
-            ) {
+                }
+            };
+            match cleanup_result {
                 Ok(true) => cleaned = true,
                 Ok(false) => warnings.push(
                     "Cleanup skipped because worktree or branch cleanup could not complete"
                         .to_string(),
                 ),
+                Err(GgError::DurabilityCheckpoint(message)) => {
+                    return Err(GgError::DurabilityCheckpoint(message));
+                }
+                Err(GgError::RemoteMutationUncertain(message)) => {
+                    return Err(GgError::RemoteMutationUncertain(message));
+                }
                 Err(error) => warnings.push(format!("Cleanup skipped: {error}")),
             }
         }
     }
+
+    // Finalize every operation segment before any terminal success payload.
+    // This includes JSON and human summaries, not only streamed JSONL output.
+    finish_land_segment(
+        &repo,
+        &config,
+        &mut guard,
+        &mut remote_effects,
+        &mut touched_remote,
+    )?;
 
     let mut jsonl_summary = None;
     if structured {
@@ -2210,19 +2235,6 @@ pub fn run(opts: LandOptions) -> Result<()> {
         );
     }
 
-    // Finalize the operation record before we exit. We do this even on error
-    // so the log captures the refs_after snapshot and remote effects that
-    // actually happened before the failure (cumulative merges are already
-    // on remote and can't be undone locally). Dropping the guard without
-    // finalize would leave the record Pending and eventually get swept to
-    // Interrupted — less accurate for `gg undo --list`.
-    finish_land_segment(
-        &repo,
-        &config,
-        &mut guard,
-        &mut remote_effects,
-        &mut touched_remote,
-    )?;
     drop(lock);
     if let Some(result) = jsonl_summary {
         emit_land_event(streamer.as_mut(), LandStreamingEvent::Summary { result });

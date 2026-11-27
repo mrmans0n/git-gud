@@ -33,9 +33,11 @@ use crate::stack::Stack;
 /// backwards-incompatible change and must be accompanied by a migration.
 pub const SCHEMA_VERSION: u32 = 2;
 
-/// Ring buffer cap. Committed/Interrupted records beyond this count are
-/// pruned oldest-first. `Pending` records are never pruned — they may
-/// belong to a live process.
+/// Cap for counted operation history. Pruning never removes Pending records or
+/// records referenced by live review-creation intents, but those records share
+/// the cap and can reduce the retained ordinary history. Exact branch-deletion
+/// evidence and records referenced by live remote-deletion intents are protected
+/// outside the cap while their recovery authority applies.
 pub const OPERATION_LOG_CAP: usize = 100;
 
 /// How long a `Pending` record may live before the sweep promotes it to
@@ -286,12 +288,10 @@ impl OperationStore {
         Ok(self.operations_dir.join(format!("{id}.json")))
     }
 
-    /// Persist a record by syncing a same-directory temporary file and
-    /// atomically replacing the destination under normal filesystem semantics.
-    /// The parent directory is not synced; after a successful rename, no later
-    /// errors are reported, avoiding a post-replacement error with an ambiguous
-    /// retry outcome. Prunes Committed/Interrupted records beyond
-    /// `OPERATION_LOG_CAP` afterwards, oldest-first.
+    /// Persist a record by syncing a same-directory temporary file, atomically
+    /// replacing the destination, and syncing the operations directory on Unix.
+    /// Afterwards, prunes oldest unprotected ordinary history beyond
+    /// `OPERATION_LOG_CAP`; records carrying recovery evidence remain.
     pub fn save(&self, record: &OperationRecord) -> Result<()> {
         fs::create_dir_all(&self.operations_dir)?;
         let path = self.path_for(&record.id)?;
@@ -303,6 +303,8 @@ impl OperationStore {
             f.sync_all()?;
         }
         fs::rename(&tmp, &path)?;
+        #[cfg(unix)]
+        fs::File::open(&self.operations_dir)?.sync_all()?;
         self.prune_to_cap();
         Ok(())
     }
@@ -353,37 +355,68 @@ impl OperationStore {
         Ok(records)
     }
 
-    /// Prune oldest unprotected Committed/Interrupted records when over cap.
-    /// Never removes Pending or live review-creation intent origins. Errors are
-    /// swallowed to avoid cascading a save failure into the caller.
+    /// Prune oldest unprotected Committed/Interrupted records when counted
+    /// history exceeds the cap. Pending records and review-creation origins stay
+    /// protected under the existing shared budget. Exact branch-deletion evidence
+    /// and records referenced by live deletion intents stay protected outside that
+    /// budget until their respective recovery authority no longer applies. Errors
+    /// are swallowed to avoid cascading a save failure into the caller.
     fn prune_to_cap(&self) {
         let Ok(mut records) = self.list(usize::MAX) else {
             return;
         };
-        if records.len() <= OPERATION_LOG_CAP {
-            return;
-        }
         let Some(common_dir) = &self.common_dir else {
             return;
         };
         let Ok(config) = Config::load(common_dir) else {
             return;
         };
-        let protected_ids: HashSet<&str> = config
+        let review_origin_ids: HashSet<&str> = config
             .stacks
             .values()
             .flat_map(|stack| stack.review_creation_intents.values())
             .map(|intent| intent.origin_operation_id.as_str())
             .collect();
+        let deletion_origin_ids: HashSet<&str> = config
+            .pending_remote_branch_deletions
+            .iter()
+            .map(|intent| intent.source_operation_id.as_str())
+            .collect();
+        let has_exact_deletion_evidence = |record: &OperationRecord| {
+            record.remote_effects.iter().any(|effect| {
+                matches!(
+                    effect,
+                    RemoteEffect::BranchDeleted {
+                        prior_oid: Some(_),
+                        ..
+                    }
+                )
+            })
+        };
+        let is_outside_budget = |record: &OperationRecord| {
+            has_exact_deletion_evidence(record) || deletion_origin_ids.contains(record.id.as_str())
+        };
+        let is_protected = |record: &OperationRecord| {
+            record.status == OperationStatus::Pending
+                || review_origin_ids.contains(record.id.as_str())
+                || is_outside_budget(record)
+        };
+        let counted_record_count = records
+            .iter()
+            .filter(|record| !is_outside_budget(record))
+            .count();
+        if counted_record_count <= OPERATION_LOG_CAP {
+            return;
+        }
         // Sort oldest-first for pruning.
         records.sort_by_key(|r| r.created_at_ms);
-        let excess = records.len() - OPERATION_LOG_CAP;
+        let excess = counted_record_count - OPERATION_LOG_CAP;
         let mut pruned = 0;
         for rec in records {
             if pruned >= excess {
                 break;
             }
-            if rec.status == OperationStatus::Pending || protected_ids.contains(rec.id.as_str()) {
+            if is_protected(&rec) {
                 continue;
             }
             if let Ok(path) = self.path_for(&rec.id) {
@@ -846,6 +879,20 @@ impl OperationGuard {
         self.update_record(|record| record.touched_remote = true)
     }
 
+    /// Durably clear pre-attempt uncertainty after a conclusive authorization
+    /// veto proves that no remote request was sent.
+    pub(crate) fn clear_touched_remote_before_attempt(&mut self) -> Result<()> {
+        if !self.record.remote_effects.is_empty() {
+            return Err(GgError::Other(
+                "cannot clear remote uncertainty after recording a remote effect".to_string(),
+            ));
+        }
+        if !self.record.touched_remote {
+            return Ok(());
+        }
+        self.update_record(|record| record.touched_remote = false)
+    }
+
     /// Persist command-specific state needed to finish a conflict-resumed
     /// operation from a later `gg continue` invocation.
     pub fn set_pending_plan(&mut self, pending_plan: serde_json::Value) {
@@ -1014,8 +1061,30 @@ pub fn run_undo(
     }
 
     // 3. Replay only the target's deletion-intent delta. A direct Drop undo
-    // cancels any authority that still exists; undoing an Undo reverses the
-    // exact state transition that Undo recorded. Consumed authority is absent
+    // cannot revoke authority for a deletion whose remote outcome is uncertain.
+    if target.kind == OperationKind::Drop {
+        if let Some(intent) = config
+            .pending_remote_branch_deletions
+            .iter()
+            .find(|intent| {
+                intent.source_operation_id == target.id
+                    && intent.state == crate::config::RemoteBranchDeletionState::Deleting
+            })
+        {
+            return Ok(UndoOutcome::RefusedStale {
+                ref_name: format!(
+                    "pending_remote_branch_deletions[{}/{}]",
+                    intent.remote, intent.branch
+                ),
+                expected: "deletion outcome resolved".to_string(),
+                actual: "deletion outcome uncertain".to_string(),
+                target,
+            });
+        }
+    }
+
+    // A direct Drop undo cancels any still-pending authority; undoing an Undo
+    // reverses the exact state transition that Undo recorded. Consumed authority is absent
     // and therefore never reconstructed from the older Drop record.
     let deletion_changes = if target.kind == OperationKind::Drop {
         config
@@ -1568,6 +1637,150 @@ pub(crate) mod tests {
         let all = store.list(usize::MAX).unwrap();
         assert!(all.iter().any(|r| r.status == OperationStatus::Pending));
         assert!(all.len() <= OPERATION_LOG_CAP + 1);
+    }
+
+    #[test]
+    fn store_preserves_branch_deletion_effects_beyond_history_cap() {
+        let (_common_dir, gg_dir) = tmp_gg_dir();
+        let store = OperationStore::new(&gg_dir);
+        let mut deletion = make_record(OperationKind::Clean, 0);
+        deletion.remote_effects = vec![RemoteEffect::BranchDeleted {
+            remote: "origin".to_string(),
+            branch: "user/stack--c-1111111".to_string(),
+            prior_oid: Some("1111111111111111111111111111111111111111".to_string()),
+        }];
+        store.save(&deletion).unwrap();
+
+        for i in 1..=OPERATION_LOG_CAP as u64 {
+            store.save(&make_record(OperationKind::Drop, i)).unwrap();
+        }
+
+        assert_eq!(store.load(&deletion.id).unwrap().id, deletion.id);
+    }
+
+    #[test]
+    fn protected_deletion_evidence_does_not_consume_ordinary_history_budget() {
+        let (_common_dir, gg_dir) = tmp_gg_dir();
+        let store = OperationStore::new(&gg_dir);
+
+        for i in 0..OPERATION_LOG_CAP as u64 {
+            let mut deletion = make_record(OperationKind::Clean, i);
+            deletion.remote_effects = vec![RemoteEffect::BranchDeleted {
+                remote: "origin".to_string(),
+                branch: format!("user/stack--c-{i:07}"),
+                prior_oid: Some(format!("{i:040x}")),
+            }];
+            store.save(&deletion).unwrap();
+        }
+
+        let mut ordinary_ids = Vec::new();
+        for i in OPERATION_LOG_CAP as u64..(2 * OPERATION_LOG_CAP) as u64 {
+            let ordinary = make_record(OperationKind::Drop, i);
+            ordinary_ids.push(ordinary.id.clone());
+            store.save(&ordinary).unwrap();
+        }
+        for id in &ordinary_ids {
+            assert_eq!(store.load(id).unwrap().id, *id);
+        }
+
+        let newest = make_record(OperationKind::Drop, (2 * OPERATION_LOG_CAP) as u64);
+        store.save(&newest).unwrap();
+
+        assert!(store.load(&ordinary_ids[0]).is_err());
+        for id in ordinary_ids.iter().skip(1) {
+            assert_eq!(store.load(id).unwrap().id, *id);
+        }
+        assert_eq!(store.load(&newest.id).unwrap().id, newest.id);
+    }
+
+    #[test]
+    fn store_preserves_interrupted_drop_origin_while_remote_deletion_intent_is_live() {
+        let (common_dir, gg_dir) = tmp_gg_dir();
+        let store = OperationStore::new(&gg_dir);
+        let mut origin = make_record(OperationKind::Drop, 0);
+        origin.status = OperationStatus::Pending;
+        let intent = PendingRemoteBranchDeletion {
+            remote: "origin".to_string(),
+            branch: "user/stack--c-1111111".to_string(),
+            expected_oid: "1111111111111111111111111111111111111111".to_string(),
+            source_operation_id: origin.id.clone(),
+            state: crate::config::RemoteBranchDeletionState::Deleting,
+        };
+        origin.remote_branch_deletion_changes = vec![RemoteBranchDeletionChange {
+            remote: intent.remote.clone(),
+            branch: intent.branch.clone(),
+            before: None,
+            after: Some(intent.clone()),
+        }];
+        store.save(&origin).unwrap();
+
+        let mut config = Config::default();
+        config.pending_remote_branch_deletions.push(intent.clone());
+        config.save(common_dir.path()).unwrap();
+        store.sweep_pending(PENDING_STALENESS_MS + 1);
+
+        for i in 1..=OPERATION_LOG_CAP as u64 {
+            store.save(&make_record(OperationKind::Nav, i)).unwrap();
+        }
+
+        let retained = store.load(&origin.id).unwrap();
+        assert_eq!(retained.status, OperationStatus::Interrupted);
+        assert_eq!(retained.kind, OperationKind::Drop);
+        assert_eq!(
+            retained.remote_branch_deletion_changes[0].after,
+            Some(intent.clone())
+        );
+
+        config.pending_remote_branch_deletions.clear();
+        config.save(common_dir.path()).unwrap();
+        store
+            .save(&make_record(
+                OperationKind::Nav,
+                OPERATION_LOG_CAP as u64 + 1,
+            ))
+            .unwrap();
+        assert!(matches!(
+            store.load(&origin.id),
+            Err(GgError::OperationRecordNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn store_preserves_interrupted_drop_origin_while_pending_deletion_intent_is_live() {
+        let (common_dir, gg_dir) = tmp_gg_dir();
+        let store = OperationStore::new(&gg_dir);
+        let mut origin = make_record(OperationKind::Drop, 0);
+        origin.status = OperationStatus::Pending;
+        let intent = PendingRemoteBranchDeletion {
+            remote: "origin".to_string(),
+            branch: "user/stack--c-2222222".to_string(),
+            expected_oid: "2222222222222222222222222222222222222222".to_string(),
+            source_operation_id: origin.id.clone(),
+            state: crate::config::RemoteBranchDeletionState::Pending,
+        };
+        origin.remote_branch_deletion_changes = vec![RemoteBranchDeletionChange {
+            remote: intent.remote.clone(),
+            branch: intent.branch.clone(),
+            before: None,
+            after: Some(intent.clone()),
+        }];
+        store.save(&origin).unwrap();
+
+        let mut config = Config::default();
+        config.pending_remote_branch_deletions.push(intent.clone());
+        config.save(common_dir.path()).unwrap();
+        store.sweep_pending(PENDING_STALENESS_MS + 1);
+        for i in 1..=OPERATION_LOG_CAP as u64 {
+            store.save(&make_record(OperationKind::Nav, i)).unwrap();
+        }
+
+        let retained = store.load(&origin.id).unwrap();
+        assert_eq!(retained.status, OperationStatus::Interrupted);
+        assert_eq!(retained.kind, OperationKind::Drop);
+        assert_eq!(
+            retained.remote_branch_deletion_changes[0].after,
+            Some(intent)
+        );
     }
 
     #[test]
@@ -2187,6 +2400,59 @@ mod undo_tests {
         assert!(matches!(outcome, UndoOutcome::Succeeded(_)));
         let restored = repo.find_reference("refs/heads/nacho/feat/1").unwrap();
         assert_eq!(restored.target().unwrap(), c1);
+    }
+
+    #[test]
+    fn run_undo_refuses_drop_while_remote_deletion_is_uncertain() {
+        let (_dir, repo, _c1, _c2) = setup_repo_with_two_commits();
+        let gg_dir = crate::git::gg_dir(&repo);
+        let store = OperationStore::new(&gg_dir);
+        let mut rec = OperationRecord {
+            id: new_id(),
+            schema_version: SCHEMA_VERSION,
+            kind: OperationKind::Drop,
+            status: OperationStatus::Committed,
+            created_at_ms: now_ms(),
+            args: vec!["drop".into()],
+            stack_name: Some("uncertain".into()),
+            refs_before: vec![],
+            refs_after: vec![],
+            remote_effects: vec![],
+            touched_remote: false,
+            undoes: None,
+            pending_plan: None,
+            remote_branch_deletion_changes: vec![],
+        };
+        let intent = crate::config::PendingRemoteBranchDeletion {
+            remote: "origin".into(),
+            branch: "nacho/uncertain--c-1111111".into(),
+            expected_oid: "1111111111111111111111111111111111111111".into(),
+            source_operation_id: rec.id.clone(),
+            state: crate::config::RemoteBranchDeletionState::Deleting,
+        };
+        rec.remote_branch_deletion_changes = vec![RemoteBranchDeletionChange {
+            remote: intent.remote.clone(),
+            branch: intent.branch.clone(),
+            before: None,
+            after: Some(intent.clone()),
+        }];
+        store.save(&rec).unwrap();
+
+        let mut config = cfg_user("nacho");
+        config.pending_remote_branch_deletions.push(intent.clone());
+        let outcome = run_undo(
+            &repo,
+            &mut config,
+            UndoOptions {
+                operation_id: Some(rec.id.clone()),
+                json: false,
+            },
+            None,
+        )
+        .unwrap();
+
+        assert!(matches!(outcome, UndoOutcome::RefusedStale { .. }));
+        assert_eq!(config.pending_remote_branch_deletions, vec![intent]);
     }
 
     #[test]

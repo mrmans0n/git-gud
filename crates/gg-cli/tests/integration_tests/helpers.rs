@@ -126,7 +126,7 @@ impl Drop for ProcessGroupGuard {
     }
 }
 
-fn isolated_home(repo_path: &std::path::Path) -> PathBuf {
+pub(crate) fn isolated_home(repo_path: &std::path::Path) -> PathBuf {
     let home = repo_path.join(".test-home");
     fs::create_dir_all(&home).expect("Failed to create isolated test home");
     home

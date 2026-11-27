@@ -7249,7 +7249,7 @@ exit 0
 
 #[cfg(unix)]
 #[test]
-fn branch_delete_config_save_and_finalization_failures_are_reported_together() {
+fn branch_delete_config_save_failure_preserves_incomplete_segment_without_finalizing() {
     let (_temp, repo_path, remote_path, fake_path) =
         setup_published_prune_stack("delete-save-finalize-failure");
     let dropped_branch = "testuser/delete-save-finalize-failure--c-3333333";
@@ -7327,15 +7327,20 @@ fn branch_delete_config_save_and_finalization_failures_are_reported_together() {
     )
     .unwrap();
 
-    assert!(!success, "double failure must fail: {stdout}\n{stderr}");
+    assert!(!success, "durability failure must fail: {stdout}\n{stderr}");
     let diagnostic = format!("{stdout}\n{stderr}");
     assert!(
-        diagnostic.contains("additionally failed to finalize sync operation"),
-        "finalization error was lost: {diagnostic}"
+        diagnostic.contains("failed to persist completed remote deletion"),
+        "config-save error was lost: {diagnostic}"
     );
     assert!(
-        diagnostic.matches("Is a directory").count() >= 2,
-        "config-save or finalization error was lost: {diagnostic}"
+        !diagnostic.contains("failed to finalize"),
+        "an incomplete deletion segment must not be finalized: {diagnostic}"
+    );
+    assert_eq!(
+        diagnostic.matches("Is a directory").count(),
+        1,
+        "the blocked operation save should remain untouched: {diagnostic}"
     );
     assert!(
         !run_git(
@@ -7502,7 +7507,7 @@ fn test_failed_delete_response_requires_reconciliation_before_same_oid_retry() {
 
 #[cfg(unix)]
 #[test]
-fn test_redo_drop_preserves_uncertain_deletion_state() {
+fn test_undo_drop_refuses_while_deletion_state_is_uncertain() {
     let (_temp, repo_path, remote_path, fake_path) =
         setup_published_prune_stack("redo-uncertain-prune");
     let dropped_branch = "testuser/redo-uncertain-prune--c-3333333";
@@ -7540,15 +7545,24 @@ fn test_redo_drop_preserves_uncertain_deletion_state() {
     );
 
     let (success, stdout, stderr) = run_gg(&repo_path, &["undo", &drop_operation_id, "--json"]);
-    assert!(success, "undo failed: {stdout}\n{stderr}");
-    let (success, stdout, stderr) = run_gg(&repo_path, &["undo", "--json"]);
-    assert!(success, "redo failed: {stdout}\n{stderr}");
+    assert!(
+        !success,
+        "undo must not revoke an uncertain deletion intent: {stdout}\n{stderr}"
+    );
+    let refusal: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(refusal["refusal"]["reason"], "stale");
+    assert!(
+        refusal["refusal"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("deletion outcome uncertain")),
+        "{refusal}"
+    );
 
     let config: Value =
         serde_json::from_slice(&fs::read(repo_path.join(".git/gg/config.json")).unwrap()).unwrap();
     assert_eq!(
         config["pending_remote_branch_deletions"][0]["state"], "deleting",
-        "redo must preserve uncertainty rather than mint pending authority"
+        "refused undo must preserve uncertainty"
     );
 
     let (success, stdout, stderr) = run_gg_with_env(

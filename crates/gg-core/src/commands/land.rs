@@ -1952,6 +1952,15 @@ pub fn run(opts: LandOptions) -> Result<()> {
                                 break 'landing_loop;
                             }
                         };
+                        if wait_outcome == WaitForReadyOutcome::Merged {
+                            clear_pipeline_handoff_after_terminal(
+                                &repo,
+                                &mut config,
+                                &stack_name,
+                                pr_num,
+                                &mut pipeline_handoff,
+                            )?;
+                        }
                         if let Some(error) = stack_changed_while_waiting(&expected_stack, &stack) {
                             if wait_outcome == WaitForReadyOutcome::Merged {
                                 guard = Some(begin_land_segment(&repo, &config, &args)?);

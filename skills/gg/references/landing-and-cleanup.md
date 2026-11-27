@@ -66,6 +66,13 @@
   mutation, revalidate an explicit open, non-draft state and expected target
   branch. Stop and inspect the values directly in GitLab rather than inferring
   a safe default.
+- When GitLab needs a replacement MR pipeline, gg durably binds the attempt to
+  the target project, MR IID, source project and branch, source OID, and target
+  branch, then revalidates that identity immediately before the POST. An
+  ambiguous POST remains `Attempted` and is never retried automatically. Do not
+  delete that recovery state or repeat the request based only on the command
+  error; inspect the exact MR identity and GitLab pipeline list, and stop if the
+  outcome remains uncertain.
 
 ## Procedure
 
@@ -110,7 +117,10 @@ stop before invoking global cleanup.
    `true`, run only after the separate admin approval even when the command
    line omits `--admin`.
 4. For GitLab auto-merge or merge trains, treat "not reported yet; still
-   polling" as non-terminal.
+   polling" as non-terminal. A completed pipeline handoff remains live until
+   the matching MR is observed merged or closed. In JSONL mode, require the
+   `pipeline_checkpoint` event before allowing later automation; a broken pipe
+   while emitting it stops gg before queueing or taking the next action.
 5. Treat `queued` and `already_queued` as queued, not merged.
 6. Verify the remote merge result before cleanup.
 7. If cleanup was separately authorized for the just-landed stack and the

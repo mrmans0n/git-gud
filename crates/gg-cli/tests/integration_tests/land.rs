@@ -301,6 +301,7 @@ if [ "$1" = "api" ]; then
             exit 1
           fi
         fi
+        touch "$GG_FAKE_MERGED"
         printf '{"merge_request":{"iid":%s},"status":"merged","pipeline":{"status":"success"}}\n' "$train_mr"
         exit 0
       fi
@@ -2853,6 +2854,25 @@ fn test_land_gitlab_startup_merged_handoff_clears_before_later_entry() {
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(fixture.queued_request().contains("merge_requests/42"));
+    assert!(gitlab_landing_attempt(&fixture.repo_path).is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_readiness_merged_handoff_clears_before_later_entry() {
+    let (fixture, _) = completed_pipeline_fixture();
+    repoint_completed_pipeline_handoff_to_first_entry(&fixture);
+    fs::remove_file(&fixture.merged).unwrap();
+    fixture.complete_merge_train_status();
+
+    let output = fixture.land_command(&PIPELINE_LAND_ARGS).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
     assert!(fixture.queued_request().contains("merge_requests/42"));
     assert!(gitlab_landing_attempt(&fixture.repo_path).is_none());

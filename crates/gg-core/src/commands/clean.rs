@@ -147,6 +147,7 @@ impl<'a> RemoteDeletionSegmentOwner<'a> {
                             branch,
                             expected_oid: prior_oid,
                             source_operation_id,
+                            gitlab_land_authorization: None,
                             state: RemoteBranchDeletionState::Deleting,
                         });
                     config.save(self.repo.commondir()).map_err(|error| {

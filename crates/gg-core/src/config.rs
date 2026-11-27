@@ -175,6 +175,91 @@ pub struct ReviewCreationIntent {
     pub origin_operation_id: String,
 }
 
+/// Durability state for one post-merge provider mutation.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LandMaintenanceMutationState {
+    /// The request may have reached the provider; automatic retry is unsafe.
+    Attempted,
+    /// The provider returned a conclusive success response.
+    Completed,
+}
+
+/// Durable identity and result of one post-merge mutation phase.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LandMaintenanceMutation {
+    pub state: LandMaintenanceMutationState,
+    pub operation_id: String,
+    /// Exact source commit confirmed by a successful branch push.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pushed_oid: Option<String>,
+    /// Most recent confirmed push on this branch when a later merge supersedes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by_oid: Option<String>,
+}
+
+/// Worktree ownership of a local downstream rebase performed by Land.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LandLocalRebaseOwnership {
+    /// Legacy state without enough information to select a worktree safely.
+    #[default]
+    Unknown,
+    /// The exact Git directory of the worktree that owns the temporary checkout.
+    WorktreeGitDir { git_dir: String },
+}
+
+fn land_local_rebase_ownership_is_unknown(ownership: &LandLocalRebaseOwnership) -> bool {
+    matches!(ownership, LandLocalRebaseOwnership::Unknown)
+}
+
+/// Durable state of one local downstream rebase performed by Land.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LandLocalRebase {
+    pub state: LandMaintenanceMutationState,
+    /// The local-only Land operation whose refs_before contains the original
+    /// symbolic or detached HEAD representation.
+    pub operation_id: String,
+    /// Worktree ownership required to recover this temporary checkout safely.
+    #[serde(
+        default,
+        skip_serializing_if = "land_local_rebase_ownership_is_unknown"
+    )]
+    pub ownership: LandLocalRebaseOwnership,
+    pub branch: String,
+    pub previous_oid: String,
+    /// Exact branch tip produced by a conclusively successful rebase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rebased_oid: Option<String>,
+}
+
+/// GitLab identity that must be reauthorized before a deferred Land deletion.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GitLabBranchDeletionAuthorization {
+    pub mr_number: u64,
+    pub project_url: String,
+}
+
+/// Restart-safe progress for maintenance after one merged stack entry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LandMaintenanceProgress {
+    pub merged_mr: u64,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub retargets: HashMap<String, LandMaintenanceMutation>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub pushes: HashMap<String, LandMaintenanceMutation>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub local_rebases: HashMap<String, LandLocalRebase>,
+}
+
+/// A GitLab landing request whose result has not been durably confirmed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GitLabLandingAttempt {
+    pub mr_number: u64,
+    pub action: String,
+    pub operation_id: String,
+}
+
 /// Per-stack configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StackConfig {
@@ -189,6 +274,14 @@ pub struct StackConfig {
     /// Review creates that must be resolved before another create is attempted.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub review_creation_intents: HashMap<String, ReviewCreationIntent>,
+
+    /// The GitLab landing mutation in flight for this stack, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gitlab_landing_attempt: Option<GitLabLandingAttempt>,
+
+    /// Restart-safe post-merge mutation progress by merged GG-ID.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub land_maintenance: HashMap<String, LandMaintenanceProgress>,
 
     /// Absolute path to a linked worktree for this stack
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -212,6 +305,8 @@ pub struct PendingRemoteBranchDeletion {
     pub branch: String,
     pub expected_oid: String,
     pub source_operation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gitlab_land_authorization: Option<GitLabBranchDeletionAuthorization>,
     #[serde(default)]
     pub state: RemoteBranchDeletionState,
 }
@@ -686,6 +781,7 @@ mod tests {
             branch: "user/stack--c-1111111".to_string(),
             expected_oid: "1111111111111111111111111111111111111111".to_string(),
             source_operation_id: "uncertain-clean".to_string(),
+            gitlab_land_authorization: None,
             state: RemoteBranchDeletionState::Deleting,
         };
         config
@@ -697,6 +793,7 @@ mod tests {
             branch: uncertain.branch.clone(),
             expected_oid: uncertain.expected_oid.clone(),
             source_operation_id: "later-drop".to_string(),
+            gitlab_land_authorization: None,
             state: RemoteBranchDeletionState::Pending,
         }]);
 
@@ -725,6 +822,186 @@ mod tests {
             loaded.get_mr_for_entry("my-feature", "c-abc123"),
             Some(1234)
         );
+    }
+
+    #[test]
+    fn recovery_schema_loads_old_config_and_roundtrips_new_provenance() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_dir = temp_dir.path();
+        let config_path = Config::config_path(git_dir);
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        fs::write(
+            &config_path,
+            r#"{
+  "stacks": {
+    "feature": {
+      "mrs": {"c-1111111": 41},
+      "worktree_path": "/tmp/feature"
+    }
+  },
+  "pending_remote_branch_deletions": [
+    {
+      "remote": "origin",
+      "branch": "user/feature--c-old0001",
+      "expected_oid": "1111111111111111111111111111111111111111",
+      "source_operation_id": "op_old_deletion",
+      "state": "pending"
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let mut config = Config::load(git_dir).unwrap();
+        let old_stack = &config.stacks["feature"];
+        assert!(old_stack.gitlab_landing_attempt.is_none());
+        assert!(old_stack.land_maintenance.is_empty());
+        assert!(config.pending_remote_branch_deletions[0]
+            .gitlab_land_authorization
+            .is_none());
+
+        let landing_attempt = GitLabLandingAttempt {
+            mr_number: 41,
+            action: "direct_merge".to_string(),
+            operation_id: "op_landing".to_string(),
+        };
+        let retarget = LandMaintenanceMutation {
+            state: LandMaintenanceMutationState::Attempted,
+            operation_id: "op_retarget".to_string(),
+            pushed_oid: None,
+            superseded_by_oid: None,
+        };
+        let push = LandMaintenanceMutation {
+            state: LandMaintenanceMutationState::Completed,
+            operation_id: "op_push".to_string(),
+            pushed_oid: Some("2222222222222222222222222222222222222222".to_string()),
+            superseded_by_oid: Some("3333333333333333333333333333333333333333".to_string()),
+        };
+        let local_rebase = LandLocalRebase {
+            state: LandMaintenanceMutationState::Completed,
+            operation_id: "op_local_rebase".to_string(),
+            ownership: LandLocalRebaseOwnership::WorktreeGitDir {
+                git_dir: "/repo/.git/worktrees/feature".to_string(),
+            },
+            branch: "user/feature--c-2222222".to_string(),
+            previous_oid: "4444444444444444444444444444444444444444".to_string(),
+            rebased_oid: Some("5555555555555555555555555555555555555555".to_string()),
+        };
+        let maintenance = LandMaintenanceProgress {
+            merged_mr: 41,
+            retargets: HashMap::from([("c-2222222".to_string(), retarget.clone())]),
+            pushes: HashMap::from([("c-2222222".to_string(), push.clone())]),
+            local_rebases: HashMap::from([("c-2222222".to_string(), local_rebase.clone())]),
+        };
+        let authorization = GitLabBranchDeletionAuthorization {
+            mr_number: 41,
+            project_url: "https://gitlab.example/group/project".to_string(),
+        };
+        let authorized_deletion = PendingRemoteBranchDeletion {
+            remote: "origin".to_string(),
+            branch: "user/feature--c-1111111".to_string(),
+            expected_oid: "6666666666666666666666666666666666666666".to_string(),
+            source_operation_id: "op_authorized_deletion".to_string(),
+            gitlab_land_authorization: Some(authorization.clone()),
+            state: RemoteBranchDeletionState::Deleting,
+        };
+
+        let stack = config.get_or_create_stack("feature");
+        stack.gitlab_landing_attempt = Some(landing_attempt.clone());
+        stack
+            .land_maintenance
+            .insert("c-1111111".to_string(), maintenance.clone());
+        config
+            .pending_remote_branch_deletions
+            .push(authorized_deletion.clone());
+        config.save(git_dir).unwrap();
+
+        let reloaded = Config::load(git_dir).unwrap();
+        let stack = &reloaded.stacks["feature"];
+        assert_eq!(stack.mrs["c-1111111"], 41);
+        assert_eq!(stack.worktree_path.as_deref(), Some("/tmp/feature"));
+        assert_eq!(
+            stack.gitlab_landing_attempt.as_ref(),
+            Some(&landing_attempt)
+        );
+        assert_eq!(stack.land_maintenance["c-1111111"], maintenance);
+        assert!(reloaded.pending_remote_branch_deletions[0]
+            .gitlab_land_authorization
+            .is_none());
+        assert_eq!(
+            reloaded.pending_remote_branch_deletions[1],
+            authorized_deletion
+        );
+        assert_eq!(
+            reloaded.pending_remote_branch_deletions[1].branch,
+            "user/feature--c-1111111"
+        );
+        assert_eq!(
+            reloaded.pending_remote_branch_deletions[1].expected_oid,
+            "6666666666666666666666666666666666666666"
+        );
+        assert_eq!(
+            reloaded.pending_remote_branch_deletions[1]
+                .gitlab_land_authorization
+                .as_ref()
+                .unwrap(),
+            &authorization
+        );
+
+        let serialized: serde_json::Value =
+            serde_json::from_slice(&fs::read(config_path).unwrap()).unwrap();
+        assert!(serialized["pending_remote_branch_deletions"][0]
+            .get("gitlab_land_authorization")
+            .is_none());
+        assert!(
+            serialized["stacks"]["feature"]["land_maintenance"]["c-1111111"]["retargets"]
+                ["c-2222222"]
+                .get("pushed_oid")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn land_local_rebase_ownership_is_explicit_and_backward_compatible() {
+        let legacy: LandLocalRebase = serde_json::from_value(serde_json::json!({
+            "state": "completed",
+            "operation_id": "op_legacy_rebase",
+            "branch": "user/feature--c-2222222",
+            "previous_oid": "1111111111111111111111111111111111111111",
+            "rebased_oid": "2222222222222222222222222222222222222222"
+        }))
+        .unwrap();
+        assert_eq!(legacy.ownership, LandLocalRebaseOwnership::Unknown);
+        assert_eq!(
+            LandLocalRebaseOwnership::default(),
+            LandLocalRebaseOwnership::Unknown
+        );
+
+        let legacy_serialized = serde_json::to_value(&legacy).unwrap();
+        assert!(legacy_serialized.get("ownership").is_none());
+        assert!(legacy_serialized.get("worktree_git_dir").is_none());
+        let legacy_roundtrip: LandLocalRebase = serde_json::from_value(legacy_serialized).unwrap();
+        assert_eq!(
+            legacy_roundtrip.ownership,
+            LandLocalRebaseOwnership::Unknown
+        );
+
+        let exact_git_dir = "/repo/.git/worktrees/feature";
+        let owned = LandLocalRebase {
+            state: LandMaintenanceMutationState::Completed,
+            operation_id: "op_owned_rebase".to_string(),
+            ownership: LandLocalRebaseOwnership::WorktreeGitDir {
+                git_dir: exact_git_dir.to_string(),
+            },
+            branch: "user/feature--c-2222222".to_string(),
+            previous_oid: "1111111111111111111111111111111111111111".to_string(),
+            rebased_oid: Some("2222222222222222222222222222222222222222".to_string()),
+        };
+        let owned_serialized = serde_json::to_value(&owned).unwrap();
+        assert_eq!(owned_serialized["ownership"]["kind"], "worktree_git_dir");
+        assert_eq!(owned_serialized["ownership"]["git_dir"], exact_git_dir);
+        let owned_roundtrip: LandLocalRebase = serde_json::from_value(owned_serialized).unwrap();
+        assert_eq!(owned_roundtrip, owned);
     }
 
     #[test]

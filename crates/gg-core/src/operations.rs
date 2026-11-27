@@ -34,10 +34,11 @@ use crate::stack::Stack;
 pub const SCHEMA_VERSION: u32 = 2;
 
 /// Cap for counted operation history. Pruning never removes Pending records or
-/// records referenced by live review-creation intents, but those records share
-/// the cap and can reduce the retained ordinary history. Exact branch-deletion
-/// evidence and records referenced by live remote-deletion intents are protected
-/// outside the cap while their recovery authority applies.
+/// records referenced by live review-creation, GitLab landing-attempt, or
+/// post-merge maintenance recovery state, but those records share the cap and can
+/// reduce retained ordinary history. Exact branch-deletion evidence and records
+/// referenced by live remote-deletion intents are protected outside the cap while
+/// their recovery authority applies.
 pub const OPERATION_LOG_CAP: usize = 100;
 
 /// How long a `Pending` record may live before the sweep promotes it to
@@ -377,6 +378,29 @@ impl OperationStore {
             .flat_map(|stack| stack.review_creation_intents.values())
             .map(|intent| intent.origin_operation_id.as_str())
             .collect();
+        let land_recovery_ids: HashSet<&str> = config
+            .stacks
+            .values()
+            .flat_map(|stack| {
+                stack
+                    .gitlab_landing_attempt
+                    .iter()
+                    .map(|attempt| attempt.operation_id.as_str())
+                    .chain(stack.land_maintenance.values().flat_map(|progress| {
+                        progress
+                            .retargets
+                            .values()
+                            .chain(progress.pushes.values())
+                            .map(|mutation| mutation.operation_id.as_str())
+                            .chain(
+                                progress
+                                    .local_rebases
+                                    .values()
+                                    .map(|phase| phase.operation_id.as_str()),
+                            )
+                    }))
+            })
+            .collect();
         let deletion_origin_ids: HashSet<&str> = config
             .pending_remote_branch_deletions
             .iter()
@@ -399,6 +423,7 @@ impl OperationStore {
         let is_protected = |record: &OperationRecord| {
             record.status == OperationStatus::Pending
                 || review_origin_ids.contains(record.id.as_str())
+                || land_recovery_ids.contains(record.id.as_str())
                 || is_outside_budget(record)
         };
         let counted_record_count = records
@@ -1221,6 +1246,8 @@ fn build_remote_hints(record: &OperationRecord) -> Vec<String> {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
     // -- small fixtures ------------------------------------------------------
@@ -1704,6 +1731,7 @@ pub(crate) mod tests {
             branch: "user/stack--c-1111111".to_string(),
             expected_oid: "1111111111111111111111111111111111111111".to_string(),
             source_operation_id: origin.id.clone(),
+            gitlab_land_authorization: None,
             state: crate::config::RemoteBranchDeletionState::Deleting,
         };
         origin.remote_branch_deletion_changes = vec![RemoteBranchDeletionChange {
@@ -1756,6 +1784,7 @@ pub(crate) mod tests {
             branch: "user/stack--c-2222222".to_string(),
             expected_oid: "2222222222222222222222222222222222222222".to_string(),
             source_operation_id: origin.id.clone(),
+            gitlab_land_authorization: None,
             state: crate::config::RemoteBranchDeletionState::Pending,
         };
         origin.remote_branch_deletion_changes = vec![RemoteBranchDeletionChange {
@@ -1830,6 +1859,121 @@ pub(crate) mod tests {
             Err(GgError::OperationRecordNotFound(_))
         ));
         assert!(store.list(usize::MAX).unwrap().len() <= OPERATION_LOG_CAP);
+    }
+
+    #[test]
+    fn store_preserves_all_recovery_operation_roots() {
+        let (common_dir, gg_dir) = tmp_gg_dir();
+        let store = OperationStore::new(&gg_dir);
+        let landing = make_record(OperationKind::Land, 0);
+        let retarget = make_record(OperationKind::Land, 1);
+        let local_rebase = make_record(OperationKind::Land, 2);
+        let downstream_push = make_record(OperationKind::Land, 3);
+        let pending_deletion = make_record(OperationKind::Drop, 4);
+        let deleting_deletion = make_record(OperationKind::Clean, 5);
+        let recovery_records = [
+            &landing,
+            &retarget,
+            &local_rebase,
+            &downstream_push,
+            &pending_deletion,
+            &deleting_deletion,
+        ];
+        for record in recovery_records {
+            store.save(record).unwrap();
+        }
+
+        let mut config = Config::default();
+        let stack = config.get_or_create_stack("recovery-stack");
+        stack.gitlab_landing_attempt = Some(crate::config::GitLabLandingAttempt {
+            mr_number: 41,
+            action: "direct_merge".to_string(),
+            operation_id: landing.id.clone(),
+        });
+        stack.land_maintenance.insert(
+            "c-1111111".to_string(),
+            crate::config::LandMaintenanceProgress {
+                merged_mr: 41,
+                retargets: HashMap::from([(
+                    "c-2222222".to_string(),
+                    crate::config::LandMaintenanceMutation {
+                        state: crate::config::LandMaintenanceMutationState::Attempted,
+                        operation_id: retarget.id.clone(),
+                        pushed_oid: None,
+                        superseded_by_oid: None,
+                    },
+                )]),
+                pushes: HashMap::from([(
+                    "c-2222222".to_string(),
+                    crate::config::LandMaintenanceMutation {
+                        state: crate::config::LandMaintenanceMutationState::Completed,
+                        operation_id: downstream_push.id.clone(),
+                        pushed_oid: Some("2222222222222222222222222222222222222222".to_string()),
+                        superseded_by_oid: None,
+                    },
+                )]),
+                local_rebases: HashMap::from([(
+                    "c-2222222".to_string(),
+                    crate::config::LandLocalRebase {
+                        state: crate::config::LandMaintenanceMutationState::Completed,
+                        operation_id: local_rebase.id.clone(),
+                        ownership: crate::config::LandLocalRebaseOwnership::WorktreeGitDir {
+                            git_dir: "/repo/.git/worktrees/recovery-stack".to_string(),
+                        },
+                        branch: "user/recovery-stack--c-2222222".to_string(),
+                        previous_oid: "1111111111111111111111111111111111111111".to_string(),
+                        rebased_oid: Some("2222222222222222222222222222222222222222".to_string()),
+                    },
+                )]),
+            },
+        );
+        config
+            .pending_remote_branch_deletions
+            .push(PendingRemoteBranchDeletion {
+                remote: "origin".to_string(),
+                branch: "user/recovery-stack--c-3333333".to_string(),
+                expected_oid: "3333333333333333333333333333333333333333".to_string(),
+                source_operation_id: pending_deletion.id.clone(),
+                gitlab_land_authorization: None,
+                state: crate::config::RemoteBranchDeletionState::Pending,
+            });
+        config
+            .pending_remote_branch_deletions
+            .push(PendingRemoteBranchDeletion {
+                remote: "origin".to_string(),
+                branch: "user/recovery-stack--c-4444444".to_string(),
+                expected_oid: "4444444444444444444444444444444444444444".to_string(),
+                source_operation_id: deleting_deletion.id.clone(),
+                gitlab_land_authorization: Some(crate::config::GitLabBranchDeletionAuthorization {
+                    mr_number: 44,
+                    project_url: "https://gitlab.example/group/project".to_string(),
+                }),
+                state: crate::config::RemoteBranchDeletionState::Deleting,
+            });
+        config.save(common_dir.path()).unwrap();
+
+        let mut ordinary_ids = Vec::new();
+        for i in 10..=OPERATION_LOG_CAP as u64 + 20 {
+            let record = make_record(OperationKind::Nav, i);
+            ordinary_ids.push(record.id.clone());
+            store.save(&record).unwrap();
+        }
+
+        for record in [
+            &landing,
+            &retarget,
+            &local_rebase,
+            &downstream_push,
+            &pending_deletion,
+            &deleting_deletion,
+        ] {
+            assert_eq!(store.load(&record.id).unwrap().id, record.id);
+        }
+        assert!(matches!(
+            store.load(&ordinary_ids[0]),
+            Err(GgError::OperationRecordNotFound(_))
+        ));
+        assert_eq!(store.list(usize::MAX).unwrap().len(), OPERATION_LOG_CAP + 2);
     }
 
     #[test]
@@ -2428,6 +2572,7 @@ mod undo_tests {
             branch: "nacho/uncertain--c-1111111".into(),
             expected_oid: "1111111111111111111111111111111111111111".into(),
             source_operation_id: rec.id.clone(),
+            gitlab_land_authorization: None,
             state: crate::config::RemoteBranchDeletionState::Deleting,
         };
         rec.remote_branch_deletion_changes = vec![RemoteBranchDeletionChange {

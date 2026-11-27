@@ -3378,6 +3378,8 @@ mod tests {
             base: None,
             mrs: HashMap::new(),
             review_creation_intents: HashMap::new(),
+            gitlab_landing_attempt: None,
+            land_maintenance: HashMap::new(),
             worktree_path: None,
         };
         stack_config.mrs.insert("c-abc1234".to_string(), 123);
@@ -3410,6 +3412,8 @@ mod tests {
             base: None,
             mrs: HashMap::new(),
             review_creation_intents: HashMap::new(),
+            gitlab_landing_attempt: None,
+            land_maintenance: HashMap::new(),
             worktree_path: None,
         };
         stack_config.mrs.insert("c-abc1234".to_string(), 123);
@@ -3460,6 +3464,8 @@ mod tests {
             base: None,
             mrs: HashMap::new(),
             review_creation_intents: HashMap::new(),
+            gitlab_landing_attempt: None,
+            land_maintenance: HashMap::new(),
             worktree_path: None,
         };
         stack_config.mrs.insert("c-abc1234".to_string(), 123);

@@ -9,11 +9,13 @@ use console::style;
 use dialoguer::Confirm;
 use indicatif::{ProgressBar, ProgressStyle};
 
-use crate::config::Config;
+use crate::config::{Config, GitLabLandingAttempt, GitLabLandingAttemptState};
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::glab::AutoMergeResult;
-use crate::operations::{OperationKind, RemoteEffect, SnapshotScope};
+use crate::operations::{
+    OperationKind, OperationStatus, OperationStore, RemoteEffect, SnapshotScope,
+};
 use crate::output::{
     print_json, LandResponse, LandResultJson, LandStreamingEvent, LandStreamingResponse,
     LandedEntryJson, StreamingJson, OUTPUT_VERSION,
@@ -815,13 +817,19 @@ fn finish_land_segment(
     let Some(guard) = guard.take() else {
         return Ok(());
     };
-    guard.finalize_with_scope(
-        repo,
-        config,
-        SnapshotScope::AllUserBranches,
-        std::mem::take(remote_effects),
-        std::mem::take(touched_remote),
-    )
+    guard
+        .finalize_with_scope(
+            repo,
+            config,
+            SnapshotScope::AllUserBranches,
+            std::mem::take(remote_effects),
+            std::mem::take(touched_remote),
+        )
+        .map_err(|error| {
+            GgError::DurabilityCheckpoint(format!(
+                "failed to finalize Land operation segment: {error}"
+            ))
+        })
 }
 
 fn ensure_land_segment(
@@ -880,6 +888,14 @@ fn requeue_merge_train_with_operation(
     let git_dir = repo.commondir();
     let config = Config::load_with_global(git_dir)?;
     let current_stack = Stack::load(repo, &config)?;
+    if config
+        .get_stack(&current_stack.name)
+        .is_some_and(|stack| stack.gitlab_landing_attempt.is_some())
+    {
+        return Err(GgError::Other(
+            "GitLab pipeline recovery is pending; restart Land before requeueing".to_string(),
+        ));
+    }
     if let Some(error) = stack_changed_while_waiting(expected_stack, &current_stack) {
         return Err(GgError::Other(error));
     }
@@ -912,6 +928,441 @@ fn mark_land_remote_attempt(
         .mark_touched_remote_before_attempt()?;
     *touched_remote = true;
     Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PipelineIdentity {
+    target_project_id: u64,
+    mr_number: u64,
+    source_project_id: u64,
+    source_branch: String,
+    source_oid: String,
+    target_branch: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PipelineHandoff {
+    identity: PipelineIdentity,
+    pipeline_id: u64,
+}
+
+fn pipeline_checkpoint_error(context: &str, error: GgError) -> GgError {
+    match error {
+        error @ GgError::DurabilityCheckpoint(_) => error,
+        error => GgError::DurabilityCheckpoint(format!("{context}: {error}")),
+    }
+}
+fn pipeline_identity(attempt: &GitLabLandingAttempt) -> Result<PipelineIdentity> {
+    let (
+        Some(target_project_id),
+        Some(source_project_id),
+        Some(source_branch),
+        Some(source_oid),
+        Some(target_branch),
+    ) = (
+        attempt.target_project_id,
+        attempt.source_project_id,
+        attempt.source_branch.clone(),
+        attempt.source_oid.clone(),
+        attempt.target_branch.clone(),
+    )
+    else {
+        return Err(GgError::Other(format!(
+            "GitLab pipeline recovery identity is incomplete for MR !{}",
+            attempt.mr_number
+        )));
+    };
+    Ok(PipelineIdentity {
+        target_project_id,
+        mr_number: attempt.mr_number,
+        source_project_id,
+        source_branch,
+        source_oid,
+        target_branch,
+    })
+}
+
+fn pipeline_identity_args(stack_name: &str, identity: &PipelineIdentity) -> Vec<String> {
+    vec![
+        "gitlab:pipeline_start".to_string(),
+        format!("gitlab:stack={stack_name}"),
+        format!("gitlab:target_project={}", identity.target_project_id),
+        format!("gitlab:mr={}", identity.mr_number),
+        format!("gitlab:source_project={}", identity.source_project_id),
+        format!("gitlab:source_branch={}", identity.source_branch),
+        format!("gitlab:source_oid={}", identity.source_oid),
+        format!("gitlab:target_branch={}", identity.target_branch),
+    ]
+}
+
+fn validate_pipeline_operation(
+    repo: &git2::Repository,
+    stack_name: &str,
+    attempt: &GitLabLandingAttempt,
+) -> Result<crate::operations::OperationRecord> {
+    if attempt.action != "pipeline_start" {
+        return Err(GgError::Other(
+            "unknown GitLab pipeline recovery action".to_string(),
+        ));
+    }
+    let identity = pipeline_identity(attempt)?;
+    let record = OperationStore::new(&git::gg_dir(repo)).load(&attempt.operation_id)?;
+    let markers = pipeline_identity_args(stack_name, &identity);
+    let exact_markers = markers.iter().all(|marker| {
+        let prefix = marker
+            .split_once('=')
+            .map_or(marker.as_str(), |pair| pair.0);
+        record
+            .args
+            .iter()
+            .filter(|arg| {
+                arg.as_str() == prefix
+                    || arg.strip_prefix(prefix).is_some_and(|v| v.starts_with('='))
+            })
+            .eq(std::iter::once(marker))
+    });
+    if record.id != attempt.operation_id
+        || record.kind != OperationKind::Land
+        || record.schema_version != crate::operations::SCHEMA_VERSION
+        || !matches!(
+            record.status,
+            OperationStatus::Pending | OperationStatus::Committed | OperationStatus::Interrupted
+        )
+        || !exact_markers
+        || !record.remote_effects.is_empty()
+        || (attempt.state == GitLabLandingAttemptState::Attempted && attempt.pipeline_id.is_some())
+        || (attempt.state == GitLabLandingAttemptState::Completed && attempt.pipeline_id.is_none())
+    {
+        return Err(GgError::Other(format!(
+            "Operation {} has conflicting GitLab pipeline identity or effects",
+            attempt.operation_id
+        )));
+    }
+    Ok(record)
+}
+
+fn finish_pipeline_operation(
+    repo: &git2::Repository,
+    config: &Config,
+    operation_id: &str,
+    touched_remote: bool,
+) -> Result<()> {
+    crate::operations::finalize_operation_by_id(
+        repo,
+        config,
+        operation_id,
+        SnapshotScope::AllUserBranches,
+        vec![],
+        touched_remote,
+    )
+    .map(|_| ())
+    .map_err(|error| {
+        pipeline_checkpoint_error("failed to finalize GitLab pipeline operation", error)
+    })
+}
+
+fn recover_pipeline_attempt(
+    repo: &git2::Repository,
+    config: &mut Config,
+    stack_name: &str,
+) -> Result<Option<PipelineHandoff>> {
+    let Some(attempt) = config
+        .get_stack(stack_name)
+        .and_then(|stack| stack.gitlab_landing_attempt.clone())
+    else {
+        return Ok(None);
+    };
+    let record = validate_pipeline_operation(repo, stack_name, &attempt)?;
+    let identity = pipeline_identity(&attempt)?;
+    match attempt.state {
+        GitLabLandingAttemptState::Attempted if record.touched_remote => {
+            Err(GgError::RemoteMutationUncertain(format!(
+                "pipeline creation for MR !{} is unresolved and will not be resubmitted automatically",
+                attempt.mr_number
+            )))
+        }
+        GitLabLandingAttemptState::Attempted => {
+            if record.status != OperationStatus::Committed {
+                finish_pipeline_operation(repo, config, &attempt.operation_id, false)?;
+            }
+            config
+                .clear_gitlab_landing_attempt(repo.commondir(), stack_name)
+                .map_err(|error| pipeline_checkpoint_error("failed to clear unattempted GitLab pipeline state", error))?;
+            Ok(None)
+        }
+        GitLabLandingAttemptState::Completed => {
+            if !record.touched_remote {
+                return Err(GgError::Other(format!(
+                    "Completed GitLab pipeline attempt for MR !{} lacks durable remote uncertainty",
+                    attempt.mr_number
+                )));
+            }
+            if record.status != OperationStatus::Committed {
+                finish_pipeline_operation(repo, config, &attempt.operation_id, true)?;
+            }
+            Ok(Some(PipelineHandoff {
+                identity,
+                pipeline_id: attempt.pipeline_id.expect("validated pipeline id"),
+            }))
+        }
+    }
+}
+
+fn emit_pipeline_checkpoint(
+    streamer: Option<&mut StreamingJson>,
+    handoff: &PipelineHandoff,
+) -> Result<()> {
+    let Some(streamer) = streamer else {
+        return Ok(());
+    };
+    streamer
+        .try_emit(&LandStreamingResponse {
+            version: OUTPUT_VERSION,
+            command: "land".to_string(),
+            event: LandStreamingEvent::PipelineCheckpoint {
+                pr_number: handoff.identity.mr_number,
+            },
+        })
+        .map_err(|error| {
+            GgError::DurabilityCheckpoint(format!(
+                "failed to emit durable pipeline checkpoint for MR !{}: {error}",
+                handoff.identity.mr_number
+            ))
+        })
+}
+
+fn recover_pipeline_after_lock(
+    repo: &git2::Repository,
+    config: &mut Config,
+    stack_name: &str,
+    handoff: &mut Option<PipelineHandoff>,
+    checkpointed: &mut bool,
+    streamer: Option<&mut StreamingJson>,
+) -> Result<()> {
+    if let Some(recovered) = recover_pipeline_attempt(repo, config, stack_name)? {
+        if handoff
+            .as_ref()
+            .is_some_and(|current| current != &recovered)
+        {
+            return Err(GgError::Other(
+                "GitLab pipeline handoff changed while the operation lock was released".into(),
+            ));
+        }
+        *handoff = Some(recovered);
+    }
+    if handoff.is_some() && !*checkpointed {
+        emit_pipeline_checkpoint(streamer, handoff.as_ref().expect("checked handoff"))?;
+        *checkpointed = true;
+    }
+    Ok(())
+}
+
+fn clear_pipeline_handoff_after_terminal(
+    repo: &git2::Repository,
+    config: &mut Config,
+    stack_name: &str,
+    mr_number: u64,
+    handoff: &mut Option<PipelineHandoff>,
+) -> Result<()> {
+    if handoff
+        .as_ref()
+        .is_some_and(|handoff| handoff.identity.mr_number == mr_number)
+    {
+        config
+            .clear_gitlab_landing_attempt(repo.commondir(), stack_name)
+            .map_err(|error| {
+                pipeline_checkpoint_error("failed to clear terminal GitLab pipeline handoff", error)
+            })?;
+        *handoff = None;
+    }
+    Ok(())
+}
+
+fn pipeline_is_missing(mr_number: u64, mr: &crate::glab::LandingMergeRequest) -> Result<bool> {
+    if mr.detailed_merge_status.as_deref() != Some("ci_must_pass") {
+        return Ok(false);
+    }
+    match mr.extra.get("head_pipeline") {
+        Some(serde_json::Value::Null) => Ok(true),
+        Some(serde_json::Value::Object(_)) => Ok(false),
+        _ => Err(GgError::Other(format!(
+            "MR !{mr_number} has unknown pipeline state"
+        ))),
+    }
+}
+
+fn pipeline_identity_matches(
+    mr: &crate::glab::LandingMergeRequest,
+    identity: &PipelineIdentity,
+) -> bool {
+    mr.iid == Some(identity.mr_number)
+        && mr.target_project_id == Some(identity.target_project_id)
+        && mr.source_project_id == Some(identity.source_project_id)
+        && mr.source_branch.as_deref() == Some(identity.source_branch.as_str())
+        && mr.sha.as_deref() == Some(identity.source_oid.as_str())
+        && mr.target_branch == identity.target_branch
+}
+
+fn validate_pipeline_handoff_before_queue(
+    mr_number: u64,
+    target_branch: &str,
+    handoff: &PipelineHandoff,
+) -> Result<()> {
+    let fresh = crate::glab::read_landing_merge_request(mr_number)?;
+    crate::glab::validate_landing_merge_request(mr_number, target_branch, &fresh)?;
+    if mr_number != handoff.identity.mr_number
+        || !pipeline_identity_matches(&fresh, &handoff.identity)
+    {
+        return Err(GgError::Other(format!(
+            "GitLab pipeline identity changed for MR !{mr_number}"
+        )));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_pipeline_segment(
+    repo: &git2::Repository,
+    config: &mut Config,
+    stack: &Stack,
+    entry: &StackEntry,
+    args: &[String],
+    handoff: &mut Option<PipelineHandoff>,
+    streamer: Option<&mut StreamingJson>,
+    before_pipeline: impl FnOnce(&Config) -> Result<()>,
+) -> Result<Option<String>> {
+    let mr_number = entry.mr_number.expect("land entry MR number");
+    if let Some(existing) = handoff.as_ref() {
+        if existing.identity.mr_number != mr_number {
+            return Err(GgError::Other(
+                "GitLab pipeline handoff belongs to another MR".to_string(),
+            ));
+        }
+        return Ok(Some(existing.identity.source_oid.clone()));
+    }
+
+    let mr = crate::glab::read_landing_merge_request(mr_number)?;
+    crate::glab::validate_landing_merge_request(mr_number, &stack.base, &mr)?;
+    let source_oid = mr
+        .sha
+        .clone()
+        .ok_or_else(|| GgError::Other(format!("GitLab MR !{mr_number} has no source OID")))?;
+    if !pipeline_is_missing(mr_number, &mr)? {
+        return Ok(Some(source_oid));
+    }
+    before_pipeline(config).map_err(|error| {
+        pipeline_checkpoint_error("failed to finalize the preceding Land segment", error)
+    })?;
+
+    let expected_branch = stack
+        .entry_branch_name(entry)
+        .ok_or_else(|| GgError::Other(format!("No source branch for MR !{mr_number}")))?;
+    let identity = PipelineIdentity {
+        target_project_id: mr
+            .target_project_id
+            .ok_or_else(|| GgError::Other("missing target project".to_string()))?,
+        mr_number,
+        source_project_id: mr
+            .source_project_id
+            .ok_or_else(|| GgError::Other("missing source project".to_string()))?,
+        source_branch: mr
+            .source_branch
+            .clone()
+            .ok_or_else(|| GgError::Other("missing source branch".to_string()))?,
+        source_oid,
+        target_branch: mr.target_branch.clone(),
+    };
+    if mr.iid != Some(mr_number) || identity.source_branch != expected_branch {
+        return Err(GgError::Other(format!(
+            "MR !{mr_number} source identity changed"
+        )));
+    }
+    git2::Oid::from_str(&identity.source_oid)
+        .map_err(|_| GgError::Other(format!("GitLab MR !{mr_number} has invalid source OID")))?;
+
+    let mut segment_args = args.to_vec();
+    segment_args.extend(pipeline_identity_args(&stack.name, &identity));
+    let mut operation = begin_land_segment(repo, config, &segment_args).map_err(|error| {
+        pipeline_checkpoint_error("failed to persist GitLab pipeline operation", error)
+    })?;
+    let mut attempt = GitLabLandingAttempt {
+        mr_number,
+        action: "pipeline_start".to_string(),
+        operation_id: operation.id().to_string(),
+        state: GitLabLandingAttemptState::Attempted,
+        target_project_id: Some(identity.target_project_id),
+        source_project_id: Some(identity.source_project_id),
+        source_branch: Some(identity.source_branch.clone()),
+        source_oid: Some(identity.source_oid.clone()),
+        target_branch: Some(identity.target_branch.clone()),
+        pipeline_id: None,
+    };
+    config
+        .set_gitlab_landing_attempt(repo.commondir(), &stack.name, attempt.clone())
+        .map_err(|error| {
+            pipeline_checkpoint_error("failed to persist GitLab pipeline state", error)
+        })?;
+    operation
+        .mark_touched_remote_before_attempt()
+        .map_err(|error| {
+            pipeline_checkpoint_error("failed to persist GitLab pipeline uncertainty", error)
+        })?;
+    let revalidation = crate::glab::read_landing_merge_request(mr_number).and_then(|fresh| {
+        crate::glab::validate_landing_merge_request(mr_number, &stack.base, &fresh)?;
+        if !pipeline_identity_matches(&fresh, &identity) {
+            return Err(GgError::Other(format!(
+                "GitLab pipeline identity changed for MR !{mr_number}"
+            )));
+        }
+        pipeline_is_missing(mr_number, &fresh)
+    });
+    if !matches!(revalidation, Ok(true)) {
+        operation
+            .clear_touched_remote_before_attempt()
+            .map_err(|error| {
+                pipeline_checkpoint_error("failed to clear unissued pipeline uncertainty", error)
+            })?;
+        operation
+            .finalize_with_scope(repo, config, SnapshotScope::AllUserBranches, vec![], false)
+            .map_err(|error| {
+                pipeline_checkpoint_error("failed to finalize unissued pipeline operation", error)
+            })?;
+        config
+            .clear_gitlab_landing_attempt(repo.commondir(), &stack.name)
+            .map_err(|error| {
+                pipeline_checkpoint_error("failed to clear unissued pipeline state", error)
+            })?;
+        return match revalidation {
+            Ok(false) => Ok(Some(identity.source_oid)),
+            Err(error) => Err(error),
+            Ok(true) => unreachable!(),
+        };
+    }
+    let pipeline_id = crate::glab::start_mr_pipeline(identity.target_project_id, mr_number)
+        .map_err(|error| {
+            GgError::RemoteMutationUncertain(format!(
+                "pipeline creation for MR !{mr_number} is unresolved and will not be resubmitted automatically: {error}"
+            ))
+        })?;
+    attempt.state = GitLabLandingAttemptState::Completed;
+    attempt.pipeline_id = Some(pipeline_id);
+    config
+        .set_gitlab_landing_attempt(repo.commondir(), &stack.name, attempt)
+        .map_err(|error| {
+            pipeline_checkpoint_error("failed to persist completed GitLab pipeline", error)
+        })?;
+    operation
+        .finalize_with_scope(repo, config, SnapshotScope::AllUserBranches, vec![], true)
+        .map_err(|error| {
+            pipeline_checkpoint_error("failed to finalize GitLab pipeline operation", error)
+        })?;
+    let completed = PipelineHandoff {
+        identity,
+        pipeline_id,
+    };
+    emit_pipeline_checkpoint(streamer, &completed)?;
+    *handoff = Some(completed.clone());
+    Ok(Some(completed.identity.source_oid))
 }
 
 fn single_land_total_entries(entries: &[StackEntry]) -> usize {
@@ -1017,6 +1468,12 @@ pub fn run(opts: LandOptions) -> Result<()> {
 
     let mut stack = Stack::load(&repo, &config)?;
     let mut streamer = jsonl.then(StreamingJson::new);
+    let mut pipeline_handoff = if provider == Provider::GitLab {
+        recover_pipeline_attempt(&repo, &mut config, &stack.name)?
+    } else {
+        None
+    };
+    let mut pipeline_checkpointed = false;
     if stack.is_empty() {
         finish_land_segment(
             &repo,
@@ -1067,6 +1524,24 @@ pub fn run(opts: LandOptions) -> Result<()> {
         );
     }
     stack.refresh_mr_info(&provider)?;
+    let terminal_pipeline_handoff = pipeline_handoff
+        .as_ref()
+        .map(|handoff| handoff.identity.mr_number)
+        .filter(|mr_number| {
+            stack.entries.iter().any(|entry| {
+                entry.mr_number == Some(*mr_number)
+                    && matches!(entry.mr_state, Some(PrState::Merged | PrState::Closed))
+            })
+        });
+    if let Some(mr_number) = terminal_pipeline_handoff {
+        clear_pipeline_handoff_after_terminal(
+            &repo,
+            &mut config,
+            &stack.name,
+            mr_number,
+            &mut pipeline_handoff,
+        )?;
+    }
 
     let land_until = if let Some(ref target) = until {
         Some(resolve_target(&stack, target)?)
@@ -1109,6 +1584,10 @@ pub fn run(opts: LandOptions) -> Result<()> {
             total_entries,
         },
     );
+    if let Some(handoff) = pipeline_handoff.as_ref() {
+        emit_pipeline_checkpoint(streamer.as_mut(), handoff)?;
+        pipeline_checkpointed = true;
+    }
 
     let interrupted = if wait {
         let flag = Arc::new(AtomicBool::new(false));
@@ -1443,6 +1922,15 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             &repo, "land", structured,
                         )?);
                         config = Config::load_with_global(git_dir)?;
+                        let stack_name = stack.name.clone();
+                        recover_pipeline_after_lock(
+                            &repo,
+                            &mut config,
+                            &stack_name,
+                            &mut pipeline_handoff,
+                            &mut pipeline_checkpointed,
+                            streamer.as_mut(),
+                        )?;
                         stack = Stack::load(&repo, &config)?;
                         let wait_outcome = match wait_result {
                             Ok(outcome) => outcome,
@@ -1464,6 +1952,15 @@ pub fn run(opts: LandOptions) -> Result<()> {
                                 break 'landing_loop;
                             }
                         };
+                        if wait_outcome == WaitForReadyOutcome::Merged {
+                            clear_pipeline_handoff_after_terminal(
+                                &repo,
+                                &mut config,
+                                &stack_name,
+                                pr_num,
+                                &mut pipeline_handoff,
+                            )?;
+                        }
                         if let Some(error) = stack_changed_while_waiting(&expected_stack, &stack) {
                             if wait_outcome == WaitForReadyOutcome::Merged {
                                 guard = Some(begin_land_segment(&repo, &config, &args)?);
@@ -1696,13 +2193,29 @@ pub fn run(opts: LandOptions) -> Result<()> {
             let mut queued_head_sha = None;
             let queue_result = (|| {
                 if wait {
-                    queued_head_sha =
-                        crate::glab::prepare_mr_pipeline_for_train(pr_num, &stack.base, || {
-                            ensure_land_segment(&repo, &config, &args, &mut guard)?;
-                            mark_land_remote_attempt(&mut guard, &mut touched_remote)
-                        })?;
+                    queued_head_sha = execute_pipeline_segment(
+                        &repo,
+                        &mut config,
+                        &stack,
+                        &entry,
+                        &args,
+                        &mut pipeline_handoff,
+                        streamer.as_mut(),
+                        |config| {
+                            finish_land_segment(
+                                &repo,
+                                config,
+                                &mut guard,
+                                &mut remote_effects,
+                                &mut touched_remote,
+                            )
+                        },
+                    )?;
+                    pipeline_checkpointed |= pipeline_handoff.is_some();
                 }
-                if provider == Provider::GitLab {
+                if let Some(handoff) = pipeline_handoff.as_ref() {
+                    validate_pipeline_handoff_before_queue(pr_num, &stack.base, handoff)?;
+                } else if provider == Provider::GitLab {
                     crate::glab::validate_mr_before_landing(pr_num, &stack.base)?;
                 }
                 ensure_land_segment(&repo, &config, &args, &mut guard)?;
@@ -1761,6 +2274,25 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             &repo, "land", structured,
                         )?);
                         config = Config::load_with_global(git_dir)?;
+                        let stack_name = stack.name.clone();
+                        recover_pipeline_after_lock(
+                            &repo,
+                            &mut config,
+                            &stack_name,
+                            &mut pipeline_handoff,
+                            &mut pipeline_checkpointed,
+                            streamer.as_mut(),
+                        )?;
+                        if wait_result.is_ok() {
+                            clear_pipeline_handoff_after_terminal(
+                                &repo,
+                                &mut config,
+                                &stack_name,
+                                pr_num,
+                                &mut pipeline_handoff,
+                            )?;
+                            pipeline_checkpointed = false;
+                        }
                         stack = Stack::load(&repo, &config)?;
                         if let Err(e) = wait_result {
                             land_error = Some(e.to_string());
@@ -1853,6 +2385,8 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         break 'landing_loop;
                     }
                 }
+                Err(e @ GgError::DurabilityCheckpoint(_))
+                | Err(e @ GgError::RemoteMutationUncertain(_)) => return Err(e),
                 Err(e) => {
                     config.save(git_dir)?;
                     finish_land_segment(
@@ -2092,6 +2626,15 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 &repo, "land", structured,
             )?);
             config = Config::load_with_global(git_dir)?;
+            let stack_name = stack.name.clone();
+            recover_pipeline_after_lock(
+                &repo,
+                &mut config,
+                &stack_name,
+                &mut pipeline_handoff,
+                &mut pipeline_checkpointed,
+                streamer.as_mut(),
+            )?;
             stack = Stack::load(&repo, &config)?;
             if let Err(error) = sleep_result {
                 land_error = Some(error.to_string());

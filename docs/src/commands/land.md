@@ -88,9 +88,29 @@ Forges compute mergeability in the background after a retarget, so gg polls for 
 
 When merge trains are enabled on the target branch, `gg land` adds MRs to the merge train instead of merging directly. It uses GitLab's auto-merge: if the MR pipeline is still pending or running, GitLab marks the MR "set to be added to the merge train" and adds it once the pipeline passes. You don't have to wait for CI before queueing, and the MR still joins the train if `gg` exits. The squash setting (`--no-squash` to disable) is sent with the request.
 
-After a preceding MR merges, GitLab can retarget the next MR without starting a new pipeline. With `--wait`, if GitLab reports that the next MR needs CI and has no head pipeline, `gg` starts the MR pipeline before requesting auto-merge. An existing pipeline is left alone. If GitLab rejects the pipeline request, `gg` reports the error instead of waiting for CI that never started.
+After a preceding MR merges, GitLab can retarget the next MR without starting a new pipeline. With `--wait`, if GitLab reports that the next MR needs CI and has no head pipeline, `gg` starts the MR pipeline before requesting auto-merge. An existing pipeline is left alone.
 
 Before processing a GitLab stack, `gg land` reads the project's merge-train setting and stops without mutating the remote if that setting is unavailable or malformed. Immediately before every MR squash update, merge, queue, or pipeline request, it re-reads the MR through the GitLab API and requires an explicit open, non-draft state with the expected target branch.
+
+### Pipeline creation recovery (GitLab)
+
+Pipeline creation is a durable operation. Before the POST, gg records the target
+project, MR IID, source project and branch, current source commit, and target
+branch, then revalidates that immutable identity immediately before the request.
+If the POST response is ambiguous, the attempt remains durably `Attempted` and
+gg will not submit it again on restart because doing so could create a duplicate
+pipeline.
+
+Inspect the MR's pipelines and exact source/target identity directly in GitLab
+before resolving an ambiguous attempt. Do not delete the recovery record or
+retry the POST merely because the command returned an error. If the provider
+state does not establish what happened, preserve the record and stop; gg has no
+automated repair command that can turn an uncertain POST into a known result.
+
+Once GitLab returns a pipeline ID, gg durably records a `Completed` handoff. It
+retains that handoff across restarts and stale provider reads until the matching
+MR is observed merged or closed, then clears it transactionally before
+continuing to another entry.
 
 GitLab only applies a squash flag that is true when queueing or merging, so an MR created while the project's squash option is "Encourage" (`default_on`) would still be squashed. With `--no-squash`, gg therefore turns off the MR's squash setting first. If the project's squash option is "Require" (`always`), `gg land --no-squash` fails before touching any MR.
 
@@ -166,6 +186,7 @@ Event kinds:
 | Event | Fields | Emitted when |
 |---|---|---|
 | `start` | `stack`, `base`, `total_entries` | A non-empty landing run begins |
+| `pipeline_checkpoint` | `pr_number` | A GitLab pipeline result and its operation finalization are durable |
 | `wait` | `position`, `pr_number`, `phase`, `poll`, `elapsed_seconds`, `ci_status`, `approved`, `merge_train_status`, `merge_train_position`, `pipeline_running`, `error` | Each readiness or merge-train provider poll completes |
 | `entry` | Same fields as an item in `landed` | An entry reaches an outcome |
 | `summary` | Same fields as the `land` object from `--json` | Landing finishes, including partial failures |
@@ -176,6 +197,11 @@ queueing an MR. Fields that the current phase did not check are `null`.
 Transient provider errors appear in a `wait` event with `status: "warning"` and
 the command keeps polling. Unchanged states still emit a heartbeat on the
 existing 10-second polling cadence.
+
+For a recovered or newly completed pipeline operation, `pipeline_checkpoint`
+is emitted only after the durable state is complete. If writing or flushing that
+event fails, including a broken output pipe, landing stops before queueing the
+MR or taking the next action.
 
 The final event is `summary` when landing reaches its normal result path.
 Consumers should inspect its `error` field because partial landing failures keep

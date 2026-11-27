@@ -499,6 +499,9 @@ pub enum LandStreamingEvent {
         pipeline_running: Option<bool>,
         error: Option<String>,
     },
+    PipelineCheckpoint {
+        pr_number: u64,
+    },
     Entry {
         #[serde(flatten)]
         entry: LandedEntryJson,

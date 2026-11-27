@@ -59,6 +59,19 @@
    `pending` authority. Do not repeat the deletion until `git ls-remote --heads
    origin <branch>`, the config entry, and the saved operation record have been
    reconciled.
+   For GitLab pipeline creation, inspect the stack's
+   `gitlab_landing_attempt` in `<git-common-dir>/gg/config.json` and its exact
+   referenced Land operation. The saved identity covers target project, MR IID,
+   source project and branch, source OID, and target branch. `Attempted` means
+   the POST may have succeeded: gg will not retry it automatically, and neither
+   should the agent. Check the matching MR's pipeline list and immutable identity
+   directly in GitLab. If those observations do not prove the outcome, preserve
+   the record and stop; there is no automated gg repair command for an uncertain
+   pipeline POST. A `Completed` handoff is retained until the matching MR is
+   observed merged or closed. In JSONL mode, `pipeline_checkpoint` means the
+   known pipeline result and operation finalization are durable; failure to
+   write or flush that event blocks queueing and every later action in that
+   invocation.
 4. While a rebase is paused, confirm its exact `operation_id` with `gg ls --json`,
    then run the argument-free `gg continue` or `gg abort`; those commands recover
    the operation named by the saved marker. Pass an operation ID explicitly only

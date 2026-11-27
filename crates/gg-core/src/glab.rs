@@ -919,30 +919,24 @@ fn parse_project_merge_settings(stdout: &str) -> Result<ProjectMergeSettings> {
     })
 }
 
-#[derive(Deserialize)]
-struct LandingMergeRequest {
-    sha: Option<String>,
-    state: String,
-    draft: bool,
-    work_in_progress: bool,
-    target_branch: String,
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct LandingMergeRequest {
+    pub(crate) iid: Option<u64>,
+    pub(crate) source_project_id: Option<u64>,
+    pub(crate) target_project_id: Option<u64>,
+    pub(crate) source_branch: Option<String>,
+    pub(crate) sha: Option<String>,
+    pub(crate) state: String,
+    pub(crate) draft: bool,
+    pub(crate) work_in_progress: bool,
+    pub(crate) target_branch: String,
     squash: bool,
-    detailed_merge_status: Option<String>,
-    #[serde(
-        rename = "head_pipeline",
-        default,
-        deserialize_with = "deserialize_is_null"
-    )]
-    missing_head_pipeline: bool,
+    pub(crate) detailed_merge_status: Option<String>,
+    #[serde(flatten)]
+    pub(crate) extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
-fn deserialize_is_null<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> std::result::Result<bool, D::Error> {
-    Ok(Option::<serde::de::IgnoredAny>::deserialize(deserializer)?.is_none())
-}
-
-fn read_landing_merge_request(mr_number: u64) -> Result<LandingMergeRequest> {
+pub(crate) fn read_landing_merge_request(mr_number: u64) -> Result<LandingMergeRequest> {
     let endpoint = format!("projects/:id/merge_requests/{mr_number}");
     let output = Command::new("glab").args(["api", &endpoint]).output()?;
     if !output.status.success() {
@@ -955,7 +949,7 @@ fn read_landing_merge_request(mr_number: u64) -> Result<LandingMergeRequest> {
         .map_err(|error| GgError::GlabError(format!("Failed to parse MR !{mr_number}: {error}")))
 }
 
-fn validate_landing_merge_request(
+pub(crate) fn validate_landing_merge_request(
     mr_number: u64,
     target_branch: &str,
     mr: &LandingMergeRequest,
@@ -986,31 +980,30 @@ pub(crate) fn validate_mr_before_landing(mr_number: u64, target_branch: &str) ->
     validate_landing_merge_request(mr_number, target_branch, &mr)
 }
 
-/// Start required CI if GitLab reports that the MR has no head pipeline.
-/// Return the source SHA observed before queueing for cancellation detection.
-pub(crate) fn prepare_mr_pipeline_for_train(
-    mr_number: u64,
-    target_branch: &str,
-    before_mutation: impl FnOnce() -> Result<()>,
-) -> Result<Option<String>> {
-    // Use the raw API response: an omitted head_pipeline can mean it is
-    // hidden by permissions, not that GitLab needs a new pipeline.
-    let mr = read_landing_merge_request(mr_number)?;
-    validate_landing_merge_request(mr_number, target_branch, &mr)?;
-    if mr.detailed_merge_status.as_deref() == Some("ci_must_pass") && mr.missing_head_pipeline {
-        before_mutation()?;
-        let endpoint = format!("projects/:id/merge_requests/{mr_number}/pipelines");
-        let output = Command::new("glab")
-            .args(["api", "-X", "POST", &endpoint])
-            .output()?;
-        if !output.status.success() {
-            return Err(GgError::GlabError(format!(
-                "Failed to start the required pipeline for MR !{mr_number}: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
+pub(crate) fn start_mr_pipeline(target_project_id: u64, mr_number: u64) -> Result<u64> {
+    let endpoint = format!("projects/{target_project_id}/merge_requests/{mr_number}/pipelines");
+    let output = Command::new("glab")
+        .args(["api", "-X", "POST", &endpoint])
+        .output()?;
+    if !output.status.success() {
+        return Err(GgError::GlabError(format!(
+            "Failed to start the required pipeline for MR !{mr_number}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
     }
-    Ok(mr.sha)
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|error| {
+        GgError::GlabError(format!(
+            "Failed to parse the started pipeline for MR !{mr_number}: {error}"
+        ))
+    })?;
+    response
+        .get("id")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            GgError::GlabError(format!(
+                "GitLab returned no pipeline ID after starting MR !{mr_number}"
+            ))
+        })
 }
 
 /// Add an MR to the merge train once its checks pass.

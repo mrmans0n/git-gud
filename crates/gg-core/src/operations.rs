@@ -1889,6 +1889,13 @@ pub(crate) mod tests {
             mr_number: 41,
             action: "direct_merge".to_string(),
             operation_id: landing.id.clone(),
+            state: crate::config::GitLabLandingAttemptState::Attempted,
+            target_project_id: None,
+            source_project_id: None,
+            source_branch: None,
+            source_oid: None,
+            target_branch: None,
+            pipeline_id: None,
         });
         stack.land_maintenance.insert(
             "c-1111111".to_string(),

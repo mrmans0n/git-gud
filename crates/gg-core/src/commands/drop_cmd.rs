@@ -163,6 +163,7 @@ pub fn run(options: DropOptions) -> Result<()> {
                     branch: branch.clone(),
                     expected_oid: expected_oid.to_string(),
                     source_operation_id: guard.id().to_string(),
+                    gitlab_land_authorization: None,
                     state: RemoteBranchDeletionState::Pending,
                 }
             })

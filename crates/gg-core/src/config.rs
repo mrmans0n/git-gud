@@ -253,11 +253,33 @@ pub struct LandMaintenanceProgress {
 }
 
 /// A GitLab landing request whose result has not been durably confirmed.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GitLabLandingAttemptState {
+    #[default]
+    Attempted,
+    Completed,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GitLabLandingAttempt {
     pub mr_number: u64,
     pub action: String,
     pub operation_id: String,
+    #[serde(default)]
+    pub state: GitLabLandingAttemptState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_project_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_project_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_oid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pipeline_id: Option<u64>,
 }
 
 /// Per-stack configuration
@@ -573,6 +595,31 @@ impl Config {
             let stack = config.get_or_create_stack(stack_name);
             stack.mrs.insert(entry_id.to_string(), mr_number);
             stack.review_creation_intents.remove(entry_id);
+        })
+    }
+
+    pub(crate) fn set_gitlab_landing_attempt(
+        &mut self,
+        git_dir: &Path,
+        stack_name: &str,
+        attempt: GitLabLandingAttempt,
+    ) -> Result<()> {
+        self.update_transactionally(git_dir, |config| {
+            config
+                .get_or_create_stack(stack_name)
+                .gitlab_landing_attempt = Some(attempt);
+        })
+    }
+
+    pub(crate) fn clear_gitlab_landing_attempt(
+        &mut self,
+        git_dir: &Path,
+        stack_name: &str,
+    ) -> Result<()> {
+        self.update_transactionally(git_dir, |config| {
+            if let Some(stack) = config.stacks.get_mut(stack_name) {
+                stack.gitlab_landing_attempt = None;
+            }
         })
     }
 
@@ -944,6 +991,13 @@ mod tests {
             mr_number: 41,
             action: "direct_merge".to_string(),
             operation_id: "op_landing".to_string(),
+            state: GitLabLandingAttemptState::Attempted,
+            target_project_id: None,
+            source_project_id: None,
+            source_branch: None,
+            source_oid: None,
+            target_branch: None,
+            pipeline_id: None,
         };
         let retarget = LandMaintenanceMutation {
             state: LandMaintenanceMutationState::Attempted,

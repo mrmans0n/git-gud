@@ -84,6 +84,10 @@ impl ProcessGroupGuard {
         self.child.as_ref().expect("guarded child").id()
     }
 
+    pub(crate) fn take_stdout(&mut self) -> Option<std::process::ChildStdout> {
+        self.child.as_mut().expect("guarded child").stdout.take()
+    }
+
     pub(crate) fn wait_with_output_timeout(
         mut self,
         timeout: Duration,

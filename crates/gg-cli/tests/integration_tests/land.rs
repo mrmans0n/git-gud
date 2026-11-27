@@ -167,7 +167,8 @@ if [ "$1" = "api" ] && [ "$2" = "--method" ] && [ "$3" = "PUT" ] && [ "$4" = "pr
   exit 0
 fi
 
-if [ "$1" = "api" ] && [ "$2" = "-X" ] && [ "$3" = "POST" ] && [ "$4" = "projects/:id/merge_requests/42/pipelines" ]; then
+if [ "$1" = "api" ] && [ "$2" = "-X" ] && [ "$3" = "POST" ] && [ "$4" = "projects/7/merge_requests/42/pipelines" ]; then
+  printf 'attempt\n' >> "$GG_FAKE_RETARGET_PIPELINE.attempts"
   if [ "$retarget_pipeline" = "rejected" ]; then
     echo "Pipeline filtered out by workflow rules" >&2
     exit 1
@@ -175,9 +176,28 @@ if [ "$1" = "api" ] && [ "$2" = "-X" ] && [ "$3" = "POST" ] && [ "$4" = "project
   if [ "$retarget_pipeline" = "applied-response-block-fail" ]; then
     touch "$GG_FAKE_RETARGET_PIPELINE.started"
     touch "$GG_FAKE_LANDING_REQUEST_FAIL.started"
-    while [ ! -f "$GG_FAKE_LANDING_REQUEST_FAIL.release" ]; do sleep 0.05; done
+    wait_count=0
+    while [ ! -f "$GG_FAKE_LANDING_REQUEST_FAIL.release" ] && [ "$wait_count" -lt 400 ]; do
+      sleep 0.05
+      wait_count=$((wait_count + 1))
+    done
+    if [ ! -f "$GG_FAKE_LANDING_REQUEST_FAIL.release" ]; then
+      echo "timed out waiting to release pipeline response" >&2
+      exit 1
+    fi
     echo "connection lost after pipeline creation" >&2
     exit 1
+  fi
+  if [ "$retarget_pipeline" = "applied-response-block-success" ]; then
+    touch "$GG_FAKE_RETARGET_PIPELINE.started"
+    wait_count=0
+    while [ ! -f "$GG_FAKE_LANDING_REQUEST_FAIL.release" ] && [ "$wait_count" -lt 400 ]; do
+      sleep 0.05
+      wait_count=$((wait_count + 1))
+    done
+    [ -f "$GG_FAKE_LANDING_REQUEST_FAIL.release" ] || exit 1
+    echo '{"id":4242,"sha":"merge-result","ref":"refs/merge-requests/42/merge","status":"pending"}'
+    exit 0
   fi
   if [ "$retarget_pipeline" = "applied-response-fail" ]; then
     touch "$GG_FAKE_RETARGET_PIPELINE.started"
@@ -189,7 +209,7 @@ if [ "$1" = "api" ] && [ "$2" = "-X" ] && [ "$3" = "POST" ] && [ "$4" = "project
     exit 1
   fi
   touch "$GG_FAKE_RETARGET_PIPELINE.started"
-  echo '{"id":4242,"status":"pending"}'
+  echo '{"id":4242,"sha":"merge-result","ref":"refs/merge-requests/42/merge","status":"pending"}'
   exit 0
 fi
 
@@ -209,7 +229,7 @@ if [ "$is_landing_request" = "true" ]; then
         touch "$GG_FAKE_MERGED"
         ;;
       projects/:id/merge_trains/merge_requests/42)
-        if [ "$retarget_pipeline" != "running" ] && [ ! -f "$GG_FAKE_RETARGET_PIPELINE.started" ]; then
+        if [ "$retarget_pipeline" != "running" ] && [ ! -f "$GG_FAKE_RETARGET_PIPELINE.started" ] && [ ! -f "$GG_FAKE_RETARGET_PIPELINE.attempts" ]; then
           echo "MR !42 still needs a pipeline for the new target" >&2
           exit 1
         fi
@@ -333,11 +353,11 @@ if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
     state=opened
     iid=42
     title="Second entry"
-    source_branch="testuser/land-wait/c-2222222"
+    source_branch="testuser/land-wait--c-2222222"
     sha=2222222222222222222222222222222222222222
     if [ -n "$retarget_pipeline" ]; then
       if [ ! -f "$GG_FAKE_MERGED" ]; then
-        target_branch="testuser/land-wait/c-1111111"
+        target_branch="testuser/land-wait--c-1111111"
       elif [ -f "$GG_FAKE_RETARGET_PIPELINE.started" ]; then
         head_pipeline='{"id":4242,"status":"pending"}'
       elif [ "$retarget_pipeline" = "running" ]; then
@@ -348,16 +368,36 @@ if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
       fi
     fi
   else
-    if [ -f "$GG_FAKE_MERGED" ]; then state=merged; else state=opened; fi
+    if [ -f "$GG_FAKE_CLOSED" ]; then state=closed; elif [ -f "$GG_FAKE_MERGED" ]; then state=merged; else state=opened; fi
     iid=41
     title="Land entry"
-    source_branch="testuser/land-wait/c-1111111"
+    source_branch="testuser/land-wait--c-1111111"
     # A push to the source branch moves the first MR head.
     if [ -f "$GG_FAKE_HEAD_MOVED" ]; then sha=2222222222222222222222222222222222222222; else sha=1111111111111111111111111111111111111111; fi
   fi
   # GitLab reports queued MRs (auto-merge or merge train) through this flag.
   if [ -f "$GG_FAKE_QUEUED" ] && [ ! -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; then auto=true; else auto=false; fi
   if [ -f "$GG_FAKE_MR_SQUASH" ]; then squash=true; else squash=false; fi
+  if [ "$raw_api" = "true" ] && [ "$num" = "42" ]; then
+    reads=0
+    if [ -f "$GG_FAKE_RETARGET_PIPELINE.reads" ]; then reads=$(cat "$GG_FAKE_RETARGET_PIPELINE.reads"); fi
+    reads=$((reads + 1)); echo "$reads" > "$GG_FAKE_RETARGET_PIPELINE.reads"
+    if [ "$retarget_pipeline" = "identity-change" ] && grep -q 'gitlab:pipeline_start' .git/gg/operations/*.json 2>/dev/null; then
+      sha=3333333333333333333333333333333333333333
+    fi
+    if [ "$retarget_pipeline" = "recovery-order" ]; then
+      for record in .git/gg/operations/*.json; do
+        if [ -f "$record" ] && grep -q 'gitlab:pipeline_start' "$record" && grep -q '"status": "pending"' "$record"; then
+          touch "$GG_FAKE_RETARGET_PIPELINE.early"; echo "pipeline recovery not finalized" >&2; exit 1
+        fi
+      done
+    fi
+  fi
+  if [ "$num" = "42" ] && [ "$retarget_pipeline" = "preceding-finalize-fail" ]; then
+    for record in .git/gg/operations/*.json; do
+      if [ -f "$record" ] && grep -q '"status": "pending"' "$record"; then mkdir "$record.tmp"; break; fi
+    done
+  fi
   if [ "$raw_api" = "true" ] && [ "$retarget_pipeline" = "malformed-squash-view" ]; then
     if [ -f "$GG_FAKE_RETARGET_PIPELINE.raw-seen" ]; then
       echo 'not json'
@@ -391,7 +431,7 @@ if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
     printf '{"iid":%s,"title":"%s","state":"%s","web_url":"https://gitlab.example/test/repo/-/merge_requests/%s","source_branch":"%s","target_branch":"%s","sha":"%s","draft":false,"detailed_merge_status":"%s","has_conflicts":false,"squash":%s,"merge_when_pipeline_succeeds":%s,"head_pipeline":%s}\n' "$iid" "$title" "$state" "$iid" "$source_branch" "$target_branch" "$sha" "$detailed_merge_status" "$squash" "$auto" "$head_pipeline"
     exit 0
   fi
-  printf '{"iid":%s,"title":"%s","state":"%s","web_url":"https://gitlab.example/test/repo/-/merge_requests/%s","source_branch":"%s","target_branch":"%s","sha":"%s","draft":false,"work_in_progress":false,"detailed_merge_status":"%s","has_conflicts":false,"squash":%s,"merge_when_pipeline_succeeds":%s,"head_pipeline":%s}\n' "$iid" "$title" "$state" "$iid" "$source_branch" "$target_branch" "$sha" "$detailed_merge_status" "$squash" "$auto" "$head_pipeline"
+  printf '{"iid":%s,"source_project_id":7,"target_project_id":7,"title":"%s","state":"%s","web_url":"https://gitlab.example/test/repo/-/merge_requests/%s","source_branch":"%s","target_branch":"%s","sha":"%s","draft":false,"work_in_progress":false,"detailed_merge_status":"%s","has_conflicts":false,"squash":%s,"merge_when_pipeline_succeeds":%s,"head_pipeline":%s}\n' "$iid" "$title" "$state" "$iid" "$source_branch" "$target_branch" "$sha" "$detailed_merge_status" "$squash" "$auto" "$head_pipeline"
   exit 0
 fi
 
@@ -845,6 +885,116 @@ fn land_operation_records(repo_path: &Path) -> Vec<Value> {
         .collect();
     records.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
     records
+}
+
+#[cfg(unix)]
+const PIPELINE_LAND_ARGS: [&str; 8] = [
+    "land",
+    "--until",
+    "2",
+    "--wait",
+    "--jsonl",
+    "--no-clean",
+    "--no-squash",
+    "--rebase-if-needed",
+];
+
+#[cfg(unix)]
+fn gitlab_landing_attempt(repo: &Path) -> Option<Value> {
+    let config: Value =
+        serde_json::from_slice(&fs::read(repo.join(".git/gg/config.json")).unwrap()).unwrap();
+    config["stacks"]["land-wait"]["gitlab_landing_attempt"]
+        .as_object()
+        .cloned()
+        .map(Value::Object)
+}
+
+#[cfg(unix)]
+fn pipeline_operation(repo: &Path) -> (std::path::PathBuf, Value) {
+    let record = land_operation_records(repo)
+        .into_iter()
+        .find(|record| {
+            record["args"]
+                .as_array()
+                .is_some_and(|args| args.iter().any(|arg| arg == "gitlab:pipeline_start"))
+        })
+        .expect("pipeline operation");
+    let path = repo.join(format!(
+        ".git/gg/operations/{}.json",
+        record["id"].as_str().unwrap()
+    ));
+    (path, record)
+}
+
+#[cfg(unix)]
+fn wait_for_file(path: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(path.exists(), "timed out waiting for {}", path.display());
+}
+
+#[cfg(unix)]
+fn completed_pipeline_fixture() -> (WaitingLandFixture, std::process::Output) {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.add_second_entry();
+    let state = fixture.repo_path.join("fake-retarget-pipeline");
+    fs::write(&state, "applied-response-block-success").unwrap();
+    let mut command = fixture.land_command(&PIPELINE_LAND_ARGS);
+    let mut guard = ProcessGroupGuard::spawn(&mut command).unwrap();
+    let mut reader = BufReader::new(guard.take_stdout().expect("pipeline stdout"));
+    let mut start = String::new();
+    reader.read_line(&mut start).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&start).unwrap()["event"],
+        "start"
+    );
+    wait_for_file(&std::path::PathBuf::from(format!(
+        "{}.started",
+        state.display()
+    )));
+    drop(reader);
+    fixture.release_landing_request();
+    let output = guard
+        .wait_with_output_timeout(Duration::from_secs(30))
+        .unwrap();
+    (fixture, output)
+}
+
+#[cfg(unix)]
+fn repoint_completed_pipeline_handoff_to_first_entry(fixture: &WaitingLandFixture) {
+    let config_path = fixture.repo_path.join(".git/gg/config.json");
+    let (operation_path, mut operation) = pipeline_operation(&fixture.repo_path);
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    let attempt = &mut config["stacks"]["land-wait"]["gitlab_landing_attempt"];
+    attempt["mr_number"] = 41.into();
+    attempt["source_branch"] = "testuser/land-wait--c-1111111".into();
+    attempt["source_oid"] = "1111111111111111111111111111111111111111".into();
+    config["stacks"]["land-wait"]["mrs"]["c-1111111"] = 41.into();
+    for marker in operation["args"].as_array_mut().unwrap() {
+        let Some(value) = marker.as_str() else {
+            continue;
+        };
+        if value.starts_with("gitlab:mr=") {
+            *marker = "gitlab:mr=41".into();
+        } else if value.starts_with("gitlab:source_branch=") {
+            *marker = "gitlab:source_branch=testuser/land-wait--c-1111111".into();
+        } else if value.starts_with("gitlab:source_oid=") {
+            *marker = "gitlab:source_oid=1111111111111111111111111111111111111111".into();
+        }
+    }
+    fs::write(config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    fs::write(
+        operation_path,
+        serde_json::to_vec_pretty(&operation).unwrap(),
+    )
+    .unwrap();
+    let state = fixture.repo_path.join("fake-retarget-pipeline");
+    fs::write(&state, "missing").unwrap();
+    fs::remove_file(format!("{}.started", state.display())).unwrap();
 }
 
 #[cfg(unix)]
@@ -1849,7 +1999,7 @@ fn test_land_gitlab_merge_train_wait_all_persists_cleanup_between_entries() {
 #[cfg(unix)]
 #[test]
 fn test_land_gitlab_starts_missing_pipeline_after_retarget_without_rebasing() {
-    for pipeline in ["missing", "running", "rejected"] {
+    for pipeline in ["missing", "running"] {
         let fixture = WaitingLandFixture::new();
         fixture.use_gitlab_provider();
         fixture.enable_gitlab_merge_trains();
@@ -1876,20 +2026,9 @@ fn test_land_gitlab_starts_missing_pipeline_after_retarget_without_rebasing() {
         let stderr = String::from_utf8(output.stderr).expect("land stderr");
         let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
             .expect("parse summary event");
-        if pipeline == "rejected" {
-            assert!(
-                summary["error"]
-                    .as_str()
-                    .is_some_and(|error| error.contains("Pipeline filtered out by workflow rules")),
-                "{summary}"
-            );
-            assert_eq!(summary["landed"][0]["action"], "merged", "{summary}");
-            assert_eq!(summary["landed"][1]["action"], "error", "{summary}");
-        } else {
-            assert!(output.status.success(), "{pipeline}: {summary}\n{stderr}");
-            assert_eq!(summary["landed"][1]["pr_number"], 42, "{summary}");
-            assert_eq!(summary["landed"][1]["action"], "merged", "{summary}");
-        }
+        assert!(output.status.success(), "{pipeline}: {summary}\n{stderr}");
+        assert_eq!(summary["landed"][1]["pr_number"], 42, "{summary}");
+        assert_eq!(summary["landed"][1]["action"], "merged", "{summary}");
         let (ok, downstream_head) = run_git(
             &fixture.repo_path,
             &["rev-parse", "testuser/land-wait--c-2222222"],
@@ -2373,60 +2512,445 @@ fn test_land_gitlab_refuses_failed_mr_lookup_before_remote_mutation() {
 
 #[cfg(unix)]
 #[test]
-fn test_land_gitlab_records_remote_uncertainty_when_pipeline_response_is_lost() {
+fn test_land_gitlab_pipeline_revalidates_identity_immediately_before_post() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.add_second_entry();
+    let state = fixture.repo_path.join("fake-retarget-pipeline");
+    fs::write(&state, "identity-change").unwrap();
+    let output = fixture.land_command(&PIPELINE_LAND_ARGS).output().unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(text.contains("identity changed"), "{text}");
+    assert!(!std::path::PathBuf::from(format!("{}.attempts", state.display())).exists());
+    assert!(!fixture.queued_request().contains("merge_requests/42"));
+    assert!(gitlab_landing_attempt(&fixture.repo_path).is_none());
+    let (_, operation) = pipeline_operation(&fixture.repo_path);
+    assert_eq!(operation["status"], "committed");
+    assert_eq!(operation["touched_remote"], false);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_waiter_reacquire_refuses_foreign_pipeline_uncertainty() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.add_second_entry();
+    fs::write(&fixture.unapproved, "hold").unwrap();
+    let mut command = fixture.land_command(&PIPELINE_LAND_ARGS);
+    let mut guard = ProcessGroupGuard::spawn(&mut command).unwrap();
+    let mut reader = BufReader::new(guard.take_stdout().expect("waiter stdout"));
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&line).unwrap()["event"],
+        "start"
+    );
+    line.clear();
+    reader.read_line(&mut line).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&line).unwrap()["event"],
+        "wait"
+    );
+
+    fs::remove_file(&fixture.unapproved).unwrap();
+    fs::write(&fixture.train_merged, "ready").unwrap();
+    fs::write(&fixture.merged, "merged").unwrap();
+    let state = fixture.repo_path.join("fake-retarget-pipeline");
+    fs::write(&state, "applied-response-fail").unwrap();
+    let mut competing = fixture.land_command(&PIPELINE_LAND_ARGS);
+    let competing_output = ProcessGroupGuard::spawn(&mut competing)
+        .unwrap()
+        .wait_with_output_timeout(Duration::from_secs(30))
+        .unwrap();
+    let competing_text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&competing_output.stdout),
+        String::from_utf8_lossy(&competing_output.stderr)
+    );
+    assert!(
+        competing_text.contains("will not be resubmitted"),
+        "{competing_text}"
+    );
+    let output = guard
+        .wait_with_output_timeout(Duration::from_secs(30))
+        .unwrap();
+    let mut remaining = String::new();
+    reader.read_to_string(&mut remaining).unwrap();
+    let text = format!("{}{}", remaining, String::from_utf8_lossy(&output.stderr));
+    assert!(text.contains("will not be resubmitted"), "{text}");
+    assert_eq!(
+        fs::read_to_string(format!("{}.attempts", state.display()))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+    assert!(!fixture.queued.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_pipeline_uncertainty_is_restart_safe() {
     let fixture = WaitingLandFixture::new();
     fixture.use_gitlab_provider();
     fixture.enable_gitlab_merge_trains();
     fixture.add_second_entry();
     let pipeline_state = fixture.repo_path.join("fake-retarget-pipeline");
-    fs::write(&pipeline_state, "applied-response-block-fail")
-        .expect("fail response after applying pipeline creation");
+    fs::write(&pipeline_state, "applied-response-fail").unwrap();
 
-    let (output, operation_id) = run_blocked_landing_and_capture_pending(
-        &fixture,
-        &[
-            "land",
-            "--until",
-            "2",
-            "--wait",
-            "--jsonl",
-            "--no-clean",
-            "--no-squash",
-            "--rebase-if-needed",
-        ],
-    );
-    let stdout = String::from_utf8(output.stdout).expect("land stdout");
-    let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
-        .expect("parse summary event");
-
-    assert_eq!(summary["status"], "error", "{summary}");
-    assert!(
-        summary["error"]
-            .as_str()
-            .is_some_and(|error| error.contains("connection lost after pipeline creation")),
-        "{summary}"
+    let first = fixture.land_command(&PIPELINE_LAND_ARGS).output().unwrap();
+    assert!(!first.status.success(), "ambiguous POST must be fatal");
+    let first_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr)
     );
     assert!(
-        std::path::PathBuf::from(format!("{}.started", pipeline_state.display())).exists(),
-        "the fake provider must apply the pipeline mutation before losing the response"
+        first_output.contains("Remote mutation outcome is uncertain"),
+        "{first_output}"
     );
     assert!(
         !fixture.queued_request().contains("merge_requests/42"),
-        "MR !42 must not be queued after an ambiguous pipeline response"
+        "uncertain pipeline must not be queued"
     );
+
     let records = land_operation_records(&fixture.repo_path);
-    let pipeline_record = records
+    let pipeline = records
         .iter()
-        .find(|record| record["id"].as_str() == Some(operation_id.as_str()))
-        .expect("same ambiguous pipeline operation");
+        .find(|record| {
+            record["args"]
+                .as_array()
+                .is_some_and(|args| args.iter().any(|arg| arg == "gitlab:pipeline_start"))
+        })
+        .expect("dedicated pipeline operation");
+    assert_eq!(pipeline["status"], "pending");
+    assert_eq!(pipeline["touched_remote"], true);
+
+    let retry = fixture.land_command(&PIPELINE_LAND_ARGS).output().unwrap();
+    assert!(!retry.status.success(), "restart must refuse resubmission");
+    let retry_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&retry.stdout),
+        String::from_utf8_lossy(&retry.stderr)
+    );
+    assert!(
+        retry_output.contains("will not be resubmitted"),
+        "{retry_output}"
+    );
+    let attempts = fs::read_to_string(format!("{}.attempts", pipeline_state.display())).unwrap();
+    assert_eq!(attempts.lines().count(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_completed_recovery_finalizes_without_provider_lookup() {
+    let (fixture, _) = completed_pipeline_fixture();
+    let (path, mut operation) = pipeline_operation(&fixture.repo_path);
+    operation["status"] = "pending".into();
+    fs::write(&path, serde_json::to_vec_pretty(&operation).unwrap()).unwrap();
+    let state = fixture.repo_path.join("fake-retarget-pipeline");
+    fs::write(&state, "recovery-order").unwrap();
+    let output = fixture.land_command(&PIPELINE_LAND_ARGS).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    let start = text.find("\"event\":\"start\"").unwrap();
+    let checkpoint = text.find("\"event\":\"pipeline_checkpoint\"").unwrap();
+    assert!(start < checkpoint);
+    let recovered: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    assert_eq!(recovered["status"], "committed");
+    assert!(!std::path::PathBuf::from(format!("{}.early", state.display())).exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_completed_handoff_survives_stale_null() {
+    let (fixture, _) = completed_pipeline_fixture();
+    let state = fixture.repo_path.join("fake-retarget-pipeline");
+    fs::write(&state, "missing").unwrap();
+    fs::remove_file(format!("{}.started", state.display())).unwrap();
+    let mut command = fixture.land_command(&PIPELINE_LAND_ARGS);
+    let output = ProcessGroupGuard::spawn(&mut command)
+        .unwrap()
+        .wait_with_output_timeout(Duration::from_secs(30))
+        .unwrap();
+    assert!(output.status.success());
     assert_eq!(
-        pipeline_record["status"], "committed",
-        "the ambiguous pipeline segment must be finalized: {pipeline_record}"
+        fs::read_to_string(format!("{}.attempts", state.display()))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+    assert!(fixture.queued_request().contains("merge_requests/42"));
+    assert!(gitlab_landing_attempt(&fixture.repo_path).is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_accepts_merged_results_pipeline_response() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.add_second_entry();
+    let state = fixture.repo_path.join("fake-retarget-pipeline");
+    fs::write(&state, "missing").unwrap();
+    let output = fixture.land_command(&PIPELINE_LAND_ARGS).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
     );
     assert_eq!(
-        pipeline_record["touched_remote"], true,
-        "the ambiguous pipeline response must remain non-undoable: {pipeline_record}"
+        fs::read_to_string(format!("{}.attempts", state.display()))
+            .unwrap()
+            .lines()
+            .count(),
+        1
     );
+    assert!(fixture.queued_request().contains("merge_requests/42"));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_pipeline_post_error_is_fatal_remote_uncertainty() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.add_second_entry();
+    let state = fixture.repo_path.join("fake-retarget-pipeline");
+    fs::write(&state, "rejected").unwrap();
+    let output = fixture.land_command(&PIPELINE_LAND_ARGS).output().unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        text.contains("Remote mutation outcome is uncertain"),
+        "{text}"
+    );
+    assert!(!fixture.queued_request().contains("merge_requests/42"));
+    assert_eq!(
+        gitlab_landing_attempt(&fixture.repo_path).unwrap()["state"],
+        "attempted"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_pipeline_checkpoint_broken_pipe_blocks_queue() {
+    let (fixture, output) = completed_pipeline_fixture();
+    assert!(!output.status.success());
+    assert!(!fixture.queued_request().contains("merge_requests/42"));
+    assert_eq!(
+        gitlab_landing_attempt(&fixture.repo_path).unwrap()["state"],
+        "completed"
+    );
+    let (_, operation) = pipeline_operation(&fixture.repo_path);
+    assert_eq!(operation["status"], "committed");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_preceding_segment_finalize_failure_is_durability_checkpoint() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.add_second_entry();
+    let state = fixture.repo_path.join("fake-retarget-pipeline");
+    fs::write(&state, "preceding-finalize-fail").unwrap();
+    let output = fixture.land_command(&PIPELINE_LAND_ARGS).output().unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(text.contains("Durability checkpoint error"), "{text}");
+    assert!(!std::path::PathBuf::from(format!("{}.attempts", state.display())).exists());
+    assert!(!fixture.queued_request().contains("merge_requests/42"));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_pipeline_recovery_rejects_conflicting_identity_or_operation() {
+    for corruption in ["marker", "kind", "status", "effect", "pipeline", "identity"] {
+        let fixture = WaitingLandFixture::new();
+        fixture.use_gitlab_provider();
+        fixture.enable_gitlab_merge_trains();
+        fixture.add_second_entry();
+        let state = fixture.repo_path.join("fake-retarget-pipeline");
+        fs::write(&state, "applied-response-fail").unwrap();
+        let _ = fixture.land_command(&PIPELINE_LAND_ARGS).output().unwrap();
+        let config_path = fixture.repo_path.join(".git/gg/config.json");
+        let (operation_path, mut operation) = pipeline_operation(&fixture.repo_path);
+        let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+        let attempt = &mut config["stacks"]["land-wait"]["gitlab_landing_attempt"];
+        match corruption {
+            "marker" => operation["args"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|arg| arg != "gitlab:source_project=7"),
+            "kind" => operation["kind"] = "sync".into(),
+            "status" => operation["status"] = "invalid".into(),
+            "effect" => {
+                operation["remote_effects"] =
+                    serde_json::json!([{"kind":"pr_merged","number":42,"url":"wrong"}])
+            }
+            "pipeline" => {
+                attempt["state"] = "completed".into();
+                attempt.as_object_mut().unwrap().remove("pipeline_id");
+            }
+            "identity" => {
+                attempt.as_object_mut().unwrap().remove("source_oid");
+            }
+            _ => unreachable!(),
+        }
+        fs::write(
+            operation_path,
+            serde_json::to_vec_pretty(&operation).unwrap(),
+        )
+        .unwrap();
+        fs::write(config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+        let retry = fixture.land_command(&PIPELINE_LAND_ARGS).output().unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&retry.stdout),
+            String::from_utf8_lossy(&retry.stderr)
+        );
+        assert!(!retry.status.success(), "{corruption}: {text}");
+        assert!(
+            !text.contains("will not be resubmitted"),
+            "{corruption}: {text}"
+        );
+        assert_eq!(
+            fs::read_to_string(format!("{}.attempts", state.display()))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_startup_merged_handoff_clears_before_later_entry() {
+    let (fixture, _) = completed_pipeline_fixture();
+    repoint_completed_pipeline_handoff_to_first_entry(&fixture);
+
+    let output = fixture.land_command(&PIPELINE_LAND_ARGS).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(fixture.queued_request().contains("merge_requests/42"));
+    assert!(gitlab_landing_attempt(&fixture.repo_path).is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_startup_closed_handoff_clears_before_later_entry() {
+    let (fixture, _) = completed_pipeline_fixture();
+    repoint_completed_pipeline_handoff_to_first_entry(&fixture);
+    fs::write(&fixture.closed, "closed").unwrap();
+
+    let output = fixture.land_command(&PIPELINE_LAND_ARGS).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(fixture.queued_request().contains("merge_requests/42"));
+    assert!(gitlab_landing_attempt(&fixture.repo_path).is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_pipeline_recovery_rejects_internal_operation_id_mismatch() {
+    let (fixture, _) = completed_pipeline_fixture();
+    let (path, mut operation) = pipeline_operation(&fixture.repo_path);
+    operation["status"] = "pending".into();
+    operation["id"] = "op_0000000000000_mismatched".into();
+    fs::write(&path, serde_json::to_vec_pretty(&operation).unwrap()).unwrap();
+
+    let output = fixture.land_command(&PIPELINE_LAND_ARGS).output().unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!output.status.success(), "{text}");
+    assert!(
+        text.contains("conflicting GitLab pipeline identity"),
+        "{text}"
+    );
+    let persisted: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    assert_eq!(persisted["status"], "pending");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_recovered_handoff_revalidates_identity_before_queue() {
+    let (fixture, _) = completed_pipeline_fixture();
+    let state = fixture.repo_path.join("fake-retarget-pipeline");
+    fs::write(&state, "identity-change").unwrap();
+
+    let output = fixture.land_command(&PIPELINE_LAND_ARGS).output().unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(text.contains("identity changed"), "{text}");
+    assert!(!fixture.queued_request().contains("merge_requests/42"));
+    assert_eq!(
+        gitlab_landing_attempt(&fixture.repo_path).unwrap()["state"],
+        "completed"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_pipeline_recovery_finalizes_sweep_interrupted_record() {
+    let (fixture, _) = completed_pipeline_fixture();
+    let (path, mut operation) = pipeline_operation(&fixture.repo_path);
+    operation["status"] = "pending".into();
+    operation["created_at_ms"] = 0.into();
+    fs::write(&path, serde_json::to_vec_pretty(&operation).unwrap()).unwrap();
+    let sweep = Command::new(env!("CARGO_BIN_EXE_gg"))
+        .args(["co", "sweep-trigger"])
+        .current_dir(&fixture.other_worktree)
+        .env("HOME", &fixture.test_home)
+        .env("PATH", &fixture.path)
+        .output()
+        .unwrap();
+    assert!(
+        sweep.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sweep.stderr)
+    );
+    let interrupted: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(interrupted["status"], "interrupted");
+
+    let output = fixture.land_command(&PIPELINE_LAND_ARGS).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let recovered: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    assert_eq!(recovered["status"], "committed");
 }
 
 #[cfg(unix)]

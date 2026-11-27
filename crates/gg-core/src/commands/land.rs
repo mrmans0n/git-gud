@@ -836,6 +836,35 @@ fn ensure_land_segment(
     Ok(())
 }
 
+fn record_merged_effect_durable(
+    provider: &Provider,
+    pr_num: u64,
+    pr_url: String,
+    guard: &mut Option<crate::operations::OperationGuard>,
+    remote_effects: &mut Vec<RemoteEffect>,
+    touched_remote: &mut bool,
+) -> Result<()> {
+    let effect = RemoteEffect::PrMerged {
+        number: pr_num,
+        url: pr_url,
+    };
+    guard
+        .as_mut()
+        .expect("land segment guard")
+        .record_remote_effect_durable(effect.clone())
+        .map_err(|error| {
+            GgError::DurabilityCheckpoint(format!(
+                "failed to durably record merge of {} {}{}: {error}",
+                provider.pr_label(),
+                provider.pr_number_prefix(),
+                pr_num
+            ))
+        })?;
+    remote_effects.push(effect);
+    *touched_remote = true;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn requeue_merge_train_with_operation(
     repo: &git2::Repository,
@@ -952,14 +981,9 @@ pub fn run(opts: LandOptions) -> Result<()> {
     )?);
     let mut config = Config::load_with_global(git_dir)?;
     let provider = Provider::detect(&repo)?;
-    // Preserve the established eager operation segment for non-wait GitHub
-    // landing. GitLab starts a segment only once a validated mutation is about
-    // to run, so provider/pre-mutation failures cannot strand a pending record.
-    let mut guard = if !wait && provider == Provider::GitHub {
-        Some(begin_land_segment(&repo, &config, &args)?)
-    } else {
-        None
-    };
+    // Open segments only after provider preflight and the initial streaming
+    // event have succeeded, immediately before a local or remote mutation.
+    let mut guard = None;
 
     // Remote effects collected during landing. A successful merge adds a
     // `PrMerged`; auto-merge scheduling sets `touched_remote` without a
@@ -1443,11 +1467,14 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         if let Some(error) = stack_changed_while_waiting(&expected_stack, &stack) {
                             if wait_outcome == WaitForReadyOutcome::Merged {
                                 guard = Some(begin_land_segment(&repo, &config, &args)?);
-                                touched_remote = true;
-                                guard
-                                    .as_mut()
-                                    .expect("land segment guard")
-                                    .mark_touched_remote();
+                                record_merged_effect_durable(
+                                    &provider,
+                                    pr_num,
+                                    String::new(),
+                                    &mut guard,
+                                    &mut remote_effects,
+                                    &mut touched_remote,
+                                )?;
                                 config.save(git_dir)?;
                                 finish_land_segment(
                                     &repo,
@@ -1489,11 +1516,14 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         }
                         if wait_outcome == WaitForReadyOutcome::Merged {
                             guard = Some(begin_land_segment(&repo, &config, &args)?);
-                            touched_remote = true;
-                            guard
-                                .as_mut()
-                                .expect("land segment guard")
-                                .mark_touched_remote();
+                            record_merged_effect_durable(
+                                &provider,
+                                pr_num,
+                                String::new(),
+                                &mut guard,
+                                &mut remote_effects,
+                                &mut touched_remote,
+                            )?;
                             landed_count += 1;
                             warnings.extend(cleanup_after_merge(
                                 &mut config,
@@ -1553,9 +1583,6 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         }
                         if pr_is_still_ready(&provider, pr_num, skip_approval, merge_trains_enabled)
                         {
-                            if provider == Provider::GitHub {
-                                guard = Some(begin_land_segment(&repo, &config, &args)?);
-                            }
                             break;
                         }
                     }
@@ -1684,17 +1711,8 @@ pub fn run(opts: LandOptions) -> Result<()> {
             })();
             match queue_result {
                 Ok(result) => {
-                    // Queueing a PR/MR on the merge train is a remote state
-                    // mutation even when the PR was already queued — the
-                    // API call still touches the remote. Mark `touched_remote`
-                    // so `gg undo` refuses to replay this op locally. Persist
-                    // the flag immediately so a mid-sequence failure still
-                    // leaves a record the sweep will promote correctly.
-                    touched_remote = true;
-                    guard
-                        .as_mut()
-                        .expect("land segment guard")
-                        .mark_touched_remote();
+                    // The durable pre-attempt barrier already recorded that
+                    // queueing may have touched the remote.
                     let action = match result {
                         AutoMergeResult::Queued => "queued",
                         AutoMergeResult::AlreadyQueued => "already_queued",
@@ -1750,11 +1768,14 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         }
                         if let Some(error) = stack_changed_while_waiting(&expected_stack, &stack) {
                             guard = Some(begin_land_segment(&repo, &config, &args)?);
-                            touched_remote = true;
-                            guard
-                                .as_mut()
-                                .expect("land segment guard")
-                                .mark_touched_remote();
+                            record_merged_effect_durable(
+                                &provider,
+                                pr_num,
+                                String::new(),
+                                &mut guard,
+                                &mut remote_effects,
+                                &mut touched_remote,
+                            )?;
                             config.save(git_dir)?;
                             finish_land_segment(
                                 &repo,
@@ -1775,11 +1796,14 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         guard = Some(begin_land_segment(&repo, &config, &args)?);
                         // The MR merged while its train was being polled. Keep the
                         // follow-up cleanup segment out of `gg undo`.
-                        touched_remote = true;
-                        guard
-                            .as_mut()
-                            .expect("land segment guard")
-                            .mark_touched_remote();
+                        record_merged_effect_durable(
+                            &provider,
+                            pr_num,
+                            String::new(),
+                            &mut guard,
+                            &mut remote_effects,
+                            &mut touched_remote,
+                        )?;
                         landed_count += 1;
                         warnings.extend(cleanup_after_merge(
                             &mut config,
@@ -1866,15 +1890,8 @@ pub fn run(opts: LandOptions) -> Result<()> {
             })();
             match auto_merge_result {
                 Ok(AutoMergeResult::Queued) => {
-                    // Queuing for auto-merge mutates remote state even though
-                    // the MR is not merged yet; mark the op as having touched
-                    // remote so `gg undo` refuses with a provider hint. Persist
-                    // immediately for mid-sequence failure tolerance.
-                    touched_remote = true;
-                    guard
-                        .as_mut()
-                        .expect("land segment guard")
-                        .mark_touched_remote();
+                    // The durable pre-attempt barrier already recorded that
+                    // queueing may have touched the remote.
                     config.save(git_dir)?;
                     finish_land_segment(
                         &repo,
@@ -1950,6 +1967,10 @@ pub fn run(opts: LandOptions) -> Result<()> {
             if admin && !structured {
                 eprintln!("⚠ Merging with admin override — bypassing approval requirements");
             }
+            let pr_url = provider
+                .get_pr_info(pr_num)
+                .map(|info| info.url)
+                .unwrap_or_default();
             let merge_admin = admin && !(structured && provider == Provider::GitLab);
             let merge_result = (|| {
                 if provider == Provider::GitLab {
@@ -1961,22 +1982,14 @@ pub fn run(opts: LandOptions) -> Result<()> {
             })();
             match merge_result {
                 Ok(()) => {
-                    // Record the merge as a remote effect. Fetch the URL if we
-                    // can; fall back to empty string if the info call fails.
-                    let pr_url = provider
-                        .get_pr_info(pr_num)
-                        .map(|info| info.url)
-                        .unwrap_or_default();
-                    let effect = RemoteEffect::PrMerged {
-                        number: pr_num,
-                        url: pr_url,
-                    };
-                    remote_effects.push(effect.clone());
-                    touched_remote = true;
-                    guard
-                        .as_mut()
-                        .expect("land segment guard")
-                        .record_remote_effect(effect);
+                    record_merged_effect_durable(
+                        &provider,
+                        pr_num,
+                        pr_url,
+                        &mut guard,
+                        &mut remote_effects,
+                        &mut touched_remote,
+                    )?;
 
                     landed_count += 1;
                     warnings.extend(cleanup_after_merge(

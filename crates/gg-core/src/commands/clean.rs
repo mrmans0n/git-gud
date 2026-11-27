@@ -226,6 +226,12 @@ impl<'a> RemoteDeletionSegmentOwner<'a> {
                         self.label
                     ),
                 )?;
+                Ok(())
+            }
+            (
+                RemoteDeletionSegmentState::Idle,
+                RemoteDeletionCheckpoint::AfterLocalMutationOutput,
+            ) => {
                 self.begin_segment(
                     config,
                     &format!("open post-output {} local cleanup segment", self.label),
@@ -571,6 +577,10 @@ fn run_for_stack_with_repo_options(
     if worktree_cleanup.removed_path.is_some() {
         record_remote_effect(RemoteDeletionCheckpoint::LocalMutationComplete, &mut config)?;
         worktree_cleanup.emit_success(silent);
+        record_remote_effect(
+            RemoteDeletionCheckpoint::AfterLocalMutationOutput,
+            &mut config,
+        )?;
     }
 
     let allow_remote_delete = should_delete_remote_branches(merge_status, merge_verified_by_land);
@@ -796,6 +806,10 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
                 segments
                     .checkpoint(&mut config, RemoteDeletionCheckpoint::LocalMutationComplete)?;
                 worktree_cleanup.emit_success(json);
+                segments.checkpoint(
+                    &mut config,
+                    RemoteDeletionCheckpoint::AfterLocalMutationOutput,
+                )?;
             }
             let removed_or_not_configured = worktree_cleanup.proceed;
             if json && !removed_or_not_configured {
@@ -1758,6 +1772,48 @@ mod tests {
                 "invalid clean remote deletion checkpoint transition: AttemptStarted -> Complete"
             ),
             "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn local_mutation_checkpoint_leaves_no_pending_segment_before_success_output() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let repo = Repository::init(temp.path()).expect("init repo");
+        let mut config = Config::default();
+        let args = vec!["clean".to_string()];
+        let mut guard = Some(
+            git::begin_recorded_op(
+                &repo,
+                &config,
+                OperationKind::Clean,
+                args.clone(),
+                Some("stack".to_string()),
+                SnapshotScope::AllUserBranches,
+            )
+            .expect("begin local cleanup segment"),
+        );
+        let mut remote_effects = Vec::new();
+        let mut touched_remote = false;
+        {
+            let mut owner = RemoteDeletionSegmentOwner::new(
+                &repo,
+                OperationKind::Clean,
+                "clean",
+                &args,
+                Some("stack"),
+                &mut guard,
+                &mut remote_effects,
+                &mut touched_remote,
+            );
+
+            owner
+                .checkpoint(&mut config, RemoteDeletionCheckpoint::LocalMutationComplete)
+                .expect("finalize local mutation before success output");
+        }
+
+        assert!(
+            guard.is_none(),
+            "success output must not run while a post-output segment is pending"
         );
     }
 

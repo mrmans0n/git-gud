@@ -672,6 +672,9 @@ pub(crate) enum RemoteDeletionCheckpoint {
     /// Clean-only boundary for a durable local mutation that has its own
     /// success output and must be finalized before that output.
     LocalMutationComplete,
+    /// Clean-only boundary after the local-mutation success output has been
+    /// emitted and later local cleanup is about to begin.
+    AfterLocalMutationOutput,
 }
 
 fn remote_deletion_deferral(provider: Option<&Provider>, branch: &str) -> Option<String> {
@@ -936,6 +939,9 @@ fn prune_stale_remote_entry_branches_for_operation(
                 }
                 RemoteDeletionCheckpoint::LocalMutationComplete => Err(GgError::Other(
                     "sync received a clean-only local mutation checkpoint".to_string(),
+                )),
+                RemoteDeletionCheckpoint::AfterLocalMutationOutput => Err(GgError::Other(
+                    "sync received a clean-only post-output checkpoint".to_string(),
                 )),
             }
         },

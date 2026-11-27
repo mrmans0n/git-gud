@@ -4,9 +4,11 @@ use console::style;
 use dialoguer::Confirm;
 use git2::{BranchType, Repository};
 use std::collections::HashSet;
-use std::path::Path;
+use std::fs::{self, File};
+use std::io::Write;
+use std::path::{Component, Path, PathBuf};
 
-use crate::config::Config;
+use crate::config::{Config, PendingRemoteBranchDeletion, RemoteBranchDeletionState};
 use crate::error::{GgError, Result};
 use crate::git;
 use crate::operations::{OperationKind, RemoteEffect, SnapshotScope};
@@ -14,49 +16,345 @@ use crate::output::{print_json, CleanResponse, CleanResultJson, OUTPUT_VERSION};
 use crate::provider::{PrState, Provider};
 use crate::stack;
 
+use super::sync::RemoteDeletionCheckpoint;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteDeletionSegmentState {
+    Idle,
+    AttemptStarted,
+    EffectRecorded,
+}
+
+pub(crate) struct RemoteDeletionSegmentOwner<'a> {
+    repo: &'a Repository,
+    kind: OperationKind,
+    label: &'static str,
+    args: &'a [String],
+    stack_name: Option<&'a str>,
+    guard: &'a mut Option<crate::operations::OperationGuard>,
+    remote_effects: &'a mut Vec<RemoteEffect>,
+    touched_remote: &'a mut bool,
+    state: RemoteDeletionSegmentState,
+}
+
+impl<'a> RemoteDeletionSegmentOwner<'a> {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        repo: &'a Repository,
+        kind: OperationKind,
+        label: &'static str,
+        args: &'a [String],
+        stack_name: Option<&'a str>,
+        guard: &'a mut Option<crate::operations::OperationGuard>,
+        remote_effects: &'a mut Vec<RemoteEffect>,
+        touched_remote: &'a mut bool,
+    ) -> Self {
+        Self {
+            repo,
+            kind,
+            label,
+            args,
+            stack_name,
+            guard,
+            remote_effects,
+            touched_remote,
+            state: RemoteDeletionSegmentState::Idle,
+        }
+    }
+
+    fn durability_error(&self, action: &str, error: impl std::fmt::Display) -> GgError {
+        GgError::DurabilityCheckpoint(format!("failed to {action}: {error}"))
+    }
+
+    fn begin_segment(&mut self, config: &Config, action: &str) -> Result<()> {
+        *self.guard = Some(
+            git::begin_recorded_op(
+                self.repo,
+                config,
+                self.kind,
+                self.args.to_vec(),
+                self.stack_name.map(str::to_string),
+                SnapshotScope::AllUserBranches,
+            )
+            .map_err(|error| self.durability_error(action, error))?,
+        );
+        Ok(())
+    }
+
+    fn finalize_current(&mut self, config: &Config, action: &str) -> Result<()> {
+        let Some(segment) = self.guard.take() else {
+            return Ok(());
+        };
+        segment
+            .finalize_with_scope(
+                self.repo,
+                config,
+                SnapshotScope::AllUserBranches,
+                std::mem::take(self.remote_effects),
+                std::mem::take(self.touched_remote),
+            )
+            .map_err(|error| self.durability_error(action, error))
+    }
+
+    pub(crate) fn checkpoint(
+        &mut self,
+        config: &mut Config,
+        checkpoint: RemoteDeletionCheckpoint,
+    ) -> Result<()> {
+        match (self.state, checkpoint) {
+            (
+                RemoteDeletionSegmentState::Idle,
+                RemoteDeletionCheckpoint::BeforeAttempt {
+                    remote,
+                    branch,
+                    prior_oid,
+                },
+            ) => {
+                self.finalize_current(
+                    config,
+                    &format!("finalize {} segment before deletion", self.label),
+                )?;
+                self.begin_segment(
+                    config,
+                    &format!("open {} remote deletion segment", self.label),
+                )?;
+                self.guard
+                    .as_mut()
+                    .expect("remote deletion segment guard")
+                    .mark_touched_remote_before_attempt()
+                    .map_err(|error| {
+                        self.durability_error(
+                            &format!("persist {} remote deletion uncertainty", self.label),
+                            error,
+                        )
+                    })?;
+                *self.touched_remote = true;
+                if !config
+                    .pending_remote_branch_deletions
+                    .iter()
+                    .any(|intent| intent.remote == remote && intent.branch == branch)
+                {
+                    let source_operation_id = self
+                        .guard
+                        .as_ref()
+                        .expect("remote deletion segment guard")
+                        .id()
+                        .to_string();
+                    config
+                        .pending_remote_branch_deletions
+                        .push(PendingRemoteBranchDeletion {
+                            remote,
+                            branch,
+                            expected_oid: prior_oid,
+                            source_operation_id,
+                            state: RemoteBranchDeletionState::Deleting,
+                        });
+                    config.save(self.repo.commondir()).map_err(|error| {
+                        self.durability_error(
+                            &format!("persist {} remote deletion identity", self.label),
+                            error,
+                        )
+                    })?;
+                }
+                self.state = RemoteDeletionSegmentState::AttemptStarted;
+                Ok(())
+            }
+            (
+                RemoteDeletionSegmentState::AttemptStarted,
+                RemoteDeletionCheckpoint::Effect(effect),
+            ) => {
+                self.guard
+                    .as_mut()
+                    .expect("remote deletion segment guard")
+                    .record_remote_effect_durable(effect.clone())
+                    .map_err(|error| {
+                        self.durability_error(
+                            &format!(
+                                "durably record exact remote deletion effect for {}",
+                                self.label
+                            ),
+                            error,
+                        )
+                    })?;
+                self.remote_effects.push(effect);
+                self.state = RemoteDeletionSegmentState::EffectRecorded;
+                Ok(())
+            }
+            (RemoteDeletionSegmentState::EffectRecorded, RemoteDeletionCheckpoint::Complete) => {
+                self.finalize_current(
+                    config,
+                    &format!("finalize {} deletion segment", self.label),
+                )?;
+                self.begin_segment(
+                    config,
+                    &format!("open post-deletion {} local cleanup segment", self.label),
+                )?;
+                self.state = RemoteDeletionSegmentState::Idle;
+                Ok(())
+            }
+            (
+                RemoteDeletionSegmentState::AttemptStarted,
+                RemoteDeletionCheckpoint::DeferredBeforeMutation,
+            ) => {
+                self.guard
+                    .as_mut()
+                    .expect("remote deletion segment guard")
+                    .clear_touched_remote_before_attempt()
+                    .map_err(|error| {
+                        self.durability_error(
+                            &format!("clear deferred {} deletion uncertainty", self.label),
+                            error,
+                        )
+                    })?;
+                *self.touched_remote = false;
+                self.finalize_current(
+                    config,
+                    &format!("finalize deferred {} deletion segment", self.label),
+                )?;
+                self.begin_segment(
+                    config,
+                    &format!("open post-deferral {} local cleanup segment", self.label),
+                )?;
+                self.state = RemoteDeletionSegmentState::Idle;
+                Ok(())
+            }
+            (RemoteDeletionSegmentState::Idle, RemoteDeletionCheckpoint::LocalMutationComplete) => {
+                self.finalize_current(
+                    config,
+                    &format!(
+                        "finalize {} local mutation before success output",
+                        self.label
+                    ),
+                )?;
+                self.begin_segment(
+                    config,
+                    &format!("open post-output {} local cleanup segment", self.label),
+                )?;
+                Ok(())
+            }
+            (state, checkpoint) => Err(GgError::DurabilityCheckpoint(format!(
+                "invalid {} remote deletion checkpoint transition: {state:?} -> {checkpoint:?}",
+                self.label
+            ))),
+        }
+    }
+
+    pub(crate) fn finish(mut self, config: &Config) -> Result<()> {
+        if self.state != RemoteDeletionSegmentState::Idle {
+            return Err(GgError::DurabilityCheckpoint(format!(
+                "cannot finish {} cleanup with an incomplete remote deletion segment",
+                self.label
+            )));
+        }
+        self.finalize_current(config, &format!("finalize {} cleanup", self.label))
+    }
+
+    fn ensure_local_segment(&mut self, config: &Config) -> Result<()> {
+        if self.state != RemoteDeletionSegmentState::Idle {
+            return Err(GgError::DurabilityCheckpoint(format!(
+                "cannot open {} local cleanup segment during a remote deletion",
+                self.label
+            )));
+        }
+        if self.guard.is_none() {
+            self.begin_segment(
+                config,
+                &format!("open {} local cleanup segment", self.label),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn finalize_before_success_output(&mut self, config: &Config) -> Result<()> {
+        if self.state != RemoteDeletionSegmentState::Idle {
+            return Err(GgError::DurabilityCheckpoint(format!(
+                "cannot report {} success with an incomplete remote deletion segment",
+                self.label
+            )));
+        }
+        self.finalize_current(
+            config,
+            &format!("finalize {} cleanup before success output", self.label),
+        )
+    }
+}
+
 /// Run the clean command for a specific stack (used by auto-clean)
 #[allow(dead_code)]
 pub fn run_for_stack(stack_name: &str, force: bool) -> Result<()> {
     let repo = git::open_repo()?;
     let _lock = git::acquire_operation_lock(&repo, "clean")?;
-    let config = Config::load_with_global(repo.commondir())?;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    run_for_stack_with_owned_journal(&repo, stack_name, force, args)
+}
 
-    let mut guard = git::begin_recorded_op(
-        &repo,
+fn run_for_stack_with_owned_journal(
+    repo: &Repository,
+    stack_name: &str,
+    force: bool,
+    args: Vec<String>,
+) -> Result<()> {
+    let config = Config::load_with_global(repo.commondir())?;
+    let mut guard = Some(git::begin_recorded_op(
+        repo,
         &config,
         OperationKind::Clean,
-        std::env::args().skip(1).collect(),
+        args.clone(),
         Some(stack_name.to_string()),
         SnapshotScope::AllUserBranches,
-    )?;
-
+    )?);
     let mut remote_effects = Vec::new();
     let mut touched_remote = false;
-    run_for_stack_with_repo_options(&repo, stack_name, force, false, false, &mut |effect| {
-        touched_remote = true;
-        if let Some(effect) = effect {
-            guard.record_remote_effect(effect.clone());
-            remote_effects.push(effect);
-            Ok(())
-        } else {
-            guard.mark_touched_remote_before_attempt()
-        }
-    })?;
+    let mut segments = RemoteDeletionSegmentOwner::new(
+        repo,
+        OperationKind::Clean,
+        "clean",
+        &args,
+        Some(stack_name),
+        &mut guard,
+        &mut remote_effects,
+        &mut touched_remote,
+    );
 
-    guard.finalize_with_scope(
-        &repo,
-        &config,
-        SnapshotScope::AllUserBranches,
-        remote_effects,
-        touched_remote,
-    )
+    let cleanup_result = run_for_stack_with_repo_options(
+        repo,
+        stack_name,
+        force,
+        false,
+        false,
+        &mut |checkpoint, checkpoint_config| segments.checkpoint(checkpoint_config, checkpoint),
+    );
+
+    match cleanup_result {
+        Ok(_) => {
+            let final_config = Config::load_with_global(repo.commondir())?;
+            segments.finish(&final_config)?;
+            Ok(())
+        }
+        Err(error @ GgError::DurabilityCheckpoint(_))
+        | Err(error @ GgError::RemoteMutationUncertain(_)) => Err(error),
+        Err(error) => {
+            let finish_result = Config::load_with_global(repo.commondir())
+                .and_then(|final_config| segments.finish(&final_config));
+            match finish_result {
+                Ok(()) => Err(error),
+                Err(finalize_error) => Err(GgError::Other(format!(
+                    "{error}; additionally failed to finalize clean operation: {finalize_error}"
+                ))),
+            }
+        }
+    }
 }
 
 /// Run clean for a stack with an already-open repository.
 pub fn run_for_stack_with_repo(repo: &Repository, stack_name: &str, force: bool) -> Result<()> {
     let _lock = git::acquire_operation_lock(repo, "clean")?;
-    run_for_stack_with_repo_options(repo, stack_name, force, false, false, &mut |_| Ok(()))
-        .map(|_| ())
+    run_for_stack_with_owned_journal(
+        repo,
+        stack_name,
+        force,
+        vec!["clean".to_string(), stack_name.to_string()],
+    )
 }
 
 /// Run clean after `gg land` has already verified that every PR/MR in the stack
@@ -71,7 +369,7 @@ pub(crate) fn run_for_stack_with_repo_after_verified_land(
     stack_name: &str,
     force: bool,
     silent: bool,
-    record_remote_effect: &mut dyn FnMut(Option<RemoteEffect>) -> Result<()>,
+    record_remote_effect: &mut dyn FnMut(RemoteDeletionCheckpoint, &mut Config) -> Result<()>,
 ) -> Result<bool> {
     // Land holds the shared operation lock whenever it calls this helper.
     run_for_stack_with_repo_options(repo, stack_name, force, true, silent, record_remote_effect)
@@ -165,7 +463,7 @@ fn reconcile_pending_deletions(
     config: &mut Config,
     stack_name: &str,
     username: &str,
-    record_remote_effect: &mut dyn FnMut(Option<RemoteEffect>) -> Result<()>,
+    record_remote_effect: &mut dyn FnMut(RemoteDeletionCheckpoint, &mut Config) -> Result<()>,
 ) -> Result<()> {
     let branch_name = git::format_stack_branch(username, stack_name);
     let stack_tip = repo.refname_to_id(&format!("refs/heads/{branch_name}"));
@@ -193,13 +491,7 @@ fn reconcile_pending_deletions(
         stack_name,
         &current_branches,
         config,
-        |checkpoint, _config| match checkpoint {
-            super::sync::RemoteDeletionCheckpoint::BeforeAttempt => record_remote_effect(None),
-            super::sync::RemoteDeletionCheckpoint::Effect(effect) => {
-                record_remote_effect(Some(effect))
-            }
-            super::sync::RemoteDeletionCheckpoint::Complete => Ok(()),
-        },
+        |checkpoint, config| record_remote_effect(checkpoint, config),
     )?;
     // Keep the stack (and its intents) recoverable instead of stranding them.
     if deferred.is_empty() {
@@ -215,7 +507,7 @@ fn run_for_stack_with_repo_options(
     force: bool,
     merge_verified_by_land: bool,
     silent: bool,
-    record_remote_effect: &mut dyn FnMut(Option<RemoteEffect>) -> Result<()>,
+    record_remote_effect: &mut dyn FnMut(RemoteDeletionCheckpoint, &mut Config) -> Result<()>,
 ) -> Result<bool> {
     let git_dir = repo.commondir();
     let mut config = Config::load_with_global(git_dir)?;
@@ -262,10 +554,24 @@ fn run_for_stack_with_repo_options(
         record_remote_effect,
     )?;
 
-    if !maybe_remove_configured_worktree(repo, &mut config, stack_name, silent)? {
+    let worktree_cleanup = maybe_remove_configured_worktree(repo, &mut config, stack_name, silent)?;
+    if !worktree_cleanup.proceed {
         return Ok(false);
     }
-    config.save(git_dir)?;
+    config.save(git_dir).map_err(|error| {
+        GgError::DurabilityCheckpoint(format!(
+            "failed to persist configured worktree cleanup for stack '{stack_name}': {error}"
+        ))
+    })?;
+    worktree_cleanup.clear_recovery_marker().map_err(|error| {
+        GgError::DurabilityCheckpoint(format!(
+            "failed to finalize configured worktree removal intent for stack '{stack_name}': {error}"
+        ))
+    })?;
+    if worktree_cleanup.removed_path.is_some() {
+        record_remote_effect(RemoteDeletionCheckpoint::LocalMutationComplete, &mut config)?;
+        worktree_cleanup.emit_success(silent);
+    }
 
     let allow_remote_delete = should_delete_remote_branches(merge_status, merge_verified_by_land);
     if !allow_remote_delete && !silent {
@@ -279,7 +585,7 @@ fn run_for_stack_with_repo_options(
     // Delete entry branches (local and remote when verified)
     delete_entry_branches(
         repo,
-        &config,
+        &mut config,
         stack_name,
         &username,
         /*delete_remote=*/ allow_remote_delete,
@@ -295,7 +601,11 @@ fn run_for_stack_with_repo_options(
     config.remove_stack(stack_name);
 
     // Save updated config
-    config.save(git_dir)?;
+    config.save(git_dir).map_err(|error| {
+        GgError::DurabilityCheckpoint(format!(
+            "failed to persist cleanup of stack '{stack_name}': {error}"
+        ))
+    })?;
 
     Ok(true)
 }
@@ -315,14 +625,15 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
     let _lock = git::acquire_operation_lock(&repo, "clean")?;
     let mut config = Config::load_with_global(git_dir)?;
 
-    let mut guard = git::begin_recorded_op(
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut guard = Some(git::begin_recorded_op(
         &repo,
         &config,
         OperationKind::Clean,
-        std::env::args().skip(1).collect(),
+        args.clone(),
         None,
         SnapshotScope::AllUserBranches,
-    )?;
+    )?);
 
     // Detect provider (best-effort).
     // Some repos (e.g. local remotes in tests) won't match GitHub/GitLab.
@@ -345,9 +656,20 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
     let mut skipped: Vec<String> = Vec::new();
     let mut remote_effects = Vec::new();
     let mut touched_remote = false;
+    let mut segments = RemoteDeletionSegmentOwner::new(
+        &repo,
+        OperationKind::Clean,
+        "clean",
+        &args,
+        None,
+        &mut guard,
+        &mut remote_effects,
+        &mut touched_remote,
+    );
     let mut cleanup_error: Option<String> = None;
 
     if stacks.is_empty() {
+        segments.finish(&config)?;
         if json {
             print_json(&CleanResponse {
                 version: OUTPUT_VERSION,
@@ -356,17 +678,11 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
         } else {
             println!("{}", style("No stacks to clean.").dim());
         }
-        guard.finalize_with_scope(
-            &repo,
-            &config,
-            SnapshotScope::AllUserBranches,
-            vec![],
-            false,
-        )?;
         return Ok(());
     }
 
     for stack_name in &stacks {
+        segments.ensure_local_segment(&config)?;
         // Try to determine if stack is fully merged
         let branch_name = git::format_stack_branch(&username, stack_name);
 
@@ -381,30 +697,35 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
                 &mut config,
                 stack_name,
                 &username,
-                &mut |effect| {
-                    touched_remote = true;
-                    if let Some(effect) = effect {
-                        guard.record_remote_effect(effect.clone());
-                        remote_effects.push(effect);
-                        Ok(())
-                    } else {
-                        guard.mark_touched_remote_before_attempt()
-                    }
+                &mut |checkpoint, checkpoint_config| {
+                    segments.checkpoint(checkpoint_config, checkpoint)
                 },
             ) {
+                if matches!(
+                    error,
+                    GgError::DurabilityCheckpoint(_) | GgError::RemoteMutationUncertain(_)
+                ) {
+                    return Err(error);
+                }
                 cleanup_error.get_or_insert_with(|| error.to_string());
                 skipped.push(format!("{stack_name} ({error})"));
                 continue;
             }
             if let Err(error) = delete_entry_branches(
                 &repo,
-                &config,
+                &mut config,
                 stack_name,
                 &username,
                 /*delete_remote=*/ false,
                 /*silent=*/ json,
-                &mut |_| Ok(()),
+                &mut |_, _| Ok(()),
             ) {
+                if matches!(
+                    error,
+                    GgError::DurabilityCheckpoint(_) | GgError::RemoteMutationUncertain(_)
+                ) {
+                    return Err(error);
+                }
                 cleanup_error.get_or_insert_with(|| error.to_string());
                 skipped.push(format!("{stack_name} ({error})"));
                 continue;
@@ -444,25 +765,39 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
                 &mut config,
                 stack_name,
                 &username,
-                &mut |effect| {
-                    touched_remote = true;
-                    if let Some(effect) = effect {
-                        guard.record_remote_effect(effect.clone());
-                        remote_effects.push(effect);
-                        Ok(())
-                    } else {
-                        guard.mark_touched_remote_before_attempt()
-                    }
+                &mut |checkpoint, checkpoint_config| {
+                    segments.checkpoint(checkpoint_config, checkpoint)
                 },
             ) {
+                if matches!(
+                    error,
+                    GgError::DurabilityCheckpoint(_) | GgError::RemoteMutationUncertain(_)
+                ) {
+                    return Err(error);
+                }
                 cleanup_error.get_or_insert_with(|| error.to_string());
                 skipped.push(format!("{stack_name} ({error})"));
                 continue;
             }
 
-            let removed_or_not_configured =
+            let worktree_cleanup =
                 maybe_remove_configured_worktree(&repo, &mut config, stack_name, json)?;
-            config.save(git_dir)?;
+            config.save(git_dir).map_err(|error| {
+                GgError::DurabilityCheckpoint(format!(
+                    "failed to persist configured worktree cleanup for stack '{stack_name}': {error}"
+                ))
+            })?;
+            worktree_cleanup.clear_recovery_marker().map_err(|error| {
+                GgError::DurabilityCheckpoint(format!(
+                    "failed to finalize configured worktree removal intent for stack '{stack_name}': {error}"
+                ))
+            })?;
+            if worktree_cleanup.removed_path.is_some() {
+                segments
+                    .checkpoint(&mut config, RemoteDeletionCheckpoint::LocalMutationComplete)?;
+                worktree_cleanup.emit_success(json);
+            }
+            let removed_or_not_configured = worktree_cleanup.proceed;
             if json && !removed_or_not_configured {
                 skipped.push(format!(
                     "{} (worktree not removed: confirmation defaults to false in --json mode)",
@@ -483,20 +818,21 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
             // Delete entry branches (local and remote when verified)
             if let Err(error) = delete_entry_branches(
                 &repo,
-                &config,
+                &mut config,
                 stack_name,
                 &username,
                 /*delete_remote=*/ allow_remote_delete,
                 /*silent=*/ json,
-                &mut |effect| {
-                    if let Some(effect) = effect {
-                        touched_remote = true;
-                        guard.record_remote_effect(effect.clone());
-                        remote_effects.push(effect);
-                    }
-                    Ok(())
+                &mut |checkpoint, checkpoint_config| {
+                    segments.checkpoint(checkpoint_config, checkpoint)
                 },
             ) {
+                if matches!(
+                    error,
+                    GgError::DurabilityCheckpoint(_) | GgError::RemoteMutationUncertain(_)
+                ) {
+                    return Err(error);
+                }
                 if !json {
                     println!(
                         "{} Could not delete entry branches for '{}': {}",
@@ -533,7 +869,12 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
 
             // Remove from config
             config.remove_stack(stack_name);
-
+            config.save(git_dir).map_err(|error| {
+                GgError::DurabilityCheckpoint(format!(
+                    "failed to persist cleanup of stack '{stack_name}': {error}"
+                ))
+            })?;
+            segments.finalize_before_success_output(&config)?;
             if !json {
                 println!(
                     "{} Deleted stack '{}'",
@@ -555,7 +896,13 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
     }
 
     // Save updated config
-    config.save(git_dir)?;
+    config.save(git_dir).map_err(|error| {
+        GgError::DurabilityCheckpoint(format!(
+            "failed to persist final clean configuration: {error}"
+        ))
+    })?;
+
+    segments.finish(&config)?;
 
     if json {
         print_json(&CleanResponse {
@@ -573,14 +920,6 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
         println!("{}", style("No stacks to clean.").dim());
     }
 
-    guard.finalize_with_scope(
-        &repo,
-        &config,
-        SnapshotScope::AllUserBranches,
-        remote_effects,
-        touched_remote,
-    )?;
-
     if json {
         Ok(())
     } else if let Some(error) = cleanup_error {
@@ -590,20 +929,185 @@ pub fn run(clean_all: bool, json: bool) -> Result<()> {
     }
 }
 
+struct ConfiguredWorktreeCleanup {
+    proceed: bool,
+    removed_path: Option<String>,
+    recovery_marker: Option<PathBuf>,
+}
+
+impl ConfiguredWorktreeCleanup {
+    fn proceed() -> Self {
+        Self {
+            proceed: true,
+            removed_path: None,
+            recovery_marker: None,
+        }
+    }
+
+    fn stop() -> Self {
+        Self {
+            proceed: false,
+            removed_path: None,
+            recovery_marker: None,
+        }
+    }
+
+    fn removed(path: String, recovery_marker: PathBuf) -> Self {
+        Self {
+            proceed: true,
+            removed_path: Some(path),
+            recovery_marker: Some(recovery_marker),
+        }
+    }
+
+    fn clear_recovery_marker(&self) -> Result<()> {
+        let Some(marker) = &self.recovery_marker else {
+            return Ok(());
+        };
+        match fs::remove_file(marker) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
+        #[cfg(unix)]
+        if let Some(parent) = marker.parent() {
+            File::open(parent)?.sync_all()?;
+        }
+        Ok(())
+    }
+
+    fn emit_success(&self, silent: bool) {
+        emit_removed_worktree_success(self.removed_path.as_deref(), silent);
+    }
+}
+
+pub(crate) fn emit_removed_worktree_success(path: Option<&str>, silent: bool) {
+    if let Some(path) = path.filter(|_| !silent) {
+        println!(
+            "{} Removed worktree '{}'.",
+            style("OK").green().bold(),
+            path
+        );
+    }
+}
+
+#[cfg(debug_assertions)]
+fn test_worktree_removal_confirmed() -> bool {
+    std::env::var_os("GG_TEST_CONFIRM_WORKTREE_REMOVAL").is_some()
+}
+
+#[cfg(not(debug_assertions))]
+fn test_worktree_removal_confirmed() -> bool {
+    false
+}
+
+fn normalize_worktree_path(repo: &Repository, configured_path: &str) -> PathBuf {
+    let path = Path::new(configured_path);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        repo.workdir()
+            .unwrap_or_else(|| repo.commondir())
+            .join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            component => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn worktree_removal_marker_path(repo: &Repository, stack_name: &str) -> PathBuf {
+    let encoded_name = stack_name
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Config::config_path(repo.commondir())
+        .parent()
+        .expect("config path has a parent")
+        .join(format!("worktree-removal-{encoded_name}.json"))
+}
+
+fn persist_worktree_removal_marker(marker: &Path, worktree_path: &str) -> Result<()> {
+    let temp = marker.with_extension("tmp");
+    let contents = serde_json::to_vec(worktree_path)?;
+    {
+        let mut file = File::create(&temp)?;
+        file.write_all(&contents)?;
+        file.sync_all()?;
+    }
+    fs::rename(&temp, marker)?;
+    #[cfg(unix)]
+    if let Some(parent) = marker.parent() {
+        File::open(parent)?.sync_all()?;
+    }
+    Ok(())
+}
+
+fn worktree_removal_marker_matches(marker: &Path, worktree_path: &str) -> Result<bool> {
+    match fs::read(marker) {
+        Ok(contents) => Ok(serde_json::from_slice::<String>(&contents)? == worktree_path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn maybe_remove_configured_worktree(
     repo: &Repository,
     config: &mut Config,
     stack_name: &str,
     silent: bool,
-) -> Result<bool> {
+) -> Result<ConfiguredWorktreeCleanup> {
     let Some(stack_cfg) = config.get_stack(stack_name) else {
-        return Ok(true);
+        return Ok(ConfiguredWorktreeCleanup::proceed());
     };
     let Some(worktree_path) = stack_cfg.worktree_path.clone() else {
-        return Ok(true);
+        return Ok(ConfiguredWorktreeCleanup::proceed());
     };
 
-    let confirm = if silent {
+    let repo_root = repo
+        .workdir()
+        .ok_or_else(|| GgError::Other("Repository has no working directory".to_string()))?;
+
+    let recovery_marker = worktree_removal_marker_path(repo, stack_name);
+    let normalized_worktree_path = normalize_worktree_path(repo, &worktree_path);
+    if !normalized_worktree_path.exists() {
+        let output = std::process::Command::new("git")
+            .args(["worktree", "list", "--porcelain"])
+            .current_dir(repo_root)
+            .output()?;
+        if !output.status.success() {
+            return Err(GgError::Other(format!(
+                "Failed to inspect worktree '{}': {}",
+                worktree_path,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        let registered = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.strip_prefix("worktree "))
+            .any(|path| normalize_worktree_path(repo, path) == normalized_worktree_path);
+        if !registered && worktree_removal_marker_matches(&recovery_marker, &worktree_path)? {
+            if let Some(stack_cfg_mut) = config.stacks.get_mut(stack_name) {
+                stack_cfg_mut.worktree_path = None;
+            }
+            return Ok(ConfiguredWorktreeCleanup::removed(
+                worktree_path,
+                recovery_marker,
+            ));
+        }
+    }
+
+    let confirm = if test_worktree_removal_confirmed() {
+        true
+    } else if silent {
         false
     } else {
         let prompt = format!(
@@ -625,12 +1129,14 @@ fn maybe_remove_configured_worktree(
                 worktree_path
             );
         }
-        return Ok(false);
+        return Ok(ConfiguredWorktreeCleanup::stop());
     }
 
-    let repo_root = repo
-        .workdir()
-        .ok_or_else(|| GgError::Other("Repository has no working directory".to_string()))?;
+    persist_worktree_removal_marker(&recovery_marker, &worktree_path).map_err(|error| {
+        GgError::DurabilityCheckpoint(format!(
+            "failed to persist configured worktree removal intent for stack '{stack_name}': {error}"
+        ))
+    })?;
 
     let output = std::process::Command::new("git")
         .arg("worktree")
@@ -653,15 +1159,12 @@ fn maybe_remove_configured_worktree(
         stack_cfg_mut.worktree_path = None;
     }
 
-    if !silent && !Path::new(&worktree_path).exists() {
-        println!(
-            "{} Removed worktree '{}'.",
-            style("OK").green().bold(),
-            worktree_path
-        );
-    }
-
-    Ok(true)
+    let removed = !Path::new(&worktree_path).exists();
+    Ok(if removed {
+        ConfiguredWorktreeCleanup::removed(worktree_path, recovery_marker)
+    } else {
+        ConfiguredWorktreeCleanup::proceed()
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1052,50 +1555,54 @@ fn verify_commits_reachable(
 /// Delete all entry branches for a stack (both local and remote)
 fn delete_entry_branches(
     repo: &git2::Repository,
-    config: &Config,
+    config: &mut Config,
     stack_name: &str,
     username: &str,
     delete_remote: bool,
     silent: bool,
-    record_remote_effect: &mut dyn FnMut(Option<RemoteEffect>) -> Result<()>,
+    record_remote_effect: &mut dyn FnMut(RemoteDeletionCheckpoint, &mut Config) -> Result<()>,
 ) -> Result<()> {
     // First, delete entry branches from config (if any)
-    if let Some(stack_config) = config.get_stack(stack_name) {
-        for entry_id in stack_config.mrs.keys() {
-            let entry_id = match git::normalize_gg_id(entry_id) {
-                Some(id) => id,
-                None => {
-                    if !silent {
-                        println!(
-                            "{} Skipping invalid GG-ID '{}' in config.",
-                            style("Warning:").yellow(),
-                            entry_id
-                        );
-                    }
-                    continue;
+    let configured_entry_ids = config
+        .get_stack(stack_name)
+        .map(|stack_config| stack_config.mrs.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    for entry_id in configured_entry_ids {
+        let entry_id = match git::normalize_gg_id(&entry_id) {
+            Some(id) => id,
+            None => {
+                if !silent {
+                    println!(
+                        "{} Skipping invalid GG-ID '{}' in config.",
+                        style("Warning:").yellow(),
+                        entry_id
+                    );
                 }
-            };
-            let entry_branch = git::format_entry_branch(username, stack_name, &entry_id);
-            // Delete remote entry branch first so a remote failure leaves the local ref
-            // discoverable for a retry.
-            if delete_remote {
-                if let Some(effect) = delete_remote_branch(repo, &entry_branch)? {
-                    record_remote_effect(Some(effect))?;
+                continue;
+            }
+        };
+        let entry_branch = git::format_entry_branch(username, stack_name, &entry_id);
+        // Delete remote entry branch first so a remote failure leaves the local ref
+        // discoverable for a retry.
+        if delete_remote {
+            if let Some(effect) =
+                delete_remote_branch(repo, config, &entry_branch, record_remote_effect)?
+            {
+                complete_remote_deletion(repo, config, effect, record_remote_effect)?;
+            }
+        }
+        // Delete local entry branch
+        if let Ok(mut branch) = repo.find_branch(&entry_branch, BranchType::Local) {
+            // Check if branch is HEAD of a worktree
+            if let Some(wt_name) = git::is_branch_checked_out_in_worktree(repo, &entry_branch) {
+                // Try to prune if stale
+                if !git::try_prune_worktree(repo, &wt_name) {
+                    // Worktree still exists - try to remove it silently
+                    let _ = git::remove_worktree(&wt_name);
                 }
             }
-            // Delete local entry branch
-            if let Ok(mut branch) = repo.find_branch(&entry_branch, BranchType::Local) {
-                // Check if branch is HEAD of a worktree
-                if let Some(wt_name) = git::is_branch_checked_out_in_worktree(repo, &entry_branch) {
-                    // Try to prune if stale
-                    if !git::try_prune_worktree(repo, &wt_name) {
-                        // Worktree still exists - try to remove it silently
-                        let _ = git::remove_worktree(&wt_name);
-                    }
-                }
-                // Try to delete, ignore errors (best effort for entry branches)
-                let _ = branch.delete();
-            }
+            // Try to delete, ignore errors (best effort for entry branches)
+            let _ = branch.delete();
         }
     }
 
@@ -1124,8 +1631,10 @@ fn delete_entry_branches(
         // Delete remote first so a remote failure leaves the local orphan ref
         // discoverable for a retry.
         if delete_remote {
-            if let Some(effect) = delete_remote_branch(repo, &branch_name)? {
-                record_remote_effect(Some(effect))?;
+            if let Some(effect) =
+                delete_remote_branch(repo, config, &branch_name, record_remote_effect)?
+            {
+                complete_remote_deletion(repo, config, effect, record_remote_effect)?;
             }
         }
         if let Ok(mut branch) = repo.find_branch(&branch_name, BranchType::Local) {
@@ -1144,19 +1653,113 @@ fn delete_entry_branches(
     Ok(())
 }
 
-fn delete_remote_branch(repo: &Repository, branch: &str) -> Result<Option<RemoteEffect>> {
-    git::delete_remote_branch(repo, branch).map(|prior_oid| {
-        prior_oid.map(|prior_oid| RemoteEffect::BranchDeleted {
+fn complete_remote_deletion(
+    repo: &Repository,
+    config: &mut Config,
+    effect: RemoteEffect,
+    record_remote_effect: &mut dyn FnMut(RemoteDeletionCheckpoint, &mut Config) -> Result<()>,
+) -> Result<()> {
+    let RemoteEffect::BranchDeleted { remote, branch, .. } = &effect else {
+        return Err(GgError::DurabilityCheckpoint(
+            "remote deletion completed without a branch_deleted effect".to_string(),
+        ));
+    };
+    let remote = remote.clone();
+    let branch = branch.clone();
+    record_remote_effect(RemoteDeletionCheckpoint::Effect(effect), config)?;
+    config
+        .pending_remote_branch_deletions
+        .retain(|intent| intent.remote != remote || intent.branch != branch);
+    config.save(repo.commondir()).map_err(|error| {
+        GgError::DurabilityCheckpoint(format!(
+            "failed to persist completed remote deletion for '{branch}': {error}"
+        ))
+    })?;
+    record_remote_effect(RemoteDeletionCheckpoint::Complete, config)
+}
+
+fn delete_remote_branch(
+    repo: &Repository,
+    config: &mut Config,
+    branch: &str,
+    record_remote_effect: &mut dyn FnMut(RemoteDeletionCheckpoint, &mut Config) -> Result<()>,
+) -> Result<Option<RemoteEffect>> {
+    let Some(prior_oid) = git::get_live_remote_branch_oid(repo, "origin", branch)? else {
+        return Ok(None);
+    };
+    record_remote_effect(
+        RemoteDeletionCheckpoint::BeforeAttempt {
             remote: "origin".to_string(),
             branch: branch.to_string(),
-            prior_oid: Some(prior_oid.to_string()),
-        })
-    })
+            prior_oid: prior_oid.to_string(),
+        },
+        config,
+    )?;
+    if let Err(delete_error) = git::delete_remote_branch_at_oid(repo, "origin", branch, prior_oid) {
+        return Err(GgError::RemoteMutationUncertain(delete_error.to_string()));
+    }
+    Ok(Some(RemoteEffect::BranchDeleted {
+        remote: "origin".to_string(),
+        branch: branch.to_string(),
+        prior_oid: Some(prior_oid.to_string()),
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_deletion_segment_rejects_complete_before_exact_effect() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let repo = Repository::init(temp.path()).expect("init repo");
+        let mut config = Config::default();
+        let args = vec!["clean".to_string()];
+        let mut guard = Some(
+            git::begin_recorded_op(
+                &repo,
+                &config,
+                OperationKind::Clean,
+                args.clone(),
+                Some("stack".to_string()),
+                SnapshotScope::AllUserBranches,
+            )
+            .expect("begin initial clean segment"),
+        );
+        let mut remote_effects = Vec::new();
+        let mut touched_remote = false;
+        let mut owner = RemoteDeletionSegmentOwner::new(
+            &repo,
+            OperationKind::Clean,
+            "clean",
+            &args,
+            Some("stack"),
+            &mut guard,
+            &mut remote_effects,
+            &mut touched_remote,
+        );
+        owner
+            .checkpoint(
+                &mut config,
+                RemoteDeletionCheckpoint::BeforeAttempt {
+                    remote: "origin".to_string(),
+                    branch: "user/stack--c-1111111".to_string(),
+                    prior_oid: "1111111111111111111111111111111111111111".to_string(),
+                },
+            )
+            .expect("persist pre-attempt uncertainty");
+
+        let error = owner
+            .checkpoint(&mut config, RemoteDeletionCheckpoint::Complete)
+            .expect_err("complete without an exact effect must be rejected");
+
+        assert!(
+            error.to_string().contains(
+                "invalid clean remote deletion checkpoint transition: AttemptStarted -> Complete"
+            ),
+            "unexpected error: {error}"
+        );
+    }
 
     #[test]
     fn normal_clean_deletes_remote_branches_only_when_verified() {
@@ -1204,7 +1807,12 @@ mod tests {
         let temp = tempfile::tempdir().expect("create temp dir");
         let repo = Repository::init(temp.path()).expect("init repo");
 
-        let error = delete_remote_branch(&repo, "u/cleanup--c-1111111").unwrap_err();
+        let mut config = Config::default();
+        let error =
+            delete_remote_branch(&repo, &mut config, "u/cleanup--c-1111111", &mut |_, _| {
+                Ok(())
+            })
+            .unwrap_err();
 
         assert!(
             error.to_string().contains("git ls-remote failed"),
@@ -1273,10 +1881,13 @@ mod tests {
         .expect("write config");
 
         let repo = Repository::open(&repo_path).expect("open repo");
-        let result =
-            run_for_stack_with_repo_after_verified_land(&repo, "cleanup", true, true, &mut |_| {
-                Ok(())
-            });
+        let result = run_for_stack_with_repo_after_verified_land(
+            &repo,
+            "cleanup",
+            true,
+            true,
+            &mut |_, _| Ok(()),
+        );
 
         assert!(result.is_err(), "missing origin should fail remote cleanup");
         assert!(
@@ -1358,10 +1969,13 @@ mod tests {
         .expect("write config");
 
         let repo = Repository::open(&repo_path).expect("open repo");
-        let result =
-            run_for_stack_with_repo_after_verified_land(&repo, "cleanup", true, true, &mut |_| {
-                Ok(())
-            });
+        let result = run_for_stack_with_repo_after_verified_land(
+            &repo,
+            "cleanup",
+            true,
+            true,
+            &mut |_, _| Ok(()),
+        );
 
         assert!(result.is_err(), "missing origin should fail remote cleanup");
         assert!(
@@ -1446,10 +2060,13 @@ mod tests {
         .expect("write config");
 
         let repo = Repository::open(&repo_path).expect("open repo");
-        let result =
-            run_for_stack_with_repo_after_verified_land(&repo, "cleanup", true, false, &mut |_| {
-                Ok(())
-            });
+        let result = run_for_stack_with_repo_after_verified_land(
+            &repo,
+            "cleanup",
+            true,
+            false,
+            &mut |_, _| Ok(()),
+        );
 
         assert!(result.is_err(), "invalid username should fail validation");
         assert!(
@@ -1553,10 +2170,13 @@ mod tests {
         .expect("write config");
 
         let repo = Repository::open(&repo_path).expect("open repo");
-        let result =
-            run_for_stack_with_repo_after_verified_land(&repo, "cleanup", true, true, &mut |_| {
-                Ok(())
-            });
+        let result = run_for_stack_with_repo_after_verified_land(
+            &repo,
+            "cleanup",
+            true,
+            true,
+            &mut |_, _| Ok(()),
+        );
 
         assert!(!result.expect("cleanup should not error"));
         assert!(

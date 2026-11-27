@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -257,8 +258,9 @@ impl Config {
         Ok(config)
     }
 
-    /// Save config to the given git directory
-    /// Uses file locking and atomic write to prevent corruption
+    /// Save config to the given git directory.
+    /// Uses file locking, a synced temporary file, an atomic rename, and a
+    /// directory sync on Unix so successful checkpoints survive a crash.
     pub fn save(&self, git_dir: &Path) -> Result<()> {
         let config_path = Self::config_path(git_dir);
 
@@ -270,13 +272,21 @@ impl Config {
         // Acquire exclusive lock for writing
         let lock = Self::acquire_lock(git_dir, /*exclusive=*/ true)?;
 
-        // Atomic write: write to temp file, then rename
+        // Write and sync the replacement before exposing it at config.json.
         let temp_path = config_path.with_extension("tmp");
         let contents = serde_json::to_string_pretty(self)?;
-        fs::write(&temp_path, contents)?;
+        {
+            let mut temp = File::create(&temp_path)?;
+            temp.write_all(contents.as_bytes())?;
+            temp.sync_all()?;
+        }
 
-        // Atomic rename (overwrites existing file)
+        // Atomic rename (overwrites existing file).
         fs::rename(&temp_path, &config_path)?;
+        #[cfg(unix)]
+        if let Some(parent) = config_path.parent() {
+            File::open(parent)?.sync_all()?;
+        }
 
         // Lock automatically released when dropped
         drop(lock);
@@ -634,6 +644,15 @@ impl Config {
         intents: impl IntoIterator<Item = PendingRemoteBranchDeletion>,
     ) {
         for intent in intents {
+            let has_uncertain_attempt =
+                self.pending_remote_branch_deletions.iter().any(|existing| {
+                    existing.remote == intent.remote
+                        && existing.branch == intent.branch
+                        && existing.state == RemoteBranchDeletionState::Deleting
+                });
+            if has_uncertain_attempt {
+                continue;
+            }
             self.pending_remote_branch_deletions.retain(|existing| {
                 existing.remote != intent.remote || existing.branch != intent.branch
             });
@@ -658,6 +677,31 @@ pub(crate) fn local_config_has_github_defaults(contents: &str) -> bool {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn queue_remote_branch_deletions_preserves_existing_uncertain_attempt() {
+        let mut config = Config::default();
+        let uncertain = PendingRemoteBranchDeletion {
+            remote: "origin".to_string(),
+            branch: "user/stack--c-1111111".to_string(),
+            expected_oid: "1111111111111111111111111111111111111111".to_string(),
+            source_operation_id: "uncertain-clean".to_string(),
+            state: RemoteBranchDeletionState::Deleting,
+        };
+        config
+            .pending_remote_branch_deletions
+            .push(uncertain.clone());
+
+        config.queue_remote_branch_deletions([PendingRemoteBranchDeletion {
+            remote: uncertain.remote.clone(),
+            branch: uncertain.branch.clone(),
+            expected_oid: uncertain.expected_oid.clone(),
+            source_operation_id: "later-drop".to_string(),
+            state: RemoteBranchDeletionState::Pending,
+        }]);
+
+        assert_eq!(config.pending_remote_branch_deletions, vec![uncertain]);
+    }
 
     #[test]
     fn test_config_roundtrip() {

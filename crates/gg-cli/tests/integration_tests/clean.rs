@@ -1,6 +1,6 @@
 use crate::helpers::{
-    create_test_repo, create_test_repo_with_remote, create_test_repo_with_worktree_support, run_gg,
-    run_gg_with_env, run_git, run_git_full,
+    create_test_repo, create_test_repo_with_remote, create_test_repo_with_worktree_support,
+    isolated_home, run_gg, run_gg_with_env, run_git, run_git_full,
 };
 
 use serde_json::Value;
@@ -10,6 +10,77 @@ use std::process::Command;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+
+#[test]
+#[ignore = "subprocess helper for public clean API integration tests"]
+fn run_public_clean_for_stack_with_repo_helper() {
+    let repo_path = std::env::var_os("GG_TEST_PUBLIC_CLEAN_REPO")
+        .expect("public clean helper requires GG_TEST_PUBLIC_CLEAN_REPO");
+    let stack_name = std::env::var("GG_TEST_PUBLIC_CLEAN_STACK").expect("stack name");
+    std::env::set_current_dir(repo_path).expect("enter public clean test repo");
+    let repo = gg_core::git::open_repo().expect("open public clean test repo");
+    gg_core::commands::clean::run_for_stack_with_repo(&repo, &stack_name, true)
+        .expect("public clean entry point failed");
+}
+
+fn run_public_clean_for_stack_with_repo(
+    repo_path: &Path,
+    stack_name: &str,
+    path: &std::ffi::OsStr,
+) -> std::process::Output {
+    run_public_clean_for_stack_with_repo_with_env(repo_path, stack_name, path, &[])
+}
+
+fn run_public_clean_for_stack_with_repo_with_env(
+    repo_path: &Path,
+    stack_name: &str,
+    path: &std::ffi::OsStr,
+    envs: &[(&str, &std::ffi::OsStr)],
+) -> std::process::Output {
+    let mut command =
+        Command::new(std::env::current_exe().expect("current integration test executable"));
+    command
+        .args([
+            "--ignored",
+            "--exact",
+            "clean::run_public_clean_for_stack_with_repo_helper",
+            "--nocapture",
+        ])
+        .env("GG_TEST_PUBLIC_CLEAN_REPO", repo_path)
+        .env("GG_TEST_PUBLIC_CLEAN_STACK", stack_name)
+        .env("HOME", isolated_home(repo_path))
+        .env("PATH", path);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    command
+        .output()
+        .expect("run public clean integration helper")
+}
+
+fn clean_operation_records(repo_path: &Path) -> Vec<Value> {
+    let operations = repo_path.join(".git/gg/operations");
+    if !operations.exists() {
+        return Vec::new();
+    }
+    fs::read_dir(operations)
+        .unwrap()
+        .filter_map(|entry| {
+            let entry = entry.unwrap();
+            entry
+                .file_type()
+                .unwrap()
+                .is_file()
+                .then(|| serde_json::from_slice::<Value>(&fs::read(entry.path()).unwrap()).unwrap())
+        })
+        .filter(|record| {
+            record["kind"] == "clean"
+                && record["remote_effects"]
+                    .as_array()
+                    .is_some_and(|effects| !effects.is_empty())
+        })
+        .collect()
+}
 
 fn checked_git(repo: &Path, args: &[&str]) -> String {
     let (success, output) = run_git(repo, args);
@@ -36,6 +107,15 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
   exit 0
 fi
 if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+  if [ "$3" = "--base" ] && [ "${GG_TEST_DEFER_ON_SECOND_BRANCH:-}" = "$4" ]; then
+    count_file="$(dirname "$0")/second-lookup-count"
+    count=0
+    [ ! -f "$count_file" ] || count=$(cat "$count_file")
+    count=$((count + 1))
+    printf '%s\n' "$count" > "$count_file"
+    [ "$count" -lt 2 ] || echo '104'
+    exit 0
+  fi
   if [ "$3" = "--base" ] && [ -f "$(dirname "$0")/targets/$(echo "$4" | tr / _)" ]; then
     cat "$(dirname "$0")/targets/$(echo "$4" | tr / _)"
   fi
@@ -109,6 +189,1264 @@ fn setup_published_drop_for_clean(
     (temp, repo_path, remote_path, fake_path, dropped_branch)
 }
 
+#[cfg(unix)]
+fn install_clean_delete_git_shim(repo_path: &Path) -> String {
+    let output = Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .expect("locate git");
+    assert!(output.status.success());
+    let real_git = String::from_utf8(output.stdout)
+        .expect("git path is UTF-8")
+        .trim()
+        .to_string();
+    let shim = repo_path.join("fake-bin/git");
+    fs::write(
+        &shim,
+        r#"#!/bin/sh
+set -eu
+case " $* " in
+  *" worktree remove "*)
+    if [ "${GG_TEST_DELETE_MODE:-}" = "block_worktree_finalize" ]; then
+      "$GG_TEST_REAL_GIT" "$@"
+      pending=''
+      for record in "$GG_TEST_GIT_DIR/gg/operations/"*.json; do
+        [ -f "$record" ] || continue
+        grep -q '"kind": "clean"' "$record" || continue
+        grep -q '"status": "pending"' "$record" || continue
+        [ -z "$pending" ] || { echo 'multiple pending clean operations' >&2; exit 1; }
+        pending=$(basename "$record" .json)
+      done
+      [ -n "$pending" ] || { echo 'missing pending clean operation' >&2; exit 1; }
+      mkdir "$GG_TEST_GIT_DIR/gg/operations/$pending.json.tmp"
+      exit 0
+    fi
+    ;;
+  *" push --force-with-lease=refs/heads/"*" :refs/heads/"*)
+    delete_branch=''
+    delete_oid=''
+    for arg in "$@"; do
+      case "$arg" in
+        --force-with-lease=refs/heads/*:*)
+          lease=${arg#--force-with-lease=refs/heads/}
+          delete_branch=${lease%%:*}
+          delete_oid=${lease#*:}
+          ;;
+      esac
+    done
+    [ -n "$delete_branch" ] && [ -n "$delete_oid" ] || { echo 'missing exact deletion lease' >&2; exit 1; }
+    pending=''
+    for record in "$GG_TEST_GIT_DIR/gg/operations/"*.json; do
+      [ -f "$record" ] || continue
+      grep -Eq '"kind": "(clean|land)"' "$record" || continue
+      grep -q '"status": "pending"' "$record" || continue
+      grep -q '"touched_remote": true' "$record" || continue
+      [ -z "$pending" ] || { echo 'multiple durable clean deletion checkpoints' >&2; exit 1; }
+      pending=$(basename "$record" .json)
+    done
+    [ -n "$pending" ] || { echo 'missing durable clean deletion checkpoint' >&2; exit 1; }
+    grep -q '"state": "deleting"' "$GG_TEST_GIT_DIR/gg/config.json" || { echo 'missing durable deleting intent' >&2; exit 1; }
+    grep -Fq "\"branch\": \"$delete_branch\"" "$GG_TEST_GIT_DIR/gg/config.json" || { echo 'deleting intent has wrong branch' >&2; exit 1; }
+    grep -Fq "\"expected_oid\": \"$delete_oid\"" "$GG_TEST_GIT_DIR/gg/config.json" || { echo 'deleting intent has wrong OID' >&2; exit 1; }
+    if [ -f "$GG_TEST_CHECKPOINT_LOG.previous-operation" ]; then
+      previous=$(cat "$GG_TEST_CHECKPOINT_LOG.previous-operation")
+      previous_branch=$(cat "$GG_TEST_CHECKPOINT_LOG.previous-branch")
+      previous_oid=$(cat "$GG_TEST_CHECKPOINT_LOG.previous-oid")
+      previous_record="$GG_TEST_GIT_DIR/gg/operations/$previous.json"
+      grep -q '"status": "committed"' "$previous_record" || { echo 'previous deletion segment not finalized' >&2; exit 1; }
+      grep -q '"kind": "branch_deleted"' "$previous_record" || { echo 'previous exact effect missing' >&2; exit 1; }
+      grep -Fq "\"branch\": \"$previous_branch\"" "$previous_record" || { echo 'previous effect has wrong branch' >&2; exit 1; }
+      grep -Fq "\"prior_oid\": \"$previous_oid\"" "$previous_record" || { echo 'previous effect has wrong OID' >&2; exit 1; }
+    fi
+    printf '%s\n' "$pending" >> "$GG_TEST_CHECKPOINT_LOG"
+    if [ "${GG_TEST_DELETE_MODE:-}" = "fail_push" ]; then
+      echo 'simulated lost deletion response' >&2
+      exit 1
+    fi
+    "$GG_TEST_REAL_GIT" "$@"
+    status=$?
+    [ "$status" -eq 0 ] || exit "$status"
+    if [ "${GG_TEST_DELETE_MODE:-}" = "delete_then_fail" ]; then
+      echo 'simulated lost deletion response after server mutation' >&2
+      exit 1
+    fi
+    printf '%s\n' "$pending" > "$GG_TEST_CHECKPOINT_LOG.previous-operation"
+    printf '%s\n' "$delete_branch" > "$GG_TEST_CHECKPOINT_LOG.previous-branch"
+    printf '%s\n' "$delete_oid" > "$GG_TEST_CHECKPOINT_LOG.previous-oid"
+    if [ "${GG_TEST_DELETE_MODE:-}" = "block_effect_save" ]; then
+      printf '%s\n' "$pending" > "$(dirname "$0")/blocked-operation-id"
+      mkdir "$GG_TEST_GIT_DIR/gg/operations/$pending.json.tmp"
+    fi
+    if [ "${GG_TEST_DELETE_MODE:-}" = "break_config" ]; then
+      mkdir "$GG_TEST_GIT_DIR/gg/config.tmp"
+    fi
+    if [ "${GG_TEST_DELETE_MODE:-}" = "break_config_and_snapshot" ]; then
+      mkdir "$GG_TEST_GIT_DIR/gg/config.tmp"
+      echo 'not a valid HEAD' > "$GG_TEST_GIT_DIR/HEAD"
+    fi
+    if [ "${GG_TEST_DELETE_MODE:-}" = "break_snapshot" ]; then
+      echo 'not a valid HEAD' > "$GG_TEST_GIT_DIR/HEAD"
+    fi
+    exit 0
+    ;;
+esac
+exec "$GG_TEST_REAL_GIT" "$@"
+"#,
+    )
+    .expect("write clean git shim");
+    let mut permissions = fs::metadata(&shim)
+        .expect("stat clean git shim")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&shim, permissions).expect("chmod clean git shim");
+    real_git
+}
+
+#[cfg(unix)]
+fn setup_direct_remote_clean(
+    stack_name: &str,
+    entry_ids: &[&str],
+) -> (
+    tempfile::TempDir,
+    PathBuf,
+    PathBuf,
+    std::ffi::OsString,
+    Vec<(String, String)>,
+) {
+    let (temp, repo_path, remote_path) = create_test_repo_with_remote();
+    let gg_dir = repo_path.join(".git/gg");
+    fs::create_dir_all(&gg_dir).unwrap();
+    fs::write(
+        gg_dir.join("config.json"),
+        r#"{"defaults":{"branch_username":"testuser","base":"main","provider":"github"}}"#,
+    )
+    .unwrap();
+    let (success, stdout, stderr) = run_gg(&repo_path, &["co", stack_name]);
+    assert!(success, "checkout failed: {stdout}\n{stderr}");
+
+    let mut branches = Vec::new();
+    let mut mappings = serde_json::Map::new();
+    for (index, entry_id) in entry_ids.iter().enumerate() {
+        checked_git(
+            &repo_path,
+            &[
+                "commit",
+                "--allow-empty",
+                "-m",
+                &format!("Entry {}\n\nGG-ID: {entry_id}", index + 1),
+            ],
+        );
+        let branch = format!("testuser/{stack_name}--{entry_id}");
+        checked_git(&repo_path, &["branch", &branch]);
+        checked_git(&repo_path, &["push", "-u", "origin", &branch]);
+        let oid = checked_git(&repo_path, &["rev-parse", &branch]);
+        branches.push((branch, oid));
+        mappings.insert(entry_id.to_string(), Value::from(101 + index as u64));
+    }
+    checked_git(&repo_path, &["checkout", "main"]);
+    checked_git(
+        &repo_path,
+        &["merge", "--ff-only", &format!("testuser/{stack_name}")],
+    );
+    checked_git(&repo_path, &["push", "origin", "main"]);
+    fs::write(
+        gg_dir.join("config.json"),
+        serde_json::json!({
+            "defaults": {
+                "branch_username": "testuser",
+                "base": "main",
+                "provider": "github"
+            },
+            "stacks": {
+                stack_name: {
+                    "base": "main",
+                    "mrs": mappings
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let fake_bin = repo_path.join("fake-bin");
+    fs::create_dir_all(&fake_bin).unwrap();
+    fs::write(
+        fake_bin.join("gh"),
+        r#"#!/bin/sh
+set -eu
+if [ "$1" = "--version" ] || { [ "$1" = "auth" ] && [ "$2" = "status" ]; }; then
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  if [ "${GG_TEST_BLOCK_FINALIZATION_ON_VIEW:-}" = "1" ]; then
+    pending=''
+    for record in "$GG_TEST_GIT_DIR/gg/operations/"*.json; do
+      [ -f "$record" ] || continue
+      grep -q '"kind": "clean"' "$record" || continue
+      grep -q '"status": "pending"' "$record" || continue
+      [ -z "$pending" ] || { echo 'multiple pending clean operations' >&2; exit 1; }
+      pending=$(basename "$record" .json)
+    done
+    [ -n "$pending" ] || { echo 'missing pending clean operation' >&2; exit 1; }
+    mkdir "$GG_TEST_GIT_DIR/gg/operations/$pending.json.tmp"
+    echo 'simulated provider lookup failure' >&2
+    exit 1
+  fi
+  printf '{"number":%s,"title":"Entry","state":"MERGED","url":"https://github.com/test/repo/pull/%s","headRefName":null,"isDraft":false,"mergeable":"MERGEABLE","reviews":[]}\n' "$3" "$3"
+  exit 0
+fi
+echo "unexpected gh invocation: $*" >&2
+exit 1
+"#,
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(fake_bin.join("gh")).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(fake_bin.join("gh"), permissions).unwrap();
+    let mut path = std::ffi::OsString::from(fake_bin.as_os_str());
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap_or_default());
+    (temp, repo_path, remote_path, path, branches)
+}
+
+#[cfg(unix)]
+#[test]
+fn test_public_clean_with_repo_journals_pending_deletion_reconciliation() {
+    let (_temp, repo_path, remote_path, fake_path, dropped_branch) =
+        setup_published_drop_for_clean("public-pending-delete");
+
+    let output =
+        run_public_clean_for_stack_with_repo(&repo_path, "public-pending-delete", &fake_path);
+    assert!(
+        output.status.success(),
+        "public clean failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !run_git(
+            &remote_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{dropped_branch}")
+            ]
+        )
+        .0,
+        "pending deletion reconciliation must delete the remote branch"
+    );
+
+    let records = clean_operation_records(&repo_path)
+        .into_iter()
+        .filter(|record| record["remote_effects"][0]["branch"] == dropped_branch)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        records.len(),
+        1,
+        "the public entry point must durably journal the reconciled deletion: {records:?}"
+    );
+    assert_eq!(records[0]["status"], "committed");
+    assert_eq!(records[0]["touched_remote"], true);
+    assert_eq!(records[0]["remote_effects"][0]["kind"], "branch_deleted");
+    assert_eq!(records[0]["remote_effects"][0]["branch"], dropped_branch);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_public_clean_with_repo_journals_direct_verified_remote_deletion() {
+    let (_temp, repo_path, remote_path, fake_path, branches) =
+        setup_direct_remote_clean("public-direct-delete", &["c-1111111"]);
+
+    let output =
+        run_public_clean_for_stack_with_repo(&repo_path, "public-direct-delete", &fake_path);
+    assert!(
+        output.status.success(),
+        "public clean failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !run_git(
+            &remote_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{}", branches[0].0)
+            ]
+        )
+        .0,
+        "verified direct cleanup must delete the remote branch"
+    );
+
+    let records = clean_operation_records(&repo_path);
+    assert_eq!(
+        records.len(),
+        1,
+        "the public entry point must durably journal the direct deletion: {records:?}"
+    );
+    assert_eq!(records[0]["status"], "committed");
+    assert_eq!(records[0]["touched_remote"], true);
+    assert_eq!(records[0]["remote_effects"][0]["kind"], "branch_deleted");
+    assert_eq!(records[0]["remote_effects"][0]["branch"], branches[0].0);
+    assert_eq!(records[0]["remote_effects"][0]["prior_oid"], branches[0].1);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_public_clean_finalizes_non_uncertain_provider_deferrals() {
+    for late in [false, true] {
+        let stack_name = if late {
+            "public-late-deferral"
+        } else {
+            "public-early-deferral"
+        };
+        let (_temp, repo_path, remote_path, fake_path, dropped_branch) =
+            setup_published_drop_for_clean(stack_name);
+        let output = if late {
+            run_public_clean_for_stack_with_repo_with_env(
+                &repo_path,
+                stack_name,
+                &fake_path,
+                &[("GG_TEST_DEFER_ON_SECOND_BRANCH", dropped_branch.as_ref())],
+            )
+        } else {
+            let targets = repo_path.join("fake-bin/targets");
+            fs::create_dir_all(&targets).unwrap();
+            fs::write(targets.join(dropped_branch.replace('/', "_")), "104\n").unwrap();
+            run_public_clean_for_stack_with_repo(&repo_path, stack_name, &fake_path)
+        };
+        assert!(
+            !output.status.success(),
+            "provider deferral must keep cleanup incomplete: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            run_git(
+                &remote_path,
+                &[
+                    "show-ref",
+                    "--verify",
+                    &format!("refs/heads/{dropped_branch}")
+                ]
+            )
+            .0,
+            "a provider-vetoed deletion must not reach the remote"
+        );
+
+        let records = fs::read_dir(repo_path.join(".git/gg/operations"))
+            .unwrap()
+            .filter_map(|entry| {
+                let record: Value =
+                    serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap();
+                (record["kind"] == "clean").then_some(record)
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            !records.is_empty(),
+            "owned clean must create a journal record"
+        );
+        assert!(
+            records.iter().all(|record| record["status"] != "pending"),
+            "a known provider deferral must finalize every owned segment: {records:?}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_public_clean_classifies_local_cleanup_config_save_failure() {
+    let (_temp, repo_path, remote_path, path, branches) =
+        setup_direct_remote_clean("public-local-save-failure", &["c-1111111"]);
+    checked_git(
+        &remote_path,
+        &["update-ref", "-d", &format!("refs/heads/{}", branches[0].0)],
+    );
+    fs::create_dir(repo_path.join(".git/gg/config.tmp")).unwrap();
+
+    let output = run_public_clean_for_stack_with_repo(
+        &repo_path,
+        "public-local-save-failure",
+        path.as_os_str(),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "config durability failure must fail: {stdout}\n{stderr}"
+    );
+    assert!(
+        stderr.contains("DurabilityCheckpoint"),
+        "{stdout}\n{stderr}"
+    );
+    let records = fs::read_dir(repo_path.join(".git/gg/operations"))
+        .unwrap()
+        .filter_map(|entry| {
+            let record: Value =
+                serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap();
+            (record["kind"] == "clean").then_some(record)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0]["status"], "pending", "{records:?}");
+    assert_eq!(records[0]["touched_remote"], false, "{records:?}");
+    assert!(
+        records[0]["remote_effects"].as_array().unwrap().is_empty(),
+        "{records:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_clean_classifies_local_cleanup_config_save_failure() {
+    let (_temp, repo_path, remote_path, path, branches) =
+        setup_direct_remote_clean("cli-local-save-failure", &["c-1111111"]);
+    checked_git(
+        &remote_path,
+        &["update-ref", "-d", &format!("refs/heads/{}", branches[0].0)],
+    );
+    fs::create_dir(repo_path.join(".git/gg/config.tmp")).unwrap();
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["clean", "--all", "--json"],
+        &[("PATH", path.as_os_str())],
+    );
+    assert!(
+        !success,
+        "config durability failure must fail: {stdout}\n{stderr}"
+    );
+    let payload: Value = serde_json::from_str(&stdout).expect("JSON error payload");
+    assert!(
+        payload["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("Durability checkpoint error")),
+        "{payload}"
+    );
+}
+
+#[cfg(all(unix, debug_assertions))]
+#[test]
+fn test_clean_emits_no_worktree_success_before_config_durability() {
+    let (temp, repo_path, _remote_path, path, _branches) =
+        setup_direct_remote_clean("worktree-save-failure", &["c-1111111"]);
+    let worktree_path = temp.path().join("configured-worktree");
+    checked_git(
+        &repo_path,
+        &[
+            "worktree",
+            "add",
+            worktree_path.to_str().unwrap(),
+            "testuser/worktree-save-failure",
+        ],
+    );
+    let config_path = repo_path.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["stacks"]["worktree-save-failure"]["worktree_path"] =
+        Value::String(worktree_path.to_string_lossy().into_owned());
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    fs::create_dir(repo_path.join(".git/gg/config.tmp")).unwrap();
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["clean", "--all"],
+        &[
+            ("PATH", path.as_os_str()),
+            ("GG_TEST_CONFIRM_WORKTREE_REMOVAL", "1".as_ref()),
+        ],
+    );
+
+    assert!(
+        !success,
+        "config durability failure must fail: {stdout}\n{stderr}"
+    );
+    assert!(
+        !worktree_path.exists(),
+        "the fixture must reach the successful worktree removal"
+    );
+    assert!(
+        !stdout.contains("Removed worktree"),
+        "worktree success preceded config durability: {stdout}\n{stderr}"
+    );
+
+    fs::remove_dir(repo_path.join(".git/gg/config.tmp")).unwrap();
+    let (retry_success, retry_stdout, retry_stderr) = run_gg_with_env(
+        &repo_path,
+        &["clean", "--all"],
+        &[
+            ("PATH", path.as_os_str()),
+            ("GG_TEST_CONFIRM_WORKTREE_REMOVAL", "1".as_ref()),
+        ],
+    );
+    assert!(
+        retry_success,
+        "retry must reconcile the already removed worktree: {retry_stdout}\n{retry_stderr}"
+    );
+    assert!(
+        retry_stdout.contains(&format!(
+            "OK Removed worktree '{}'.",
+            worktree_path.display()
+        )),
+        "the durable retry must report the completed worktree cleanup: {retry_stdout}"
+    );
+    let saved: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert!(
+        saved["stacks"]["worktree-save-failure"].is_null(),
+        "retry must durably finish stack cleanup: {saved}"
+    );
+}
+
+#[cfg(all(unix, debug_assertions))]
+#[test]
+fn test_clean_emits_no_worktree_success_when_local_segment_finalization_fails() {
+    let (temp, repo_path, _remote_path, path, _branches) =
+        setup_direct_remote_clean("worktree-finalize-failure", &["c-1111111"]);
+    let worktree_path = temp.path().join("configured-worktree-finalize");
+    checked_git(
+        &repo_path,
+        &[
+            "worktree",
+            "add",
+            worktree_path.to_str().unwrap(),
+            "testuser/worktree-finalize-failure",
+        ],
+    );
+    let config_path = repo_path.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["stacks"]["worktree-finalize-failure"]["worktree_path"] =
+        Value::String(worktree_path.to_string_lossy().into_owned());
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    let real_git = install_clean_delete_git_shim(&repo_path);
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["clean", "--all"],
+        &[
+            ("PATH", path.as_os_str()),
+            ("GG_TEST_CONFIRM_WORKTREE_REMOVAL", "1".as_ref()),
+            ("GG_TEST_REAL_GIT", real_git.as_ref()),
+            ("GG_TEST_GIT_DIR", repo_path.join(".git").as_os_str()),
+            ("GG_TEST_DELETE_MODE", "block_worktree_finalize".as_ref()),
+        ],
+    );
+
+    assert!(
+        !success,
+        "local finalization failure must fail: {stdout}\n{stderr}"
+    );
+    assert!(
+        format!("{stdout}{stderr}").contains("finalize clean local mutation before success output"),
+        "{stdout}\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("Removed worktree"),
+        "worktree success preceded segment finalization: {stdout}\n{stderr}"
+    );
+    assert!(!worktree_path.exists());
+    let saved: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert!(
+        saved["stacks"]["worktree-finalize-failure"]["worktree_path"].is_null(),
+        "the worktree config save precedes segment finalization: {saved}"
+    );
+}
+
+#[cfg(all(unix, debug_assertions))]
+#[test]
+fn test_clean_emits_configured_worktree_success_after_durable_cleanup() {
+    let (temp, repo_path, _remote_path, path, _branches) =
+        setup_direct_remote_clean("worktree-save-success", &["c-1111111"]);
+    let worktree_path = temp.path().join("configured-worktree-success");
+    checked_git(
+        &repo_path,
+        &[
+            "worktree",
+            "add",
+            worktree_path.to_str().unwrap(),
+            "testuser/worktree-save-success",
+        ],
+    );
+    let config_path = repo_path.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["stacks"]["worktree-save-success"]["worktree_path"] =
+        Value::String(worktree_path.to_string_lossy().into_owned());
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["clean", "--all"],
+        &[
+            ("PATH", path.as_os_str()),
+            ("GG_TEST_CONFIRM_WORKTREE_REMOVAL", "1".as_ref()),
+        ],
+    );
+
+    assert!(success, "clean failed: {stdout}\n{stderr}");
+    let worktree_message = format!("OK Removed worktree '{}'.", worktree_path.display());
+    let worktree_position = stdout.find(&worktree_message).unwrap_or_else(|| {
+        panic!("the successful cleanup must retain its worktree message: {stdout}")
+    });
+    let stack_position = stdout
+        .find("OK Deleted stack 'worktree-save-success'")
+        .unwrap_or_else(|| {
+            panic!("the successful cleanup must retain its stack message: {stdout}")
+        });
+    assert!(
+        worktree_position < stack_position,
+        "worktree success must retain its position before stack success: {stdout}"
+    );
+    let saved: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert!(
+        saved["stacks"]["worktree-save-success"].is_null(),
+        "the success message requires the cleaned config on disk: {saved}"
+    );
+}
+
+#[cfg(all(unix, not(debug_assertions)))]
+#[test]
+fn test_release_clean_ignores_worktree_env_confirmation_override() {
+    let (temp, repo_path, _remote_path, path, _branches) =
+        setup_direct_remote_clean("release-worktree-confirm", &["c-1111111"]);
+    let worktree_path = temp.path().join("release-configured-worktree");
+    checked_git(
+        &repo_path,
+        &[
+            "worktree",
+            "add",
+            worktree_path.to_str().unwrap(),
+            "testuser/release-worktree-confirm",
+        ],
+    );
+    let config_path = repo_path.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["stacks"]["release-worktree-confirm"]["worktree_path"] =
+        Value::String(worktree_path.to_string_lossy().into_owned());
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["clean", "--all", "--json"],
+        &[
+            ("PATH", path.as_os_str()),
+            ("GG_TEST_CONFIRM_WORKTREE_REMOVAL", "1".as_ref()),
+        ],
+    );
+
+    assert!(success, "release clean failed: {stdout}\n{stderr}");
+    assert!(
+        worktree_path.exists(),
+        "a release build must not auto-confirm worktree removal from a test env var"
+    );
+    let payload: Value = serde_json::from_str(&stdout).expect("clean JSON payload");
+    assert!(payload["clean"]["cleaned"].as_array().unwrap().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_clean_persists_remote_uncertainty_before_first_direct_deletion() {
+    let (_temp, repo_path, remote_path, path, branches) =
+        setup_direct_remote_clean("durable-first-delete", &["c-1111111"]);
+    let real_git = install_clean_delete_git_shim(&repo_path);
+    let checkpoint_log = repo_path.join("fake-bin/clean-checkpoints");
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["clean", "--all"],
+        &[
+            ("PATH", path.as_os_str()),
+            ("GG_TEST_REAL_GIT", real_git.as_ref()),
+            ("GG_TEST_GIT_DIR", repo_path.join(".git").as_os_str()),
+            ("GG_TEST_CHECKPOINT_LOG", checkpoint_log.as_os_str()),
+        ],
+    );
+
+    assert!(success, "clean failed: {stdout}\n{stderr}");
+    assert_eq!(
+        fs::read_to_string(&checkpoint_log).unwrap().lines().count(),
+        1,
+        "the deletion shim must observe one durable checkpoint"
+    );
+    assert!(
+        !run_git(
+            &remote_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{}", branches[0].0)
+            ]
+        )
+        .0,
+        "the checkpointed deletion must reach the remote"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_clean_finalizes_each_direct_deletion_with_its_exact_effect() {
+    let (_temp, repo_path, _remote_path, path, branches) =
+        setup_direct_remote_clean("segmented-direct-deletes", &["c-1111111", "c-2222222"]);
+    let config_path = repo_path.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["stacks"]["segmented-direct-deletes"]["mrs"]
+        .as_object_mut()
+        .unwrap()
+        .remove("c-2222222");
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    let real_git = install_clean_delete_git_shim(&repo_path);
+    let checkpoint_log = repo_path.join("fake-bin/clean-checkpoints");
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["clean", "--all", "--json"],
+        &[
+            ("PATH", path.as_os_str()),
+            ("GG_TEST_REAL_GIT", real_git.as_ref()),
+            ("GG_TEST_GIT_DIR", repo_path.join(".git").as_os_str()),
+            ("GG_TEST_CHECKPOINT_LOG", checkpoint_log.as_os_str()),
+        ],
+    );
+    assert!(success, "clean failed: {stdout}\n{stderr}");
+
+    let mut deletion_records =
+        fs::read_dir(repo_path.join(".git/gg/operations"))
+            .unwrap()
+            .filter_map(|entry| {
+                let entry = entry.unwrap();
+                entry.file_type().unwrap().is_file().then(|| {
+                    serde_json::from_slice::<Value>(&fs::read(entry.path()).unwrap()).unwrap()
+                })
+            })
+            .filter(|record| {
+                record["kind"] == "clean"
+                    && record["remote_effects"]
+                        .as_array()
+                        .is_some_and(|effects| !effects.is_empty())
+            })
+            .collect::<Vec<_>>();
+    deletion_records.sort_by_key(|record| record["id"].as_str().unwrap().to_string());
+
+    assert_eq!(
+        deletion_records.len(),
+        2,
+        "each deletion needs its own operation record: {deletion_records:?}"
+    );
+    let mut actual_effects = deletion_records
+        .iter()
+        .map(|record| {
+            assert_eq!(record["status"], "committed", "{record}");
+            assert_eq!(record["touched_remote"], true, "{record}");
+            let effects = record["remote_effects"].as_array().unwrap();
+            assert_eq!(effects.len(), 1, "{record}");
+            (
+                effects[0]["remote"].as_str().unwrap().to_string(),
+                effects[0]["branch"].as_str().unwrap().to_string(),
+                effects[0]["prior_oid"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    actual_effects.sort();
+    let mut expected_effects = branches
+        .into_iter()
+        .map(|(branch, oid)| ("origin".to_string(), branch, oid))
+        .collect::<Vec<_>>();
+    expected_effects.sort();
+    assert_eq!(actual_effects, expected_effects);
+
+    let checkpoint_ids = fs::read_to_string(checkpoint_log)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(checkpoint_ids.len(), 2);
+    assert_ne!(
+        checkpoint_ids[0], checkpoint_ids[1],
+        "successive deletions must not share one pending segment"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_clean_surfaces_effect_recording_failure_after_successful_deletion() {
+    let (_temp, repo_path, remote_path, path, branches) =
+        setup_direct_remote_clean("effect-save-failure", &["c-1111111"]);
+    let real_git = install_clean_delete_git_shim(&repo_path);
+    let checkpoint_log = repo_path.join("fake-bin/clean-checkpoints");
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["clean", "--all", "--json"],
+        &[
+            ("PATH", path.as_os_str()),
+            ("GG_TEST_REAL_GIT", real_git.as_ref()),
+            ("GG_TEST_GIT_DIR", repo_path.join(".git").as_os_str()),
+            ("GG_TEST_CHECKPOINT_LOG", checkpoint_log.as_os_str()),
+            ("GG_TEST_DELETE_MODE", "block_effect_save".as_ref()),
+        ],
+    );
+    assert!(
+        !success,
+        "effect persistence failure must fail: {stdout}\n{stderr}"
+    );
+    let diagnostic = format!("{stdout}{stderr}");
+    assert!(
+        diagnostic.contains("failed to durably record exact remote deletion effect"),
+        "the known effect failure must be explicit: {diagnostic}"
+    );
+    assert!(
+        !run_git(
+            &remote_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{}", branches[0].0)
+            ]
+        )
+        .0,
+        "the fake remote must delete the branch before blocking effect persistence"
+    );
+    assert!(
+        run_git(
+            &repo_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{}", branches[0].0)
+            ]
+        )
+        .0,
+        "the local branch must remain as recovery evidence"
+    );
+
+    let operation_id = fs::read_to_string(repo_path.join("fake-bin/blocked-operation-id"))
+        .unwrap()
+        .trim()
+        .to_string();
+    let record: Value = serde_json::from_slice(
+        &fs::read(
+            repo_path
+                .join(".git/gg/operations")
+                .join(format!("{operation_id}.json")),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["status"], "pending", "{record}");
+    assert_eq!(record["touched_remote"], true, "{record}");
+    assert!(record["remote_effects"].as_array().unwrap().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_clean_keeps_effect_segment_pending_when_intent_removal_save_fails() {
+    let (_temp, repo_path, remote_path, path, dropped_branch) =
+        setup_published_drop_for_clean("intent-removal-save-failure");
+    let real_git = install_clean_delete_git_shim(&repo_path);
+    let checkpoint_log = repo_path.join("fake-bin/clean-checkpoints");
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["clean", "--all", "--json"],
+        &[
+            ("PATH", path.as_os_str()),
+            ("GG_TEST_REAL_GIT", real_git.as_ref()),
+            ("GG_TEST_GIT_DIR", repo_path.join(".git").as_os_str()),
+            ("GG_TEST_CHECKPOINT_LOG", checkpoint_log.as_os_str()),
+            ("GG_TEST_DELETE_MODE", "break_config".as_ref()),
+        ],
+    );
+
+    assert!(
+        !success,
+        "intent-removal durability failure must fail: {stdout}\n{stderr}"
+    );
+    assert!(
+        format!("{stdout}{stderr}").contains("failed to persist completed remote deletion"),
+        "{stdout}\n{stderr}"
+    );
+    assert!(
+        !run_git(
+            &remote_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{dropped_branch}")
+            ]
+        )
+        .0,
+        "the remote deletion must have succeeded before the save failure"
+    );
+
+    let operation_id = fs::read_to_string(&checkpoint_log)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .to_string();
+    let record: Value = serde_json::from_slice(
+        &fs::read(
+            repo_path
+                .join(".git/gg/operations")
+                .join(format!("{operation_id}.json")),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["status"], "pending", "{record}");
+    assert_eq!(record["touched_remote"], true, "{record}");
+    assert_eq!(
+        record["remote_effects"].as_array().unwrap().len(),
+        1,
+        "the exact effect must remain durable: {record}"
+    );
+    let config: Value =
+        serde_json::from_slice(&fs::read(repo_path.join(".git/gg/config.json")).unwrap()).unwrap();
+    assert_eq!(
+        config["pending_remote_branch_deletions"][0]["state"], "deleting",
+        "the on-disk uncertain intent must remain truthful: {config}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_clean_direct_push_failure_is_uncertain_and_not_retried() {
+    let (_temp, repo_path, remote_path, path, branches) =
+        setup_direct_remote_clean("uncertain-direct-delete", &["c-1111111"]);
+    // Model a provider-verified squash merge: the review is merged, but the
+    // original entry commit remains in the local stack walk.
+    checked_git(&repo_path, &["reset", "--hard", "HEAD~1"]);
+    let real_git = install_clean_delete_git_shim(&repo_path);
+    let checkpoint_log = repo_path.join("fake-bin/clean-checkpoints");
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["clean", "--all", "--json"],
+        &[
+            ("PATH", path.as_os_str()),
+            ("GG_TEST_REAL_GIT", real_git.as_ref()),
+            ("GG_TEST_GIT_DIR", repo_path.join(".git").as_os_str()),
+            ("GG_TEST_CHECKPOINT_LOG", checkpoint_log.as_os_str()),
+            ("GG_TEST_DELETE_MODE", "delete_then_fail".as_ref()),
+        ],
+    );
+
+    assert!(!success, "ambiguous deletion must fail: {stdout}\n{stderr}");
+    assert!(
+        format!("{stdout}{stderr}").contains("Remote mutation outcome is uncertain"),
+        "the uncertain outcome must be explicit: {stdout}\n{stderr}"
+    );
+    assert_eq!(
+        fs::read_to_string(&checkpoint_log).unwrap().lines().count(),
+        1,
+        "the failed deletion must not be retried"
+    );
+    assert!(
+        !run_git(
+            &remote_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{}", branches[0].0)
+            ]
+        )
+        .0,
+        "the simulated lost response must happen after the remote branch is deleted"
+    );
+    assert!(
+        run_git(
+            &repo_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{}", branches[0].0)
+            ]
+        )
+        .0,
+        "local recovery evidence must remain"
+    );
+
+    let records = fs::read_dir(repo_path.join(".git/gg/operations"))
+        .unwrap()
+        .filter_map(|entry| {
+            let record: Value =
+                serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap();
+            (record["kind"] == "clean" && record["touched_remote"] == true).then_some(record)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0]["status"], "pending");
+    assert!(records[0]["remote_effects"].as_array().unwrap().is_empty());
+
+    // Another actor may restore the same ref while the first response remains
+    // unresolved. The durable Deleting marker must still forbid a retry.
+    checked_git(
+        &repo_path,
+        &[
+            "push",
+            "origin",
+            &format!("{}:{}", branches[0].0, branches[0].0),
+        ],
+    );
+
+    let (retry_success, retry_stdout, retry_stderr) = run_gg_with_env(
+        &repo_path,
+        &["clean", "--all", "--json"],
+        &[
+            ("PATH", path.as_os_str()),
+            ("GG_TEST_REAL_GIT", real_git.as_ref()),
+            ("GG_TEST_GIT_DIR", repo_path.join(".git").as_os_str()),
+            ("GG_TEST_CHECKPOINT_LOG", checkpoint_log.as_os_str()),
+            ("GG_TEST_DELETE_MODE", "delete_then_fail".as_ref()),
+        ],
+    );
+    assert!(
+        !retry_success,
+        "an unresolved deletion must block the next clean: {retry_stdout}\n{retry_stderr}"
+    );
+    assert!(
+        format!("{retry_stdout}{retry_stderr}").contains("uncertain prior outcome"),
+        "the retry must require reconciliation: {retry_stdout}\n{retry_stderr}"
+    );
+    assert_eq!(
+        fs::read_to_string(&checkpoint_log).unwrap().lines().count(),
+        1,
+        "the next invocation must not send another deletion request"
+    );
+    assert!(
+        run_git(
+            &repo_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{}", branches[0].0)
+            ]
+        )
+        .0,
+        "local recovery evidence must remain until the uncertainty is reconciled"
+    );
+    assert!(
+        run_git(
+            &remote_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{}", branches[0].0)
+            ]
+        )
+        .0,
+        "the restored remote branch must not be deleted by an automatic retry"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_clean_emits_no_human_or_json_success_before_finalization() {
+    for json in [false, true] {
+        let stack_name = if json {
+            "json-finalization-failure"
+        } else {
+            "human-finalization-failure"
+        };
+        let (_temp, repo_path, _remote_path, path, _branches) =
+            setup_direct_remote_clean(stack_name, &["c-1111111"]);
+        let args = if json {
+            vec!["clean", "--all", "--json"]
+        } else {
+            vec!["clean", "--all"]
+        };
+        let (success, stdout, stderr) = run_gg_with_env(
+            &repo_path,
+            &args,
+            &[
+                ("PATH", path.as_os_str()),
+                ("GG_TEST_GIT_DIR", repo_path.join(".git").as_os_str()),
+                ("GG_TEST_BLOCK_FINALIZATION_ON_VIEW", "1".as_ref()),
+            ],
+        );
+
+        assert!(
+            !success,
+            "finalization failure must fail: {stdout}\n{stderr}"
+        );
+        if json {
+            let payload: Value = serde_json::from_str(&stdout).expect("JSON error payload");
+            assert!(
+                payload.get("clean").is_none(),
+                "JSON success payload preceded finalization failure: {payload}"
+            );
+            assert!(
+                payload["error"]
+                    .as_str()
+                    .is_some_and(|error| error.contains("Is a directory")),
+                "JSON must report the finalization failure: {payload}"
+            );
+        } else {
+            assert!(
+                !stdout.contains("Deleted stack") && !stdout.contains("Cleaned 1 stack"),
+                "human success output preceded finalization failure: {stdout}\n{stderr}"
+            );
+            assert!(
+                stderr.contains("Is a directory"),
+                "human mode must report the finalization failure: {stdout}\n{stderr}"
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_clean_preserves_per_stack_human_output_order_after_finalization() {
+    let (_temp, repo_path, _remote_path, path, _branches) =
+        setup_direct_remote_clean("aa-cleaned-first", &["c-1111111"]);
+    let (success, stdout, stderr) = run_gg(&repo_path, &["co", "zz-unmerged-later"]);
+    assert!(success, "checkout failed: {stdout}\n{stderr}");
+    checked_git(
+        &repo_path,
+        &[
+            "commit",
+            "--allow-empty",
+            "-m",
+            "Unmerged\n\nGG-ID: c-9999999",
+        ],
+    );
+    checked_git(&repo_path, &["checkout", "main"]);
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["clean", "--all"],
+        &[("PATH", path.as_os_str())],
+    );
+    assert!(success, "clean failed: {stdout}\n{stderr}");
+    let deleted = stdout.find("Deleted stack 'aa-cleaned-first'").unwrap();
+    let skipped = stdout
+        .find("Stack 'zz-unmerged-later' has unmerged commits")
+        .unwrap();
+    assert!(
+        deleted < skipped,
+        "each finalized stack must be reported before later stack output: {stdout}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_empty_stack_emits_no_success_before_finalization() {
+    for json in [false, true] {
+        let (_temp, repo_path, _remote_path) = create_test_repo_with_remote();
+        fs::create_dir_all(repo_path.join(".git/gg")).unwrap();
+        fs::write(
+            repo_path.join(".git/gg/config.json"),
+            r#"{"defaults":{"branch_username":"testuser","base":"main","provider":"github"}}"#,
+        )
+        .unwrap();
+        let (success, stdout, stderr) = run_gg(&repo_path, &["co", "empty-land"]);
+        assert!(success, "checkout failed: {stdout}\n{stderr}");
+
+        let fake_bin = repo_path.join("fake-bin");
+        fs::create_dir_all(&fake_bin).unwrap();
+        let gh = fake_bin.join("gh");
+        fs::write(
+            &gh,
+            r#"#!/bin/sh
+set -eu
+if [ "$1" = "--version" ]; then
+  exit 0
+fi
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  pending=''
+  for record in "$GG_TEST_GIT_DIR/gg/operations/"*.json; do
+    [ -f "$record" ] || continue
+    grep -q '"kind": "land"' "$record" || continue
+    grep -q '"status": "pending"' "$record" || continue
+    [ -z "$pending" ] || { echo 'multiple pending land operations' >&2; exit 1; }
+    pending=$(basename "$record" .json)
+  done
+  [ -n "$pending" ] || { echo 'missing pending land operation' >&2; exit 1; }
+  mkdir "$GG_TEST_GIT_DIR/gg/operations/$pending.json.tmp"
+  exit 0
+fi
+echo "unexpected gh invocation: $*" >&2
+exit 1
+"#,
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&gh).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&gh, permissions).unwrap();
+        let mut path = std::ffi::OsString::from(fake_bin.as_os_str());
+        path.push(":");
+        path.push(std::env::var_os("PATH").unwrap_or_default());
+        let args = if json {
+            vec!["land", "--json"]
+        } else {
+            vec!["land"]
+        };
+        let (success, stdout, stderr) = run_gg_with_env(
+            &repo_path,
+            &args,
+            &[
+                ("PATH", path.as_os_str()),
+                ("GG_TEST_GIT_DIR", repo_path.join(".git").as_os_str()),
+            ],
+        );
+        assert!(
+            !success,
+            "finalization failure must fail empty land: {stdout}\n{stderr}"
+        );
+        assert!(
+            !stdout.contains("\"land\"") && !stdout.contains("Stack is empty"),
+            "success output preceded finalization: {stdout}\n{stderr}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_jsonl_emits_no_cleanup_summary_when_deletion_finalization_fails() {
+    let (_temp, repo_path, _remote_path, path, _branches) =
+        setup_direct_remote_clean("land-jsonl-finalize", &["c-1111111"]);
+    checked_git(&repo_path, &["checkout", "testuser/land-jsonl-finalize"]);
+    checked_git(&repo_path, &["branch", "-f", "main", "HEAD~1"]);
+    checked_git(&repo_path, &["push", "--force", "origin", "main"]);
+    let real_git = install_clean_delete_git_shim(&repo_path);
+    let checkpoint_log = repo_path.join("fake-bin/clean-checkpoints");
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["land", "--all", "--clean", "--jsonl"],
+        &[
+            ("PATH", path.as_os_str()),
+            ("GG_TEST_REAL_GIT", real_git.as_ref()),
+            ("GG_TEST_GIT_DIR", repo_path.join(".git").as_os_str()),
+            ("GG_TEST_CHECKPOINT_LOG", checkpoint_log.as_os_str()),
+            ("GG_TEST_DELETE_MODE", "break_snapshot".as_ref()),
+        ],
+    );
+    assert!(
+        !success,
+        "finalization failure must fail land: {stdout}\n{stderr}"
+    );
+    let events = stdout
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("valid JSONL event"))
+        .collect::<Vec<_>>();
+    assert!(
+        events.iter().all(|event| event["event"] != "summary"),
+        "cleanup summary preceded deletion finalization: {events:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(&checkpoint_log).unwrap().lines().count(),
+        1,
+        "the deletion request must reach its durable checkpoint: {stdout}\n{stderr}"
+    );
+    assert!(
+        events.iter().any(|event| {
+            event["event"] == "error"
+                && event["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("finalize land clean deletion segment"))
+        }),
+        "the exact deletion-finalization failure must be observable: {stdout}\n{stderr}"
+    );
+}
+
 #[test]
 fn test_clean_consumes_pending_drop_before_removing_local_stack() {
     let (temp, repo_path, remote_path, fake_path, dropped_branch) =
@@ -166,6 +1504,106 @@ fn test_clean_consumes_pending_drop_before_removing_local_stack() {
 }
 
 #[test]
+fn test_clean_surfaces_absent_pending_deletion_config_save_failure() {
+    let (_temp, repo_path, remote_path, fake_path, dropped_branch) =
+        setup_published_drop_for_clean("absent-pending-save-failure");
+    checked_git(
+        &remote_path,
+        &["update-ref", "-d", &format!("refs/heads/{dropped_branch}")],
+    );
+    fs::create_dir(repo_path.join(".git/gg/config.tmp")).unwrap();
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["clean", "--all", "--json"],
+        &[("PATH", fake_path.as_os_str())],
+    );
+
+    assert!(
+        !success,
+        "losing the durable intent update must fail: {stdout}\n{stderr}"
+    );
+    let payload: Value = serde_json::from_str(&stdout).expect("JSON error payload");
+    assert!(payload.get("clean").is_none(), "{payload}");
+    assert!(
+        payload["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("Durability checkpoint error")),
+        "{payload}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_clean_config_save_failure_does_not_finalize_incomplete_deletion() {
+    let (_temp, repo_path, _remote_path, fake_path, _dropped_branch) =
+        setup_published_drop_for_clean("combined-deletion-failure");
+    let real_git = install_clean_delete_git_shim(&repo_path);
+    let checkpoint_log = repo_path.join("fake-bin/clean-checkpoints");
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["clean", "--all", "--json"],
+        &[
+            ("PATH", fake_path.as_os_str()),
+            ("GG_TEST_REAL_GIT", real_git.as_ref()),
+            ("GG_TEST_GIT_DIR", repo_path.join(".git").as_os_str()),
+            ("GG_TEST_CHECKPOINT_LOG", checkpoint_log.as_os_str()),
+            ("GG_TEST_DELETE_MODE", "break_config_and_snapshot".as_ref()),
+        ],
+    );
+    assert!(
+        !success,
+        "config durability failure must fail: {stdout}\n{stderr}"
+    );
+    let diagnostic = format!("{stdout}{stderr}");
+    assert!(
+        diagnostic.contains("failed to persist completed remote deletion"),
+        "{diagnostic}"
+    );
+    assert!(
+        !diagnostic.contains("failed to finalize"),
+        "the incomplete deletion segment must remain pending: {diagnostic}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_clean_surfaces_obsolete_pending_deletion_config_save_failure() {
+    let (_temp, repo_path, _remote_path, path, branches) =
+        setup_direct_remote_clean("obsolete-pending-save-failure", &["c-1111111"]);
+    let config_path = repo_path.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["pending_remote_branch_deletions"] = serde_json::json!([{
+        "remote": "origin",
+        "branch": branches[0].0,
+        "expected_oid": branches[0].1,
+        "source_operation_id": "test-obsolete-intent",
+        "state": "pending"
+    }]);
+    checked_git(&repo_path, &["reset", "--hard", "HEAD~1"]);
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    fs::create_dir(repo_path.join(".git/gg/config.tmp")).unwrap();
+
+    let output = run_public_clean_for_stack_with_repo(
+        &repo_path,
+        "obsolete-pending-save-failure",
+        path.as_os_str(),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "losing obsolete-intent removal must fail: {stdout}\n{stderr}"
+    );
+    assert!(
+        stderr.contains("DurabilityCheckpoint"),
+        "{stdout}\n{stderr}"
+    );
+}
+
+#[test]
 fn test_clean_orphan_stack_keeps_dropped_branch_targeted_by_open_review() {
     let (_temp, repo_path, remote_path, fake_path, dropped_branch) =
         setup_published_drop_for_clean("clean-orphan-dependent");
@@ -217,6 +1655,78 @@ fn test_clean_orphan_stack_keeps_dropped_branch_targeted_by_open_review() {
     );
     assert!(success, "retry clean failed: {stdout}\n{stderr}");
     assert!(!remote_has_dropped(), "retry clean must prune the branch");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_clean_reopens_local_segment_after_late_remote_deletion_deferral() {
+    let (_temp, repo_path, _remote_path, fake_path, dropped_branch) =
+        setup_published_drop_for_clean("aa-late-deferral");
+    let later_stack = "zz-local-after-deferral";
+    let later_branch = format!("testuser/{later_stack}--c-9999999");
+    checked_git(&repo_path, &["branch", &later_branch]);
+
+    let config_path = repo_path.join(".git/gg/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["stacks"][later_stack] = serde_json::json!({
+        "base": "main",
+        "mrs": {"c-9999999": 999}
+    });
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["clean", "--all", "--json"],
+        &[
+            ("PATH", fake_path.as_os_str()),
+            ("GG_TEST_DEFER_ON_SECOND_BRANCH", dropped_branch.as_ref()),
+        ],
+    );
+    assert!(success, "clean failed: {stdout}\n{stderr}");
+    assert!(
+        !run_git(
+            &repo_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{later_branch}")
+            ]
+        )
+        .0,
+        "the later orphan branch must be cleaned"
+    );
+
+    let later_ref = format!("refs/heads/{later_branch}");
+    let records = fs::read_dir(repo_path.join(".git/gg/operations"))
+        .unwrap()
+        .filter_map(|entry| {
+            let record: Value =
+                serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap();
+            (record["kind"] == "clean" && record["status"] == "committed").then_some(record)
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        records.iter().all(|record| {
+            record["touched_remote"] != true
+                || !record["remote_effects"].as_array().unwrap().is_empty()
+        }),
+        "a provider-vetoed request must not be recorded as uncertain: {records:?}"
+    );
+    assert!(
+        records.iter().any(|record| {
+            record["refs_before"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|reference| reference["name"] == later_ref)
+                && record["refs_after"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|reference| reference["name"] != later_ref)
+        }),
+        "the later local cleanup needs its own durable segment: {records:?}"
+    );
 }
 
 #[cfg(unix)]
@@ -289,6 +1799,153 @@ exit 0
     );
     let refusal: Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(refusal["refusal"]["reason"], "remote");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_clean_finalizes_each_remote_deletion_in_its_own_segment() {
+    let (_temp, repo_path, _remote_path, path, branches) =
+        setup_direct_remote_clean("land-segmented-deletes", &["c-1111111", "c-2222222"]);
+    checked_git(&repo_path, &["checkout", "testuser/land-segmented-deletes"]);
+    checked_git(&repo_path, &["branch", "-f", "main", "HEAD~2"]);
+    checked_git(&repo_path, &["push", "--force", "origin", "main"]);
+    let real_git = install_clean_delete_git_shim(&repo_path);
+    let checkpoint_log = repo_path.join("fake-bin/clean-checkpoints");
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["land", "--all", "--clean", "--jsonl"],
+        &[
+            ("PATH", path.as_os_str()),
+            ("GG_TEST_REAL_GIT", real_git.as_ref()),
+            ("GG_TEST_GIT_DIR", repo_path.join(".git").as_os_str()),
+            ("GG_TEST_CHECKPOINT_LOG", checkpoint_log.as_os_str()),
+        ],
+    );
+    assert!(success, "land failed: {stdout}\n{stderr}");
+
+    let mut records = fs::read_dir(repo_path.join(".git/gg/operations"))
+        .unwrap()
+        .filter_map(|entry| {
+            let record: Value =
+                serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap();
+            (record["kind"] == "land"
+                && record["remote_effects"]
+                    .as_array()
+                    .is_some_and(|effects| !effects.is_empty()))
+            .then_some(record)
+        })
+        .collect::<Vec<_>>();
+    records.sort_by_key(|record| record["id"].as_str().unwrap().to_string());
+    assert_eq!(records.len(), 2, "{records:?}");
+    let mut actual = records
+        .iter()
+        .map(|record| {
+            assert_eq!(record["status"], "committed");
+            assert_eq!(record["touched_remote"], true);
+            let effects = record["remote_effects"].as_array().unwrap();
+            assert_eq!(effects.len(), 1, "{record}");
+            (
+                effects[0]["branch"].as_str().unwrap().to_string(),
+                effects[0]["prior_oid"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    actual.sort();
+    let mut expected = branches;
+    expected.sort();
+    assert_eq!(actual, expected);
+
+    let checkpoint_ids = fs::read_to_string(checkpoint_log)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(checkpoint_ids.len(), 2);
+    assert_ne!(checkpoint_ids[0], checkpoint_ids[1]);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_clean_surfaces_effect_save_failure_with_truthful_recovery_record() {
+    let (_temp, repo_path, remote_path, path, branches) =
+        setup_direct_remote_clean("land-effect-save-failure", &["c-1111111"]);
+    checked_git(
+        &repo_path,
+        &["checkout", "testuser/land-effect-save-failure"],
+    );
+    checked_git(&repo_path, &["branch", "-f", "main", "HEAD~1"]);
+    checked_git(&repo_path, &["push", "--force", "origin", "main"]);
+    let real_git = install_clean_delete_git_shim(&repo_path);
+    let checkpoint_log = repo_path.join("fake-bin/clean-checkpoints");
+
+    let (success, stdout, stderr) = run_gg_with_env(
+        &repo_path,
+        &["land", "--all", "--clean", "--jsonl"],
+        &[
+            ("PATH", path.as_os_str()),
+            ("GG_TEST_REAL_GIT", real_git.as_ref()),
+            ("GG_TEST_GIT_DIR", repo_path.join(".git").as_os_str()),
+            ("GG_TEST_CHECKPOINT_LOG", checkpoint_log.as_os_str()),
+            ("GG_TEST_DELETE_MODE", "block_effect_save".as_ref()),
+        ],
+    );
+    assert!(
+        !success,
+        "effect save failure must fail land: {stdout}\n{stderr}"
+    );
+    assert!(
+        format!("{stdout}{stderr}").contains("Durability checkpoint error"),
+        "durability failure must be explicit: {stdout}\n{stderr}"
+    );
+    assert!(
+        !stdout.lines().any(|line| {
+            serde_json::from_str::<Value>(line).is_ok_and(|event| event["event"] == "summary")
+        }),
+        "land must not emit a success summary after effect-save failure: {stdout}"
+    );
+    assert!(
+        !run_git(
+            &remote_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{}", branches[0].0)
+            ]
+        )
+        .0,
+        "the remote branch must be deleted before the injected save failure"
+    );
+    assert!(
+        run_git(
+            &repo_path,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{}", branches[0].0)
+            ]
+        )
+        .0,
+        "the local branch must remain as recovery evidence"
+    );
+
+    let operation_id = fs::read_to_string(repo_path.join("fake-bin/blocked-operation-id"))
+        .unwrap()
+        .trim()
+        .to_string();
+    let record: Value = serde_json::from_slice(
+        &fs::read(
+            repo_path
+                .join(".git/gg/operations")
+                .join(format!("{operation_id}.json")),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["kind"], "land");
+    assert_eq!(record["status"], "pending");
+    assert_eq!(record["touched_remote"], true);
+    assert!(record["remote_effects"].as_array().unwrap().is_empty());
 }
 
 #[test]
@@ -1173,7 +2830,14 @@ exit 1
         .as_array()
         .unwrap()
         .iter()
-        .find(|record| record["kind"] == "land")
+        .find(|record| {
+            record["kind"] == "land"
+                && record["remote_effects"].as_array().is_some_and(|effects| {
+                    effects
+                        .iter()
+                        .any(|effect| effect["kind"] == "branch_deleted")
+                })
+        })
         .expect("Land operation must be recorded");
     assert_eq!(land_record["touched_remote"], true);
     assert_eq!(land_record["is_undoable"], false);
@@ -1301,7 +2965,14 @@ exit 1
         .as_array()
         .unwrap()
         .iter()
-        .find(|record| record["kind"] == "clean")
+        .find(|record| {
+            record["kind"] == "clean"
+                && record["remote_effects"].as_array().is_some_and(|effects| {
+                    effects
+                        .iter()
+                        .any(|effect| effect["kind"] == "branch_deleted")
+                })
+        })
         .expect("clean operation must be listed");
     assert_eq!(clean_record["touched_remote"], true);
     assert_eq!(clean_record["is_undoable"], false);

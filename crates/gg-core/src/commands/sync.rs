@@ -42,6 +42,7 @@ struct SyncSegment {
     guard: Option<OperationGuard>,
     remote_effects: Vec<RemoteEffect>,
     touched_remote: bool,
+    remote_deletion_incomplete: bool,
 }
 
 impl SyncSegment {
@@ -50,6 +51,7 @@ impl SyncSegment {
             guard: None,
             remote_effects: Vec::new(),
             touched_remote: false,
+            remote_deletion_incomplete: false,
         }
     }
 
@@ -93,6 +95,11 @@ impl SyncSegment {
     }
 
     fn finish(&mut self, repo: &Repository, config: &Config) -> Result<()> {
+        if self.remote_deletion_incomplete {
+            return Err(GgError::DurabilityCheckpoint(
+                "cannot finalize sync with an incomplete remote deletion segment".to_string(),
+            ));
+        }
         let Some(guard) = self.guard.take() else {
             return Ok(());
         };
@@ -105,12 +112,37 @@ impl SyncSegment {
         )
     }
 
+    fn finish_remote_deletion(&mut self, repo: &Repository, config: &Config) -> Result<()> {
+        self.remote_deletion_incomplete = false;
+        let result = self.finish(repo, config);
+        if result.is_err() {
+            self.remote_deletion_incomplete = true;
+        }
+        result
+    }
+
     fn finish_result<T>(
         &mut self,
         repo: &Repository,
         config: &Config,
         result: Result<T>,
     ) -> Result<T> {
+        if self.remote_deletion_incomplete {
+            return match result {
+                Err(error @ GgError::RemoteMutationUncertain(_)) => {
+                    match self.finish_remote_deletion(repo, config) {
+                        Ok(()) => Err(error),
+                        Err(finalize_error) => Err(GgError::Other(format!(
+                            "{error}; additionally failed to finalize sync operation: {finalize_error}"
+                        ))),
+                    }
+                }
+                Err(error) => Err(error),
+                Ok(_) => Err(GgError::DurabilityCheckpoint(
+                    "cannot complete sync with an incomplete remote deletion segment".to_string(),
+                )),
+            };
+        }
         match (result, self.finish(repo, config)) {
             (Ok(value), Ok(())) => Ok(value),
             (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
@@ -627,10 +659,19 @@ fn expected_current_target_branches(
     targets
 }
 
+#[derive(Debug)]
 pub(crate) enum RemoteDeletionCheckpoint {
-    BeforeAttempt,
+    BeforeAttempt {
+        remote: String,
+        branch: String,
+        prior_oid: String,
+    },
     Effect(RemoteEffect),
+    DeferredBeforeMutation,
     Complete,
+    /// Clean-only boundary for a durable local mutation that has its own
+    /// success output and must be finalized before that output.
+    LocalMutationComplete,
 }
 
 fn remote_deletion_deferral(provider: Option<&Provider>, branch: &str) -> Option<String> {
@@ -693,14 +734,19 @@ pub(crate) fn reconcile_pending_remote_entry_deletions(
     stack_name: &str,
     current_branches: &HashSet<String>,
     config: &mut Config,
-    mut checkpoint: impl FnMut(RemoteDeletionCheckpoint, &Config) -> Result<()>,
+    mut checkpoint: impl FnMut(RemoteDeletionCheckpoint, &mut Config) -> Result<()>,
 ) -> Result<Vec<String>> {
     let before = config.pending_remote_branch_deletions.len();
-    config
-        .pending_remote_branch_deletions
-        .retain(|intent| !current_branches.contains(&intent.branch));
+    config.pending_remote_branch_deletions.retain(|intent| {
+        intent.state != RemoteBranchDeletionState::Pending
+            || !current_branches.contains(&intent.branch)
+    });
     if config.pending_remote_branch_deletions.len() != before {
-        config.save(repo.commondir())?;
+        config.save(repo.commondir()).map_err(|error| {
+            GgError::DurabilityCheckpoint(format!(
+                "failed to persist removal of obsolete remote deletion intents: {error}"
+            ))
+        })?;
     }
 
     let intents = config
@@ -721,8 +767,8 @@ pub(crate) fn reconcile_pending_remote_entry_deletions(
     let mut deferred = Vec::new();
     for intent in intents {
         if intent.state == RemoteBranchDeletionState::Deleting {
-            return Err(GgError::Other(format!(
-                "Remote deletion of '{}' has an uncertain prior outcome. Inspect '{}' and remove or reset its pending_remote_branch_deletions entry before retrying.",
+            return Err(GgError::RemoteMutationUncertain(format!(
+                "remote deletion of '{}' has an uncertain prior outcome. Inspect '{}' and remove or reset its pending_remote_branch_deletions entry before retrying.",
                 intent.branch,
                 Config::config_path(repo.commondir()).display()
             )));
@@ -734,7 +780,12 @@ pub(crate) fn reconcile_pending_remote_entry_deletions(
             config.pending_remote_branch_deletions.retain(|candidate| {
                 candidate.remote != intent.remote || candidate.branch != intent.branch
             });
-            config.save(repo.commondir())?;
+            config.save(repo.commondir()).map_err(|error| {
+                GgError::DurabilityCheckpoint(format!(
+                    "failed to persist reconciliation of already-absent remote branch '{}': {error}",
+                    intent.branch
+                ))
+            })?;
             continue;
         };
         if live_oid != expected_oid {
@@ -751,27 +802,50 @@ pub(crate) fn reconcile_pending_remote_entry_deletions(
             continue;
         }
 
-        set_remote_deletion_state(repo, config, &intent, RemoteBranchDeletionState::Deleting)?;
+        set_remote_deletion_state(repo, config, &intent, RemoteBranchDeletionState::Deleting)
+            .map_err(|error| {
+                GgError::DurabilityCheckpoint(format!(
+                    "failed to persist remote deletion uncertainty for '{}': {error}",
+                    intent.branch
+                ))
+            })?;
 
         // A crash or cancellation from this point can make the deletion outcome
         // unknowable. Persist operation-level uncertainty before the final
         // provider authorization as well as before the push itself.
-        checkpoint(RemoteDeletionCheckpoint::BeforeAttempt, config)?;
+        checkpoint(
+            RemoteDeletionCheckpoint::BeforeAttempt {
+                remote: intent.remote.clone(),
+                branch: intent.branch.clone(),
+                prior_oid: intent.expected_oid.clone(),
+            },
+            config,
+        )?;
 
         // The earlier lookup classified the branch before the durable deletion
         // checkpoint and is stale. Re-authorize after that checkpoint so a
         // newly dependent review can still stop the exact-OID deletion push.
         if let Some(message) = remote_deletion_deferral(provider, &intent.branch) {
-            set_remote_deletion_state(repo, config, &intent, RemoteBranchDeletionState::Pending)?;
+            set_remote_deletion_state(repo, config, &intent, RemoteBranchDeletionState::Pending)
+                .map_err(|error| {
+                    GgError::DurabilityCheckpoint(format!(
+                        "failed to restore deferred remote deletion state for '{}': {error}",
+                        intent.branch
+                    ))
+                })?;
             deferred.push(message);
-            checkpoint(RemoteDeletionCheckpoint::Complete, config)?;
+            checkpoint(RemoteDeletionCheckpoint::DeferredBeforeMutation, config)?;
             continue;
         }
 
         // Any unsuccessful push is ambiguous: the server may have applied the
         // deletion before the response was lost. Persist remote uncertainty
         // before attempting it, and leave the intent in `deleting` on error.
-        git::delete_remote_branch_at_oid(repo, &intent.remote, &intent.branch, expected_oid)?;
+        if let Err(error) =
+            git::delete_remote_branch_at_oid(repo, &intent.remote, &intent.branch, expected_oid)
+        {
+            return Err(GgError::RemoteMutationUncertain(error.to_string()));
+        }
 
         checkpoint(
             RemoteDeletionCheckpoint::Effect(RemoteEffect::BranchDeleted {
@@ -784,17 +858,13 @@ pub(crate) fn reconcile_pending_remote_entry_deletions(
         config.pending_remote_branch_deletions.retain(|candidate| {
             candidate.remote != intent.remote || candidate.branch != intent.branch
         });
-        let save_result = config.save(repo.commondir());
-        let completion_result = checkpoint(RemoteDeletionCheckpoint::Complete, config);
-        match (save_result, completion_result) {
-            (Ok(()), Ok(())) => {}
-            (Err(error), Ok(())) | (Ok(()), Err(error)) => return Err(error),
-            (Err(error), Err(finalize_error)) => {
-                return Err(GgError::Other(format!(
-                    "{error}; additionally failed to finalize sync operation: {finalize_error}"
-                )))
-            }
-        }
+        config.save(repo.commondir()).map_err(|error| {
+            GgError::DurabilityCheckpoint(format!(
+                "failed to persist completed remote deletion for '{}': {error}",
+                intent.branch
+            ))
+        })?;
+        checkpoint(RemoteDeletionCheckpoint::Complete, config)?;
     }
 
     Ok(deferred)
@@ -846,11 +916,27 @@ fn prune_stale_remote_entry_branches_for_operation(
         |checkpoint, current_config| {
             segment.ensure_started(repo, current_config)?;
             match checkpoint {
-                RemoteDeletionCheckpoint::BeforeAttempt => segment.mark_remote_before_attempt(),
+                RemoteDeletionCheckpoint::BeforeAttempt { .. } => {
+                    segment.mark_remote_before_attempt()?;
+                    segment.remote_deletion_incomplete = true;
+                    Ok(())
+                }
                 RemoteDeletionCheckpoint::Effect(effect) => {
                     segment.record_remote_effect_durable(effect)
                 }
-                RemoteDeletionCheckpoint::Complete => segment.finish(repo, current_config),
+                RemoteDeletionCheckpoint::DeferredBeforeMutation => {
+                    if segment.remote_effects.is_empty() {
+                        segment.guard_mut().clear_touched_remote_before_attempt()?;
+                        segment.touched_remote = false;
+                    }
+                    segment.finish_remote_deletion(repo, current_config)
+                }
+                RemoteDeletionCheckpoint::Complete => {
+                    segment.finish_remote_deletion(repo, current_config)
+                }
+                RemoteDeletionCheckpoint::LocalMutationComplete => Err(GgError::Other(
+                    "sync received a clean-only local mutation checkpoint".to_string(),
+                )),
             }
         },
     )?;

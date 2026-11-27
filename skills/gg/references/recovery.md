@@ -41,7 +41,24 @@
    second create. If any prerequisite cannot be read or saved, it retains the
    intent and stops. Do not silently undo or rerun any other remote mutation.
    Retry only after provider state, remote refs, local config, and the operation
-   records have been reconciled.
+   records have been reconciled. For failed `gg clean` or land auto-clean, inspect
+   every deletion segment separately. Any durably saved `branch_deleted` effect
+   is exact evidence of the deleted branch and prior OID regardless of whether
+   its operation record is pending, committed, or interrupted. A touched segment
+   without that effect means the request outcome is uncertain. The 100-record
+   operation history cap counts every record except exact branch-deletion
+   evidence and source operation IDs referenced by live remote-deletion intents.
+   Pending records and source operation IDs referenced by live review-creation
+   intents remain protected from deletion, but share the cap and can reduce the
+   retained ordinary history. An interrupted Drop or Clean source is protected
+   outside the cap only while its remote-deletion intent remains. Direct Clean
+   deletions also
+   retain a `pending_remote_branch_deletions` entry in `deleting` state with the
+   exact branch and expected OID. Clean refuses another attempt while that entry
+   remains, and a later Drop or resumed Drop cannot replace it with fresh
+   `pending` authority. Do not repeat the deletion until `git ls-remote --heads
+   origin <branch>`, the config entry, and the saved operation record have been
+   reconciled.
 4. While a rebase is paused, confirm its exact `operation_id` with `gg ls --json`,
    then run the argument-free `gg continue` or `gg abort`; those commands recover
    the operation named by the saved marker. Pass an operation ID explicitly only

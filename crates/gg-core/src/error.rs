@@ -91,6 +91,12 @@ pub enum GgError {
     #[error("No operation record found with id '{0}'")]
     OperationRecordNotFound(String),
 
+    #[error("Durability checkpoint error: {0}")]
+    DurabilityCheckpoint(String),
+
+    #[error("Remote mutation outcome is uncertain: {0}")]
+    RemoteMutationUncertain(String),
+
     #[error("Operation '{id}' is not undoable: {reason}")]
     OperationNotUndoable { id: String, reason: String },
 

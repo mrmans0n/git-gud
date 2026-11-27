@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -332,6 +332,11 @@ pub struct Config {
     pub pending_remote_branch_deletions: Vec<PendingRemoteBranchDeletion>,
 }
 
+pub(crate) enum ConfigSaveOutcome {
+    Durable,
+    ReplacedButDirectorySyncFailed(io::Error),
+}
+
 impl Config {
     /// Load config from the given git directory
     /// Uses file locking to prevent race conditions with concurrent operations
@@ -357,6 +362,25 @@ impl Config {
     /// Uses file locking, a synced temporary file, an atomic rename, and a
     /// directory sync on Unix so successful checkpoints survive a crash.
     pub fn save(&self, git_dir: &Path) -> Result<()> {
+        match self.save_with_outcome(git_dir)? {
+            ConfigSaveOutcome::Durable => Ok(()),
+            ConfigSaveOutcome::ReplacedButDirectorySyncFailed(error) => {
+                Err(GgError::DurabilityCheckpoint(format!(
+                    "config.json was replaced, but its directory could not be synced: {error}"
+                )))
+            }
+        }
+    }
+
+    pub(crate) fn save_with_outcome(&self, git_dir: &Path) -> Result<ConfigSaveOutcome> {
+        self.save_with_parent_sync(git_dir, |parent| File::open(parent)?.sync_all())
+    }
+
+    fn save_with_parent_sync(
+        &self,
+        git_dir: &Path,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<ConfigSaveOutcome> {
         let config_path = Self::config_path(git_dir);
 
         // Ensure the gg directory exists
@@ -378,14 +402,19 @@ impl Config {
 
         // Atomic rename (overwrites existing file).
         fs::rename(&temp_path, &config_path)?;
-        #[cfg(unix)]
-        if let Some(parent) = config_path.parent() {
-            File::open(parent)?.sync_all()?;
-        }
+
+        let outcome = if cfg!(unix) {
+            match config_path.parent().map(sync_parent).transpose() {
+                Ok(Some(())) | Ok(None) => ConfigSaveOutcome::Durable,
+                Err(error) => ConfigSaveOutcome::ReplacedButDirectorySyncFailed(error),
+            }
+        } else {
+            ConfigSaveOutcome::Durable
+        };
 
         // Lock automatically released when dropped
         drop(lock);
-        Ok(())
+        Ok(outcome)
     }
 
     /// Acquire a file lock on the config file
@@ -494,7 +523,11 @@ impl Config {
             .and_then(|stack| stack.review_creation_intents.get(entry_id))
     }
 
-    /// Persist a review-creation intent without changing memory on save failure.
+    /// Persist a review-creation intent transactionally.
+    ///
+    /// Errors before atomic replacement leave memory unchanged. If replacement
+    /// succeeds but directory sync fails, memory adopts the on-disk replacement
+    /// and the method returns a durability-checkpoint error.
     pub fn set_review_creation_intent(
         &mut self,
         git_dir: &Path,
@@ -510,7 +543,11 @@ impl Config {
         })
     }
 
-    /// Remove one review-creation intent without changing memory on save failure.
+    /// Remove one review-creation intent transactionally.
+    ///
+    /// Errors before atomic replacement leave memory unchanged. If replacement
+    /// succeeds but directory sync fails, memory adopts the on-disk replacement
+    /// and the method returns a durability-checkpoint error.
     pub fn remove_review_creation_intent(
         &mut self,
         git_dir: &Path,
@@ -544,11 +581,31 @@ impl Config {
         git_dir: &Path,
         update: impl FnOnce(&mut Config),
     ) -> Result<()> {
+        self.update_transactionally_with_parent_sync(git_dir, update, |parent| {
+            File::open(parent)?.sync_all()
+        })
+    }
+
+    fn update_transactionally_with_parent_sync(
+        &mut self,
+        git_dir: &Path,
+        update: impl FnOnce(&mut Config),
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<()> {
         let mut prospective = self.clone();
         update(&mut prospective);
-        prospective.save(git_dir)?;
-        *self = prospective;
-        Ok(())
+        match prospective.save_with_parent_sync(git_dir, sync_parent)? {
+            ConfigSaveOutcome::Durable => {
+                *self = prospective;
+                Ok(())
+            }
+            ConfigSaveOutcome::ReplacedButDirectorySyncFailed(error) => {
+                *self = prospective;
+                Err(GgError::DurabilityCheckpoint(format!(
+                    "config.json was replaced, but its directory could not be synced: {error}"
+                )))
+            }
+        }
     }
 
     /// Get all stacks
@@ -798,6 +855,29 @@ mod tests {
         }]);
 
         assert_eq!(config.pending_remote_branch_deletions, vec![uncertain]);
+    }
+
+    #[test]
+    fn post_rename_sync_failure_keeps_memory_aligned_with_replaced_config() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_dir = temp_dir.path();
+
+        let mut config = Config::default();
+        config.defaults.base = Some("old-base".to_string());
+        config.save(git_dir).unwrap();
+
+        let result = config.update_transactionally_with_parent_sync(
+            git_dir,
+            |prospective| prospective.defaults.base = Some("new-base".to_string()),
+            |_| Err(std::io::Error::other("forced directory sync failure")),
+        );
+
+        assert!(matches!(result, Err(GgError::DurabilityCheckpoint(_))));
+        assert_eq!(config.defaults.base.as_deref(), Some("new-base"));
+        assert_eq!(
+            Config::load(git_dir).unwrap().defaults.base.as_deref(),
+            Some("new-base")
+        );
     }
 
     #[test]

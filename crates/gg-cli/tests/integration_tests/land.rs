@@ -1631,6 +1631,40 @@ fn test_land_all_rechecks_approval_before_each_remote_mutation() {
 
 #[cfg(unix)]
 #[test]
+fn test_land_gitlab_auto_merge_all_wait_rechecks_approval_before_queue() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fs::write(&fixture.approval_regress, "1\n").expect("regress second approval lookup");
+
+    let output = fixture
+        .land_command(&[
+            "land",
+            "--all",
+            "--wait",
+            "--auto-merge",
+            "--jsonl",
+            "--no-clean",
+        ])
+        .output()
+        .expect("run land");
+    let stdout = String::from_utf8(output.stdout).expect("land stdout");
+    let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
+        .expect("parse summary event");
+
+    assert!(!fixture.queued.exists(), "queued marker exists: {summary}");
+    assert_eq!(summary["error"], "MR !41 is not approved", "{summary}");
+    assert_eq!(
+        fs::read_to_string(format!("{}.calls", fixture.approval_regress.display()))
+            .expect("approval call count")
+            .trim(),
+        "2"
+    );
+    assert!(land_operation_records(&fixture.repo_path).is_empty());
+    assert!(gitlab_landing_attempt(&fixture.repo_path).is_none());
+}
+
+#[cfg(unix)]
+#[test]
 fn test_land_jsonl_draft_entry_emits_error_status() {
     let fixture = WaitingLandFixture::new();
     fixture.mark_draft();

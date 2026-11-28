@@ -22,6 +22,9 @@
   Direct merge paths also perform this final check in `--wait` mode for single,
   `--all`, and `--until` scopes. Only GitHub's explicit effective admin setting
   bypasses it; GitLab still requires current approval.
+  GitLab auto-merge queueing also rechecks approval in `--wait` mode immediately
+  before creating recovery state or sending its queue PUT; GitLab admin settings
+  never bypass this gate.
   Non-wait GitLab `--no-squash` also rechecks approval immediately before
   changing the MR squash setting; this does not replace the later final queue
   or merge authorization, or any other preflight gate.

@@ -56,7 +56,13 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
       exit 0
       ;;
     *"--jq .reviewDecision"*)
-      if [ -f "$GG_FAKE_UNAPPROVED" ]; then echo REVIEW_REQUIRED; else echo APPROVED; fi
+      approval=APPROVED
+      if [ -f "$GG_FAKE_APPROVAL_REGRESS" ]; then
+        calls=0; [ ! -f "$GG_FAKE_APPROVAL_REGRESS.calls" ] || calls=$(cat "$GG_FAKE_APPROVAL_REGRESS.calls")
+        calls=$((calls + 1)); echo "$calls" > "$GG_FAKE_APPROVAL_REGRESS.calls"
+        [ "$calls" -eq 1 ] || approval=REVIEW_REQUIRED
+      elif [ -f "$GG_FAKE_UNAPPROVED" ]; then approval=REVIEW_REQUIRED; fi
+      echo "$approval"
       exit 0
       ;;
   esac
@@ -316,7 +322,13 @@ if [ "$1" = "api" ]; then
   fi
   case "$2" in
     projects/:id/merge_requests/*/approvals)
-      if [ -f "$GG_FAKE_UNAPPROVED" ]; then echo '{"approved":false}'; else echo '{"approved":true}'; fi
+      approved=true
+      if [ -f "$GG_FAKE_APPROVAL_REGRESS" ]; then
+        calls=0; [ ! -f "$GG_FAKE_APPROVAL_REGRESS.calls" ] || calls=$(cat "$GG_FAKE_APPROVAL_REGRESS.calls")
+        calls=$((calls + 1)); echo "$calls" > "$GG_FAKE_APPROVAL_REGRESS.calls"
+        [ "$calls" -eq 1 ] || approved=false
+      elif [ -f "$GG_FAKE_UNAPPROVED" ]; then approved=false; fi
+      printf '{"approved":%s}\n' "$approved"
       exit 0
       ;;
     projects/:id/merge_trains/merge_requests/*)
@@ -526,6 +538,7 @@ struct WaitingLandFixture {
     closed: std::path::PathBuf,
     draft: std::path::PathBuf,
     unapproved: std::path::PathBuf,
+    approval_regress: std::path::PathBuf,
     ci_calls: std::path::PathBuf,
     regress: std::path::PathBuf,
     merge_trains: std::path::PathBuf,
@@ -599,6 +612,7 @@ impl WaitingLandFixture {
         let closed = repo_path.join("fake-closed");
         let draft = repo_path.join("fake-draft");
         let unapproved = repo_path.join("fake-unapproved");
+        let approval_regress = repo_path.join("fake-approval-regress");
         let ci_calls = repo_path.join("fake-ci-calls");
         let regress = repo_path.join("fake-regress");
         let merge_trains = repo_path.join("fake-merge-trains");
@@ -633,6 +647,7 @@ impl WaitingLandFixture {
             closed,
             draft,
             unapproved,
+            approval_regress,
             ci_calls,
             regress,
             merge_trains,
@@ -673,6 +688,7 @@ impl WaitingLandFixture {
             .env("GG_FAKE_CLOSED", &self.closed)
             .env("GG_FAKE_DRAFT", &self.draft)
             .env("GG_FAKE_UNAPPROVED", &self.unapproved)
+            .env("GG_FAKE_APPROVAL_REGRESS", &self.approval_regress)
             .env("GG_FAKE_CI_CALLS", &self.ci_calls)
             .env("GG_FAKE_REGRESS", &self.regress)
             .env("GG_FAKE_MERGE_TRAINS", &self.merge_trains)
@@ -1518,6 +1534,73 @@ fn test_land_jsonl_unapproved_entry_emits_error_outcome() {
         .as_str()
         .is_some_and(|error| error.contains("is not approved")));
     assert_eq!(events.last().unwrap()["status"], "error");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_all_rechecks_approval_before_each_remote_mutation() {
+    for (variant, merge_train, extra_args) in [
+        ("merge train", true, &[][..]),
+        ("auto-merge", false, &["--auto-merge"][..]),
+        ("direct merge with GitLab admin", false, &["--admin"][..]),
+    ] {
+        let fixture = WaitingLandFixture::new();
+        fixture.use_gitlab_provider();
+        if merge_train {
+            fixture.enable_gitlab_merge_trains();
+        }
+        fs::write(&fixture.approval_regress, "enabled\n").expect("regress approval");
+
+        let mut args = vec!["land", "--all", "--jsonl", "--no-clean"];
+        args.extend_from_slice(extra_args);
+        let output = fixture
+            .start_land_with_args(&args)
+            .wait_with_output()
+            .expect("wait for land");
+        let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+        let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+        assert!(output.status.success(), "{variant}: stderr={stderr}");
+        assert!(
+            stderr.trim().is_empty(),
+            "{variant}: unexpected stderr: {stderr}"
+        );
+
+        let events = stdout
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("parse JSONL event"))
+            .collect::<Vec<_>>();
+        let entry = events
+            .iter()
+            .find(|event| event["event"] == "entry")
+            .expect("approval regression should emit an entry");
+        assert_eq!(entry["action"], "error", "{variant}: {stdout}");
+        assert!(
+            entry["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("is not approved")),
+            "{variant}: {stdout}"
+        );
+        assert_eq!(events.last().unwrap()["status"], "error", "{variant}");
+        assert_eq!(
+            fs::read_to_string(format!("{}.calls", fixture.approval_regress.display()))
+                .expect("approval call count")
+                .trim(),
+            "2",
+            "{variant}: initial refresh and final seam must each check approval"
+        );
+        assert!(
+            !fixture.queued.exists(),
+            "{variant}: remote queue was mutated"
+        );
+        assert!(
+            !fixture.merged.exists(),
+            "{variant}: remote merge was mutated"
+        );
+        assert!(
+            land_operation_records(&fixture.repo_path).is_empty(),
+            "{variant}: approval refusal must not touch a Land operation"
+        );
+    }
 }
 
 #[cfg(unix)]

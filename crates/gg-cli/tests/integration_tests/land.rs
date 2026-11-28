@@ -159,11 +159,27 @@ fi
 
 if [ "$1" = "api" ] && [ "$2" = "--method" ] && [ "$3" = "PUT" ] && [ "$4" = "projects/:id/merge_requests/41" ]; then
   printf '%s\n' "$*" > "$GG_FAKE_SQUASH_DISABLED"
+  printf 'attempt\n' >> "$GG_FAKE_SQUASH_DISABLED.attempts"
+  squash_mode=ok
+  if [ -f "$GG_FAKE_LANDING_REQUEST_FAIL" ]; then squash_mode=$(cat "$GG_FAKE_LANDING_REQUEST_FAIL"); fi
+  if [ "$squash_mode" = "squash-unapplied-response-fail" ]; then
+    echo "connection lost before squash update" >&2
+    exit 1
+  fi
+  if [ "$squash_mode" = "squash-block-success" ]; then
+    touch "$GG_FAKE_LANDING_REQUEST_FAIL.started"
+    wait_count=0
+    while [ ! -f "$GG_FAKE_LANDING_REQUEST_FAIL.release" ] && [ "$wait_count" -lt 400 ]; do
+      sleep 0.05; wait_count=$((wait_count + 1))
+    done
+    [ -f "$GG_FAKE_LANDING_REQUEST_FAIL.release" ] || exit 1
+  fi
   rm -f "$GG_FAKE_MR_SQUASH"
-  if [ -f "$GG_FAKE_LANDING_REQUEST_FAIL" ] && [ "$(cat "$GG_FAKE_LANDING_REQUEST_FAIL")" = "squash-response-fail" ]; then
+  if [ "$squash_mode" = "squash-response-fail" ]; then
     echo "connection lost after squash update" >&2
     exit 1
   fi
+  printf '{"iid":41,"source_project_id":7,"target_project_id":7,"state":"opened","source_branch":"testuser/land-wait--c-1111111","target_branch":"main","sha":"1111111111111111111111111111111111111111","draft":false,"work_in_progress":false,"squash":false}\n'
   exit 0
 fi
 
@@ -383,7 +399,7 @@ if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
     reads=0
     if [ -f "$GG_FAKE_RETARGET_PIPELINE.reads" ]; then reads=$(cat "$GG_FAKE_RETARGET_PIPELINE.reads"); fi
     reads=$((reads + 1)); echo "$reads" > "$GG_FAKE_RETARGET_PIPELINE.reads"
-    if [ "$retarget_pipeline" = "identity-change" ] && grep -q 'gitlab:pipeline_start' .git/gg/operations/*.json 2>/dev/null; then
+    if [ "$retarget_pipeline" = "identity-change" ] && grep -Eq 'gitlab:(pipeline_start|squash_disable)' .git/gg/operations/*.json 2>/dev/null; then
       sha=3333333333333333333333333333333333333333
     fi
     if [ "$retarget_pipeline" = "recovery-order" ]; then
@@ -393,6 +409,9 @@ if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
         fi
       done
     fi
+  fi
+  if [ "$raw_api" = "true" ] && [ "$num" = "41" ] && [ "$retarget_pipeline" = "identity-change" ] && grep -q 'gitlab:squash_disable' .git/gg/operations/*.json 2>/dev/null; then
+    sha=3333333333333333333333333333333333333333
   fi
   if [ "$num" = "42" ] && [ "$retarget_pipeline" = "preceding-finalize-fail" ]; then
     for record in .git/gg/operations/*.json; do
@@ -778,11 +797,6 @@ impl WaitingLandFixture {
             "block-second-fail\n"
         };
         fs::write(&self.landing_request_fail, mode).expect("block second fake landing request");
-    }
-
-    fn block_then_fail_gitlab_landing_request(&self) {
-        fs::write(&self.landing_request_fail, "block-fail\n")
-            .expect("block then fail fake landing request");
     }
 
     fn block_then_succeed_gitlab_landing_request(&self) {
@@ -3215,8 +3229,218 @@ fn test_land_gitlab_no_squash_turns_off_mr_squash_before_queueing() {
 
     fs::write(&fixture.merged, "merged\n").expect("complete fake merge train");
     let output = land.wait_with_output().expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
     let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
     assert!(output.status.success(), "land failed: {stderr}");
+    assert!(stdout.contains("squash_checkpoint") && stdout.contains("\"squash\":false"));
+    let records = land_operation_records(&fixture.repo_path);
+    let squash_record = records
+        .iter()
+        .find(|record| record["args"].to_string().contains("gitlab:squash_disable"))
+        .expect("dedicated squash operation");
+    assert_eq!(squash_record["status"], "committed");
+    assert_eq!(
+        squash_record["remote_effects"],
+        serde_json::json!([{"kind":"pr_squash_updated","number":41,"squash":false}])
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_ambiguous_applied_squash_reconciles_without_second_put() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fs::write(&fixture.squash_option, "default_on").expect("set fake squash option");
+    fs::write(&fixture.mr_squash, "on\n").expect("enable fake MR squash");
+    fixture.fail_gitlab_squash_update_response();
+    let args = ["land", "--json", "--no-clean", "--no-squash"];
+
+    assert!(!fixture
+        .land_command(&args)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    fs::remove_file(&fixture.landing_request_fail).unwrap();
+    let restart = fixture.land_command(&args).output().unwrap();
+    assert!(
+        restart.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restart.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(format!("{}.attempts", fixture.squash_disabled.display()))
+            .unwrap()
+            .lines()
+            .count(),
+        1,
+        "ambiguous PUT was retried"
+    );
+    assert!(gitlab_landing_attempt(&fixture.repo_path).is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_squash_veto_noop_and_unapplied_ambiguity_fail_closed() {
+    let args = ["land", "--json", "--no-clean", "--no-squash"];
+
+    let noop = WaitingLandFixture::new();
+    noop.use_gitlab_provider();
+    fs::write(&noop.squash_option, "default_on").expect("set squash policy");
+    let output = noop.land_command(&args).output().unwrap();
+    assert!(output.status.success());
+    assert!(!noop.squash_disabled.exists());
+    assert!(
+        !serde_json::to_string(&land_operation_records(&noop.repo_path))
+            .unwrap()
+            .contains("gitlab:squash_disable")
+    );
+
+    let veto = WaitingLandFixture::new();
+    veto.use_gitlab_provider();
+    fs::write(&veto.squash_option, "default_on").expect("set squash policy");
+    fs::write(&veto.mr_squash, "on\n").expect("enable squash");
+    fs::write(
+        veto.repo_path.join("fake-retarget-pipeline"),
+        "identity-change",
+    )
+    .expect("change fresh identity");
+    let output = veto.land_command(&args).output().unwrap();
+    assert!(!output.status.success());
+    assert!(
+        !veto.squash_disabled.exists(),
+        "identity veto must precede PUT"
+    );
+    let veto_record = land_operation_records(&veto.repo_path)
+        .pop()
+        .expect("no-effect segment");
+    assert_eq!(veto_record["status"], "committed");
+    assert_eq!(veto_record["touched_remote"], false);
+
+    let ambiguous = WaitingLandFixture::new();
+    ambiguous.use_gitlab_provider();
+    fs::write(&ambiguous.squash_option, "default_on").expect("set squash policy");
+    fs::write(&ambiguous.mr_squash, "on\n").expect("enable squash");
+    fs::write(
+        &ambiguous.landing_request_fail,
+        "squash-unapplied-response-fail\n",
+    )
+    .expect("fail unapplied PUT");
+    for _ in 0..2 {
+        assert!(!ambiguous
+            .land_command(&args)
+            .output()
+            .unwrap()
+            .status
+            .success());
+    }
+    let attempts = fs::read_to_string(format!("{}.attempts", ambiguous.squash_disabled.display()))
+        .expect("read attempts");
+    assert_eq!(attempts.lines().count(), 1, "ambiguous PUT was retried");
+    assert!(
+        !ambiguous.merged.exists(),
+        "downstream merge must remain blocked"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_squash_recovery_rejects_corrupt_foreign_terminal_and_handoff() {
+    for case in ["schema", "effect", "terminal", "draft", "pipeline"] {
+        let fixture = WaitingLandFixture::new();
+        fixture.use_gitlab_provider();
+        fs::write(&fixture.squash_option, "default_on").unwrap();
+        fs::write(&fixture.mr_squash, "on\n").unwrap();
+        fs::write(
+            &fixture.landing_request_fail,
+            "squash-unapplied-response-fail\n",
+        )
+        .unwrap();
+        let args = ["land", "--json", "--no-clean", "--no-squash"];
+        let _ = fixture.land_command(&args).output().unwrap();
+        let config_path = fixture.repo_path.join(".git/gg/config.json");
+        let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+        let attempt = &mut config["stacks"]["land-wait"]["gitlab_landing_attempt"];
+        let operation_id = attempt["operation_id"].as_str().unwrap().to_string();
+        let record_path = fixture
+            .repo_path
+            .join(format!(".git/gg/operations/{operation_id}.json"));
+        let mut record: Value = serde_json::from_slice(&fs::read(&record_path).unwrap()).unwrap();
+        let retarget = fixture.repo_path.join("fake-retarget-pipeline");
+        match case {
+            "schema" => record["schema_version"] = Value::from(999),
+            "effect" => {
+                record["remote_effects"] = serde_json::json!([{
+                    "kind":"pr_squash_updated", "number":999, "squash":false
+                }])
+            }
+            "terminal" => fs::write(&retarget, "closed-on-landing").unwrap(),
+            "draft" => fs::write(&retarget, "draft-on-landing").unwrap(),
+            "pipeline" => attempt["action"] = Value::from("pipeline_start"),
+            _ => unreachable!(),
+        }
+        fs::write(&record_path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+        fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+        let restart = fixture.land_command(&args).output().unwrap();
+        assert!(
+            !restart.status.success(),
+            "{case} recovery must fail closed"
+        );
+        let attempts =
+            fs::read_to_string(format!("{}.attempts", fixture.squash_disabled.display())).unwrap();
+        assert_eq!(attempts.lines().count(), 1, "{case} retried the PUT");
+        assert!(!fixture.merged.exists(), "{case} allowed downstream merge");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_untouched_squash_recovery_does_not_undo_intervening_ref_move() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fs::write(&fixture.squash_option, "default_on").unwrap();
+    fs::write(&fixture.mr_squash, "on\n").unwrap();
+    fs::write(
+        &fixture.landing_request_fail,
+        "squash-unapplied-response-fail",
+    )
+    .unwrap();
+    let args = ["land", "--json", "--no-clean", "--no-squash"];
+    let _ = fixture.land_command(&args).output().unwrap();
+
+    let config: Value =
+        serde_json::from_slice(&fs::read(fixture.repo_path.join(".git/gg/config.json")).unwrap())
+            .unwrap();
+    let id = config["stacks"]["land-wait"]["gitlab_landing_attempt"]["operation_id"]
+        .as_str()
+        .unwrap();
+    let record_path = fixture
+        .repo_path
+        .join(format!(".git/gg/operations/{id}.json"));
+    let mut record: Value = serde_json::from_slice(&fs::read(&record_path).unwrap()).unwrap();
+    record["touched_remote"] = false.into();
+    fs::write(&record_path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+
+    let moved =
+        fs::read_to_string(fixture.repo_path.join(".git/refs/heads/testuser/land-wait")).unwrap();
+    run_git(
+        &fixture.repo_path,
+        &["update-ref", "refs/heads/testuser/other", moved.trim()],
+    );
+    fixture.fail_gitlab_merge_settings_lookup();
+    let _ = fixture.land_command(&args).output().unwrap();
+    assert!(gitlab_landing_attempt(&fixture.repo_path).is_none());
+    let committed: Value = serde_json::from_slice(&fs::read(&record_path).unwrap()).unwrap();
+    assert_eq!(committed["refs_after"], committed["refs_before"]);
+
+    let undo = fixture
+        .land_command(&["undo", id, "--json"])
+        .output()
+        .unwrap();
+    assert!(!undo.status.success(), "moved ref must make undo refuse");
+    let after =
+        fs::read_to_string(fixture.repo_path.join(".git/refs/heads/testuser/other")).unwrap();
+    assert_eq!(after.trim(), moved.trim());
 }
 
 #[cfg(unix)]
@@ -3246,13 +3470,13 @@ fn test_land_gitlab_no_squash_records_remote_touch_when_landing_request_fails() 
         .is_some_and(|error| error.contains("landing request failed")));
 
     let records = land_operation_records(&fixture.repo_path);
-    assert_eq!(records.len(), 1, "expected one land operation: {records:?}");
-    assert_eq!(records[0]["status"], "committed");
-    assert_eq!(
-        records[0]["touched_remote"], true,
-        "the successful squash-setting mutation must make the operation non-undoable: {}",
-        records[0]
-    );
+    assert_eq!(records.len(), 2, "expected squash and queue segments");
+    assert!(records
+        .iter()
+        .all(|record| record["status"] == "committed" && record["touched_remote"] == true));
+    assert!(records
+        .iter()
+        .any(|record| record["remote_effects"][0]["kind"] == "pr_squash_updated"));
 }
 
 #[cfg(unix)]
@@ -3320,53 +3544,65 @@ fn test_land_direct_merge_failure_records_remote_uncertainty_before_attempt() {
 
 #[cfg(unix)]
 #[test]
-fn test_land_jsonl_disconnect_after_squash_update_finalizes_failed_landing() {
+fn test_land_jsonl_disconnect_after_squash_checkpoint_recovers_before_merge() {
     let fixture = WaitingLandFixture::new();
     fixture.use_gitlab_provider();
-    fixture.enable_gitlab_merge_trains();
     fs::write(&fixture.squash_option, "default_on").expect("set fake squash option");
     fs::write(&fixture.mr_squash, "on\n").expect("enable fake MR squash");
-    fixture.block_then_fail_gitlab_landing_request();
+    fs::write(&fixture.landing_request_fail, "squash-block-success\n")
+        .expect("block squash response");
 
-    let mut land = fixture.start_land_with_args(&["land", "--jsonl", "--no-clean", "--no-squash"]);
+    let args = ["land", "--jsonl", "--no-clean", "--no-squash"];
+    let mut land = fixture.start_land_with_args(&args);
     let stdout = land.stdout.take().expect("capture land stdout");
     let mut reader = BufReader::new(stdout);
     let mut line = String::new();
-    reader.read_line(&mut line).expect("read land start event");
-    let start: Value = serde_json::from_str(line.trim()).expect("parse land start event");
-    assert_eq!(start["event"], "start");
-
+    reader.read_line(&mut line).expect("read start event");
+    assert_eq!(
+        serde_json::from_str::<Value>(line.trim()).unwrap()["event"],
+        "start"
+    );
     let deadline = Instant::now() + Duration::from_secs(60);
-    let request_started = fixture.landing_request_started();
-    while !request_started.exists() && Instant::now() < deadline {
+    let started = fixture.landing_request_started();
+    while !started.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(25));
     }
-    assert!(
-        request_started.exists(),
-        "final landing request never started after disabling squash"
-    );
-    assert!(
-        fixture.squash_disabled.exists(),
-        "land never disabled squash before the final request"
-    );
+    assert!(started.exists(), "squash PUT never started");
     drop(reader);
     fixture.release_landing_request();
 
-    let output = land.wait_with_output().expect("wait for land");
-    assert!(
-        !output.status.success(),
-        "land must fail when the landing request and JSONL consumer fail"
-    );
-    assert!(!fixture.queued.exists(), "final landing request must fail");
-
-    let records = land_operation_records(&fixture.repo_path);
-    assert_eq!(records.len(), 1, "expected one land operation: {records:?}");
+    let output = land.wait_with_output().expect("wait for broken pipe");
+    assert!(!output.status.success(), "broken checkpoint pipe must fail");
+    assert!(!fixture.merged.exists(), "merge must wait for checkpoint");
+    let config_path = fixture.repo_path.join(".git/gg/config.json");
+    let config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
     assert_eq!(
-        records[0]["status"], "committed",
-        "the operation must be finalized before streaming the landing error: {}",
-        records[0]
+        config["stacks"]["land-wait"]["gitlab_landing_attempt"]["state"],
+        "completed"
     );
-    assert_eq!(records[0]["touched_remote"], true);
+
+    fs::remove_file(&fixture.landing_request_fail).expect("unblock restart");
+    let restart = fixture
+        .start_land_with_args(&args)
+        .wait_with_output()
+        .unwrap();
+    let stdout = String::from_utf8(restart.stdout).unwrap();
+    assert!(restart.status.success(), "{stdout}");
+    let events: Vec<Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let event_pos = |name| {
+        events
+            .iter()
+            .position(|event| event["event"] == name)
+            .unwrap()
+    };
+    assert!(event_pos("start") < event_pos("squash_checkpoint"));
+    let config: Value = serde_json::from_slice(&fs::read(config_path).unwrap()).unwrap();
+    assert!(config["stacks"]["land-wait"]
+        .get("gitlab_landing_attempt")
+        .is_none());
 }
 
 #[cfg(unix)]
@@ -3441,7 +3677,7 @@ fn test_land_jsonl_disconnect_after_successful_direct_merge_finalizes_operation(
 
 #[cfg(unix)]
 #[test]
-fn test_land_gitlab_no_squash_records_remote_uncertainty_before_update() {
+fn test_land_gitlab_no_squash_preserves_remote_uncertainty_before_update() {
     let fixture = WaitingLandFixture::new();
     fixture.use_gitlab_provider();
     fs::write(&fixture.squash_option, "default_on").expect("set fake squash option");
@@ -3465,16 +3701,13 @@ fn test_land_gitlab_no_squash_records_remote_uncertainty_before_update() {
 
     let records = land_operation_records(&fixture.repo_path);
     assert_eq!(records.len(), 1, "expected one land operation: {records:?}");
-    assert_eq!(
-        records[0]["status"], "committed",
-        "an ambiguous squash-update outcome must be finalized: {}",
-        records[0]
-    );
+    assert_eq!(records[0]["status"], "pending");
     assert_eq!(
         records[0]["touched_remote"], true,
         "an ambiguous squash-update outcome must be persisted before the request: {}",
         records[0]
     );
+    assert!(records[0]["remote_effects"].as_array().unwrap().is_empty());
 }
 
 #[cfg(unix)]

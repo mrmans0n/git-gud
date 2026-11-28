@@ -1754,11 +1754,46 @@ pub fn run(opts: LandOptions) -> Result<()> {
             .get_stack(&stack.name)
             .and_then(|saved| saved.gitlab_landing_attempt.as_ref())
             .map(|attempt| attempt.action.as_str());
-        if action == Some("squash_disable") {
-            recovered_squash_checkpoint = recover_squash_attempt(&repo, &mut config, &stack.name)?;
-            None
-        } else {
-            recover_pipeline_attempt(&repo, &mut config, &stack.name)?
+        match action {
+            Some("squash_disable") => {
+                recovered_squash_checkpoint =
+                    recover_squash_attempt(&repo, &mut config, &stack.name)?;
+                None
+            }
+            Some("queue_auto_merge") => {
+                let attempt = config
+                    .get_stack(&stack.name)
+                    .and_then(|saved| saved.gitlab_landing_attempt.as_ref())
+                    .expect("matched queue attempt");
+                let inconsistent_evidence = || {
+                    GgError::Other(format!(
+                        "Inconsistent queue_auto_merge recovery evidence for operation {}",
+                        attempt.operation_id
+                    ))
+                };
+                let record = OperationStore::new(&git::gg_dir(&repo))
+                    .load(&attempt.operation_id)
+                    .map_err(|_| inconsistent_evidence())?;
+                if record.id != attempt.operation_id
+                    || record.schema_version != crate::operations::SCHEMA_VERSION
+                    || record.kind != OperationKind::Land
+                    || !matches!(
+                        record.status,
+                        OperationStatus::Pending
+                            | OperationStatus::Interrupted
+                            | OperationStatus::Committed
+                    )
+                    || !record.touched_remote
+                    || !record.remote_effects.is_empty()
+                {
+                    return Err(inconsistent_evidence());
+                }
+                return Err(GgError::RemoteMutationUncertain(format!(
+                    "auto-merge queue for MR !{} is unresolved; operation {} will not be retried automatically",
+                    attempt.mr_number, attempt.operation_id
+                )));
+            }
+            _ => recover_pipeline_attempt(&repo, &mut config, &stack.name)?,
         }
     } else {
         None
@@ -2733,13 +2768,38 @@ pub fn run(opts: LandOptions) -> Result<()> {
                     crate::glab::validate_mr_before_landing(pr_num, &stack.base)?;
                 }
                 ensure_land_segment(&repo, &config, &args, &mut guard)?;
+                let operation_id = guard
+                    .as_ref()
+                    .expect("auto-merge Land operation")
+                    .id()
+                    .to_string();
+                config.set_gitlab_landing_attempt(
+                    git_dir,
+                    &stack.name,
+                    GitLabLandingAttempt {
+                        mr_number: pr_num,
+                        action: "queue_auto_merge".to_string(),
+                        operation_id,
+                        state: GitLabLandingAttemptState::Attempted,
+                        target_project_id: None,
+                        source_project_id: None,
+                        source_branch: None,
+                        source_oid: None,
+                        target_branch: Some(stack.base.clone()),
+                        pipeline_id: None,
+                    },
+                )?;
                 mark_land_remote_attempt(&mut guard, &mut touched_remote)?;
                 provider.auto_merge_pr_when_pipeline_succeeds(pr_num, squash, false)
             })();
             match auto_merge_result {
-                Ok(AutoMergeResult::Queued) => {
+                Ok(result @ (AutoMergeResult::Queued | AutoMergeResult::AlreadyQueued)) => {
                     // The durable pre-attempt barrier already recorded that
                     // queueing may have touched the remote.
+                    let action = match result {
+                        AutoMergeResult::Queued => "queued",
+                        AutoMergeResult::AlreadyQueued => "already_queued",
+                    };
                     config.save(git_dir)?;
                     finish_land_segment(
                         &repo,
@@ -2748,6 +2808,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         &mut remote_effects,
                         &mut touched_remote,
                     )?;
+                    config.clear_gitlab_landing_attempt(git_dir, &stack.name)?;
                     record_landed_entry(
                         &mut landed_entries,
                         &mut streamer,
@@ -2757,30 +2818,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                             title: entry.title.clone(),
                             gg_id: gg_id.clone(),
                             pr_number: pr_num,
-                            action: "queued".to_string(),
-                            error: None,
-                        },
-                    );
-                }
-                Ok(AutoMergeResult::AlreadyQueued) => {
-                    config.save(git_dir)?;
-                    finish_land_segment(
-                        &repo,
-                        &config,
-                        &mut guard,
-                        &mut remote_effects,
-                        &mut touched_remote,
-                    )?;
-                    record_landed_entry(
-                        &mut landed_entries,
-                        &mut streamer,
-                        LandedEntryJson {
-                            position: entry.position,
-                            sha: entry.short_sha.clone(),
-                            title: entry.title.clone(),
-                            gg_id: gg_id.clone(),
-                            pr_number: pr_num,
-                            action: "already_queued".to_string(),
+                            action: action.to_string(),
                             error: None,
                         },
                     );

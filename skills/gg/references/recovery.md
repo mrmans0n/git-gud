@@ -76,6 +76,13 @@
    `Completed` is recovered from the exact record without a provider lookup. In JSONL mode, `squash_checkpoint` means the completed attempt, exact `pr_squash_updated` effect, and finalization are durable. A broken pipe keeps `Completed` and blocks every later mutation until restart emits the checkpoint.
    Treat a GitLab `queue_auto_merge` attempt the same way: restart reports its exact Land operation ID and stops without another PUT. Reconcile the MR in GitLab before changing the saved attempt.
    An initial merge-train `queue_merge_train` attempt is stored separately from any completed pipeline handoff. Preserve both records, inspect the MR in GitLab manually, and do not retry the POST automatically.
+   A pushed-head merge-train `requeue_merge_train` attempt is also a separate
+   Land operation. Its marker must reference that exact operation, MR, stack,
+   and target branch. An ambiguous provider response or failed post-POST
+   checkpoint retains the marker even when GitLab may have accepted the
+   request. Preserve it, inspect the MR and operation ID manually, and do not
+   retry the POST automatically. A later `gg land` refuses this unresolved
+   evidence before contacting GitLab.
 4. While a rebase is paused, confirm its exact `operation_id` with `gg ls --json`,
    then run the argument-free `gg continue` or `gg abort`; those commands recover
    the operation named by the saved marker. Pass an operation ID explicitly only

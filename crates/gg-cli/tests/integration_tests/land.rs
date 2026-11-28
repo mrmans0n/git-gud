@@ -326,7 +326,7 @@ if [ "$1" = "api" ]; then
       if [ -f "$GG_FAKE_APPROVAL_REGRESS" ]; then
         calls=0; [ ! -f "$GG_FAKE_APPROVAL_REGRESS.calls" ] || calls=$(cat "$GG_FAKE_APPROVAL_REGRESS.calls")
         calls=$((calls + 1)); echo "$calls" > "$GG_FAKE_APPROVAL_REGRESS.calls"
-        [ "$calls" -eq 1 ] || approved=false
+        [ "$calls" -le "$(cat "$GG_FAKE_APPROVAL_REGRESS")" ] || approved=false
       elif [ -f "$GG_FAKE_UNAPPROVED" ]; then approved=false; fi
       printf '{"approved":%s}\n' "$approved"
       exit 0
@@ -1549,7 +1549,7 @@ fn test_land_all_rechecks_approval_before_each_remote_mutation() {
         if merge_train {
             fixture.enable_gitlab_merge_trains();
         }
-        fs::write(&fixture.approval_regress, "enabled\n").expect("regress approval");
+        fs::write(&fixture.approval_regress, "1\n").expect("regress approval");
 
         let mut args = vec!["land", "--all", "--jsonl", "--no-clean"];
         args.extend_from_slice(extra_args);
@@ -3400,6 +3400,44 @@ fn test_land_gitlab_no_squash_turns_off_mr_squash_before_queueing() {
         squash_record["remote_effects"],
         serde_json::json!([{"kind":"pr_squash_updated","number":41,"squash":false}])
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_no_squash_rechecks_approval_before_put() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fs::write(&fixture.squash_option, "default_on").expect("set fake squash option");
+    fs::write(&fixture.mr_squash, "on\n").expect("enable fake MR squash");
+    fs::write(&fixture.approval_regress, "2\n").expect("regress third approval lookup");
+
+    let output = fixture
+        .land_command(&["land", "--json", "--no-clean", "--no-squash"])
+        .output()
+        .expect("run land");
+    let result: Value = serde_json::from_slice(&output.stdout).expect("parse land JSON");
+
+    assert!(!output.status.success());
+    assert!(result["land"]["error"]
+        .as_str()
+        .or_else(|| result["error"].as_str())
+        .is_some_and(|error| error.contains("MR !41 is not approved")));
+    assert_eq!(
+        fs::read_to_string(format!("{}.calls", fixture.approval_regress.display()))
+            .expect("approval call count")
+            .trim(),
+        "3"
+    );
+    assert!(
+        !fixture.squash_disabled.exists(),
+        "squash PUT marker exists"
+    );
+    assert!(
+        !std::path::PathBuf::from(format!("{}.attempts", fixture.squash_disabled.display()))
+            .exists()
+    );
+    assert!(land_operation_records(&fixture.repo_path).is_empty());
+    assert!(gitlab_landing_attempt(&fixture.repo_path).is_none());
 }
 
 #[cfg(unix)]

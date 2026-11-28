@@ -2674,9 +2674,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 } else if provider == Provider::GitLab {
                     crate::glab::validate_mr_before_landing(pr_num, &stack.base)?;
                 }
-                if !wait {
-                    require_fresh_approval(&provider, pr_num, admin)?;
-                }
+                require_fresh_approval(&provider, pr_num, admin)?;
                 finish_land_segment(
                     &repo,
                     &config,

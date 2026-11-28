@@ -35,6 +35,11 @@ GitLab auto-merge queueing also refreshes approval in wait mode, immediately
 before creating recovery state and asking GitLab to merge when the pipeline
 succeeds. GitLab admin settings do not bypass this check.
 
+The initial GitLab merge-train queue request has the same boundary: after the
+final MR or pipeline-handoff validation, gg refreshes approval before creating
+queue recovery state or sending the queue request. A refusal leaves neither an
+initial queue attempt nor landing recovery state, even with `--admin`.
+
 For non-wait GitLab landing with `--no-squash`, gg also refreshes approval
 immediately before changing the MR's squash setting. If approval was dismissed,
 gg leaves the setting unchanged and creates no landing recovery record.

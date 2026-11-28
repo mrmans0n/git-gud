@@ -341,23 +341,32 @@ if [ "$1" = "api" ]; then
     projects/:id/merge_requests/*/approvals)
       approved=true
       if [ -f "$GG_FAKE_APPROVAL_REGRESS" ]; then
-        if [ "$(cat "$GG_FAKE_APPROVAL_REGRESS")" = "after-validation" ]; then
+        approval_mode=$(cat "$GG_FAKE_APPROVAL_REGRESS")
+        if [ "$approval_mode" = "fail-squash-segment" ]; then
+          if [ -f "$GG_FAKE_APPROVAL_REGRESS.forbid" ]; then touch "$GG_FAKE_APPROVAL_REGRESS.failed"; echo "approval lookup failed" >&2; exit 1; fi
+          for record in .git/gg/operations/*.json; do
+            if [ -f "$record" ] && grep -q 'gitlab:squash_disable' "$record" && grep -q '"status": "pending"' "$record"; then
+              touch "$GG_FAKE_APPROVAL_REGRESS.failed"; echo "approval lookup failed" >&2; exit 1
+            fi
+          done
+        elif [ "$approval_mode" = "after-validation" ]; then
           reads=0; [ ! -f "$GG_FAKE_APPROVAL_REGRESS.raw-reads" ] || reads=$(cat "$GG_FAKE_APPROVAL_REGRESS.raw-reads")
           printf 'approval:%s\n' "$reads" >> "$GG_FAKE_APPROVAL_REGRESS.order"
           [ "$reads" -lt 3 ] || approved=false
-        elif [ "$(cat "$GG_FAKE_APPROVAL_REGRESS")" = "after-requeue-validation" ]; then
+        elif [ "$approval_mode" = "after-requeue-validation" ]; then
           if [ -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; then
             reads=0; [ ! -f "$GG_FAKE_APPROVAL_REGRESS.raw-reads" ] || reads=$(cat "$GG_FAKE_APPROVAL_REGRESS.raw-reads")
             printf 'approval:%s\n' "$reads" >> "$GG_FAKE_APPROVAL_REGRESS.order"; [ ! -f "$GG_FAKE_APPROVAL_REGRESS.requeue-validated" ] || approved=false
           fi
-        elif [ "$(cat "$GG_FAKE_APPROVAL_REGRESS")" = "pipeline-operation" ]; then
+        elif [ "$approval_mode" = "pipeline-operation" ]; then
           grep -q 'gitlab:pipeline_start' .git/gg/operations/*.json 2>/dev/null && approved=false
         else
           calls=0; [ ! -f "$GG_FAKE_APPROVAL_REGRESS.calls" ] || calls=$(cat "$GG_FAKE_APPROVAL_REGRESS.calls")
           calls=$((calls + 1)); echo "$calls" > "$GG_FAKE_APPROVAL_REGRESS.calls"
-          [ "$calls" -le "$(cat "$GG_FAKE_APPROVAL_REGRESS")" ] || approved=false
+          [ "$calls" -le "$approval_mode" ] || approved=false
         fi
       elif [ -f "$GG_FAKE_UNAPPROVED" ]; then approved=false; fi
+      if [ -f "$GG_FAKE_READINESS_POLL.enabled" ]; then touch "$GG_FAKE_READINESS_POLL.armed"; fi
       printf '{"approved":%s}\n' "$approved"
       exit 0
       ;;
@@ -423,6 +432,17 @@ fi
 
 if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
   num="${3:-41}"
+  if [ "$raw_api" = "false" ] && [ -f "$GG_FAKE_READINESS_POLL.enabled" ]; then
+    readiness_views=0; [ ! -f "$GG_FAKE_READINESS_POLL.view-calls" ] || readiness_views=$(cat "$GG_FAKE_READINESS_POLL.view-calls")
+    readiness_views=$((readiness_views + 1)); echo "$readiness_views" > "$GG_FAKE_READINESS_POLL.view-calls"
+    if [ -f "$GG_FAKE_READINESS_POLL.armed" ] && [ ! -f "$GG_FAKE_READINESS_POLL" ]; then
+      touch "$GG_FAKE_READINESS_POLL"
+      wait_count=0
+      while [ ! -f "$GG_FAKE_READINESS_POLL.release" ] && [ "$wait_count" -lt 400 ]; do sleep 0.05; wait_count=$((wait_count + 1)); done
+      [ -f "$GG_FAKE_READINESS_POLL.release" ] || { echo "timed out waiting to release readiness poll" >&2; exit 1; }
+      ci=$(cat "$GG_FAKE_GLAB_CI")
+    fi
+  fi
   target_branch=main
   detailed_merge_status=mergeable
   head_pipeline="{\"status\":\"$ci\"}"
@@ -465,6 +485,12 @@ if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
   if [ -f "$GG_FAKE_QUEUED" ] && [ ! -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; then auto=true; else auto=false; fi
   if [ "$raw_api" = "false" ] && [ "$num" = "41" ] && [ "$(cat "$GG_FAKE_APPROVAL_REGRESS" 2>/dev/null)" = "after-requeue-validation" ] && [ -f "$GG_FAKE_AUTO_MERGE_DROPPED" ] && [ ! -f "$GG_FAKE_APPROVAL_REGRESS.poll-seen" ]; then touch "$GG_FAKE_APPROVAL_REGRESS.poll-seen"; printf 'poll\n' >> "$GG_FAKE_APPROVAL_REGRESS.order"; fi
   if [ -f "$GG_FAKE_MR_SQUASH" ]; then squash=true; else squash=false; fi
+  if [ "$num" = "41" ] && [ "$squash" = "false" ] && [ "$(cat "$GG_FAKE_APPROVAL_REGRESS" 2>/dev/null)" = "fail-squash-segment" ]; then
+    if [ "$raw_api" = "true" ]; then
+      reads=0; [ ! -f "$GG_FAKE_APPROVAL_REGRESS.raw-reads" ] || reads=$(cat "$GG_FAKE_APPROVAL_REGRESS.raw-reads")
+      reads=$((reads + 1)); echo "$reads" > "$GG_FAKE_APPROVAL_REGRESS.raw-reads"; [ "$reads" -ne 2 ] || touch "$GG_FAKE_APPROVAL_REGRESS.forbid"
+    else rm -f "$GG_FAKE_APPROVAL_REGRESS.forbid"; fi
+  fi
   if [ "$raw_api" = "true" ] && [ "$num" = "42" ]; then
     reads=0
     if [ -f "$GG_FAKE_RETARGET_PIPELINE.reads" ]; then reads=$(cat "$GG_FAKE_RETARGET_PIPELINE.reads"); fi
@@ -583,6 +609,7 @@ struct WaitingLandFixture {
     other_worktree: std::path::PathBuf,
     path: OsString,
     polled: std::path::PathBuf,
+    readiness_poll: std::path::PathBuf,
     ready: std::path::PathBuf,
     merged: std::path::PathBuf,
     closed: std::path::PathBuf,
@@ -657,6 +684,7 @@ impl WaitingLandFixture {
         path.push(std::env::var_os("PATH").unwrap_or_default());
 
         let polled = repo_path.join("fake-polled");
+        let readiness_poll = repo_path.join("fake-readiness-poll");
         let ready = repo_path.join("fake-ready");
         let merged = repo_path.join("fake-merged");
         let closed = repo_path.join("fake-closed");
@@ -692,6 +720,7 @@ impl WaitingLandFixture {
             other_worktree,
             path,
             polled,
+            readiness_poll,
             ready,
             merged,
             closed,
@@ -733,6 +762,7 @@ impl WaitingLandFixture {
             .env("HOME", &self.test_home)
             .env("PATH", &self.path)
             .env("GG_FAKE_POLLED", &self.polled)
+            .env("GG_FAKE_READINESS_POLL", &self.readiness_poll)
             .env("GG_FAKE_READY", &self.ready)
             .env("GG_FAKE_MERGED", &self.merged)
             .env("GG_FAKE_CLOSED", &self.closed)
@@ -4179,7 +4209,141 @@ fn test_land_gitlab_no_squash_rechecks_approval_before_put() {
         !std::path::PathBuf::from(format!("{}.attempts", fixture.squash_disabled.display()))
             .exists()
     );
-    assert!(land_operation_records(&fixture.repo_path).is_empty());
+    let record = land_operation_records(&fixture.repo_path)
+        .pop()
+        .expect("approval refusal segment");
+    assert_eq!(record["status"], "committed", "{record}");
+    assert_eq!(record["touched_remote"], false, "{record}");
+    assert_eq!(record["remote_effects"], serde_json::json!([]));
+    assert_eq!(record["refs_after"], record["refs_before"]);
+    assert!(gitlab_landing_attempt(&fixture.repo_path).is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_wait_no_squash_rechecks_approval_inside_squash_segment() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.set_glab_pipeline_status("pending");
+    fs::write(
+        fixture.readiness_poll.with_extension("enabled"),
+        "enabled\n",
+    )
+    .expect("enable readiness-poll handshake");
+    fs::write(&fixture.squash_option, "default_on").expect("set fake squash option");
+    fs::write(&fixture.mr_squash, "on\n").expect("enable fake MR squash");
+    let refs_before = Command::new("git")
+        .args(["for-each-ref", "--format=%(refname) %(objectname)"])
+        .current_dir(&fixture.repo_path)
+        .output()
+        .expect("snapshot refs")
+        .stdout;
+
+    let mut command = fixture.land_command(&[
+        "land",
+        "--all",
+        "--wait",
+        "--jsonl",
+        "--no-clean",
+        "--no-squash",
+    ]);
+    let land = ProcessGroupGuard::spawn(&mut command).expect("start waiting land");
+    wait_for_file(&fixture.readiness_poll);
+    assert_eq!(
+        fs::read_to_string(fixture.readiness_poll.with_extension("view-calls"))
+            .unwrap()
+            .trim(),
+        "3"
+    );
+    fixture.mark_unapproved();
+    fixture.set_glab_pipeline_status("success");
+    fs::write(
+        fixture.readiness_poll.with_extension("release"),
+        "release\n",
+    )
+    .expect("release readiness poll");
+    let output = land
+        .wait_with_output_timeout(Duration::from_secs(30))
+        .expect("wait for bounded land");
+    let stdout = String::from_utf8(output.stdout).expect("land stdout");
+    let events: Vec<Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("parse JSONL event"))
+        .collect();
+    let terminal = events.last().expect("terminal error event");
+
+    assert!(!output.status.success(), "{stdout}");
+    assert_eq!(terminal["event"], "error", "{terminal}");
+    assert_eq!(terminal["status"], "error", "{terminal}");
+    assert_eq!(terminal["message"], "MR !41 is not approved", "{terminal}");
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event["event"].as_str(), Some("entry" | "squash_checkpoint"))),
+        "{stdout}"
+    );
+    assert!(
+        !fixture.squash_disabled.exists(),
+        "squash PUT marker exists"
+    );
+    assert!(!fixture.merged.exists(), "downstream merge marker exists");
+    assert!(gitlab_landing_attempt(&fixture.repo_path).is_none());
+    let records = land_operation_records(&fixture.repo_path);
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0]["status"], "committed", "{records:?}");
+    assert_eq!(records[0]["touched_remote"], false, "{records:?}");
+    assert_eq!(records[0]["remote_effects"], serde_json::json!([]));
+    assert_eq!(records[0]["refs_after"], records[0]["refs_before"]);
+    let refs_after = Command::new("git")
+        .args(["for-each-ref", "--format=%(refname) %(objectname)"])
+        .current_dir(&fixture.repo_path)
+        .output()
+        .expect("read refs")
+        .stdout;
+    assert_eq!(refs_after, refs_before);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_squash_approval_lookup_failure_finalizes_proven_noop() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fs::write(&fixture.squash_option, "default_on").unwrap();
+    fs::write(&fixture.mr_squash, "on\n").unwrap();
+    fs::write(&fixture.approval_regress, "fail-squash-segment\n").unwrap();
+    let refs_before = Command::new("git")
+        .args(["for-each-ref", "--format=%(refname) %(objectname)"])
+        .current_dir(&fixture.repo_path)
+        .output()
+        .unwrap()
+        .stdout;
+
+    let output = fixture
+        .land_command(&["land", "--jsonl", "--no-clean", "--no-squash"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(!output.status.success(), "{stdout}");
+    assert!(stdout.contains("MR !41 is not approved"), "{stdout}");
+    assert!(fixture.approval_regress.with_extension("failed").exists());
+    assert!(!stdout.contains("squash_checkpoint"), "{stdout}");
+    assert!(!fixture.squash_disabled.exists());
+    assert!(!fixture.queued.exists() && !fixture.merged.exists());
+    let records = land_operation_records(&fixture.repo_path);
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0]["status"], "committed");
+    assert_eq!(records[0]["touched_remote"], false);
+    assert_eq!(records[0]["remote_effects"], serde_json::json!([]));
+    assert_eq!(records[0]["refs_after"], records[0]["refs_before"]);
+    assert_eq!(
+        Command::new("git")
+            .args(["for-each-ref", "--format=%(refname) %(objectname)"])
+            .current_dir(&fixture.repo_path)
+            .output()
+            .unwrap()
+            .stdout,
+        refs_before
+    );
     assert!(gitlab_landing_attempt(&fixture.repo_path).is_none());
 }
 
@@ -4225,8 +4389,11 @@ fn test_land_gitlab_squash_veto_noop_and_unapplied_ambiguity_fail_closed() {
     let noop = WaitingLandFixture::new();
     noop.use_gitlab_provider();
     fs::write(&noop.squash_option, "default_on").expect("set squash policy");
+    fs::write(&noop.approval_regress, "fail-squash-segment\n").unwrap();
     let output = noop.land_command(&args).output().unwrap();
     assert!(output.status.success());
+    assert!(!noop.approval_regress.with_extension("failed").exists());
+
     assert!(!noop.squash_disabled.exists());
     assert!(
         !serde_json::to_string(&land_operation_records(&noop.repo_path))

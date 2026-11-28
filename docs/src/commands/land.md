@@ -45,9 +45,13 @@ has its own authorization and recovery boundary. gg re-reads and validates the
 MR, requires its current head SHA, and refreshes approval before recording or
 sending the requeue. GitLab `--admin` does not bypass this check.
 
-For non-wait GitLab landing with `--no-squash`, gg also refreshes approval
-immediately before changing the MR's squash setting. If approval was dismissed,
-gg leaves the setting unchanged and creates no landing recovery record.
+For every GitLab landing with `--no-squash`, including `--wait`, gg also
+refreshes approval inside the durable squash segment immediately before changing
+the MR's setting. This happens after the final identity and policy checks. If the
+setting is already disabled, gg skips both approval lookup and the PUT. If
+approval was dismissed or cannot be read, gg leaves the setting unchanged,
+records the segment as a committed untouched no-op, clears its attempt marker,
+and stops before any later landing mutation.
 
 In GitLab merge-train wait mode, gg refreshes approval after validating that a
 pipeline is still missing and immediately before asking GitLab to create it.
@@ -147,7 +151,7 @@ continuing to another entry.
 
 For `--auto-merge` without merge trains, an ambiguous queue response also stops automatic recovery. A restart reports the saved Land operation ID without issuing another queue request; reconcile the MR in GitLab before changing the saved attempt.
 
-GitLab only applies a squash flag that is true when queueing or merging, so an MR created while the project's squash option is "Encourage" (`default_on`) would still be squashed. With `--no-squash`, gg therefore turns off the MR's squash setting in its own durable Land segment. It rechecks project policy and the complete MR identity immediately before one PUT, records `pr_squash_updated`, and emits `squash_checkpoint` before any merge or queue request. An initially disabled setting is an unjournaled no-op. If the project's squash option is "Require" (`always`), `gg land --no-squash` fails before touching any MR.
+GitLab only applies a squash flag that is true when queueing or merging, so an MR created while the project's squash option is "Encourage" (`default_on`) would still be squashed. With `--no-squash`, gg therefore turns off the MR's squash setting in its own durable Land segment. It rechecks project policy and the complete MR identity, then refreshes approval immediately before one PUT. An initially disabled setting is an unjournaled no-op; if the setting becomes disabled during final revalidation, gg instead commits the opened segment as untouched and clears its marker without consulting approval. Approval refusal or lookup failure does the same proven-no-op cleanup and stops downstream work. After a successful PUT, gg records `pr_squash_updated` and emits `squash_checkpoint` before any merge or queue request. If the project's squash option is "Require" (`always`), `gg land --no-squash` fails before touching any MR.
 
 If the PUT response is ambiguous, gg never submits it again automatically. On restart it may reconcile only when a fresh, exact-identity read proves `squash=false`; otherwise it preserves the attempt and stops for manual reconciliation. A failed `squash_checkpoint` write also stops downstream work; the completed record is emitted and cleared on restart.
 

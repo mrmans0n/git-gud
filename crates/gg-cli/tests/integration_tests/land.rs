@@ -324,7 +324,11 @@ if [ "$1" = "api" ]; then
     projects/:id/merge_requests/*/approvals)
       approved=true
       if [ -f "$GG_FAKE_APPROVAL_REGRESS" ]; then
-        if [ "$(cat "$GG_FAKE_APPROVAL_REGRESS")" = "pipeline-operation" ]; then
+        if [ "$(cat "$GG_FAKE_APPROVAL_REGRESS")" = "after-validation" ]; then
+          reads=0; [ ! -f "$GG_FAKE_APPROVAL_REGRESS.raw-reads" ] || reads=$(cat "$GG_FAKE_APPROVAL_REGRESS.raw-reads")
+          printf 'approval:%s\n' "$reads" >> "$GG_FAKE_APPROVAL_REGRESS.order"
+          [ "$reads" -lt 3 ] || approved=false
+        elif [ "$(cat "$GG_FAKE_APPROVAL_REGRESS")" = "pipeline-operation" ]; then
           grep -q 'gitlab:pipeline_start' .git/gg/operations/*.json 2>/dev/null && approved=false
         else
           calls=0; [ ! -f "$GG_FAKE_APPROVAL_REGRESS.calls" ] || calls=$(cat "$GG_FAKE_APPROVAL_REGRESS.calls")
@@ -484,6 +488,11 @@ if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
   if [ "$num" = "42" ] && [ "$retarget_pipeline" = "missing-work-in-progress" ]; then
     printf '{"iid":%s,"title":"%s","state":"%s","web_url":"https://gitlab.example/test/repo/-/merge_requests/%s","source_branch":"%s","target_branch":"%s","sha":"%s","draft":false,"detailed_merge_status":"%s","has_conflicts":false,"squash":%s,"merge_when_pipeline_succeeds":%s,"head_pipeline":%s}\n' "$iid" "$title" "$state" "$iid" "$source_branch" "$target_branch" "$sha" "$detailed_merge_status" "$squash" "$auto" "$head_pipeline"
     exit 0
+  fi
+  if [ "$raw_api" = "true" ] && [ "$num" = "41" ] && [ "$(cat "$GG_FAKE_APPROVAL_REGRESS" 2>/dev/null)" = "after-validation" ]; then
+    reads=0; [ ! -f "$GG_FAKE_APPROVAL_REGRESS.raw-reads" ] || reads=$(cat "$GG_FAKE_APPROVAL_REGRESS.raw-reads")
+    reads=$((reads + 1)); echo "$reads" > "$GG_FAKE_APPROVAL_REGRESS.raw-reads"
+    printf 'validation:%s\n' "$reads" >> "$GG_FAKE_APPROVAL_REGRESS.order"
   fi
   printf '{"iid":%s,"source_project_id":7,"target_project_id":7,"title":"%s","state":"%s","web_url":"https://gitlab.example/test/repo/-/merge_requests/%s","source_branch":"%s","target_branch":"%s","sha":"%s","draft":false,"work_in_progress":false,"detailed_merge_status":"%s","has_conflicts":false,"squash":%s,"merge_when_pipeline_succeeds":%s,"head_pipeline":%s}\n' "$iid" "$title" "$state" "$iid" "$source_branch" "$target_branch" "$sha" "$detailed_merge_status" "$squash" "$auto" "$head_pipeline"
   exit 0
@@ -1661,6 +1670,61 @@ fn test_land_gitlab_auto_merge_all_wait_rechecks_approval_before_queue() {
     );
     assert!(land_operation_records(&fixture.repo_path).is_empty());
     assert!(gitlab_landing_attempt(&fixture.repo_path).is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_merge_train_wait_rechecks_approval_after_validation_before_initial_queue() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fs::write(&fixture.approval_regress, "after-validation\n").expect("regress approval");
+    fs::write(
+        &fixture.landing_request_fail,
+        "merge-train-applied-response-fail\n",
+    )
+    .expect("terminate a would-be queue request");
+
+    let output = fixture
+        .land_command(&["land", "--wait", "--jsonl", "--no-clean"])
+        .output()
+        .expect("run land");
+    let stdout = String::from_utf8(output.stdout).expect("land stdout");
+    let stderr = String::from_utf8(output.stderr).expect("land stderr");
+    assert!(output.status.success(), "land failed: {stderr}");
+    assert!(stderr.is_empty(), "unexpected stderr: {stderr}");
+    let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
+        .expect("parse summary event");
+    assert_eq!(summary["event"], "summary", "{summary}");
+    assert_eq!(summary["status"], "error", "{summary}");
+    let config: Value = serde_json::from_slice(
+        &fs::read(fixture.repo_path.join(".git/gg/config.json")).expect("read config"),
+    )
+    .expect("parse config");
+    let stack = &config["stacks"]["land-wait"];
+
+    assert_eq!(
+        serde_json::json!({
+            "error": summary["error"],
+            "queue_post_marker": fixture.queued.exists(),
+            "queue_post_attempt": std::path::PathBuf::from(format!("{}.attempts", fixture.queued.display())).exists(),
+            "gitlab_landing_attempt": stack["gitlab_landing_attempt"],
+            "gitlab_merge_train_queue_attempt": stack["gitlab_merge_train_queue_attempt"],
+            "land_operation_records": land_operation_records(&fixture.repo_path),
+            "validation_order": fs::read_to_string(format!("{}.order", fixture.approval_regress.display())).expect("validation order"),
+            "validation_reads": fs::read_to_string(format!("{}.raw-reads", fixture.approval_regress.display())).expect("validation reads"),
+        }),
+        serde_json::json!({
+            "error": "MR !41 is not approved",
+            "queue_post_marker": false,
+            "queue_post_attempt": false,
+            "gitlab_landing_attempt": null,
+            "gitlab_merge_train_queue_attempt": null,
+            "land_operation_records": [],
+            "validation_order": "approval:0\napproval:0\napproval:0\nvalidation:1\nvalidation:2\nvalidation:3\napproval:3\n",
+            "validation_reads": "3\n",
+        })
+    );
 }
 
 #[cfg(unix)]

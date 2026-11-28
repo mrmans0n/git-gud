@@ -472,6 +472,8 @@ if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
     # A push to the source branch moves the first MR head.
     if [ -f "$GG_FAKE_HEAD_MOVED" ]; then sha=2222222222222222222222222222222222222222; else sha=1111111111111111111111111111111111111111; fi
     if [ "$(cat "$GG_FAKE_LANDING_REQUEST_FAIL" 2>/dev/null)" = "requeue-head-race" ] && [ -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; then
+      # The test writes the drop marker after the head move, so re-read the head here to avoid a stale 1111 snapshot.
+      if [ -f "$GG_FAKE_HEAD_MOVED" ]; then sha=2222222222222222222222222222222222222222; fi
       if [ "$raw_api" = "true" ] || [ -f "$GG_FAKE_LANDING_REQUEST_FAIL.attempts" ]; then sha=3333333333333333333333333333333333333333; fi
       if [ "$raw_api" = "true" ]; then
         printf 'validation:%s\n' "$sha" >> "$GG_FAKE_LANDING_REQUEST_FAIL.order"

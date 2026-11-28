@@ -1640,7 +1640,11 @@ fn execute_squash_segment(
                 "GitLab squash identity changed for MR !{mr_number}"
             )));
         }
-        Ok(fresh.squash)
+        if !fresh.squash {
+            return Ok(false);
+        }
+        require_fresh_approval(&Provider::GitLab, mr_number, false)?;
+        Ok(true)
     })();
     if !matches!(revalidation, Ok(true)) {
         operation.clear_touched_remote_before_attempt()?;
@@ -2700,9 +2704,6 @@ pub fn run(opts: LandOptions) -> Result<()> {
         }
 
         if !squash && provider == Provider::GitLab {
-            if !wait {
-                require_fresh_approval(&provider, pr_num, admin)?;
-            }
             execute_squash_segment(
                 &repo,
                 &mut config,

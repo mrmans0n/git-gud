@@ -324,9 +324,13 @@ if [ "$1" = "api" ]; then
     projects/:id/merge_requests/*/approvals)
       approved=true
       if [ -f "$GG_FAKE_APPROVAL_REGRESS" ]; then
-        calls=0; [ ! -f "$GG_FAKE_APPROVAL_REGRESS.calls" ] || calls=$(cat "$GG_FAKE_APPROVAL_REGRESS.calls")
-        calls=$((calls + 1)); echo "$calls" > "$GG_FAKE_APPROVAL_REGRESS.calls"
-        [ "$calls" -le "$(cat "$GG_FAKE_APPROVAL_REGRESS")" ] || approved=false
+        if [ "$(cat "$GG_FAKE_APPROVAL_REGRESS")" = "pipeline-operation" ]; then
+          grep -q 'gitlab:pipeline_start' .git/gg/operations/*.json 2>/dev/null && approved=false
+        else
+          calls=0; [ ! -f "$GG_FAKE_APPROVAL_REGRESS.calls" ] || calls=$(cat "$GG_FAKE_APPROVAL_REGRESS.calls")
+          calls=$((calls + 1)); echo "$calls" > "$GG_FAKE_APPROVAL_REGRESS.calls"
+          [ "$calls" -le "$(cat "$GG_FAKE_APPROVAL_REGRESS")" ] || approved=false
+        fi
       elif [ -f "$GG_FAKE_UNAPPROVED" ]; then approved=false; fi
       printf '{"approved":%s}\n' "$approved"
       exit 0
@@ -2644,6 +2648,43 @@ fn test_land_gitlab_pipeline_revalidates_identity_immediately_before_post() {
     assert!(text.contains("identity changed"), "{text}");
     assert!(!std::path::PathBuf::from(format!("{}.attempts", state.display())).exists());
     assert!(!fixture.queued_request().contains("merge_requests/42"));
+    assert!(gitlab_landing_attempt(&fixture.repo_path).is_none());
+    let (_, operation) = pipeline_operation(&fixture.repo_path);
+    assert_eq!(operation["status"], "committed");
+    assert_eq!(operation["touched_remote"], false);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_wait_rechecks_approval_before_pipeline_post() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.add_second_entry();
+    let state = fixture.repo_path.join("fake-retarget-pipeline");
+    fs::write(&state, "missing").unwrap();
+    fs::write(&fixture.approval_regress, "pipeline-operation\n").unwrap();
+
+    let output = fixture.land_command(&PIPELINE_LAND_ARGS).output().unwrap();
+    let stdout = String::from_utf8(output.stdout).expect("land stdout");
+    let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
+        .expect("parse summary event");
+    let attempts = std::path::PathBuf::from(format!("{}.attempts", state.display()));
+    let started = std::path::PathBuf::from(format!("{}.started", state.display()));
+
+    assert!(
+        !attempts.exists(),
+        "pipeline POST attempt marker exists: {stdout}"
+    );
+    assert!(
+        !started.exists(),
+        "pipeline POST started marker exists: {stdout}"
+    );
+    assert_eq!(summary["error"], "MR !42 is not approved", "{summary}");
+    assert!(
+        !fixture.queued_request().contains("merge_requests/42"),
+        "MR !42 queue was mutated"
+    );
     assert!(gitlab_landing_attempt(&fixture.repo_path).is_none());
     let (_, operation) = pipeline_operation(&fixture.repo_path);
     assert_eq!(operation["status"], "committed");

@@ -49,7 +49,7 @@ By default, landing several entries rebases and force-pushes the remaining branc
 gg land --all --wait --no-squash --rebase-if-needed
 ```
 
-On GitLab projects with merge trains, `--wait` starts a required MR pipeline if retargeting leaves the next MR without one. You don't need to push a new commit or click **Run pipeline**.
+On GitLab projects with merge trains, `--wait` starts a required MR pipeline if retargeting leaves the next MR without one. You don't need to push a new commit or click **Run pipeline**. Approval is refreshed after confirming that the pipeline is still missing and immediately before the creation request. If approval was dismissed while waiting, no pipeline request or later queue mutation is sent.
 
 `gg land` stops before changing the remote if it cannot read a valid merge-train setting. It also revalidates each MR immediately before mutation and requires an explicit open, non-draft state with the expected target branch. Retry only after direct provider inspection confirms those values.
 

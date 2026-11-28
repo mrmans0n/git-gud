@@ -1712,7 +1712,11 @@ fn execute_pipeline_segment(
                 "GitLab pipeline identity changed for MR !{mr_number}"
             )));
         }
-        pipeline_is_missing(mr_number, &fresh)
+        if !pipeline_is_missing(mr_number, &fresh)? {
+            return Ok(false);
+        }
+        require_fresh_approval(&Provider::GitLab, mr_number, false)?;
+        Ok(true)
     });
     if !matches!(revalidation, Ok(true)) {
         operation

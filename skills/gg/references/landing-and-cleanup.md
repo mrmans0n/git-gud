@@ -32,6 +32,10 @@
   missing-pipeline validation, immediately before creating that pipeline. A
   refusal is a proven no-op and must not be treated as a pipeline attempt or as
   authorization for the later queue mutation.
+  The initial merge-train queue is a separate authorization boundary: after the
+  final MR or pipeline-handoff validation, recheck approval before creating
+  queue recovery state or sending the queue request. A refusal must leave no
+  queue attempt or landing recovery state. GitLab admin never bypasses it.
   If the user separately approved a GitHub admin bypass, approval may be absent.
   If the user explicitly requested or immediately confirmed `--wait` without
   `--all`, pending or running CI and pending approval may be polled, but do not

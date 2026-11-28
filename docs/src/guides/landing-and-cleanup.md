@@ -14,6 +14,11 @@ gg land
 gg land --all
 ```
 
+Approval is checked again for each entry immediately before its final queue or
+merge request. This prevents `--all` from landing an entry whose approval was
+dismissed while earlier entries were being processed. GitHub's explicit admin
+override is the only exception; GitLab always requires approval.
+
 ## Wait for CI and approvals
 
 ```bash

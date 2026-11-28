@@ -16,6 +16,9 @@
 - Define readiness as current approval, or a verified absence of required
   reviews, plus successful CI or a verified absence of required CI checks, and
   no blocking state.
+  Non-wait `gg land --all` rechecks approval immediately before each entry's
+  final queue or merge request, but the agent must still complete the full
+  preflight below because approval alone does not establish readiness.
   If the user separately approved a GitHub admin bypass, approval may be absent.
   If the user explicitly requested or immediately confirmed `--wait` without
   `--all`, pending or running CI and pending approval may be polled, but do not

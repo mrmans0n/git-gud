@@ -269,6 +269,9 @@ if [ "$is_landing_request" = "true" ]; then
   fi
   if [ -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; then
     printf 'attempt\n' >> "$GG_FAKE_LANDING_REQUEST_FAIL.attempts"
+    if [ "$landing_request_mode" = "requeue-head-race" ]; then
+      printf 'post:3333333333333333333333333333333333333333\n' >> "$GG_FAKE_LANDING_REQUEST_FAIL.order"
+    fi
   fi
   if [ "$landing_request_mode" = "block-fail" ] || [ "$landing_request_mode" = "block-success" ] || { { [ "$landing_request_mode" = "block-requeue-success" ] || [ "$landing_request_mode" = "block-requeue-fail" ]; } && [ -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; } || { [ "$landing_request_mode" = "block-second-fail" ] && [ "$4" = "projects/:id/merge_trains/merge_requests/42" ]; } || { [ "$landing_request_mode" = "block-second-success" ] && [ "$4" = "projects/:id/merge_trains/merge_requests/42" ]; }; then
     touch "$GG_FAKE_LANDING_REQUEST_FAIL.started"
@@ -282,7 +285,17 @@ if [ "$is_landing_request" = "true" ]; then
       exit 1
     fi
   fi
-  if [ "$landing_request_mode" = "block-fail" ] || { [ "$landing_request_mode" = "block-requeue-fail" ] && [ -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; } || { [ "$landing_request_mode" = "block-second-fail" ] && [ "$4" = "projects/:id/merge_trains/merge_requests/42" ]; }; then
+  if [ -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; then
+    case "$landing_request_mode" in
+      requeue-success-finalization-fail|requeue-fail-finalization-fail)
+        for record in .git/gg/operations/*.json; do
+          if [ -f "$record" ] && grep -q 'gitlab:requeue_merge_train' "$record"; then mkdir "$record.tmp"; break; fi
+        done
+        ;;
+      requeue-success-marker-clear-fail) mkdir .git/gg/config.tmp ;;
+    esac
+  fi
+  if [ "$landing_request_mode" = "block-fail" ] || { { [ "$landing_request_mode" = "block-requeue-fail" ] || [ "$landing_request_mode" = "requeue-fail-finalization-fail" ]; } && [ -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; } || { [ "$landing_request_mode" = "block-second-fail" ] && [ "$4" = "projects/:id/merge_trains/merge_requests/42" ]; }; then
     echo "landing request failed" >&2
     exit 1
   fi
@@ -307,9 +320,13 @@ if [ "$is_landing_request" = "true" ]; then
     echo "connection lost after adding MR to merge train" >&2
     exit 1
   fi
+  if [ "$landing_request_mode" = "requeue-merge" ] && [ -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; then touch "$GG_FAKE_MERGED"; fi
+  if [ "$landing_request_mode" = "requeue-head-race" ] && [ "$(wc -l < "$GG_FAKE_LANDING_REQUEST_FAIL.attempts")" -ge 2 ]; then touch "$GG_FAKE_MERGED"; fi
   if [ -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; then
     printf '%s\n' "$*" > "$GG_FAKE_REQUEUED"
-    rm -f "$GG_FAKE_AUTO_MERGE_DROPPED"
+    if [ "$landing_request_mode" != "requeue-head-race" ] || [ "$(wc -l < "$GG_FAKE_LANDING_REQUEST_FAIL.attempts")" -ge 2 ]; then
+      rm -f "$GG_FAKE_AUTO_MERGE_DROPPED"
+    fi
   fi
   printf '%s\n' "$*" > "$GG_FAKE_QUEUED"
   exit 0
@@ -328,6 +345,11 @@ if [ "$1" = "api" ]; then
           reads=0; [ ! -f "$GG_FAKE_APPROVAL_REGRESS.raw-reads" ] || reads=$(cat "$GG_FAKE_APPROVAL_REGRESS.raw-reads")
           printf 'approval:%s\n' "$reads" >> "$GG_FAKE_APPROVAL_REGRESS.order"
           [ "$reads" -lt 3 ] || approved=false
+        elif [ "$(cat "$GG_FAKE_APPROVAL_REGRESS")" = "after-requeue-validation" ]; then
+          if [ -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; then
+            reads=0; [ ! -f "$GG_FAKE_APPROVAL_REGRESS.raw-reads" ] || reads=$(cat "$GG_FAKE_APPROVAL_REGRESS.raw-reads")
+            printf 'approval:%s\n' "$reads" >> "$GG_FAKE_APPROVAL_REGRESS.order"; [ ! -f "$GG_FAKE_APPROVAL_REGRESS.requeue-validated" ] || approved=false
+          fi
         elif [ "$(cat "$GG_FAKE_APPROVAL_REGRESS")" = "pipeline-operation" ]; then
           grep -q 'gitlab:pipeline_start' .git/gg/operations/*.json 2>/dev/null && approved=false
         else
@@ -429,9 +451,19 @@ if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
     source_branch="testuser/land-wait--c-1111111"
     # A push to the source branch moves the first MR head.
     if [ -f "$GG_FAKE_HEAD_MOVED" ]; then sha=2222222222222222222222222222222222222222; else sha=1111111111111111111111111111111111111111; fi
+    if [ "$(cat "$GG_FAKE_LANDING_REQUEST_FAIL" 2>/dev/null)" = "requeue-head-race" ] && [ -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; then
+      if [ "$raw_api" = "true" ] || [ -f "$GG_FAKE_LANDING_REQUEST_FAIL.attempts" ]; then sha=3333333333333333333333333333333333333333; fi
+      if [ "$raw_api" = "true" ]; then
+        printf 'validation:%s\n' "$sha" >> "$GG_FAKE_LANDING_REQUEST_FAIL.order"
+      elif [ ! -f "$GG_FAKE_LANDING_REQUEST_FAIL.poll-$sha" ]; then
+        touch "$GG_FAKE_LANDING_REQUEST_FAIL.poll-$sha"
+        printf 'poll:%s\n' "$sha" >> "$GG_FAKE_LANDING_REQUEST_FAIL.order"
+      fi
+    fi
   fi
   # GitLab reports queued MRs (auto-merge or merge train) through this flag.
   if [ -f "$GG_FAKE_QUEUED" ] && [ ! -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; then auto=true; else auto=false; fi
+  if [ "$raw_api" = "false" ] && [ "$num" = "41" ] && [ "$(cat "$GG_FAKE_APPROVAL_REGRESS" 2>/dev/null)" = "after-requeue-validation" ] && [ -f "$GG_FAKE_AUTO_MERGE_DROPPED" ] && [ ! -f "$GG_FAKE_APPROVAL_REGRESS.poll-seen" ]; then touch "$GG_FAKE_APPROVAL_REGRESS.poll-seen"; printf 'poll\n' >> "$GG_FAKE_APPROVAL_REGRESS.order"; fi
   if [ -f "$GG_FAKE_MR_SQUASH" ]; then squash=true; else squash=false; fi
   if [ "$raw_api" = "true" ] && [ "$num" = "42" ]; then
     reads=0
@@ -493,7 +525,12 @@ if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
     reads=0; [ ! -f "$GG_FAKE_APPROVAL_REGRESS.raw-reads" ] || reads=$(cat "$GG_FAKE_APPROVAL_REGRESS.raw-reads")
     reads=$((reads + 1)); echo "$reads" > "$GG_FAKE_APPROVAL_REGRESS.raw-reads"
     printf 'validation:%s\n' "$reads" >> "$GG_FAKE_APPROVAL_REGRESS.order"
+  elif [ "$raw_api" = "true" ] && [ "$num" = "41" ] && [ "$(cat "$GG_FAKE_APPROVAL_REGRESS" 2>/dev/null)" = "after-requeue-validation" ] && [ -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; then
+    reads=0; [ ! -f "$GG_FAKE_APPROVAL_REGRESS.raw-reads" ] || reads=$(cat "$GG_FAKE_APPROVAL_REGRESS.raw-reads")
+    reads=$((reads + 1)); echo "$reads" > "$GG_FAKE_APPROVAL_REGRESS.raw-reads"
+    touch "$GG_FAKE_APPROVAL_REGRESS.requeue-validated"; printf 'validation:%s\n' "$reads" >> "$GG_FAKE_APPROVAL_REGRESS.order"
   fi
+  if [ "$raw_api" = "false" ] && [ -f "$GG_FAKE_QUEUED" ]; then touch "$GG_FAKE_LANDING_REQUEST_FAIL.waiter-polled"; fi
   printf '{"iid":%s,"source_project_id":7,"target_project_id":7,"title":"%s","state":"%s","web_url":"https://gitlab.example/test/repo/-/merge_requests/%s","source_branch":"%s","target_branch":"%s","sha":"%s","draft":false,"work_in_progress":false,"detailed_merge_status":"%s","has_conflicts":false,"squash":%s,"merge_when_pipeline_succeeds":%s,"head_pipeline":%s}\n' "$iid" "$title" "$state" "$iid" "$source_branch" "$target_branch" "$sha" "$detailed_merge_status" "$squash" "$auto" "$head_pipeline"
   exit 0
 fi
@@ -753,6 +790,10 @@ impl WaitingLandFixture {
         assert!(self.queued.exists(), "land never queued the MR");
     }
 
+    fn wait_until_waiter_snapshots_queued_head(&self) {
+        wait_for_file(&self.landing_request_fail.with_extension("waiter-polled"));
+    }
+
     fn release_ci(&self) {
         fs::write(&self.ready, "ready\n").expect("release fake CI");
     }
@@ -995,6 +1036,43 @@ fn wait_for_file(path: &Path) {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(path.exists(), "timed out waiting for {}", path.display());
+}
+
+#[cfg(unix)]
+fn pause_requeue_after_operation_creation(
+    fixture: &WaitingLandFixture,
+    args: &[&str],
+) -> (std::process::Child, String, std::path::PathBuf) {
+    let ready = fixture.repo_path.join("requeue-operation-ready");
+    let release = fixture.repo_path.join("requeue-operation-release");
+    let child = fixture
+        .land_command(args)
+        .env("GG_TEST_REQUEUE_OPERATION_READY", &ready)
+        .env("GG_TEST_REQUEUE_OPERATION_RELEASE", &release)
+        .spawn()
+        .expect("start Land at the requeue operation boundary");
+    fixture.wait_until_queued();
+    fs::write(&fixture.head_moved, "moved\n").expect("move fake MR head");
+    fs::write(&fixture.auto_merge_dropped, "dropped\n").expect("drop fake auto-merge");
+    wait_for_file(&ready);
+    let operation_id = fs::read_to_string(ready).expect("read requeue operation ID");
+    (child, operation_id, release)
+}
+
+#[cfg(unix)]
+fn assert_requeue_restart_proceeds(fixture: &WaitingLandFixture, args: &[&str]) {
+    let restart = fixture.land_command(args).output().expect("restart Land");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&restart.stdout),
+        String::from_utf8_lossy(&restart.stderr)
+    );
+    assert!(restart.status.success(), "restart failed: {text}");
+    assert!(!text.contains("Inconsistent merge-train recovery evidence"));
+    assert!(
+        fixture.requeued.exists(),
+        "restart never reached the requeue POST"
+    );
 }
 
 #[cfg(unix)]
@@ -2543,25 +2621,323 @@ fn test_land_gitlab_requeue_revalidates_state_and_creates_no_pending_operation()
 
 #[cfg(unix)]
 #[test]
-fn test_land_gitlab_ambiguous_requeue_is_finalized_and_not_retried() {
+fn test_land_gitlab_merge_train_requeue_rechecks_approval_after_final_validation() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.set_glab_pipeline_status("running");
+    fs::write(&fixture.approval_regress, "after-requeue-validation\n").unwrap();
+    fs::write(&fixture.landing_request_fail, "requeue-merge\n").unwrap();
+    let args = ["land", "--wait", "--admin", "--jsonl", "--no-clean"];
+    let land = fixture.start_land_with_args(&args);
+    fixture.wait_until_queued();
+    fs::write(&fixture.head_moved, "moved\n").unwrap();
+    fs::write(&fixture.auto_merge_dropped, "dropped\n").unwrap();
+    let output = land.wait_with_output().expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("land stdout");
+    let stderr = String::from_utf8(output.stderr).expect("land stderr");
+    assert!(output.status.success(), "land failed: {stderr}");
+    assert!(stderr.is_empty(), "unexpected stderr: {stderr}");
+    let summary: Value = serde_json::from_str(stdout.lines().last().unwrap()).unwrap();
+    let config_bytes = fs::read(fixture.repo_path.join(".git/gg/config.json")).unwrap();
+    let config: Value = serde_json::from_slice(&config_bytes).unwrap();
+    let records = land_operation_records(&fixture.repo_path);
+    let post_attempt = format!("{}.attempts", fixture.landing_request_fail.display());
+    assert!(
+        !Path::new(&post_attempt).exists(),
+        "requeue POST occurred: config={config} records={records:?}"
+    );
+    assert_eq!(summary["event"], "summary");
+    assert_eq!(summary["status"], "error");
+    assert_eq!(summary["error"], "MR !41 is not approved");
+    assert!(!fixture.requeued.exists(), "requeue POST marker exists");
+    assert!(config["stacks"]["land-wait"]["gitlab_merge_train_queue_attempt"].is_null());
+    assert_eq!(records.len(), 1, "{records:?}");
+    let args = records[0]["args"].as_array().expect("initial queue args");
+    assert!(args.iter().any(|arg| arg == "gitlab:queue_merge_train"));
+    assert!(!args.iter().any(|arg| arg == "gitlab:requeue_merge_train"));
+    let order =
+        fs::read_to_string(format!("{}.order", fixture.approval_regress.display())).unwrap();
+    assert_eq!(order, "poll\nvalidation:1\napproval:1\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_requeue_tracks_the_final_validated_head() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.set_glab_pipeline_status("running");
+    fs::write(&fixture.landing_request_fail, "requeue-head-race\n").unwrap();
+
+    let land = fixture.start_land_with_args(&["land", "--wait", "--jsonl", "--no-clean"]);
+    fixture.wait_until_queued();
+    fs::write(&fixture.head_moved, "moved\n").unwrap();
+    fs::write(&fixture.auto_merge_dropped, "dropped\n").unwrap();
+
+    let output = land.wait_with_output().expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("land stdout");
+    let summary: Value = serde_json::from_str(stdout.lines().last().unwrap()).unwrap();
+    let attempts = fs::read_to_string(format!(
+        "{}.attempts",
+        fixture.landing_request_fail.display()
+    ))
+    .unwrap();
+    let order =
+        fs::read_to_string(format!("{}.order", fixture.landing_request_fail.display())).unwrap();
+
+    assert_eq!(attempts.lines().count(), 1, "second requeue POST: {order}");
+    assert_eq!(summary["status"], "error");
+    assert!(summary["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("auto-merge was cancelled without a new push")));
+    assert_eq!(order, "poll:2222222222222222222222222222222222222222\nvalidation:3333333333333333333333333333333333333333\npost:3333333333333333333333333333333333333333\npoll:3333333333333333333333333333333333333333\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_requeue_durability_boundaries_precede_post_and_allow_restart() {
+    let args = ["land", "--all", "--wait", "--jsonl", "--no-clean"];
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.set_glab_pipeline_status("running");
+    fs::write(&fixture.landing_request_fail, "requeue-merge\n").unwrap();
+
+    let (land, operation_id, release) = pause_requeue_after_operation_creation(&fixture, &args);
+    let operation_block = fixture
+        .repo_path
+        .join(format!(".git/gg/operations/{operation_id}.json.tmp"));
+    fs::create_dir(&operation_block).expect("block touched_remote save");
+    fs::write(release, "release\n").expect("release requeue operation");
+    let output = land.wait_with_output().expect("wait for failed requeue");
+    fs::remove_dir(operation_block).expect("restore operation store");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let records = land_operation_records(&fixture.repo_path);
+    let record = records
+        .iter()
+        .find(|record| record["id"] == operation_id)
+        .expect("requeue operation record");
+    let config: Value = serde_json::from_slice(
+        &fs::read(fixture.repo_path.join(".git/gg/config.json")).expect("read config"),
+    )
+    .expect("parse config");
+    let attempt = &config["stacks"]["land-wait"]["gitlab_merge_train_queue_attempt"];
+    let post_attempts = std::path::PathBuf::from(format!(
+        "{}.attempts",
+        fixture.landing_request_fail.display()
+    ));
+    assert!(
+        attempt.is_null(),
+        "stale requeue marker survived failed touched_remote barrier: attempt={attempt} touched_remote={} requeue_post={} post_attempt_log={} output={text}",
+        record["touched_remote"],
+        fixture.requeued.exists(),
+        post_attempts.exists()
+    );
+    assert_eq!(record["status"], "pending", "{record}");
+    assert_eq!(record["touched_remote"], false, "{record}");
+    assert_eq!(record["remote_effects"], serde_json::json!([]));
+    assert!(
+        !fixture.requeued.exists(),
+        "requeue POST escaped the barrier"
+    );
+    assert!(!post_attempts.exists(), "requeue POST reached the provider");
+    assert_requeue_restart_proceeds(&fixture, &args);
+
+    let marker_fixture = WaitingLandFixture::new();
+    marker_fixture.use_gitlab_provider();
+    marker_fixture.enable_gitlab_merge_trains();
+    marker_fixture.set_glab_pipeline_status("running");
+    fs::write(&marker_fixture.landing_request_fail, "requeue-merge\n").unwrap();
+    let (land, operation_id, release) =
+        pause_requeue_after_operation_creation(&marker_fixture, &args);
+    let config_block = marker_fixture.repo_path.join(".git/gg/config.tmp");
+    fs::create_dir(&config_block).expect("block requeue marker save");
+    fs::write(release, "release\n").expect("release requeue operation");
+    let output = land
+        .wait_with_output()
+        .expect("wait for failed marker save");
+    fs::remove_dir(config_block).expect("restore config store");
+    let records = land_operation_records(&marker_fixture.repo_path);
+    let record = records
+        .iter()
+        .find(|record| record["id"] == operation_id)
+        .expect("requeue operation record");
+    let config: Value = serde_json::from_slice(
+        &fs::read(marker_fixture.repo_path.join(".git/gg/config.json")).expect("read config"),
+    )
+    .expect("parse config");
+    assert_eq!(record["touched_remote"], true, "{record}");
+    assert!(config["stacks"]["land-wait"]["gitlab_merge_train_queue_attempt"].is_null());
+    assert!(
+        !marker_fixture.requeued.exists(),
+        "requeue POST escaped marker save"
+    );
+    assert!(!format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+    .contains("Inconsistent merge-train recovery evidence"));
+    assert_requeue_restart_proceeds(&marker_fixture, &args);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_requeue_checkpoint_failures_preserve_remote_outcome() {
+    let args = ["land", "--all", "--wait", "--jsonl", "--no-clean"];
+    for (mode, provider_succeeded, expected_status) in [
+        ("requeue-success-finalization-fail", true, "pending"),
+        ("requeue-fail-finalization-fail", false, "pending"),
+        ("requeue-success-marker-clear-fail", true, "committed"),
+    ] {
+        let fixture = WaitingLandFixture::new();
+        fixture.use_gitlab_provider();
+        fixture.enable_gitlab_merge_trains();
+        fixture.set_glab_pipeline_status("running");
+        fs::write(&fixture.landing_request_fail, format!("{mode}\n")).unwrap();
+
+        let mut land = fixture.start_land_with_args(&args);
+        fixture.wait_until_queued();
+        fixture.wait_until_waiter_snapshots_queued_head();
+        fs::write(&fixture.head_moved, "moved\n").unwrap();
+        fs::write(&fixture.auto_merge_dropped, "dropped\n").unwrap();
+        let (stdout, stderr) = if mode == "requeue-success-marker-clear-fail" {
+            let mut reader = BufReader::new(land.stdout.take().expect("land stdout pipe"));
+            let mut stdout = String::new();
+            loop {
+                let mut line = String::new();
+                assert_ne!(reader.read_line(&mut line).unwrap(), 0, "{stdout}");
+                stdout.push_str(&line);
+                if line.contains("marker-clear checkpoint failed") {
+                    break;
+                }
+            }
+            fs::remove_dir(fixture.repo_path.join(".git/gg/config.tmp"))
+                .expect("restore config store after marker-clear failure");
+            reader.read_to_string(&mut stdout).unwrap();
+            let output = land.wait_with_output().expect("wait for Land");
+            (
+                stdout,
+                String::from_utf8(output.stderr).expect("land stderr"),
+            )
+        } else {
+            let output = land
+                .wait_with_output()
+                .expect("wait for requeue checkpoint failure");
+            (
+                String::from_utf8(output.stdout).expect("land stdout"),
+                String::from_utf8(output.stderr).expect("land stderr"),
+            )
+        };
+        let text = format!("{stdout}{stderr}");
+        let summary: Value = serde_json::from_str(stdout.lines().last().unwrap()).unwrap();
+        let error = summary["message"]
+            .as_str()
+            .or_else(|| summary["error"].as_str())
+            .expect("terminal error message");
+
+        let records = land_operation_records(&fixture.repo_path);
+        let record = records
+            .iter()
+            .find(|record| {
+                record["args"]
+                    .as_array()
+                    .is_some_and(|args| args.iter().any(|arg| arg == "gitlab:requeue_merge_train"))
+            })
+            .expect("requeue operation record");
+        let operation_id = record["id"].as_str().expect("operation ID");
+        let operation_tmp = fixture
+            .repo_path
+            .join(format!(".git/gg/operations/{operation_id}.json.tmp"));
+        if operation_tmp.exists() {
+            fs::remove_dir(&operation_tmp).expect("remove finalization blocker");
+        }
+        let config_tmp = fixture.repo_path.join(".git/gg/config.tmp");
+        if config_tmp.exists() {
+            fs::remove_dir(&config_tmp).expect("remove marker-clear blocker");
+        }
+        let config: Value = serde_json::from_slice(
+            &fs::read(fixture.repo_path.join(".git/gg/config.json")).unwrap(),
+        )
+        .unwrap();
+        let attempt = &config["stacks"]["land-wait"]["gitlab_merge_train_queue_attempt"];
+
+        assert!(
+            matches!(summary["event"].as_str(), Some("error" | "summary")),
+            "{mode}: {summary}"
+        );
+        assert_eq!(summary["status"], "error", "{mode}: {summary}");
+        assert_eq!(record["status"], expected_status, "{mode}: {record}");
+        assert_eq!(record["touched_remote"], true, "{mode}: {record}");
+        assert_eq!(attempt["state"], "attempted", "{mode}: {attempt}");
+        assert_eq!(attempt["operation_id"], operation_id, "{mode}: {attempt}");
+        assert_eq!(
+            fixture.requeued.exists(),
+            provider_succeeded,
+            "{mode}: {text}"
+        );
+        assert!(error.contains(operation_id), "{mode}: {text}");
+        assert!(
+            error.contains("requeue attempt marker remains authoritative"),
+            "{mode}: {text}"
+        );
+
+        match mode {
+            "requeue-success-finalization-fail" => {
+                assert!(error.contains("requeue succeeded remotely"), "{text}");
+                assert!(error.contains("finalization checkpoint failed"), "{text}");
+                assert!(error.contains("inspect GitLab and operation"), "{text}");
+            }
+            "requeue-fail-finalization-fail" => {
+                assert!(
+                    error.contains("Remote mutation outcome is uncertain"),
+                    "{text}"
+                );
+                assert!(error.contains("landing request failed"), "{text}");
+                assert!(
+                    error.contains("finalization checkpoint also failed"),
+                    "{text}"
+                );
+                assert!(
+                    error.contains("do not retry the POST automatically"),
+                    "{text}"
+                );
+            }
+            "requeue-success-marker-clear-fail" => {
+                assert!(error.contains("requeue succeeded remotely"), "{text}");
+                assert!(
+                    error.contains(&format!("operation {operation_id} was finalized")),
+                    "{text}"
+                );
+                assert!(error.contains("marker-clear checkpoint failed"), "{text}");
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_ambiguous_requeue_is_restart_safe_without_provider_access() {
     let fixture = WaitingLandFixture::new();
     fixture.use_gitlab_provider();
     fixture.enable_gitlab_merge_trains();
     fixture.set_glab_pipeline_status("running");
     fs::write(&fixture.landing_request_fail, "block-requeue-fail\n")
         .expect("block and fail the requeue request");
+    let args = ["land", "--all", "--wait", "--jsonl", "--no-clean"];
 
-    let land = fixture.start_land_with_args(&["land", "--all", "--wait", "--jsonl", "--no-clean"]);
+    let land = fixture.start_land_with_args(&args);
     fixture.wait_until_queued();
     fs::write(&fixture.head_moved, "moved\n").expect("move fake MR head");
     fs::write(&fixture.auto_merge_dropped, "dropped\n").expect("drop fake auto-merge");
+    wait_for_file(&fixture.landing_request_started());
 
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let request_started = fixture.landing_request_started();
-    while !request_started.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    assert!(request_started.exists(), "requeue request never started");
     let pending: Vec<Value> = land_operation_records(&fixture.repo_path)
         .into_iter()
         .filter(|record| record["status"] == "pending")
@@ -2576,28 +2952,63 @@ fn test_land_gitlab_ambiguous_requeue_is_finalized_and_not_retried() {
         .expect("pending requeue operation id")
         .to_string();
     assert_eq!(pending[0]["touched_remote"], true);
+    let markers = pending[0]["args"]
+        .as_array()
+        .expect("requeue operation args")
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|arg| arg.starts_with("gitlab:"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        markers,
+        [
+            "gitlab:requeue_merge_train",
+            "gitlab:stack=land-wait",
+            "gitlab:mr=41",
+            "gitlab:target_branch=main",
+        ]
+    );
+    let config_path = fixture.repo_path.join(".git/gg/config.json");
+    let pending_config: Value =
+        serde_json::from_slice(&fs::read(&config_path).expect("read pending config"))
+            .expect("parse pending config");
+    let pending_attempt =
+        &pending_config["stacks"]["land-wait"]["gitlab_merge_train_queue_attempt"];
+    assert_eq!(pending_attempt["action"], "requeue_merge_train");
+    assert_eq!(pending_attempt["state"], "attempted");
+    assert_eq!(pending_attempt["mr_number"], 41);
+    assert_eq!(pending_attempt["target_branch"], "main");
+    assert_eq!(pending_attempt["operation_id"], operation_id);
 
     fixture.release_landing_request();
     let output = land.wait_with_output().expect("wait for land");
-    let stdout = String::from_utf8(output.stdout).expect("land stdout");
-    let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
-        .expect("parse summary event");
-    assert!(
-        summary["error"]
-            .as_str()
-            .is_some_and(|error| error.contains("landing request failed")),
-        "{summary}"
+    let first_text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
+    assert!(
+        first_text.contains("Remote mutation outcome is uncertain"),
+        "{first_text}"
+    );
+    assert!(first_text.contains("MR !41"), "{first_text}");
+    assert!(first_text.contains(&operation_id), "{first_text}");
     assert!(
         !fixture.requeued.exists(),
         "failed requeue must not look successful"
     );
-    let attempts = fs::read_to_string(format!(
+    let attempts_path = std::path::PathBuf::from(format!(
         "{}.attempts",
         fixture.landing_request_fail.display()
-    ))
-    .expect("read requeue attempt count");
-    assert_eq!(attempts.lines().count(), 1, "mutation must not be retried");
+    ));
+    assert_eq!(
+        fs::read_to_string(&attempts_path)
+            .expect("read requeue attempt count")
+            .lines()
+            .count(),
+        1,
+        "mutation must not be retried"
+    );
 
     let records = land_operation_records(&fixture.repo_path);
     let record = records
@@ -2606,6 +3017,177 @@ fn test_land_gitlab_ambiguous_requeue_is_finalized_and_not_retried() {
         .expect("same requeue operation after failure");
     assert_eq!(record["status"], "committed");
     assert_eq!(record["touched_remote"], true);
+    let config_before = fs::read(&config_path).expect("snapshot config");
+    let retained_config: Value =
+        serde_json::from_slice(&config_before).expect("parse retained config");
+    let retained_attempt =
+        &retained_config["stacks"]["land-wait"]["gitlab_merge_train_queue_attempt"];
+    assert_eq!(retained_attempt["action"], "requeue_merge_train");
+    assert_eq!(retained_attempt["state"], "attempted");
+    assert_eq!(retained_attempt["operation_id"], operation_id);
+    let operations_dir = fixture.repo_path.join(".git/gg/operations");
+    let snapshot_operations = || {
+        let mut files = fs::read_dir(&operations_dir)
+            .expect("list operations")
+            .map(|entry| {
+                let path = entry.expect("operation entry").path();
+                (
+                    path.file_name().unwrap().to_os_string(),
+                    fs::read(path).expect("read operation"),
+                )
+            })
+            .collect::<Vec<_>>();
+        files.sort_by(|left, right| left.0.cmp(&right.0));
+        files
+    };
+    let operations_before = snapshot_operations();
+    let refs_before = Command::new("git")
+        .args(["for-each-ref", "--format=%(refname) %(objectname)"])
+        .current_dir(&fixture.repo_path)
+        .output()
+        .expect("snapshot refs")
+        .stdout;
+    fs::write(&fixture.merge_settings_fail, "forbid-all")
+        .expect("forbid every provider process access");
+
+    let restart = fixture.land_command(&args).output().expect("restart Land");
+    let restart_text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&restart.stdout),
+        String::from_utf8_lossy(&restart.stderr)
+    );
+    assert!(!restart.status.success(), "restart must fail closed");
+    assert!(restart_text.contains("MR !41"), "{restart_text}");
+    assert!(restart_text.contains(&operation_id), "{restart_text}");
+    assert!(
+        restart_text.contains("will not be retried automatically"),
+        "{restart_text}"
+    );
+    assert!(!fixture
+        .merge_settings_fail
+        .with_extension("accessed")
+        .exists());
+    assert_eq!(
+        fs::read_to_string(attempts_path)
+            .expect("read requeue attempts after restart")
+            .lines()
+            .count(),
+        1,
+        "restart retried the requeue POST"
+    );
+    assert_eq!(fs::read(config_path).expect("read config"), config_before);
+    assert_eq!(snapshot_operations(), operations_before);
+    let refs_after = Command::new("git")
+        .args(["for-each-ref", "--format=%(refname) %(objectname)"])
+        .current_dir(&fixture.repo_path)
+        .output()
+        .expect("read refs")
+        .stdout;
+    assert_eq!(refs_after, refs_before);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_merge_train_recovery_rejects_conflicting_action_markers() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.set_glab_pipeline_status("running");
+    fs::write(&fixture.landing_request_fail, "block-requeue-fail\n")
+        .expect("block and fail the requeue request");
+    let args = ["land", "--all", "--wait", "--jsonl", "--no-clean"];
+
+    let land = fixture.start_land_with_args(&args);
+    fixture.wait_until_queued();
+    fs::write(&fixture.head_moved, "moved\n").expect("move fake MR head");
+    fs::write(&fixture.auto_merge_dropped, "dropped\n").expect("drop fake auto-merge");
+    wait_for_file(&fixture.landing_request_started());
+    fixture.release_landing_request();
+    let _ = land.wait_with_output().expect("wait for ambiguous requeue");
+
+    let config_path = fixture.repo_path.join(".git/gg/config.json");
+    let config: Value = serde_json::from_slice(&fs::read(&config_path).expect("read config"))
+        .expect("parse config");
+    let attempt = &config["stacks"]["land-wait"]["gitlab_merge_train_queue_attempt"];
+    assert_eq!(attempt["action"], "requeue_merge_train");
+    assert_eq!(attempt["state"], "attempted");
+    let operation_id = attempt["operation_id"]
+        .as_str()
+        .expect("requeue operation ID");
+    let operation_path = fixture
+        .repo_path
+        .join(format!(".git/gg/operations/{operation_id}.json"));
+    let mut operation: Value =
+        serde_json::from_slice(&fs::read(&operation_path).expect("read operation"))
+            .expect("parse operation");
+    let operation_args = operation["args"].as_array_mut().expect("operation args");
+    assert!(operation_args
+        .iter()
+        .any(|arg| arg == "gitlab:requeue_merge_train"));
+    assert!(!operation_args
+        .iter()
+        .any(|arg| arg == "gitlab:queue_merge_train"));
+    operation_args.push("gitlab:queue_merge_train".into());
+    let conflicting_operation =
+        serde_json::to_vec_pretty(&operation).expect("serialize conflicting operation");
+    fs::write(&operation_path, &conflicting_operation).expect("inject conflicting action marker");
+
+    let config_before = fs::read(&config_path).expect("snapshot config");
+    let operations_dir = fixture.repo_path.join(".git/gg/operations");
+    let snapshot_operations = || {
+        let mut files = fs::read_dir(&operations_dir)
+            .expect("list operations")
+            .map(|entry| {
+                let path = entry.expect("operation entry").path();
+                (
+                    path.file_name().unwrap().to_os_string(),
+                    fs::read(path).expect("read operation"),
+                )
+            })
+            .collect::<Vec<_>>();
+        files.sort_by(|left, right| left.0.cmp(&right.0));
+        files
+    };
+    let operations_before = snapshot_operations();
+    let refs_before = Command::new("git")
+        .args(["for-each-ref", "--format=%(refname) %(objectname)"])
+        .current_dir(&fixture.repo_path)
+        .output()
+        .expect("snapshot refs")
+        .stdout;
+    fs::write(&fixture.merge_settings_fail, "forbid-all")
+        .expect("forbid every provider process access");
+
+    let restart = fixture.land_command(&args).output().expect("restart Land");
+    let restart_text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&restart.stdout),
+        String::from_utf8_lossy(&restart.stderr)
+    );
+    assert!(!restart.status.success(), "restart must fail closed");
+    assert!(
+        restart_text.contains(&format!(
+            "Inconsistent merge-train recovery evidence for operation {operation_id}"
+        )),
+        "{restart_text}"
+    );
+    assert!(!fixture
+        .merge_settings_fail
+        .with_extension("accessed")
+        .exists());
+    assert_eq!(fs::read(config_path).expect("read config"), config_before);
+    assert_eq!(snapshot_operations(), operations_before);
+    let refs_after = Command::new("git")
+        .args(["for-each-ref", "--format=%(refname) %(objectname)"])
+        .current_dir(&fixture.repo_path)
+        .output()
+        .expect("read refs")
+        .stdout;
+    assert_eq!(refs_after, refs_before);
+    assert_eq!(
+        fs::read(operation_path).expect("read conflicting operation"),
+        conflicting_operation
+    );
 }
 
 #[cfg(unix)]

@@ -905,10 +905,10 @@ fn requeue_merge_train_with_operation(
     target_branch: &str,
     squash: bool,
     structured: bool,
-) -> Result<AutoMergeResult> {
+) -> Result<(AutoMergeResult, String)> {
     let _lock = git::acquire_operation_lock_silent(repo, "land", structured)?;
     let git_dir = repo.commondir();
-    let config = Config::load_with_global(git_dir)?;
+    let mut config = Config::load_with_global(git_dir)?;
     let current_stack = Stack::load(repo, &config)?;
     recover_merge_train_queue_attempt(repo, &config, &current_stack.name)?;
     if config
@@ -922,23 +922,83 @@ fn requeue_merge_train_with_operation(
     if let Some(error) = stack_changed_while_waiting(expected_stack, &current_stack) {
         return Err(GgError::Other(error));
     }
-    crate::glab::validate_mr_before_landing(pr_num, target_branch)?;
+    let mr = crate::glab::read_landing_merge_request(pr_num)?;
+    crate::glab::validate_landing_merge_request(pr_num, target_branch, &mr)?;
+    let validated_head_sha = mr.sha.ok_or_else(|| {
+        GgError::GlabError(format!("MR !{pr_num} is missing its required head SHA"))
+    })?;
+    require_fresh_approval(provider, pr_num, false)?;
 
-    let mut guard = None;
+    let mut requeue_args = args.to_vec();
+    requeue_args.extend(merge_train_queue_args(
+        &current_stack.name,
+        pr_num,
+        target_branch,
+        "requeue_merge_train",
+    ));
+    let mut guard = Some(begin_land_segment(repo, &config, &requeue_args)?);
     let mut remote_effects = Vec::new();
     let mut touched_remote = false;
-    ensure_land_segment(repo, &config, args, &mut guard)?;
+    let operation_id = guard.as_ref().expect("requeue operation").id().to_string();
+    #[cfg(debug_assertions)]
+    if let (Some(ready), Some(release)) = (
+        std::env::var_os("GG_TEST_REQUEUE_OPERATION_READY"),
+        std::env::var_os("GG_TEST_REQUEUE_OPERATION_RELEASE"),
+    ) {
+        std::fs::write(ready, operation_id.as_bytes())?;
+        let release = std::path::PathBuf::from(release);
+        while !release.exists() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
     mark_land_remote_attempt(&mut guard, &mut touched_remote)?;
-    let result = provider.add_to_merge_train(pr_num, squash);
-    config.save(git_dir)?;
-    finish_land_segment(
+    config.set_gitlab_merge_train_queue_attempt(
+        git_dir,
+        &current_stack.name,
+        GitLabLandingAttempt {
+            mr_number: pr_num,
+            action: "requeue_merge_train".to_string(),
+            operation_id: operation_id.clone(),
+            state: GitLabLandingAttemptState::Attempted,
+            target_project_id: None,
+            source_project_id: None,
+            source_branch: None,
+            source_oid: None,
+            target_branch: Some(target_branch.to_string()),
+            pipeline_id: None,
+        },
+    )?;
+    let provider_result = provider.add_to_merge_train(pr_num, squash);
+    let finalization_result = finish_land_segment(
         repo,
         &config,
         &mut guard,
         &mut remote_effects,
         &mut touched_remote,
-    )?;
-    result
+    );
+    match (provider_result, finalization_result) {
+        (Ok(result), Ok(())) => {
+            config
+                .clear_gitlab_merge_train_queue_attempt(git_dir, &current_stack.name)
+                .map_err(|error| {
+                    GgError::DurabilityCheckpoint(format!(
+                        "merge-train requeue succeeded remotely for MR !{pr_num} and operation {operation_id} was finalized, but marker-clear checkpoint failed: {error}; the requeue attempt marker remains authoritative; inspect GitLab and operation {operation_id} before recovery; do not retry the POST automatically"
+                    ))
+                })?;
+            Ok((result, validated_head_sha))
+        }
+        (Ok(_), Err(error)) => Err(GgError::DurabilityCheckpoint(format!(
+            "merge-train requeue succeeded remotely for MR !{pr_num}, but finalization checkpoint failed for operation {operation_id}: {error}; the requeue attempt marker remains authoritative; inspect GitLab and operation {operation_id} before recovery; do not retry the POST automatically"
+        ))),
+        (Err(provider_error), Ok(())) => Err(GgError::RemoteMutationUncertain(format!(
+            "merge-train requeue for MR !{pr_num} is unresolved after provider error for operation {operation_id}: {provider_error}; the operation was finalized, but the requeue attempt marker remains authoritative; inspect GitLab and operation {operation_id} before recovery; it will not be retried automatically"
+        ))),
+        (Err(provider_error), Err(finalization_error)) => {
+            Err(GgError::RemoteMutationUncertain(format!(
+                "merge-train requeue for MR !{pr_num} is unresolved after provider error for operation {operation_id}: {provider_error}; finalization checkpoint also failed: {finalization_error}; the requeue attempt marker remains authoritative; inspect GitLab and operation {operation_id} before recovery; do not retry the POST automatically"
+            )))
+        }
+    }
 }
 
 fn mark_land_remote_attempt(
@@ -953,9 +1013,14 @@ fn mark_land_remote_attempt(
     Ok(())
 }
 
-fn merge_train_queue_args(stack_name: &str, mr_number: u64, target_branch: &str) -> Vec<String> {
+fn merge_train_queue_args(
+    stack_name: &str,
+    mr_number: u64,
+    target_branch: &str,
+    action: &str,
+) -> Vec<String> {
     vec![
-        "gitlab:queue_merge_train".to_string(),
+        format!("gitlab:{action}"),
         format!("gitlab:stack={stack_name}"),
         format!("gitlab:mr={mr_number}"),
         format!("gitlab:target_branch={target_branch}"),
@@ -975,7 +1040,7 @@ fn recover_merge_train_queue_attempt(
     };
     let inconsistent = || {
         GgError::Other(format!(
-            "Inconsistent queue_merge_train recovery evidence for operation {}",
+            "Inconsistent merge-train recovery evidence for operation {}",
             attempt.operation_id
         ))
     };
@@ -983,24 +1048,37 @@ fn recover_merge_train_queue_attempt(
     let record = OperationStore::new(&git::gg_dir(repo))
         .load(&attempt.operation_id)
         .map_err(|_| inconsistent())?;
-    let exact_markers = merge_train_queue_args(stack_name, attempt.mr_number, target_branch)
+    let recovery_args = merge_train_queue_args(
+        stack_name,
+        attempt.mr_number,
+        target_branch,
+        &attempt.action,
+    );
+    let exact_markers = recovery_args.iter().all(|marker| {
+        let prefix = marker
+            .split_once('=')
+            .map_or(marker.as_str(), |pair| pair.0);
+        record
+            .args
+            .iter()
+            .filter(|arg| {
+                arg.as_str() == prefix
+                    || arg
+                        .strip_prefix(prefix)
+                        .is_some_and(|value| value.starts_with('='))
+            })
+            .eq(std::iter::once(marker))
+    });
+    let exact_action_marker = record
+        .args
         .iter()
-        .all(|marker| {
-            let prefix = marker
-                .split_once('=')
-                .map_or(marker.as_str(), |pair| pair.0);
-            record
-                .args
-                .iter()
-                .filter(|arg| {
-                    arg.as_str() == prefix
-                        || arg
-                            .strip_prefix(prefix)
-                            .is_some_and(|value| value.starts_with('='))
-                })
-                .eq(std::iter::once(marker))
-        });
-    if attempt.action != "queue_merge_train"
+        .filter_map(|arg| match arg.as_str() {
+            "gitlab:queue_merge_train" => Some("queue_merge_train"),
+            "gitlab:requeue_merge_train" => Some("requeue_merge_train"),
+            _ => None,
+        })
+        .eq(std::iter::once(attempt.action.as_str()));
+    if attempt.action != "queue_merge_train" && attempt.action != "requeue_merge_train"
         || attempt.state != GitLabLandingAttemptState::Attempted
         || attempt.target_project_id.is_some()
         || attempt.source_project_id.is_some()
@@ -1017,6 +1095,7 @@ fn recover_merge_train_queue_attempt(
         || !record.touched_remote
         || !record.remote_effects.is_empty()
         || !exact_markers
+        || !exact_action_marker
     {
         return Err(inconsistent());
     }
@@ -2683,7 +2762,12 @@ pub fn run(opts: LandOptions) -> Result<()> {
                     &mut touched_remote,
                 )?;
                 let mut queue_args = args.clone();
-                queue_args.extend(merge_train_queue_args(&stack.name, pr_num, &stack.base));
+                queue_args.extend(merge_train_queue_args(
+                    &stack.name,
+                    pr_num,
+                    &stack.base,
+                    "queue_merge_train",
+                ));
                 guard = Some(begin_land_segment(&repo, &config, &queue_args)?);
                 let operation_id = guard
                     .as_ref()
@@ -2776,14 +2860,23 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         )?);
                         config = Config::load_with_global(git_dir)?;
                         let stack_name = stack.name.clone();
-                        recover_pipeline_after_lock(
-                            &repo,
-                            &mut config,
-                            &stack_name,
-                            &mut pipeline_handoff,
-                            &mut pipeline_checkpointed,
-                            streamer.as_mut(),
-                        )?;
+                        let preserve_requeue_error = wait_result.is_err()
+                            && config.get_stack(&stack_name).is_some_and(|stack| {
+                                stack
+                                    .gitlab_merge_train_queue_attempt
+                                    .as_ref()
+                                    .is_some_and(|attempt| attempt.action == "requeue_merge_train")
+                            });
+                        if !preserve_requeue_error {
+                            recover_pipeline_after_lock(
+                                &repo,
+                                &mut config,
+                                &stack_name,
+                                &mut pipeline_handoff,
+                                &mut pipeline_checkpointed,
+                                streamer.as_mut(),
+                            )?;
+                        }
                         if wait_result.is_ok() {
                             clear_pipeline_handoff_after_terminal(
                                 &repo,
@@ -3998,8 +4091,8 @@ fn wait_for_merge_train_completion(
                                         squash,
                                         json,
                                     ) {
-                                        Ok(_) => {
-                                            queued_head_sha = pr_info.head_sha.clone();
+                                        Ok((_, validated_head_sha)) => {
+                                            queued_head_sha = Some(validated_head_sha);
                                             idle_count = 0;
                                             let msg = format!(
                                                 "GitLab cancelled auto-merge for {} {}{} after a push to its source branch; re-queued it for the merge train",
@@ -4012,13 +4105,7 @@ fn wait_for_merge_train_completion(
                                         }
                                         Err(e) => {
                                             api_calls_succeeded = false;
-                                            let msg = format!(
-                                                "Failed to re-queue {} {}{} for the merge train: {}",
-                                                provider.pr_label(),
-                                                provider.pr_number_prefix(),
-                                                pr_num,
-                                                e
-                                            );
+                                            let msg = e.to_string();
                                             // A failed mutation response is remotely ambiguous.
                                             // Never retry it automatically; the operation record
                                             // is already durable and non-undoable.

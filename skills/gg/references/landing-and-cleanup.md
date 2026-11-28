@@ -19,6 +19,9 @@
   Non-wait `gg land --all` rechecks approval immediately before each entry's
   final queue or merge request, but the agent must still complete the full
   preflight below because approval alone does not establish readiness.
+  Non-wait GitLab `--no-squash` also rechecks approval immediately before
+  changing the MR squash setting; this does not replace the later final queue
+  or merge authorization, or any other preflight gate.
   If the user separately approved a GitHub admin bypass, approval may be absent.
   If the user explicitly requested or immediately confirmed `--wait` without
   `--all`, pending or running CI and pending approval may be polled, but do not

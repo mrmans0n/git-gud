@@ -38,6 +38,11 @@ gg land --until 2
 gg land --no-squash
 ```
 
+On GitLab, a non-wait `--no-squash` run checks approval again immediately
+before turning off the MR's squash setting. If that approval has been
+dismissed, the command refuses before changing the MR or creating landing
+recovery state.
+
 By default, landing several entries rebases and force-pushes the remaining branches after every merge, which re-triggers CI on each of them. On large stacks, land with merge commits and `--rebase-if-needed`. After each merge, gg checks that the landed commit reached the base branch unchanged and that the forge says the next PR/MR still merges cleanly. When both hold, the remaining branches stay as they are; otherwise gg rebases them as usual:
 
 ```bash

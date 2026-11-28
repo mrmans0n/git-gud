@@ -62,6 +62,14 @@ pipeline handoff and refreshes approval again. If approval was dismissed, it
 creates no queue attempt or landing recovery state and sends no queue request;
 GitLab `--admin` does not bypass this check.
 
+If a later push cancels that queued merge, `--wait` treats the requeue as a new
+authorization boundary. gg validates the MR's current head and approval before
+creating requeue recovery state or sending another request. A lost response or
+post-POST durability-checkpoint failure leaves the action-specific recovery
+marker in place, so a restart stops before provider access instead of risking a
+duplicate POST. Inspect the reported MR and operation ID before changing
+recovery data or retrying manually.
+
 `gg land` stops before changing the remote if it cannot read a valid merge-train setting. It also revalidates each MR immediately before mutation and requires an explicit open, non-draft state with the expected target branch. Retry only after direct provider inspection confirms those values.
 
 The initial merge-train queue request is recovery-safe. `gg` records the request before sending it. If GitLab accepts the request but the response is lost, later Land runs stop before provider access instead of queueing the MR again. Inspect the reported MR and operation ID in GitLab and the local operation log before changing recovery data. A completed pipeline handoff is kept separately, so investigating the queue request does not discard that evidence.

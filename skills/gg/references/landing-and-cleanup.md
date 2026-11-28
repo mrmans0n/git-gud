@@ -36,6 +36,11 @@
   final MR or pipeline-handoff validation, recheck approval before creating
   queue recovery state or sending the queue request. A refusal must leave no
   queue attempt or landing recovery state. GitLab admin never bypasses it.
+  A merge-train requeue after a pushed head is another separate boundary:
+  require the final authoritative MR read to prove an open, non-draft MR, the
+  expected target, and a current head SHA, then recheck approval before any
+  requeue owner state or POST. Treat the returned validated SHA as authoritative
+  for subsequent polling. GitLab admin never bypasses this gate.
   If the user separately approved a GitHub admin bypass, approval may be absent.
   If the user explicitly requested or immediately confirmed `--wait` without
   `--all`, pending or running CI and pending approval may be polled, but do not
@@ -141,6 +146,10 @@ stop before invoking global cleanup.
    the matching MR is observed merged or closed. In JSONL mode, require the
    `pipeline_checkpoint` event before allowing later automation; a broken pipe
    while emitting it stops gg before queueing or taking the next action.
+   A requeue after a pushed head has its own Land operation and
+   `requeue_merge_train` attempt marker. If the provider response is ambiguous
+   or a post-POST checkpoint fails, preserve that marker and stop; a restart
+   must refuse before provider access rather than replaying the POST.
 5. Treat `queued` and `already_queued` as queued, not merged.
 6. Verify the remote merge result before cleanup.
 7. If cleanup was separately authorized for the just-landed stack and the

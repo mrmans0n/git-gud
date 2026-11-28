@@ -40,6 +40,11 @@ final MR or pipeline-handoff validation, gg refreshes approval before creating
 queue recovery state or sending the queue request. A refusal leaves neither an
 initial queue attempt nor landing recovery state, even with `--admin`.
 
+If a push cancels auto-merge while `--wait` is tracking the train, the requeue
+has its own authorization and recovery boundary. gg re-reads and validates the
+MR, requires its current head SHA, and refreshes approval before recording or
+sending the requeue. GitLab `--admin` does not bypass this check.
+
 For non-wait GitLab landing with `--no-squash`, gg also refreshes approval
 immediately before changing the MR's squash setting. If approval was dismissed,
 gg leaves the setting unchanged and creates no landing recovery record.
@@ -153,6 +158,17 @@ After queueing, GitLab can take time to report the MR in the merge train listing
 If GitLab accepts the initial queue request but the response is lost, `gg` saves the unresolved request and refuses to send it again. Later `gg land` runs stop before contacting GitLab and report the MR and operation ID that need inspection. Check the MR's merge-train state and the saved operation before changing recovery data or rerunning the command. The completed pipeline handoff remains available while this queue request is unresolved.
 
 GitLab cancels auto-merge when the MR's source branch is pushed, and it does not add the MR back by itself. gg records the MR's head commit when it queues the MR. When `--wait` sees the MR still open, off the train, and no longer set to auto-merge, it compares heads. If the head moved, a push cancelled the merge: gg queues the MR again with the same squash choice, records the new head, reports this in a `wait` event with `status: "warning"`, and keeps polling. If the head did not move, the train pipeline failed or someone cancelled auto-merge by hand, so gg stops waiting with an error instead of queueing the MR again.
+
+The requeue request is journaled separately from the initial queue. Before the
+POST, gg durably records both the requeue owner and that remote work may begin.
+It clears that recovery marker only after GitLab confirms success and the Land
+operation is finalized. An ambiguous response or a failed post-POST durability
+checkpoint retains the marker, and a later `gg land` stops before contacting
+GitLab rather than risking a duplicate requeue. Inspect the reported MR and
+operation ID in GitLab and the local operation log before changing recovery
+data. After a known
+success, the waiter tracks the head SHA from the final MR validation rather than
+the earlier polling snapshot.
 
 ## CI Failure Details
 

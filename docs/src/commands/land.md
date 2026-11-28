@@ -21,6 +21,12 @@ gg land [OPTIONS]
 - `--json`: Emit machine-readable JSON output (no human logs)
 - `--jsonl`: Emit flushed NDJSON events as landing and polling progress; conflicts with `--json`
 
+For non-wait landing, gg refreshes approval for each entry immediately before
+its final queue or merge request. If approval was dismissed after the initial
+stack refresh, that entry is refused without starting the landing mutation.
+Only the explicit GitHub admin override bypasses this check; GitLab still
+requires approval when `--admin` is supplied.
+
 ## Examples
 
 ```bash

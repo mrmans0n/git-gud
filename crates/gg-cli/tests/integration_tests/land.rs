@@ -116,6 +116,8 @@ fn write_fake_land_glab(path: &Path) {
         r#"#!/bin/sh
 set -eu
 
+if [ -f "$GG_FAKE_MERGE_SETTINGS_FAIL" ] && [ "$(cat "$GG_FAKE_MERGE_SETTINGS_FAIL")" = "forbid-all" ]; then touch "$GG_FAKE_MERGE_SETTINGS_FAIL.accessed"; exit 1; fi
+
 if [ "$1" = "--version" ]; then
   echo "glab version 1.0.0"
   exit 0
@@ -237,6 +239,9 @@ if [ "$1" = "api" ] && [ "$2" = "--method" ] && [ "$3" = "PUT" ] && [ "$4" = "pr
   is_landing_request=true
 fi
 if [ "$is_landing_request" = "true" ]; then
+  case "$*" in
+    *merge_when_pipeline_succeeds=true*) printf 'attempt\n' >> "$GG_FAKE_QUEUED.attempts" ;;
+  esac
   if [ -n "$retarget_pipeline" ]; then
     case "$4" in
       projects/:id/merge_trains/merge_requests/41)
@@ -281,6 +286,13 @@ if [ "$is_landing_request" = "true" ]; then
   fi
   if [ "$landing_request_mode" = "fail" ]; then
     echo "landing request failed" >&2
+    exit 1
+  fi
+  if [ "$landing_request_mode" = "already-auto-merge" ]; then echo "409 already set to Auto-Merge" >&2; exit 1; fi
+  if [ "$landing_request_mode" = "auto-merge-applied-response-fail" ]; then
+    printf 'attempt\n' >> "$GG_FAKE_LANDING_REQUEST_FAIL.attempts"
+    printf '%s\n' "$*" > "$GG_FAKE_QUEUED"
+    echo "connection lost after enabling auto-merge" >&2
     exit 1
   fi
   if [ -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; then
@@ -3531,6 +3543,222 @@ fn test_land_auto_merge_failure_records_remote_uncertainty_before_attempt() {
         &fixture,
         &["land", "--json", "--auto-merge", "--no-clean"],
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_auto_merge_lost_response_recovery_is_at_most_once() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fs::write(
+        &fixture.landing_request_fail,
+        "auto-merge-applied-response-fail\n",
+    )
+    .expect("fail the response after enabling auto-merge");
+    let args = ["land", "--json", "--auto-merge", "--no-clean"];
+
+    let first = fixture
+        .land_command(&args)
+        .output()
+        .expect("run first Land");
+    let first_text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        first_text.contains("connection lost after enabling auto-merge"),
+        "{first_text}"
+    );
+    assert!(fixture.queued.exists(), "the PUT must reach GitLab");
+
+    let attempt = gitlab_landing_attempt(&fixture.repo_path).expect("saved queue attempt");
+    assert_eq!(attempt["action"], "queue_auto_merge");
+    let operation_id = attempt["operation_id"]
+        .as_str()
+        .expect("saved operation ID")
+        .to_string();
+    let records_before = land_operation_records(&fixture.repo_path);
+    assert_eq!(records_before.len(), 1, "{records_before:?}");
+    assert_eq!(records_before[0]["id"], operation_id);
+    assert_eq!(records_before[0]["touched_remote"], true);
+    assert_eq!(
+        fs::read_to_string(format!(
+            "{}.attempts",
+            fixture.landing_request_fail.display()
+        ))
+        .expect("read auto-merge attempts")
+        .lines()
+        .count(),
+        1
+    );
+
+    fs::remove_file(&fixture.queued).expect("make provider state stale and not queued");
+    let config_path = fixture.repo_path.join(".git/gg/config.json");
+    let config_before = fs::read(&config_path).expect("snapshot config");
+    let refs_before = Command::new("git")
+        .args(["for-each-ref", "--format=%(refname) %(objectname)"])
+        .current_dir(&fixture.repo_path)
+        .output()
+        .expect("snapshot refs")
+        .stdout;
+
+    let second = fixture.land_command(&args).output().expect("restart Land");
+    let second_text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&second.stdout),
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert!(!second.status.success(), "recovery must fail closed");
+    assert!(second_text.contains(&operation_id), "{second_text}");
+    assert_eq!(
+        fs::read_to_string(format!(
+            "{}.attempts",
+            fixture.landing_request_fail.display()
+        ))
+        .expect("read auto-merge attempts")
+        .lines()
+        .count(),
+        1,
+        "recovery retried the auto-merge PUT"
+    );
+    assert_eq!(land_operation_records(&fixture.repo_path), records_before);
+    assert_eq!(fs::read(config_path).expect("read config"), config_before);
+    let refs_after = Command::new("git")
+        .args(["for-each-ref", "--format=%(refname) %(objectname)"])
+        .current_dir(&fixture.repo_path)
+        .output()
+        .expect("read refs")
+        .stdout;
+    assert_eq!(refs_after, refs_before);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_auto_merge_recovery_rejects_wrong_operation_kind() {
+    for invalid_field in ["id", "schema", "kind", "status", "untouched", "effects"] {
+        let fixture = WaitingLandFixture::new();
+        fixture.use_gitlab_provider();
+        fs::write(
+            &fixture.landing_request_fail,
+            "auto-merge-applied-response-fail\n",
+        )
+        .expect("fail the response after enabling auto-merge");
+        let args = ["land", "--json", "--auto-merge", "--no-clean"];
+        let _ = fixture.land_command(&args).output().expect("seed attempt");
+
+        let attempt = gitlab_landing_attempt(&fixture.repo_path).expect("saved queue attempt");
+        let operation_id = attempt["operation_id"]
+            .as_str()
+            .expect("saved operation ID")
+            .to_string();
+        let operation_path = fixture
+            .repo_path
+            .join(format!(".git/gg/operations/{operation_id}.json"));
+        let mut operation: Value =
+            serde_json::from_slice(&fs::read(&operation_path).expect("read operation"))
+                .expect("parse operation");
+        match invalid_field {
+            "id" => operation["id"] = "wrong-operation-id".into(),
+            "schema" => operation["schema_version"] = 0.into(),
+            "kind" => operation["kind"] = "sync".into(),
+            "status" => operation["status"] = "invalid".into(),
+            "untouched" => operation["touched_remote"] = false.into(),
+            "effects" => {
+                operation["remote_effects"] = serde_json::json!([{
+                    "kind": "pushed", "remote": "origin", "branch": "topic", "force": false
+                }])
+            }
+            _ => unreachable!(),
+        }
+        let corrupt_operation = serde_json::to_vec_pretty(&operation).expect("serialize operation");
+        fs::write(&operation_path, &corrupt_operation).expect("corrupt operation evidence");
+        fs::write(&fixture.merge_settings_fail, "forbid-all").expect("forbid provider access");
+
+        let operations_dir = fixture.repo_path.join(".git/gg/operations");
+        let operation_count = fs::read_dir(&operations_dir)
+            .expect("list operations")
+            .count();
+        let config_path = fixture.repo_path.join(".git/gg/config.json");
+        let config_before = fs::read(&config_path).expect("snapshot config");
+
+        let restart = fixture.land_command(&args).output().expect("restart Land");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&restart.stdout),
+            String::from_utf8_lossy(&restart.stderr)
+        );
+        assert!(!restart.status.success(), "{invalid_field}: {text}");
+        assert!(
+            text.contains(&format!(
+                "Inconsistent queue_auto_merge recovery evidence for operation {operation_id}"
+            )),
+            "{invalid_field}: {text}"
+        );
+        assert_eq!(
+            fs::read_to_string(format!(
+                "{}.attempts",
+                fixture.landing_request_fail.display()
+            ))
+            .expect("read provider mutation attempts")
+            .lines()
+            .count(),
+            1,
+            "recovery issued a provider mutation"
+        );
+        assert_eq!(
+            fs::read_dir(operations_dir)
+                .expect("list operations after recovery")
+                .count(),
+            operation_count,
+            "recovery created an operation"
+        );
+        assert_eq!(fs::read(config_path).expect("read config"), config_before);
+        assert_eq!(
+            fs::read(operation_path).expect("read corrupt operation"),
+            corrupt_operation
+        );
+        assert!(!fixture
+            .merge_settings_fail
+            .with_extension("accessed")
+            .exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_auto_merge_success_clears_attempt_after_finalization() {
+    for (mode, action) in [
+        (None, "queued"),
+        (Some("already-auto-merge"), "already_queued"),
+    ] {
+        let fixture = WaitingLandFixture::new();
+        fixture.use_gitlab_provider();
+        if let Some(mode) = mode {
+            fs::write(&fixture.landing_request_fail, mode).expect("set provider result");
+        }
+        let output = fixture
+            .land_command(&["land", "--json", "--auto-merge", "--no-clean"])
+            .output()
+            .expect("run Land");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let response: Value = serde_json::from_slice(&output.stdout).expect("parse Land response");
+        assert_eq!(response["land"]["landed"][0]["action"], action);
+        let attempts = fs::read_to_string(format!("{}.attempts", fixture.queued.display()))
+            .expect("read auto-merge PUT attempts");
+        assert_eq!(attempts.lines().count(), 1, "provider PUT count");
+        let records = land_operation_records(&fixture.repo_path);
+        assert_eq!(records.len(), 1, "expected one Land operation: {records:?}");
+        assert_eq!(records[0]["status"], "committed");
+        assert!(
+            gitlab_landing_attempt(&fixture.repo_path).is_none(),
+            "retained attempt"
+        );
+    }
 }
 
 #[cfg(unix)]

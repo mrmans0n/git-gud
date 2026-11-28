@@ -2657,6 +2657,9 @@ if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
 fi
 
 if [ "$1" = "pr" ] && [ "$2" = "view" ] && [ "$3" = "4242" ]; then
+  case "$*" in
+    *"--jq .reviewDecision"*) echo APPROVED; exit 0 ;;
+  esac
   echo '{"number":4242,"title":"Land clean","state":"OPEN","url":"https://github.com/test/repo/pull/4242","headRefName":"testuser/land-clean--c-1a2b3c4","isDraft":false,"mergeable":"MERGEABLE","reviews":[]}'
   exit 0
 fi

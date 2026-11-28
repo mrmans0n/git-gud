@@ -786,6 +786,28 @@ fn pr_is_still_ready(
     (skip_approval && !merge_trains_enabled) || provider.check_pr_approved(pr_num).unwrap_or(false)
 }
 
+fn require_fresh_approval(provider: &Provider, pr_num: u64, admin: bool) -> Result<()> {
+    if admin && *provider == Provider::GitHub {
+        return Ok(());
+    }
+    match provider.check_pr_approved(pr_num) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(GgError::Other(format!(
+            "{} {}{} is not approved",
+            provider.pr_label(),
+            provider.pr_number_prefix(),
+            pr_num
+        ))),
+        Err(error) => Err(GgError::Other(format!(
+            "Failed to check approval for {} {}{}: {}",
+            provider.pr_label(),
+            provider.pr_number_prefix(),
+            pr_num,
+            error
+        ))),
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum WaitForReadyOutcome {
     Ready,
@@ -2645,6 +2667,9 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 } else if provider == Provider::GitLab {
                     crate::glab::validate_mr_before_landing(pr_num, &stack.base)?;
                 }
+                if !wait {
+                    require_fresh_approval(&provider, pr_num, admin)?;
+                }
                 finish_land_segment(
                     &repo,
                     &config,
@@ -2889,6 +2914,9 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 if provider == Provider::GitLab {
                     crate::glab::validate_mr_before_landing(pr_num, &stack.base)?;
                 }
+                if !wait {
+                    require_fresh_approval(&provider, pr_num, admin)?;
+                }
                 ensure_land_segment(&repo, &config, &args, &mut guard)?;
                 let operation_id = guard
                     .as_ref()
@@ -2983,6 +3011,9 @@ pub fn run(opts: LandOptions) -> Result<()> {
             let merge_result = (|| {
                 if provider == Provider::GitLab {
                     crate::glab::validate_mr_before_landing(pr_num, &stack.base)?;
+                }
+                if !wait {
+                    require_fresh_approval(&provider, pr_num, admin)?;
                 }
                 ensure_land_segment(&repo, &config, &args, &mut guard)?;
                 mark_land_remote_attempt(&mut guard, &mut touched_remote)?;

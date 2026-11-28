@@ -888,6 +888,7 @@ fn requeue_merge_train_with_operation(
     let git_dir = repo.commondir();
     let config = Config::load_with_global(git_dir)?;
     let current_stack = Stack::load(repo, &config)?;
+    recover_merge_train_queue_attempt(repo, &config, &current_stack.name)?;
     if config
         .get_stack(&current_stack.name)
         .is_some_and(|stack| stack.gitlab_landing_attempt.is_some())
@@ -928,6 +929,79 @@ fn mark_land_remote_attempt(
         .mark_touched_remote_before_attempt()?;
     *touched_remote = true;
     Ok(())
+}
+
+fn merge_train_queue_args(stack_name: &str, mr_number: u64, target_branch: &str) -> Vec<String> {
+    vec![
+        "gitlab:queue_merge_train".to_string(),
+        format!("gitlab:stack={stack_name}"),
+        format!("gitlab:mr={mr_number}"),
+        format!("gitlab:target_branch={target_branch}"),
+    ]
+}
+
+fn recover_merge_train_queue_attempt(
+    repo: &git2::Repository,
+    config: &Config,
+    stack_name: &str,
+) -> Result<()> {
+    let Some(attempt) = config
+        .get_stack(stack_name)
+        .and_then(|stack| stack.gitlab_merge_train_queue_attempt.as_ref())
+    else {
+        return Ok(());
+    };
+    let inconsistent = || {
+        GgError::Other(format!(
+            "Inconsistent queue_merge_train recovery evidence for operation {}",
+            attempt.operation_id
+        ))
+    };
+    let target_branch = attempt.target_branch.as_deref().ok_or_else(&inconsistent)?;
+    let record = OperationStore::new(&git::gg_dir(repo))
+        .load(&attempt.operation_id)
+        .map_err(|_| inconsistent())?;
+    let exact_markers = merge_train_queue_args(stack_name, attempt.mr_number, target_branch)
+        .iter()
+        .all(|marker| {
+            let prefix = marker
+                .split_once('=')
+                .map_or(marker.as_str(), |pair| pair.0);
+            record
+                .args
+                .iter()
+                .filter(|arg| {
+                    arg.as_str() == prefix
+                        || arg
+                            .strip_prefix(prefix)
+                            .is_some_and(|value| value.starts_with('='))
+                })
+                .eq(std::iter::once(marker))
+        });
+    if attempt.action != "queue_merge_train"
+        || attempt.state != GitLabLandingAttemptState::Attempted
+        || attempt.target_project_id.is_some()
+        || attempt.source_project_id.is_some()
+        || attempt.source_branch.is_some()
+        || attempt.source_oid.is_some()
+        || attempt.pipeline_id.is_some()
+        || record.id != attempt.operation_id
+        || record.schema_version != crate::operations::SCHEMA_VERSION
+        || record.kind != OperationKind::Land
+        || !matches!(
+            record.status,
+            OperationStatus::Pending | OperationStatus::Interrupted | OperationStatus::Committed
+        )
+        || !record.touched_remote
+        || !record.remote_effects.is_empty()
+        || !exact_markers
+    {
+        return Err(inconsistent());
+    }
+    Err(GgError::RemoteMutationUncertain(format!(
+        "merge-train queue for MR !{} is unresolved; operation {} will not be retried automatically",
+        attempt.mr_number, attempt.operation_id
+    )))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1139,6 +1213,7 @@ fn recover_pipeline_after_lock(
     checkpointed: &mut bool,
     streamer: Option<&mut StreamingJson>,
 ) -> Result<()> {
+    recover_merge_train_queue_attempt(repo, config, stack_name)?;
     if config
         .get_stack(stack_name)
         .and_then(|stack| stack.gitlab_landing_attempt.as_ref())
@@ -1748,6 +1823,9 @@ pub fn run(opts: LandOptions) -> Result<()> {
 
     let mut stack = Stack::load(&repo, &config)?;
     let mut streamer = jsonl.then(StreamingJson::new);
+    if provider == Provider::GitLab {
+        recover_merge_train_queue_attempt(&repo, &config, &stack.name)?;
+    }
     let mut recovered_squash_checkpoint = None;
     let mut pipeline_handoff = if provider == Provider::GitLab {
         let action = config
@@ -2567,9 +2645,53 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 } else if provider == Provider::GitLab {
                     crate::glab::validate_mr_before_landing(pr_num, &stack.base)?;
                 }
-                ensure_land_segment(&repo, &config, &args, &mut guard)?;
+                finish_land_segment(
+                    &repo,
+                    &config,
+                    &mut guard,
+                    &mut remote_effects,
+                    &mut touched_remote,
+                )?;
+                let mut queue_args = args.clone();
+                queue_args.extend(merge_train_queue_args(&stack.name, pr_num, &stack.base));
+                guard = Some(begin_land_segment(&repo, &config, &queue_args)?);
+                let operation_id = guard
+                    .as_ref()
+                    .expect("merge-train queue Land operation")
+                    .id()
+                    .to_string();
+                config.set_gitlab_merge_train_queue_attempt(
+                    git_dir,
+                    &stack.name,
+                    GitLabLandingAttempt {
+                        mr_number: pr_num,
+                        action: "queue_merge_train".to_string(),
+                        operation_id: operation_id.clone(),
+                        state: GitLabLandingAttemptState::Attempted,
+                        target_project_id: None,
+                        source_project_id: None,
+                        source_branch: None,
+                        source_oid: None,
+                        target_branch: Some(stack.base.clone()),
+                        pipeline_id: None,
+                    },
+                )?;
                 mark_land_remote_attempt(&mut guard, &mut touched_remote)?;
-                provider.add_to_merge_train(pr_num, squash)
+                match provider.add_to_merge_train(pr_num, squash) {
+                    Ok(result) => Ok(result),
+                    Err(error) => {
+                        finish_land_segment(
+                            &repo,
+                            &config,
+                            &mut guard,
+                            &mut remote_effects,
+                            &mut touched_remote,
+                        )?;
+                        Err(GgError::Other(format!(
+                            "Remote mutation outcome is uncertain: merge-train queue for MR !{pr_num} is unresolved; operation {operation_id} will not be retried automatically: {error}"
+                        )))
+                    }
+                }
             })();
             match queue_result {
                 Ok(result) => {
@@ -2579,7 +2701,6 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         AutoMergeResult::Queued => "queued",
                         AutoMergeResult::AlreadyQueued => "already_queued",
                     };
-                    config.save(git_dir)?;
                     finish_land_segment(
                         &repo,
                         &config,
@@ -2587,6 +2708,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                         &mut remote_effects,
                         &mut touched_remote,
                     )?;
+                    config.clear_gitlab_merge_train_queue_attempt(git_dir, &stack.name)?;
                     record_landed_entry(
                         &mut landed_entries,
                         &mut streamer,
@@ -4274,6 +4396,7 @@ mod tests {
             mrs: HashMap::new(),
             review_creation_intents: HashMap::new(),
             gitlab_landing_attempt: None,
+            gitlab_merge_train_queue_attempt: None,
             land_maintenance: HashMap::new(),
             worktree_path: None,
         };
@@ -4308,6 +4431,7 @@ mod tests {
             mrs: HashMap::new(),
             review_creation_intents: HashMap::new(),
             gitlab_landing_attempt: None,
+            gitlab_merge_train_queue_attempt: None,
             land_maintenance: HashMap::new(),
             worktree_path: None,
         };
@@ -4360,6 +4484,7 @@ mod tests {
             mrs: HashMap::new(),
             review_creation_intents: HashMap::new(),
             gitlab_landing_attempt: None,
+            gitlab_merge_train_queue_attempt: None,
             land_maintenance: HashMap::new(),
             worktree_path: None,
         };

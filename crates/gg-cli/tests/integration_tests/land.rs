@@ -295,6 +295,12 @@ if [ "$is_landing_request" = "true" ]; then
     echo "connection lost after enabling auto-merge" >&2
     exit 1
   fi
+  if [ "$landing_request_mode" = "merge-train-applied-response-fail" ]; then
+    printf 'attempt\n' >> "$GG_FAKE_QUEUED.attempts"
+    printf '%s\n' "$*" > "$GG_FAKE_QUEUED"
+    echo "connection lost after adding MR to merge train" >&2
+    exit 1
+  fi
   if [ -f "$GG_FAKE_AUTO_MERGE_DROPPED" ]; then
     printf '%s\n' "$*" > "$GG_FAKE_REQUEUED"
     rm -f "$GG_FAKE_AUTO_MERGE_DROPPED"
@@ -2623,6 +2629,62 @@ fn test_land_gitlab_waiter_reacquire_refuses_foreign_pipeline_uncertainty() {
 
 #[cfg(unix)]
 #[test]
+fn test_land_gitlab_waiter_reacquire_refuses_foreign_merge_train_queue_uncertainty() {
+    let fixture = WaitingLandFixture::new();
+    fixture.use_gitlab_provider();
+    fixture.enable_gitlab_merge_trains();
+    fixture.add_second_entry();
+    fs::write(&fixture.unapproved, "hold").unwrap();
+    let mut command = fixture.land_command(&PIPELINE_LAND_ARGS);
+    let mut guard = ProcessGroupGuard::spawn(&mut command).unwrap();
+    let mut reader = BufReader::new(guard.take_stdout().expect("waiter stdout"));
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&line).unwrap()["event"],
+        "start"
+    );
+    line.clear();
+    reader.read_line(&mut line).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&line).unwrap()["event"],
+        "wait"
+    );
+
+    fs::remove_file(&fixture.unapproved).unwrap();
+    fs::write(&fixture.train_merged, "ready").unwrap();
+    fs::write(&fixture.merged, "merged").unwrap();
+    fs::write(
+        &fixture.landing_request_fail,
+        "merge-train-applied-response-fail",
+    )
+    .unwrap();
+    let competing = fixture.land_command(&PIPELINE_LAND_ARGS).output().unwrap();
+    let competing_text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&competing.stdout),
+        String::from_utf8_lossy(&competing.stderr)
+    );
+    assert!(competing_text.contains("will not be retried automatically"));
+
+    let output = guard
+        .wait_with_output_timeout(Duration::from_secs(30))
+        .unwrap();
+    let mut remaining = String::new();
+    reader.read_to_string(&mut remaining).unwrap();
+    let text = format!("{}{}", remaining, String::from_utf8_lossy(&output.stderr));
+    assert!(text.contains("will not be retried automatically"), "{text}");
+    assert_eq!(
+        fs::read_to_string(format!("{}.attempts", fixture.queued.display()))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn test_land_gitlab_pipeline_uncertainty_is_restart_safe() {
     let fixture = WaitingLandFixture::new();
     fixture.use_gitlab_provider();
@@ -3624,6 +3686,150 @@ fn test_land_gitlab_auto_merge_lost_response_recovery_is_at_most_once() {
     );
     assert_eq!(land_operation_records(&fixture.repo_path), records_before);
     assert_eq!(fs::read(config_path).expect("read config"), config_before);
+    let refs_after = Command::new("git")
+        .args(["for-each-ref", "--format=%(refname) %(objectname)"])
+        .current_dir(&fixture.repo_path)
+        .output()
+        .expect("read refs")
+        .stdout;
+    assert_eq!(refs_after, refs_before);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_land_gitlab_merge_train_lost_response_restart_is_at_most_once_without_provider_access() {
+    let (fixture, pipeline_output) = completed_pipeline_fixture();
+    assert!(
+        !pipeline_output.status.success(),
+        "the completed pipeline handoff must stop at its broken checkpoint"
+    );
+    let pipeline_handoff = gitlab_landing_attempt(&fixture.repo_path)
+        .expect("completed pipeline handoff must remain durable");
+    assert_eq!(pipeline_handoff["action"], "pipeline_start");
+    assert_eq!(pipeline_handoff["state"], "completed");
+    let pipeline_operation_id = pipeline_handoff["operation_id"]
+        .as_str()
+        .expect("pipeline operation ID")
+        .to_string();
+
+    fs::write(
+        &fixture.landing_request_fail,
+        "merge-train-applied-response-fail\n",
+    )
+    .expect("lose the response after accepting the merge-train POST");
+    let first = fixture
+        .land_command(&PIPELINE_LAND_ARGS)
+        .output()
+        .expect("queue merge train");
+    let first_text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        first.status.success(),
+        "structured Land must report the ambiguous queue POST in its payload"
+    );
+    assert!(
+        first_text.contains("connection lost after adding MR to merge train"),
+        "{first_text}"
+    );
+    assert!(
+        fixture
+            .queued_request()
+            .contains("merge_trains/merge_requests/42"),
+        "the fake provider must accept the initial queue POST"
+    );
+    let attempts_path = std::path::PathBuf::from(format!("{}.attempts", fixture.queued.display()));
+    assert_eq!(
+        fs::read_to_string(&attempts_path)
+            .expect("read merge-train attempts")
+            .lines()
+            .count(),
+        1
+    );
+
+    let config_path = fixture.repo_path.join(".git/gg/config.json");
+    let config_before = fs::read(&config_path).expect("snapshot config");
+    let config: Value = serde_json::from_slice(&config_before).expect("parse config");
+    assert_eq!(
+        config["stacks"]["land-wait"]["gitlab_landing_attempt"], pipeline_handoff,
+        "queue recovery must not replace the completed pipeline handoff"
+    );
+    let queue_attempt = &config["stacks"]["land-wait"]["gitlab_merge_train_queue_attempt"];
+    assert_eq!(queue_attempt["action"], "queue_merge_train");
+    assert_eq!(queue_attempt["mr_number"], 42);
+    assert_eq!(queue_attempt["target_branch"], "main");
+    let queue_operation_id = queue_attempt["operation_id"]
+        .as_str()
+        .expect("queue operation ID")
+        .to_string();
+    assert_ne!(queue_operation_id, pipeline_operation_id);
+    let queue_operation = land_operation_records(&fixture.repo_path)
+        .into_iter()
+        .find(|record| record["id"] == queue_operation_id)
+        .expect("fresh queue Land operation");
+    assert_eq!(queue_operation["status"], "committed");
+    assert_eq!(queue_operation["touched_remote"], true);
+    assert!(queue_operation["remote_effects"]
+        .as_array()
+        .is_some_and(Vec::is_empty));
+
+    let operations_dir = fixture.repo_path.join(".git/gg/operations");
+    let snapshot_operations = || {
+        let mut files = fs::read_dir(&operations_dir)
+            .expect("list operations")
+            .map(|entry| {
+                let path = entry.expect("operation entry").path();
+                (
+                    path.file_name().unwrap().to_os_string(),
+                    fs::read(path).expect("read operation"),
+                )
+            })
+            .collect::<Vec<_>>();
+        files.sort_by(|left, right| left.0.cmp(&right.0));
+        files
+    };
+    let operations_before = snapshot_operations();
+    let refs_before = Command::new("git")
+        .args(["for-each-ref", "--format=%(refname) %(objectname)"])
+        .current_dir(&fixture.repo_path)
+        .output()
+        .expect("snapshot refs")
+        .stdout;
+    fs::write(&fixture.merge_settings_fail, "forbid-all")
+        .expect("forbid every provider process access");
+
+    let restart = fixture
+        .land_command(&PIPELINE_LAND_ARGS)
+        .output()
+        .expect("restart Land");
+    let restart_text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&restart.stdout),
+        String::from_utf8_lossy(&restart.stderr)
+    );
+    assert!(!restart.status.success(), "restart must fail closed");
+    assert!(restart_text.contains("MR !42"), "{restart_text}");
+    assert!(restart_text.contains(&queue_operation_id), "{restart_text}");
+    assert!(
+        restart_text.contains("will not be retried automatically"),
+        "{restart_text}"
+    );
+    assert_eq!(
+        fs::read_to_string(attempts_path)
+            .expect("read merge-train attempts after restart")
+            .lines()
+            .count(),
+        1,
+        "restart retried the merge-train POST"
+    );
+    assert!(!fixture
+        .merge_settings_fail
+        .with_extension("accessed")
+        .exists());
+    assert_eq!(fs::read(config_path).expect("read config"), config_before);
+    assert_eq!(snapshot_operations(), operations_before);
     let refs_after = Command::new("git")
         .args(["for-each-ref", "--format=%(refname) %(objectname)"])
         .current_dir(&fixture.repo_path)

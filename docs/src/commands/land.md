@@ -27,6 +27,10 @@ stack refresh, that entry is refused without starting the landing mutation.
 Only the explicit GitHub admin override bypasses this check; GitLab still
 requires approval when `--admin` is supplied.
 
+For non-wait GitLab landing with `--no-squash`, gg also refreshes approval
+immediately before changing the MR's squash setting. If approval was dismissed,
+gg leaves the setting unchanged and creates no landing recovery record.
+
 ## Examples
 
 ```bash

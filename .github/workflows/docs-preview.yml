@@ -24,6 +24,8 @@ jobs:
         run: mdbook build docs
 
       - name: Publish PR preview
+        # Fork PRs still build above, but their read-only tokens cannot publish.
+        if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
         uses: rossjrw/pr-preview-action@v1
         with:
           source-dir: docs/book/

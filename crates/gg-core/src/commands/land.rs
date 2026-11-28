@@ -3019,9 +3019,7 @@ pub fn run(opts: LandOptions) -> Result<()> {
                 if provider == Provider::GitLab {
                     crate::glab::validate_mr_before_landing(pr_num, &stack.base)?;
                 }
-                if !wait {
-                    require_fresh_approval(&provider, pr_num, admin)?;
-                }
+                require_fresh_approval(&provider, pr_num, admin)?;
                 ensure_land_segment(&repo, &config, &args, &mut guard)?;
                 mark_land_remote_attempt(&mut guard, &mut touched_remote)?;
                 provider.merge_pr(pr_num, squash, false, merge_admin)

@@ -25,9 +25,13 @@
   GitLab auto-merge queueing also rechecks approval in `--wait` mode immediately
   before creating recovery state or sending its queue PUT; GitLab admin settings
   never bypass this gate.
-  Non-wait GitLab `--no-squash` also rechecks approval immediately before
-  changing the MR squash setting; this does not replace the later final queue
-  or merge authorization, or any other preflight gate.
+  Every GitLab `--no-squash` path, including `--wait`, rechecks approval inside
+  the durable squash segment after final policy and MR-identity validation and
+  immediately before the PUT. An already-disabled setting skips approval and
+  the PUT. Approval refusal or lookup failure commits the segment as an
+  untouched proven no-op, clears its marker, and stops before any downstream
+  mutation. This does not replace the later final queue or merge authorization,
+  or any other preflight gate.
   GitLab merge-train wait mode rechecks approval after final MR identity and
   missing-pipeline validation, immediately before creating that pipeline. A
   refusal is a proven no-op and must not be treated as a pipeline attempt or as

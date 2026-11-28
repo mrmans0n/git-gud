@@ -112,7 +112,9 @@ retains that handoff across restarts and stale provider reads until the matching
 MR is observed merged or closed, then clears it transactionally before
 continuing to another entry.
 
-GitLab only applies a squash flag that is true when queueing or merging, so an MR created while the project's squash option is "Encourage" (`default_on`) would still be squashed. With `--no-squash`, gg therefore turns off the MR's squash setting first. If the project's squash option is "Require" (`always`), `gg land --no-squash` fails before touching any MR.
+GitLab only applies a squash flag that is true when queueing or merging, so an MR created while the project's squash option is "Encourage" (`default_on`) would still be squashed. With `--no-squash`, gg therefore turns off the MR's squash setting in its own durable Land segment. It rechecks project policy and the complete MR identity immediately before one PUT, records `pr_squash_updated`, and emits `squash_checkpoint` before any merge or queue request. An initially disabled setting is an unjournaled no-op. If the project's squash option is "Require" (`always`), `gg land --no-squash` fails before touching any MR.
+
+If the PUT response is ambiguous, gg never submits it again automatically. On restart it may reconcile only when a fresh, exact-identity read proves `squash=false`; otherwise it preserves the attempt and stops for manual reconciliation. A failed `squash_checkpoint` write also stops downstream work; the completed record is emitted and cleared on restart.
 
 **Approval is always required** before an MR can enter the merge train queue — even with `--all`. If using `--wait`, the command will show "Waiting for approval..." until a reviewer approves the MR. A pipeline that has already failed or been canceled stops the command instead of queueing.
 
@@ -187,6 +189,7 @@ Event kinds:
 |---|---|---|
 | `start` | `stack`, `base`, `total_entries` | A non-empty landing run begins |
 | `pipeline_checkpoint` | `pr_number` | A GitLab pipeline result and its operation finalization are durable |
+| `squash_checkpoint` | `pr_number`, `squash` | A GitLab squash update, exact effect, and operation finalization are durable |
 | `wait` | `position`, `pr_number`, `phase`, `poll`, `elapsed_seconds`, `ci_status`, `approved`, `merge_train_status`, `merge_train_position`, `pipeline_running`, `error` | Each readiness or merge-train provider poll completes |
 | `entry` | Same fields as an item in `landed` | An entry reaches an outcome |
 | `summary` | Same fields as the `land` object from `--json` | Landing finishes, including partial failures |

@@ -1139,6 +1139,23 @@ fn recover_pipeline_after_lock(
     checkpointed: &mut bool,
     streamer: Option<&mut StreamingJson>,
 ) -> Result<()> {
+    if config
+        .get_stack(stack_name)
+        .and_then(|stack| stack.gitlab_landing_attempt.as_ref())
+        .is_some_and(|attempt| attempt.action == "squash_disable")
+    {
+        if handoff.is_some() {
+            return Err(GgError::Other(
+                "GitLab squash recovery cannot replace a live pipeline handoff".into(),
+            ));
+        }
+        let checkpoint = recover_squash_attempt(repo, config, stack_name)?;
+        if let Some(mr_number) = checkpoint {
+            emit_squash_checkpoint(streamer, mr_number)?;
+            config.clear_gitlab_landing_attempt(repo.commondir(), stack_name)?;
+        }
+        return Ok(());
+    }
     if let Some(recovered) = recover_pipeline_attempt(repo, config, stack_name)? {
         if handoff
             .as_ref()
@@ -1201,6 +1218,290 @@ fn pipeline_identity_matches(
         && mr.source_branch.as_deref() == Some(identity.source_branch.as_str())
         && mr.sha.as_deref() == Some(identity.source_oid.as_str())
         && mr.target_branch == identity.target_branch
+}
+
+fn squash_identity_args(stack_name: &str, identity: &PipelineIdentity) -> Vec<String> {
+    let mut markers = pipeline_identity_args(stack_name, identity);
+    markers[0] = "gitlab:squash_disable".to_string();
+    markers
+}
+
+fn validate_squash_operation(
+    repo: &git2::Repository,
+    stack_name: &str,
+    attempt: &GitLabLandingAttempt,
+) -> Result<crate::operations::OperationRecord> {
+    if attempt.action != "squash_disable" || attempt.pipeline_id.is_some() {
+        return Err(GgError::Other(
+            "unknown GitLab squash recovery action".into(),
+        ));
+    }
+    let identity = pipeline_identity(attempt)?;
+    let record = OperationStore::new(&git::gg_dir(repo)).load(&attempt.operation_id)?;
+    let markers = squash_identity_args(stack_name, &identity);
+    let exact_markers = markers.iter().all(|marker| {
+        let prefix = marker
+            .split_once('=')
+            .map_or(marker.as_str(), |pair| pair.0);
+        record
+            .args
+            .iter()
+            .filter(|arg| {
+                arg.as_str() == prefix
+                    || arg.strip_prefix(prefix).is_some_and(|v| v.starts_with('='))
+            })
+            .eq(std::iter::once(marker))
+    });
+    let effect = RemoteEffect::PrSquashUpdated {
+        number: identity.mr_number,
+        squash: false,
+    };
+    let effects_valid = record.remote_effects.is_empty()
+        || (attempt.state == GitLabLandingAttemptState::Completed
+            && record.remote_effects == [effect]);
+    if record.id != attempt.operation_id
+        || record.kind != OperationKind::Land
+        || record.schema_version != crate::operations::SCHEMA_VERSION
+        || !matches!(
+            record.status,
+            OperationStatus::Pending | OperationStatus::Committed | OperationStatus::Interrupted
+        )
+        || !exact_markers
+        || !effects_valid
+        || (attempt.state == GitLabLandingAttemptState::Attempted
+            && !record.remote_effects.is_empty())
+        || (attempt.state == GitLabLandingAttemptState::Completed && !record.touched_remote)
+        || (attempt.state == GitLabLandingAttemptState::Completed
+            && record.status == OperationStatus::Committed
+            && record.remote_effects.is_empty())
+    {
+        return Err(GgError::Other(format!(
+            "Operation {} has conflicting GitLab squash identity or effects",
+            attempt.operation_id
+        )));
+    }
+    Ok(record)
+}
+
+fn squash_effect(mr_number: u64) -> RemoteEffect {
+    RemoteEffect::PrSquashUpdated {
+        number: mr_number,
+        squash: false,
+    }
+}
+
+fn emit_squash_checkpoint(streamer: Option<&mut StreamingJson>, mr_number: u64) -> Result<()> {
+    let Some(streamer) = streamer else {
+        return Ok(());
+    };
+    streamer
+        .try_emit(&serde_json::json!({
+            "version": OUTPUT_VERSION,
+            "command": "land",
+            "status": "ok",
+            "event": "squash_checkpoint",
+            "pr_number": mr_number,
+            "squash": false,
+        }))
+        .map_err(|error| {
+            GgError::DurabilityCheckpoint(format!(
+                "failed to emit durable squash checkpoint for MR !{mr_number}: {error}"
+            ))
+        })
+}
+
+fn finish_squash_operation(
+    repo: &git2::Repository,
+    config: &Config,
+    stack_name: &str,
+    attempt: &GitLabLandingAttempt,
+) -> Result<()> {
+    let record = validate_squash_operation(repo, stack_name, attempt)?;
+    if record.status != OperationStatus::Committed {
+        crate::operations::finalize_operation_by_id(
+            repo,
+            config,
+            &attempt.operation_id,
+            SnapshotScope::AllUserBranches,
+            vec![squash_effect(attempt.mr_number)],
+            true,
+        )?;
+    }
+    Ok(())
+}
+
+fn recover_squash_attempt(
+    repo: &git2::Repository,
+    config: &mut Config,
+    stack_name: &str,
+) -> Result<Option<u64>> {
+    let attempt = config
+        .get_stack(stack_name)
+        .and_then(|stack| stack.gitlab_landing_attempt.clone())
+        .ok_or_else(|| GgError::Other("GitLab squash recovery state is missing".into()))?;
+    let record = validate_squash_operation(repo, stack_name, &attempt)?;
+    if attempt.state == GitLabLandingAttemptState::Attempted && !record.touched_remote {
+        crate::operations::finalize_proven_noop_by_id(repo, &attempt.operation_id)?;
+        config.clear_gitlab_landing_attempt(repo.commondir(), stack_name)?;
+        return Ok(None);
+    }
+    let mut completed = attempt.clone();
+    if attempt.state == GitLabLandingAttemptState::Attempted {
+        let reconciled = (|| {
+            let policy = crate::glab::get_project_merge_settings()?;
+            if let Some(error) = no_squash_refusal(false, policy.squash_option.as_deref()) {
+                return Err(GgError::Other(error));
+            }
+            let mr = crate::glab::read_landing_merge_request(attempt.mr_number)?;
+            crate::glab::validate_landing_merge_request(
+                attempt.mr_number,
+                attempt.target_branch.as_deref().unwrap_or_default(),
+                &mr,
+            )?;
+            if !pipeline_identity_matches(&mr, &pipeline_identity(&attempt)?) || mr.squash {
+                return Err(GgError::Other(
+                    "provider state does not prove squash=false".into(),
+                ));
+            }
+            Ok(())
+        })();
+        if let Err(error) = reconciled {
+            return Err(GgError::RemoteMutationUncertain(format!(
+                "squash update for MR !{} is unresolved and will not be resubmitted automatically: {error}",
+                attempt.mr_number
+            )));
+        }
+        completed.state = GitLabLandingAttemptState::Completed;
+        config.set_gitlab_landing_attempt(repo.commondir(), stack_name, completed.clone())?;
+    }
+    finish_squash_operation(repo, config, stack_name, &completed)?;
+    Ok(Some(completed.mr_number))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_squash_segment(
+    repo: &git2::Repository,
+    config: &mut Config,
+    stack: &Stack,
+    entry: &StackEntry,
+    args: &[String],
+    streamer: Option<&mut StreamingJson>,
+    before_squash: impl FnOnce(&Config) -> Result<()>,
+) -> Result<()> {
+    let mr_number = entry.mr_number.expect("land entry MR number");
+    let mr = crate::glab::read_landing_merge_request(mr_number)?;
+    crate::glab::validate_landing_merge_request(mr_number, &stack.base, &mr)?;
+    if !mr.squash {
+        return Ok(());
+    }
+    if config
+        .get_stack(&stack.name)
+        .is_some_and(|saved| saved.gitlab_landing_attempt.is_some())
+    {
+        return Err(GgError::Other(
+            "another GitLab landing recovery is still active".into(),
+        ));
+    }
+    before_squash(config).map_err(|error| {
+        GgError::DurabilityCheckpoint(format!(
+            "failed to finalize the preceding Land segment: {error}"
+        ))
+    })?;
+    let identity = PipelineIdentity {
+        target_project_id: mr
+            .target_project_id
+            .ok_or_else(|| GgError::Other("missing target project".into()))?,
+        mr_number,
+        source_project_id: mr
+            .source_project_id
+            .ok_or_else(|| GgError::Other("missing source project".into()))?,
+        source_branch: mr
+            .source_branch
+            .clone()
+            .ok_or_else(|| GgError::Other("missing source branch".into()))?,
+        source_oid: mr
+            .sha
+            .clone()
+            .ok_or_else(|| GgError::Other("missing source OID".into()))?,
+        target_branch: mr.target_branch.clone(),
+    };
+    let expected_branch = stack
+        .entry_branch_name(entry)
+        .ok_or_else(|| GgError::Other(format!("No source branch for MR !{mr_number}")))?;
+    if mr.iid != Some(mr_number) || identity.source_branch != expected_branch {
+        return Err(GgError::Other(format!(
+            "MR !{mr_number} source identity changed"
+        )));
+    }
+    git2::Oid::from_str(&identity.source_oid)
+        .map_err(|_| GgError::Other(format!("GitLab MR !{mr_number} has invalid source OID")))?;
+    let mut segment_args = args.to_vec();
+    segment_args.extend(squash_identity_args(&stack.name, &identity));
+    let mut operation = begin_land_segment(repo, config, &segment_args)?;
+    let mut attempt = GitLabLandingAttempt {
+        mr_number,
+        action: "squash_disable".to_string(),
+        operation_id: operation.id().to_string(),
+        state: GitLabLandingAttemptState::Attempted,
+        target_project_id: Some(identity.target_project_id),
+        source_project_id: Some(identity.source_project_id),
+        source_branch: Some(identity.source_branch.clone()),
+        source_oid: Some(identity.source_oid.clone()),
+        target_branch: Some(identity.target_branch.clone()),
+        pipeline_id: None,
+    };
+    config.set_gitlab_landing_attempt(repo.commondir(), &stack.name, attempt.clone())?;
+    operation.mark_touched_remote_before_attempt()?;
+    let revalidation = (|| {
+        let policy = crate::glab::get_project_merge_settings()?;
+        if let Some(error) = no_squash_refusal(false, policy.squash_option.as_deref()) {
+            return Err(GgError::Other(error));
+        }
+        let fresh = crate::glab::read_landing_merge_request(mr_number)?;
+        crate::glab::validate_landing_merge_request(mr_number, &stack.base, &fresh)?;
+        if !pipeline_identity_matches(&fresh, &identity) {
+            return Err(GgError::Other(format!(
+                "GitLab squash identity changed for MR !{mr_number}"
+            )));
+        }
+        Ok(fresh.squash)
+    })();
+    if !matches!(revalidation, Ok(true)) {
+        operation.clear_touched_remote_before_attempt()?;
+        let operation_id = operation.id().to_string();
+        drop(operation);
+        crate::operations::finalize_proven_noop_by_id(repo, &operation_id)?;
+        config.clear_gitlab_landing_attempt(repo.commondir(), &stack.name)?;
+        return match revalidation {
+            Ok(false) => Ok(()),
+            Err(error) => Err(error),
+            Ok(true) => unreachable!(),
+        };
+    }
+    let updated = crate::glab::disable_mr_squash(mr_number).map_err(|error| {
+        GgError::RemoteMutationUncertain(format!(
+            "squash update for MR !{mr_number} is unresolved and will not be resubmitted automatically: {error}"
+        ))
+    })?;
+    if crate::glab::validate_landing_merge_request(mr_number, &stack.base, &updated).is_err()
+        || !pipeline_identity_matches(&updated, &identity)
+        || updated.squash
+    {
+        return Err(GgError::RemoteMutationUncertain(format!(
+            "GitLab returned an unverified squash update for MR !{mr_number}"
+        )));
+    }
+    attempt.state = GitLabLandingAttemptState::Completed;
+    config.set_gitlab_landing_attempt(repo.commondir(), &stack.name, attempt.clone())?;
+    operation.finalize_with_scope(
+        repo,
+        config,
+        SnapshotScope::AllUserBranches,
+        vec![squash_effect(mr_number)],
+        true,
+    )?;
+    emit_squash_checkpoint(streamer, mr_number)?;
+    config.clear_gitlab_landing_attempt(repo.commondir(), &stack.name)
 }
 
 fn validate_pipeline_handoff_before_queue(
@@ -1442,12 +1743,29 @@ pub fn run(opts: LandOptions) -> Result<()> {
     let mut remote_effects: Vec<RemoteEffect> = Vec::new();
     let mut touched_remote = false;
 
-    provider.check_installed()?;
-    provider.check_auth_with_silent(structured)?;
-
     let auto_merge_on_land =
         provider == Provider::GitLab && (auto_merge_flag || config.get_gitlab_auto_merge_on_land());
 
+    let mut stack = Stack::load(&repo, &config)?;
+    let mut streamer = jsonl.then(StreamingJson::new);
+    let mut recovered_squash_checkpoint = None;
+    let mut pipeline_handoff = if provider == Provider::GitLab {
+        let action = config
+            .get_stack(&stack.name)
+            .and_then(|saved| saved.gitlab_landing_attempt.as_ref())
+            .map(|attempt| attempt.action.as_str());
+        if action == Some("squash_disable") {
+            recovered_squash_checkpoint = recover_squash_attempt(&repo, &mut config, &stack.name)?;
+            None
+        } else {
+            recover_pipeline_attempt(&repo, &mut config, &stack.name)?
+        }
+    } else {
+        None
+    };
+    let mut pipeline_checkpointed = false;
+    provider.check_installed()?;
+    provider.check_auth_with_silent(structured)?;
     let merge_settings = provider.get_project_merge_settings()?;
     if provider == Provider::GitLab {
         if let Some(error) = no_squash_refusal(squash, merge_settings.squash_option.as_deref()) {
@@ -1465,15 +1783,6 @@ pub fn run(opts: LandOptions) -> Result<()> {
             .dim()
         );
     }
-
-    let mut stack = Stack::load(&repo, &config)?;
-    let mut streamer = jsonl.then(StreamingJson::new);
-    let mut pipeline_handoff = if provider == Provider::GitLab {
-        recover_pipeline_attempt(&repo, &mut config, &stack.name)?
-    } else {
-        None
-    };
-    let mut pipeline_checkpointed = false;
     if stack.is_empty() {
         finish_land_segment(
             &repo,
@@ -1584,6 +1893,10 @@ pub fn run(opts: LandOptions) -> Result<()> {
             total_entries,
         },
     );
+    if let Some(mr_number) = recovered_squash_checkpoint {
+        emit_squash_checkpoint(streamer.as_mut(), mr_number)?;
+        config.clear_gitlab_landing_attempt(repo.commondir(), &stack.name)?;
+    }
     if let Some(handoff) = pipeline_handoff.as_ref() {
         emit_pipeline_checkpoint(streamer.as_mut(), handoff)?;
         pipeline_checkpointed = true;
@@ -2168,23 +2481,24 @@ pub fn run(opts: LandOptions) -> Result<()> {
             crate::glab::validate_mr_before_landing(pr_num, &stack.base)?;
         }
 
-        if !squash {
-            if let Err(error) = provider.prepare_no_squash(pr_num, &stack.base, || {
-                ensure_land_segment(&repo, &config, &args, &mut guard)?;
-                mark_land_remote_attempt(&mut guard, &mut touched_remote)
-            }) {
-                if guard.is_some() {
-                    config.save(git_dir)?;
+        if !squash && provider == Provider::GitLab {
+            execute_squash_segment(
+                &repo,
+                &mut config,
+                &stack,
+                &entry,
+                &args,
+                streamer.as_mut(),
+                |config| {
                     finish_land_segment(
                         &repo,
-                        &config,
+                        config,
                         &mut guard,
                         &mut remote_effects,
                         &mut touched_remote,
-                    )?;
-                }
-                return Err(error);
-            }
+                    )
+                },
+            )?;
         }
 
         if merge_trains_enabled {

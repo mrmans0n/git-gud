@@ -131,6 +131,8 @@ pub enum RemoteEffect {
     PrMerged { number: u64, url: String },
     /// A pull/merge request was closed (without merging).
     PrClosed { number: u64, url: String },
+    /// A pull/merge request's squash-on-merge setting was updated.
+    PrSquashUpdated { number: u64, squash: bool },
 }
 
 /// One repository-local remote-deletion intent changed by an Undo operation.
@@ -619,6 +621,17 @@ pub fn finalize_operation_by_id(
     record.touched_remote = touched_remote;
     store.save(&record)?;
     Ok(record)
+}
+
+/// Commit a proven no-op without observing refs that may have changed later.
+pub(crate) fn finalize_proven_noop_by_id(repo: &Repository, operation_id: &str) -> Result<()> {
+    let store = OperationStore::new(&crate::git::gg_dir(repo));
+    let mut record = store.load(operation_id)?;
+    record.status = OperationStatus::Committed;
+    record.refs_after = record.refs_before.clone();
+    record.remote_effects.clear();
+    record.touched_remote = false;
+    store.save(&record)
 }
 
 /// Load and validate the sync operation that owns a review-creation intent.
@@ -1235,6 +1248,9 @@ fn build_remote_hints(record: &OperationRecord) -> Vec<String> {
             ),
             RemoteEffect::PrClosed { number, url } => format!(
                 "Reopen {url} with `gh pr reopen {number}` / `glab mr reopen {number}`."
+            ),
+            RemoteEffect::PrSquashUpdated { number, squash } => format!(
+                "This operation set squash={squash} on review {number}. Restore the intended setting manually in the provider."
             ),
         })
         .collect()

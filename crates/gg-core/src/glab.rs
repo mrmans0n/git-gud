@@ -577,24 +577,8 @@ pub fn update_mr_title(mr_number: u64, title: &str) -> Result<()> {
     Ok(())
 }
 
-/// Turn off the MR's squash flag when it is set.
-///
-/// GitLab only applies a truthy `squash` param when merging or queueing an MR,
-/// so `squash=false` on those endpoints leaves an MR created with the project's
-/// `default_on` squash option squashing anyway. Updating the MR itself does
-/// apply `false`.
-fn ensure_mr_squash_disabled(
-    mr_number: u64,
-    target_branch: &str,
-    before_mutation: impl FnOnce() -> Result<()>,
-) -> Result<bool> {
-    let mr = read_landing_merge_request(mr_number)?;
-    validate_landing_merge_request(mr_number, target_branch, &mr)?;
-    if !mr.squash {
-        return Ok(false);
-    }
-
-    before_mutation()?;
+/// Disable squash and return GitLab's full updated MR representation.
+pub(crate) fn disable_mr_squash(mr_number: u64) -> Result<LandingMergeRequest> {
     let output = Command::new("glab")
         .args([
             "api",
@@ -614,17 +598,9 @@ fn ensure_mr_squash_disabled(
         )));
     }
 
-    Ok(true)
-}
-
-/// Disable squash on an MR before a landing request and report whether the MR
-/// was changed remotely.
-pub fn prepare_mr_no_squash(
-    mr_number: u64,
-    target_branch: &str,
-    before_mutation: impl FnOnce() -> Result<()>,
-) -> Result<bool> {
-    ensure_mr_squash_disabled(mr_number, target_branch, before_mutation)
+    serde_json::from_slice(&output.stdout).map_err(|error| {
+        GgError::GlabError(format!("Failed to parse updated MR !{mr_number}: {error}"))
+    })
 }
 
 /// Merge an MR
@@ -930,7 +906,7 @@ pub(crate) struct LandingMergeRequest {
     pub(crate) draft: bool,
     pub(crate) work_in_progress: bool,
     pub(crate) target_branch: String,
-    squash: bool,
+    pub(crate) squash: bool,
     pub(crate) detailed_merge_status: Option<String>,
     #[serde(flatten)]
     pub(crate) extra: std::collections::BTreeMap<String, serde_json::Value>,

@@ -72,6 +72,8 @@
    known pipeline result and operation finalization are durable; failure to
    write or flush that event blocks queueing and every later action in that
    invocation.
+   For a GitLab `squash_disable` attempt, inspect the same saved full MR identity and referenced Land record. `Attempted` with `touched_remote: true` is never retried automatically. gg reconciles it only when a fresh policy and exact-identity read proves `squash=false`; otherwise preserve the evidence and stop.
+   `Completed` is recovered from the exact record without a provider lookup. In JSONL mode, `squash_checkpoint` means the completed attempt, exact `pr_squash_updated` effect, and finalization are durable. A broken pipe keeps `Completed` and blocks every later mutation until restart emits the checkpoint.
 4. While a rebase is paused, confirm its exact `operation_id` with `gg ls --json`,
    then run the argument-free `gg continue` or `gg abort`; those commands recover
    the operation named by the saved marker. Pass an operation ID explicitly only

@@ -834,6 +834,14 @@ impl WaitingLandFixture {
         wait_for_file(&marker);
     }
 
+    /// Simulates a push that makes GitLab cancel auto-merge, only after the
+    /// waiter has observed the queued head so it cannot see a half-applied state.
+    fn push_and_cancel_auto_merge(&self) {
+        self.wait_until_waiter_snapshots_queued_head();
+        fs::write(&self.head_moved, "moved\n").expect("move fake MR head");
+        fs::write(&self.auto_merge_dropped, "dropped\n").expect("drop fake auto-merge");
+    }
+
     fn release_ci(&self) {
         fs::write(&self.ready, "ready\n").expect("release fake CI");
     }
@@ -1092,8 +1100,7 @@ fn pause_requeue_after_operation_creation(
     let child = ProcessGroupGuard::spawn(&mut command)
         .expect("start Land at the requeue operation boundary");
     fixture.wait_until_queued();
-    fs::write(&fixture.head_moved, "moved\n").expect("move fake MR head");
-    fs::write(&fixture.auto_merge_dropped, "dropped\n").expect("drop fake auto-merge");
+    fixture.push_and_cancel_auto_merge();
     let deadline = Instant::now() + Duration::from_secs(60);
     while !ready.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
@@ -2643,8 +2650,7 @@ fn test_land_gitlab_requeue_revalidates_state_and_creates_no_pending_operation()
         "draft-on-requeue",
     )
     .expect("make the MR draft before requeue");
-    fs::write(&fixture.head_moved, "moved\n").expect("move fake MR head");
-    fs::write(&fixture.auto_merge_dropped, "dropped\n").expect("drop fake auto-merge");
+    fixture.push_and_cancel_auto_merge();
 
     let output = land.wait_with_output().expect("wait for land");
     let stdout = String::from_utf8(output.stdout).expect("land stdout");
@@ -2680,8 +2686,7 @@ fn test_land_gitlab_merge_train_requeue_rechecks_approval_after_final_validation
     let args = ["land", "--wait", "--admin", "--jsonl", "--no-clean"];
     let land = fixture.start_land_with_args(&args);
     fixture.wait_until_queued();
-    fs::write(&fixture.head_moved, "moved\n").unwrap();
-    fs::write(&fixture.auto_merge_dropped, "dropped\n").unwrap();
+    fixture.push_and_cancel_auto_merge();
     let output = land.wait_with_output().expect("wait for land");
     let stdout = String::from_utf8(output.stdout).expect("land stdout");
     let stderr = String::from_utf8(output.stderr).expect("land stderr");
@@ -2722,9 +2727,7 @@ fn test_land_gitlab_requeue_tracks_the_final_validated_head() {
     let mut command = fixture.land_command(&["land", "--wait", "--jsonl", "--no-clean"]);
     let land = ProcessGroupGuard::spawn(&mut command).expect("start waiting Land process");
     fixture.wait_until_queued();
-    fixture.wait_until_waiter_snapshots_queued_head();
-    fs::write(&fixture.head_moved, "moved\n").unwrap();
-    fs::write(&fixture.auto_merge_dropped, "dropped\n").unwrap();
+    fixture.push_and_cancel_auto_merge();
 
     let output = land
         .wait_with_output_timeout(Duration::from_secs(90))
@@ -2861,9 +2864,7 @@ fn test_land_gitlab_requeue_checkpoint_failures_preserve_remote_outcome() {
 
         let mut land = fixture.start_land_with_args(&args);
         fixture.wait_until_queued();
-        fixture.wait_until_waiter_snapshots_queued_head();
-        fs::write(&fixture.head_moved, "moved\n").unwrap();
-        fs::write(&fixture.auto_merge_dropped, "dropped\n").unwrap();
+        fixture.push_and_cancel_auto_merge();
         let (stdout, stderr) = if mode == "requeue-success-marker-clear-fail" {
             let mut reader = BufReader::new(land.stdout.take().expect("land stdout pipe"));
             let mut stdout = String::new();
@@ -2992,8 +2993,7 @@ fn test_land_gitlab_ambiguous_requeue_is_restart_safe_without_provider_access() 
 
     let land = fixture.start_land_with_args(&args);
     fixture.wait_until_queued();
-    fs::write(&fixture.head_moved, "moved\n").expect("move fake MR head");
-    fs::write(&fixture.auto_merge_dropped, "dropped\n").expect("drop fake auto-merge");
+    fixture.push_and_cancel_auto_merge();
     wait_for_file(&fixture.landing_request_started());
 
     let pending: Vec<Value> = land_operation_records(&fixture.repo_path)
@@ -3157,8 +3157,7 @@ fn test_land_gitlab_merge_train_recovery_rejects_conflicting_action_markers() {
 
     let land = fixture.start_land_with_args(&args);
     fixture.wait_until_queued();
-    fs::write(&fixture.head_moved, "moved\n").expect("move fake MR head");
-    fs::write(&fixture.auto_merge_dropped, "dropped\n").expect("drop fake auto-merge");
+    fixture.push_and_cancel_auto_merge();
     wait_for_file(&fixture.landing_request_started());
     fixture.release_landing_request();
     let _ = land.wait_with_output().expect("wait for ambiguous requeue");
@@ -4092,8 +4091,7 @@ fn test_land_gitlab_merge_train_wait_requeues_when_a_push_cancels_auto_merge() {
     fixture.wait_until_queued();
     // A push to the source branch moves the MR head and makes GitLab cancel
     // auto-merge.
-    fs::write(&fixture.head_moved, "moved\n").expect("move fake MR head");
-    fs::write(&fixture.auto_merge_dropped, "dropped\n").expect("drop fake auto-merge");
+    fixture.push_and_cancel_auto_merge();
 
     let deadline = Instant::now() + Duration::from_secs(60);
     while !fixture.requeued.exists() && Instant::now() < deadline {
@@ -5431,9 +5429,7 @@ fn test_land_jsonl_disconnect_after_merge_train_requeue_finalizes_operation() {
         1,
         "initial queue must have exactly one finalized segment"
     );
-    fixture.wait_until_waiter_snapshots_queued_head();
-    fs::write(&fixture.head_moved, "moved\n").expect("move fake MR head");
-    fs::write(&fixture.auto_merge_dropped, "dropped\n").expect("drop fake auto-merge");
+    fixture.push_and_cancel_auto_merge();
 
     let deadline = Instant::now() + Duration::from_secs(60);
     let request_started = fixture.landing_request_started();

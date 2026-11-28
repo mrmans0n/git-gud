@@ -2617,6 +2617,9 @@ pub fn run(opts: LandOptions) -> Result<()> {
         }
 
         if !squash && provider == Provider::GitLab {
+            if !wait {
+                require_fresh_approval(&provider, pr_num, admin)?;
+            }
             execute_squash_segment(
                 &repo,
                 &mut config,

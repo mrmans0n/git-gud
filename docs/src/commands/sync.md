@@ -11,7 +11,7 @@ gg sync [OPTIONS]
 - `-d, --draft`: Create new PRs/MRs as draft (does not affect existing PRs/MRs)
 - `-f, --force`: Force push even if remote is ahead
 - `--update-descriptions`: Update PR/MR descriptions from commit messages
-- `--update-title`: Update PR/MR titles from commit messages
+- `--update-title`: Update PR/MR titles from commit subjects. If the subject has no draft prefix, a GitLab draft MR keeps its existing prefix, such as `[Draft]`.
 - `-l, --lint`: Run lint before sync (aborts sync on lint failure and restores repository state to the pre-sync snapshot)
 - `--no-lint`: Disable lint before sync (overrides config default)
 - `--no-rebase-check`: Skip checking whether your stack base is behind `origin/<base>`

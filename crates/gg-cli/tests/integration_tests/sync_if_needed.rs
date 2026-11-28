@@ -1655,6 +1655,62 @@ fn recognizes_landed_parent_already_excluded_by_local_base() {
 }
 
 #[test]
+fn gitlab_sync_updates_titles_without_removing_draft_prefix() {
+    for (remote_title, draft, draft_flag, expected_title) in [
+        ("Draft: Old title", true, false, "Draft: Entry 1"),
+        ("Draft: Old title", true, true, "Draft: Entry 1"),
+        ("[Draft] Old title", true, false, "[Draft] Entry 1"),
+        ("(draft) Old title", true, false, "(draft) Entry 1"),
+        ("Old title", false, true, "Entry 1"),
+    ] {
+        let stack = Stack::landed(false, false);
+        checked_git(&stack.repo, &["reset", "--hard", &stack.commits[0]]);
+        let path = stack.repo.join(".git/gg/config.json");
+        let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        config["defaults"]["provider"] = json!("gitlab");
+        fs::write(path, serde_json::to_vec(&config).unwrap()).unwrap();
+        fs::write(stack.bin.join("title"), remote_title).unwrap();
+        fs::write(stack.bin.join("draft"), draft.to_string()).unwrap();
+        executable(
+            &stack.bin.join("glab"),
+            r#"#!/bin/sh
+set -eu
+dir=$(dirname "$0")
+case "$1 ${2:-}" in
+  '--version ') echo 'glab 1.0.0';;
+  'auth status') exit 0;;
+  'mr view')
+    [ "$3" = 1 ]
+    head=$(cat "$dir/head1"); base=$(cat "$dir/base1")
+    oid=$(git --git-dir="$TEST_ORIGIN" rev-parse "refs/heads/$head")
+    printf '{"iid":1,"title":"%s","draft":%s,"state":"opened","web_url":"https://gitlab.test/repo/-/merge_requests/1","source_branch":"%s","sha":"%s","target_branch":"%s","has_conflicts":false}\n' "$(cat "$dir/title")" "$(cat "$dir/draft")" "$head" "$oid" "$base";;
+  'mr update')
+    [ "$3" = 1 ]
+    case "$4" in
+      --title) printf '%s\n' "$5" > "$dir/updated-title";;
+      --target-branch) [ "$5" = main ];;
+      *) exit 1;;
+    esac;;
+  *) echo "unexpected glab $*" >&2; exit 1;;
+esac
+"#,
+        );
+        let mut args = vec!["sync", "--update-title", "--no-rebase-check", "--json"];
+        if draft_flag {
+            args.push("--draft");
+        }
+        let result = stack.json(&args, "");
+        assert!(result["sync"]["entries"][0]["error"].is_null(), "{result}");
+        assert_eq!(
+            fs::read_to_string(stack.bin.join("updated-title"))
+                .unwrap()
+                .trim(),
+            expected_title
+        );
+    }
+}
+
+#[test]
 fn gitlab_retargets_without_pushing_or_queueing() {
     let stack = Stack::landed(false, true);
     let path = stack.repo.join(".git/gg/config.json");

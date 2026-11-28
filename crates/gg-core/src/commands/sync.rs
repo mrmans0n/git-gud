@@ -2053,15 +2053,22 @@ pub fn run(
                 } else {
                     let mut review_changed = retargeted_pr == Some(pr_num);
                     let mut review_event_emitted = review_changed;
-                    let current_base = pr_info
-                        .as_ref()
-                        .and_then(|info| info.base_branch.as_deref())
+                    let info = pr_info.as_ref().expect("classified active review");
+                    let current_base = info
+                        .base_branch
+                        .as_deref()
                         .expect("classified active review has a target");
                     if update_title
                         && (!rebase_if_needed
-                            || pr_info.as_ref().is_none_or(|info| info.title != title))
+                            || info.title
+                                != ensure_draft_prefix_for_gitlab(
+                                    &title,
+                                    &info.title,
+                                    &provider,
+                                    info.draft,
+                                ))
                     {
-                        segment.finish_on_error(
+                        let current_review = segment.finish_on_error(
                             &repo,
                             &config,
                             authorize_review_mutation(
@@ -2071,9 +2078,15 @@ pub fn run(
                                 current_base,
                             ),
                         )?;
+                        let updated_title = ensure_draft_prefix_for_gitlab(
+                            &title,
+                            &current_review.title,
+                            &provider,
+                            current_review.draft,
+                        );
                         segment.ensure_started(&repo, &config)?;
                         segment.mark_remote_before_attempt()?;
-                        let title_result = provider.update_pr_title(pr_num, &title);
+                        let title_result = provider.update_pr_title(pr_num, &updated_title);
                         let title_result = segment.finish_result(&repo, &config, title_result);
                         if let Err(e) = title_result {
                             if !json && !jsonl {
@@ -2110,9 +2123,6 @@ pub fn run(
                     }
 
                     if update_descriptions {
-                        // Existing PRs keep their current draft/ready state.
-                        // --draft only applies when creating NEW PRs/MRs.
-
                         // Fetch current remote body and merge only the managed block,
                         // preserving user edits outside the markers.
                         match provider.get_pr_body(pr_num) {
@@ -3391,29 +3401,30 @@ fn replacement_closing_comment(
     )
 }
 
-/// Ensure a title has the "Draft: " prefix for GitLab when draft is true.
-/// GitLab controls draft state via the title prefix, so when syncing with --draft,
-/// we need to ensure the title has the "Draft: " prefix.
-/// This function only adds the prefix if:
-/// - The provider is GitLab
-/// - is_draft is true
-/// - The title doesn't already have the prefix (case-insensitive check)
-#[allow(dead_code)]
-fn ensure_draft_prefix_for_gitlab(title: &str, provider: &Provider, is_draft: bool) -> String {
-    // Only add prefix for GitLab when draft is true
-    if !is_draft || !matches!(provider, Provider::GitLab) {
+/// Preserve an existing GitLab MR's draft status when replacing its title.
+fn ensure_draft_prefix_for_gitlab(
+    title: &str,
+    current_title: &str,
+    provider: &Provider,
+    is_draft: bool,
+) -> String {
+    if !is_draft || !matches!(provider, Provider::GitLab) || gitlab_draft_prefix(title).is_some() {
         return title.to_string();
     }
 
-    let trimmed = title.trim_start();
-    let lower = trimmed.to_ascii_lowercase();
+    let prefix = gitlab_draft_prefix(current_title).unwrap_or("Draft:");
+    format!("{prefix} {title}")
+}
 
-    // Don't double-add if it already has the prefix
-    if lower.starts_with("draft:") {
-        title.to_string()
-    } else {
-        format!("Draft: {}", title)
-    }
+fn gitlab_draft_prefix(title: &str) -> Option<&str> {
+    let title = title.trim_start();
+    ["Draft:", "[Draft]", "(Draft)"]
+        .into_iter()
+        .find_map(|prefix| {
+            title
+                .get(..prefix.len())
+                .filter(|candidate| candidate.eq_ignore_ascii_case(prefix))
+        })
 }
 
 /// Create a branch pointing to a specific entry's commit
@@ -3809,7 +3820,7 @@ mod tests {
         use crate::provider::Provider;
         // GitLab + draft = should add prefix
         assert_eq!(
-            ensure_draft_prefix_for_gitlab("Add feature", &Provider::GitLab, true),
+            ensure_draft_prefix_for_gitlab("Add feature", "Old title", &Provider::GitLab, true),
             "Draft: Add feature"
         );
     }
@@ -3817,19 +3828,13 @@ mod tests {
     #[test]
     fn test_ensure_draft_prefix_for_gitlab_no_double_add() {
         use crate::provider::Provider;
-        // Should not double-add if already present
-        assert_eq!(
-            ensure_draft_prefix_for_gitlab("Draft: Add feature", &Provider::GitLab, true),
-            "Draft: Add feature"
-        );
-        assert_eq!(
-            ensure_draft_prefix_for_gitlab("draft: Add feature", &Provider::GitLab, true),
-            "draft: Add feature"
-        );
-        assert_eq!(
-            ensure_draft_prefix_for_gitlab("DRAFT: Add feature", &Provider::GitLab, true),
-            "DRAFT: Add feature"
-        );
+        for prefix in ["Draft:", "draft:", "DRAFT:", "[Draft]", "(Draft)"] {
+            let title = format!("{prefix} Add feature");
+            assert_eq!(
+                ensure_draft_prefix_for_gitlab(&title, "Draft: Old title", &Provider::GitLab, true),
+                title
+            );
+        }
     }
 
     #[test]
@@ -3837,7 +3842,7 @@ mod tests {
         use crate::provider::Provider;
         // GitLab + not draft = no prefix
         assert_eq!(
-            ensure_draft_prefix_for_gitlab("Add feature", &Provider::GitLab, false),
+            ensure_draft_prefix_for_gitlab("Add feature", "Old title", &Provider::GitLab, false),
             "Add feature"
         );
     }
@@ -3847,11 +3852,11 @@ mod tests {
         use crate::provider::Provider;
         // GitHub doesn't use title prefix for draft, so should be unchanged
         assert_eq!(
-            ensure_draft_prefix_for_gitlab("Add feature", &Provider::GitHub, true),
+            ensure_draft_prefix_for_gitlab("Add feature", "Old title", &Provider::GitHub, true),
             "Add feature"
         );
         assert_eq!(
-            ensure_draft_prefix_for_gitlab("Add feature", &Provider::GitHub, false),
+            ensure_draft_prefix_for_gitlab("Add feature", "Old title", &Provider::GitHub, false),
             "Add feature"
         );
     }
@@ -3861,7 +3866,12 @@ mod tests {
         use crate::provider::Provider;
         // Should handle leading whitespace in draft prefix check
         assert_eq!(
-            ensure_draft_prefix_for_gitlab("  Draft: Add feature", &Provider::GitLab, true),
+            ensure_draft_prefix_for_gitlab(
+                "  Draft: Add feature",
+                "Old title",
+                &Provider::GitLab,
+                true
+            ),
             "  Draft: Add feature"
         );
     }

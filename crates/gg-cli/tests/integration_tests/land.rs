@@ -5431,6 +5431,7 @@ fn test_land_jsonl_disconnect_after_merge_train_requeue_finalizes_operation() {
         1,
         "initial queue must have exactly one finalized segment"
     );
+    fixture.wait_until_waiter_snapshots_queued_head();
     fs::write(&fixture.head_moved, "moved\n").expect("move fake MR head");
     fs::write(&fixture.auto_merge_dropped, "dropped\n").expect("drop fake auto-merge");
 

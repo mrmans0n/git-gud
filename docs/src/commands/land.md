@@ -31,6 +31,11 @@ For non-wait GitLab landing with `--no-squash`, gg also refreshes approval
 immediately before changing the MR's squash setting. If approval was dismissed,
 gg leaves the setting unchanged and creates no landing recovery record.
 
+In GitLab merge-train wait mode, gg refreshes approval after validating that a
+pipeline is still missing and immediately before asking GitLab to create it.
+If approval was dismissed while waiting, gg sends no pipeline request and
+records the prepared operation as a proven no-op.
+
 ## Examples
 
 ```bash

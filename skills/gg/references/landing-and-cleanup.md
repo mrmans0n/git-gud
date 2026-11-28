@@ -22,6 +22,10 @@
   Non-wait GitLab `--no-squash` also rechecks approval immediately before
   changing the MR squash setting; this does not replace the later final queue
   or merge authorization, or any other preflight gate.
+  GitLab merge-train wait mode rechecks approval after final MR identity and
+  missing-pipeline validation, immediately before creating that pipeline. A
+  refusal is a proven no-op and must not be treated as a pipeline attempt or as
+  authorization for the later queue mutation.
   If the user separately approved a GitHub admin bypass, approval may be absent.
   If the user explicitly requested or immediately confirmed `--wait` without
   `--all`, pending or running CI and pending approval may be polled, but do not

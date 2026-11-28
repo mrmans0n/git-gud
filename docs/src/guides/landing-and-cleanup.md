@@ -22,6 +22,9 @@ override is the only exception; GitLab always requires approval.
 Direct merges perform this final check in both normal and `--wait` mode,
 including every entry selected by `--all` or `--until`.
 
+GitLab auto-merge performs the same final check in `--wait` mode before queueing
+the selected MR. A refusal creates no landing recovery state.
+
 ## Wait for CI and approvals
 
 ```bash

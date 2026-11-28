@@ -57,6 +57,11 @@ gg land --all --wait --no-squash --rebase-if-needed
 
 On GitLab projects with merge trains, `--wait` starts a required MR pipeline if retargeting leaves the next MR without one. You don't need to push a new commit or click **Run pipeline**. Approval is refreshed after confirming that the pipeline is still missing and immediately before the creation request. If approval was dismissed while waiting, no pipeline request or later queue mutation is sent.
 
+Before the initial merge-train queue request, gg validates the final MR or
+pipeline handoff and refreshes approval again. If approval was dismissed, it
+creates no queue attempt or landing recovery state and sends no queue request;
+GitLab `--admin` does not bypass this check.
+
 `gg land` stops before changing the remote if it cannot read a valid merge-train setting. It also revalidates each MR immediately before mutation and requires an explicit open, non-draft state with the expected target branch. Retry only after direct provider inspection confirms those values.
 
 The initial merge-train queue request is recovery-safe. `gg` records the request before sending it. If GitLab accepts the request but the response is lost, later Land runs stop before provider access instead of queueing the MR again. Inspect the reported MR and operation ID in GitLab and the local operation log before changing recovery data. A completed pipeline handoff is kept separately, so investigating the queue request does not discard that evidence.

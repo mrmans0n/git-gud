@@ -388,6 +388,12 @@ impl OperationStore {
                     .gitlab_landing_attempt
                     .iter()
                     .map(|attempt| attempt.operation_id.as_str())
+                    .chain(
+                        stack
+                            .gitlab_merge_train_queue_attempt
+                            .iter()
+                            .map(|attempt| attempt.operation_id.as_str()),
+                    )
                     .chain(stack.land_maintenance.values().flat_map(|progress| {
                         progress
                             .retargets

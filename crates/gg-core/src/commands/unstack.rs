@@ -801,6 +801,7 @@ mod tests {
                 mrs: HashMap::from([("c-abc1234".to_string(), 42)]),
                 review_creation_intents: HashMap::new(),
                 gitlab_landing_attempt: None,
+                gitlab_merge_train_queue_attempt: None,
                 land_maintenance: HashMap::new(),
                 worktree_path: None,
             },

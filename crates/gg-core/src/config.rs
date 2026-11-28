@@ -301,6 +301,10 @@ pub struct StackConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gitlab_landing_attempt: Option<GitLabLandingAttempt>,
 
+    /// The initial GitLab merge-train queue request in flight, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gitlab_merge_train_queue_attempt: Option<GitLabLandingAttempt>,
+
     /// Restart-safe post-merge mutation progress by merged GG-ID.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub land_maintenance: HashMap<String, LandMaintenanceProgress>,
@@ -619,6 +623,31 @@ impl Config {
         self.update_transactionally(git_dir, |config| {
             if let Some(stack) = config.stacks.get_mut(stack_name) {
                 stack.gitlab_landing_attempt = None;
+            }
+        })
+    }
+
+    pub(crate) fn set_gitlab_merge_train_queue_attempt(
+        &mut self,
+        git_dir: &Path,
+        stack_name: &str,
+        attempt: GitLabLandingAttempt,
+    ) -> Result<()> {
+        self.update_transactionally(git_dir, |config| {
+            config
+                .get_or_create_stack(stack_name)
+                .gitlab_merge_train_queue_attempt = Some(attempt);
+        })
+    }
+
+    pub(crate) fn clear_gitlab_merge_train_queue_attempt(
+        &mut self,
+        git_dir: &Path,
+        stack_name: &str,
+    ) -> Result<()> {
+        self.update_transactionally(git_dir, |config| {
+            if let Some(stack) = config.stacks.get_mut(stack_name) {
+                stack.gitlab_merge_train_queue_attempt = None;
             }
         })
     }

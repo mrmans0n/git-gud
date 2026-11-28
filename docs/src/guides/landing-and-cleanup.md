@@ -19,6 +19,9 @@ merge request. This prevents `--all` from landing an entry whose approval was
 dismissed while earlier entries were being processed. GitHub's explicit admin
 override is the only exception; GitLab always requires approval.
 
+Direct merges perform this final check in both normal and `--wait` mode,
+including every entry selected by `--all` or `--until`.
+
 ## Wait for CI and approvals
 
 ```bash

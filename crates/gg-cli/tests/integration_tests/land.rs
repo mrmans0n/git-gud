@@ -1343,6 +1343,28 @@ fn test_land_jsonl_streams_wait_entry_and_summary() {
 
 #[cfg(unix)]
 #[test]
+fn test_land_all_wait_rechecks_approval_before_direct_merge() {
+    let fixture = WaitingLandFixture::new();
+    let land = fixture.start_land_with_args(&["land", "--all", "--wait", "--jsonl", "--no-clean"]);
+    fixture.wait_until_polling();
+    fixture.mark_unapproved();
+    fixture.release_ci();
+
+    let output = land.wait_with_output().expect("wait for land");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    let summary: Value = serde_json::from_str(stdout.lines().last().expect("summary event"))
+        .expect("parse summary event");
+
+    assert!(!fixture.merged.exists(), "merge marker exists: {summary}");
+    assert_eq!(summary["error"], "PR #41 is not approved", "{summary}");
+    assert!(
+        land_operation_records(&fixture.repo_path).is_empty(),
+        "approval refusal must not create a Land operation"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn test_land_jsonl_admin_emits_no_human_warning() {
     let fixture = WaitingLandFixture::new();
     fixture.release_ci();
